@@ -14,7 +14,7 @@ import {
   type ModelListOpts, type ModelListResult,
   type UsageOpts, type UsageResult,
   run, agentLog, detectAgentBin, buildStreamPreviewMeta,
-  pushRecentActivity,
+  pushRecentActivity, firstNonEmptyLine, shortValue, normalizeErrorMessage,
   listPikiclawSessions, findPikiclawSession, isPendingSessionId,
   emptyUsage,
 } from './code-agent.js';
@@ -57,6 +57,115 @@ function geminiContextWindowFromModel(model: unknown): number | null {
   return null;
 }
 
+function geminiToolName(value: unknown): string {
+  const name = typeof value === 'string' ? value.trim() : '';
+  return name || 'tool';
+}
+
+function geminiToolLabel(name: string): string {
+  return name
+    .replace(/^mcp_/, '')
+    .replace(/^discovered_tool_/, '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || 'tool';
+}
+
+function geminiToolSummary(name: unknown, parameters: any): string {
+  const tool = geminiToolName(name);
+  const params = parameters && typeof parameters === 'object' ? parameters : {};
+  switch (tool) {
+    case 'read_file': {
+      const target = shortValue(params.file_path || params.path, 140);
+      return target ? `Read ${target}` : 'Read file';
+    }
+    case 'read_many_files': {
+      const include = shortValue(params.include || params.pattern, 120);
+      return include ? `Read files: ${include}` : 'Read files';
+    }
+    case 'write_file': {
+      const target = shortValue(params.file_path || params.path, 140);
+      return target ? `Write ${target}` : 'Write file';
+    }
+    case 'replace': {
+      const target = shortValue(params.file_path || params.path, 140);
+      return target ? `Edit ${target}` : 'Edit file';
+    }
+    case 'list_directory': {
+      const dir = shortValue(params.dir_path || params.path, 120);
+      return dir ? `List files: ${dir}` : 'List files';
+    }
+    case 'glob': {
+      const pattern = shortValue(params.pattern || params.glob, 120);
+      return pattern ? `Find files: ${pattern}` : 'Find files';
+    }
+    case 'grep_search':
+    case 'search_file_content': {
+      const pattern = shortValue(params.pattern || params.query, 120);
+      return pattern ? `Search text: ${pattern}` : 'Search text';
+    }
+    case 'run_shell_command': {
+      const command = shortValue(params.command, 120);
+      return command ? `Run shell: ${command}` : 'Run shell';
+    }
+    case 'web_fetch': {
+      const target = shortValue(params.url || params.prompt, 120);
+      return target ? `Fetch ${target}` : 'Fetch web page';
+    }
+    case 'google_web_search': {
+      const query = shortValue(params.query, 120);
+      return query ? `Search web: ${query}` : 'Search web';
+    }
+    case 'write_todos': return 'Update todo list';
+    case 'save_memory': return 'Save memory';
+    case 'ask_user': return 'Request user input';
+    case 'activate_skill': {
+      const skill = shortValue(params.name, 80);
+      return skill ? `Activate skill: ${skill}` : 'Activate skill';
+    }
+    case 'get_internal_docs': {
+      const target = shortValue(params.path, 120);
+      return target ? `Read docs: ${target}` : 'Read docs';
+    }
+    case 'enter_plan_mode': return 'Enter plan mode';
+    case 'exit_plan_mode': return 'Exit plan mode';
+    default: {
+      const detail = shortValue(
+        params.file_path
+        || params.path
+        || params.dir_path
+        || params.pattern
+        || params.query
+        || params.command
+        || params.url
+        || params.name,
+        120,
+      );
+      const label = shortValue(geminiToolLabel(tool), 80);
+      return detail ? `Use ${label}: ${detail}` : `Use ${label}`;
+    }
+  }
+}
+
+function geminiToolResultSummary(tool: { name: string; summary: string } | undefined, ev: any): string {
+  const fallbackSummary = geminiToolSummary(
+    tool?.name || ev.tool_name || ev.name || ev.tool,
+    ev.parameters || ev.args || ev.input || {},
+  );
+  const summary = tool?.summary || fallbackSummary;
+  const detail = shortValue(
+    firstNonEmptyLine(
+      normalizeErrorMessage(ev.error)
+      || ev.output
+      || ev.message
+      || '',
+    ),
+    120,
+  );
+  if (ev.status === 'error') return detail ? `${summary} failed: ${detail}` : `${summary} failed`;
+  return detail ? `${summary} -> ${detail}` : `${summary} done`;
+}
+
 function geminiParse(ev: any, s: any) {
   const t = ev.type || '';
 
@@ -68,29 +177,46 @@ function geminiParse(ev: any, s: any) {
   }
 
   // message delta: {"type":"message","role":"assistant","content":"...","delta":true}
-  if (t === 'message' && ev.role === 'assistant' && ev.delta) {
-    s.text += ev.content || '';
+  if (t === 'message' && ev.role === 'assistant') {
+    if (ev.delta) s.text += ev.content || '';
+    else if (!s.text.trim()) s.text = ev.content || '';
   }
 
-  // tool_call event (if gemini uses tools)
-  if (t === 'tool_call') {
-    const name = ev.name || ev.tool || 'tool';
-    pushRecentActivity(s.recentActivity, `Using ${name}...`);
+  if (t === 'tool_use' || t === 'tool_call') {
+    const name = geminiToolName(ev.tool_name || ev.name || ev.tool);
+    const summary = geminiToolSummary(name, ev.parameters || ev.args || ev.input || {});
+    const toolId = String(ev.tool_id || ev.id || '').trim();
+    if (toolId) s.geminiToolsById.set(toolId, { name, summary });
+    pushRecentActivity(s.recentActivity, summary);
     s.activity = s.recentActivity.join('\n');
   }
 
-  // tool_result event
   if (t === 'tool_result') {
-    const name = ev.name || ev.tool || 'tool';
-    pushRecentActivity(s.recentActivity, `${name} done`);
+    const toolId = String(ev.tool_id || ev.id || '').trim();
+    const tool = toolId ? s.geminiToolsById.get(toolId) : undefined;
+    pushRecentActivity(s.recentActivity, geminiToolResultSummary(tool, ev));
     s.activity = s.recentActivity.join('\n');
+  }
+
+  if (t === 'error') {
+    const message = normalizeErrorMessage(ev.message || ev.error) || 'Gemini reported an error';
+    if (ev.severity === 'error') {
+      s.errors = [...(s.errors || []), message];
+    } else {
+      pushRecentActivity(s.recentActivity, message);
+      s.activity = s.recentActivity.join('\n');
+    }
   }
 
   // result event: {"type":"result","status":"success","stats":{...}}
   if (t === 'result') {
     s.sessionId = ev.session_id ?? s.sessionId;
     if (ev.status === 'error' || ev.status === 'failure') {
-      s.errors = [ev.error || ev.message || `Gemini returned status: ${ev.status}`];
+      const message = normalizeErrorMessage(ev.error)
+        || normalizeErrorMessage(ev.errors)
+        || normalizeErrorMessage(ev.message)
+        || `Gemini returned status: ${ev.status}`;
+      s.errors = [message];
     }
     s.stopReason = ev.status === 'success' ? 'end_turn' : ev.status;
     const u = ev.stats;

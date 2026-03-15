@@ -315,7 +315,7 @@ class FeishuChannel extends Channel {
     typingIndicators: false,
     commandMenu: true,
     callbackActions: true,
-    messageReactions: false,
+    messageReactions: true,
     fileUpload: true,
     fileDownload: true,
     threads: false,
@@ -813,6 +813,20 @@ class FeishuChannel extends Channel {
 
   async sendTyping(_chatId: number | string): Promise<void> {
     // Feishu has no typing indicator API — no-op
+  }
+
+  async setMessageReaction(_chatId: number | string, msgId: number | string, reactions: string[]): Promise<void> {
+    const messageId = String(msgId || '').trim();
+    const emojiTypes = [...new Set(reactions.map(reaction => String(reaction || '').trim()).filter(Boolean))];
+    if (!messageId || !emojiTypes.length) return;
+
+    this._logOutgoing('setReaction', `msg_id=${messageId} reactions=${emojiTypes.join(',')}`);
+    for (const emojiType of emojiTypes) {
+      await this.client.im.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      }).catch(() => {});
+    }
   }
 
   // ========================================================================

@@ -365,9 +365,9 @@ rl.on('line', (line) => {
     expect(result3.inputTokens).toBe(11417);
     expect(result3.cachedInputTokens).toBe(10752);
     expect(result3.outputTokens).toBe(125);
-    expect(result3.contextUsedTokens).toBe(22169);
-    expect(result3.contextPercent).toBe(8.6);
-    expect(previewMeta.some(meta => meta?.contextPercent === 8.6)).toBe(true);
+    expect(result3.contextUsedTokens).toBe(11542);
+    expect(result3.contextPercent).toBe(4.5);
+    expect(previewMeta.some(meta => meta?.contextPercent === 4.5)).toBe(true);
   });
 
   it('keeps long codex commentary lines intact and runs turns in parallel across sessions', async () => {
@@ -634,6 +634,48 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(result.contextWindow).toBe(1_048_576);
     expect(result.contextUsedTokens).toBe(9434);
     expect(result.contextPercent).toBe(0.9);
+  });
+
+  it('parses Gemini tool_use and tool_result events into readable activity previews', async () => {
+    const activities: string[] = [];
+    writeFakeScript('gemini', [
+      { type: 'init', session_id: 'gemini-tools', model: 'gemini-2.5-pro' },
+      { type: 'tool_use', tool_name: 'list_directory', tool_id: 'tool-1', parameters: { dir_path: '.' } },
+      { type: 'tool_result', tool_id: 'tool-1', status: 'success', output: 'Listed 38 item(s). (2 ignored)' },
+      { type: 'message', role: 'assistant', delta: true, content: 'Done' },
+      { type: 'result', session_id: 'gemini-tools', status: 'success' },
+    ]);
+
+    const result = await doGeminiStream(baseOpts('gemini', {
+      onText: (_text, _thinking, activity) => {
+        if (activity) activities.push(activity);
+      },
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe('Done');
+    expect(result.activity).toContain('List files: .');
+    expect(result.activity).toContain('List files: . -> Listed 38 item(s). (2 ignored)');
+    expect(activities.some(activity => activity.includes('List files: . -> Listed 38 item(s). (2 ignored)'))).toBe(true);
+  });
+
+  it('normalizes structured Gemini result errors without crashing', async () => {
+    writeFakeScript('gemini', [
+      { type: 'init', session_id: 'gemini-error', model: 'gemini-2.5-pro' },
+      {
+        type: 'result',
+        session_id: 'gemini-error',
+        status: 'error',
+        error: { type: 'FatalCancellationError', message: 'Operation cancelled.' },
+      },
+    ]);
+
+    const result = await doGeminiStream(baseOpts('gemini'));
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe('Operation cancelled.');
+    expect(result.error).toBe('Operation cancelled.');
+    expect(result.incomplete).toBe(true);
   });
 });
 

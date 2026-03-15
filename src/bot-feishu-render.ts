@@ -238,8 +238,9 @@ export function buildHumanLoopPromptMarkdown(prompt: HumanLoopPromptState): stri
 // LivePreview renderer — produces Markdown for Feishu card elements
 // ---------------------------------------------------------------------------
 
-export function buildInitialPreviewMarkdown(agent: Agent, model?: string | null, effort?: string | null): string {
+export function buildInitialPreviewMarkdown(agent: Agent, model?: string | null, effort?: string | null, waiting = false): string {
   const parts: string[] = [];
+  if (waiting) parts.push('Waiting in queue...');
   if (model) parts.push(model);
   else parts.push(agent);
   if (effort) parts.push(`${effort}`);

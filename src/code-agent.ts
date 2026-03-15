@@ -235,6 +235,31 @@ export function shortValue(value: unknown, max = 90): string {
   return `${text.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
+export function normalizeErrorMessage(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (value instanceof Error) return value.message.trim();
+  if (Array.isArray(value)) {
+    return value.map(item => normalizeErrorMessage(item)).filter(Boolean).join('; ').trim();
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const preferred = normalizeErrorMessage(record.message)
+      || normalizeErrorMessage(record.error)
+      || normalizeErrorMessage(record.detail)
+      || normalizeErrorMessage(record.type)
+      || normalizeErrorMessage(record.code)
+      || normalizeErrorMessage(record.status);
+    if (preferred) return preferred;
+    try { return JSON.stringify(value).trim(); } catch {}
+  }
+  return value == null ? '' : String(value).trim();
+}
+
+export function joinErrorMessages(errors: unknown[] | null | undefined): string {
+  if (!errors?.length) return '';
+  return errors.map(error => normalizeErrorMessage(error)).filter(Boolean).join('; ').trim();
+}
+
 export function appendSystemPrompt(base: string | undefined, extra: string): string {
   const lhs = String(base || '').trim();
   const rhs = String(extra || '').trim();
@@ -809,7 +834,7 @@ export async function run(cmd: string[], opts: StreamOpts, parseLine: (ev: any, 
   let interrupted = false;
   const s = {
     sessionId: opts.sessionId, text: '', thinking: '', msgs: [] as string[], thinkParts: [] as string[],
-    model: opts.model, thinkingEffort: opts.thinkingEffort, errors: null as string[] | null,
+    model: opts.model, thinkingEffort: opts.thinkingEffort, errors: null as unknown[] | null,
     inputTokens: null as number | null, outputTokens: null as number | null, cachedInputTokens: null as number | null,
     cacheCreationInputTokens: null as number | null, contextWindow: null as number | null,
     contextUsedTokens: null as number | null,
@@ -818,6 +843,7 @@ export async function run(cmd: string[], opts: StreamOpts, parseLine: (ev: any, 
     recentActivity: [] as string[],
     claudeToolsById: new Map<string, { name: string; summary: string }>(),
     seenClaudeToolIds: new Set<string>(),
+    geminiToolsById: new Map<string, { name: string; summary: string }>(),
   };
 
   const shellCmd = cmd.map(Q).join(' ');
@@ -887,22 +913,23 @@ export async function run(cmd: string[], opts: StreamOpts, parseLine: (ev: any, 
   if (!s.text.trim() && s.msgs.length) s.text = s.msgs.join('\n\n');
   if (!s.thinking.trim() && s.thinkParts.length) s.thinking = s.thinkParts.join('\n\n');
 
+  const errorText = joinErrorMessages(s.errors);
   const ok = procOk && !s.errors && !timedOut && !interrupted;
-  const error = s.errors?.map(e => e.trim()).filter(Boolean).join('; ').trim()
+  const error = errorText
     || (interrupted ? 'Interrupted by user.' : null)
     || (timedOut ? `Timed out after ${opts.timeout}s before the agent reported completion.` : null)
     || (!procOk ? (stderr.trim() || `Failed (exit=${code}).`) : null);
   const incomplete = !ok || s.stopReason === 'max_tokens' || s.stopReason === 'timeout';
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   agentLog(`[result] ok=${ok && !s.errors} elapsed=${elapsed}s text=${s.text.length}chars thinking=${s.thinking.length}chars session=${s.sessionId || '?'}`);
-  if (s.errors) agentLog(`[result] errors: ${s.errors.join('; ')}`);
+  if (errorText) agentLog(`[result] errors: ${errorText}`);
   if (s.stopReason) agentLog(`[result] stop_reason=${s.stopReason}`);
   if (stderr.trim() && !procOk) agentLog(`[result] stderr: ${stderr.trim().slice(0, 300)}`);
 
   return {
     ok, sessionId: s.sessionId, workspacePath: null,
     model: s.model, thinkingEffort: s.thinkingEffort,
-    message: s.text.trim() || s.errors?.join('; ') || (procOk ? '(no textual response)' : `Failed (exit=${code}).\n\n${stderr.trim() || '(no output)'}`),
+    message: s.text.trim() || errorText || (procOk ? '(no textual response)' : `Failed (exit=${code}).\n\n${stderr.trim() || '(no output)'}`),
     thinking: s.thinking.trim() || null,
     elapsedS: (Date.now() - start) / 1000,
     inputTokens: s.inputTokens, outputTokens: s.outputTokens, cachedInputTokens: s.cachedInputTokens,

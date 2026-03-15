@@ -407,8 +407,10 @@ function trimActivityForPreview(text: string, maxChars = 900): string {
   return [...head, '...', ...tail].join('\n');
 }
 
-export function buildInitialPreviewHtml(agent: Agent): string {
-  return formatPreviewFooterHtml(agent, 0);
+export function buildInitialPreviewHtml(agent: Agent, waiting = false): string {
+  return waiting
+    ? `<i>Waiting in queue...</i>\n\n${formatPreviewFooterHtml(agent, 0)}`
+    : formatPreviewFooterHtml(agent, 0);
 }
 
 export function buildStreamPreviewHtml(input: StreamPreviewRenderInput): string {

@@ -23,6 +23,7 @@ function createTestChannel() {
   const createCalls: any[] = [];
   const patchCalls: any[] = [];
   const requestCalls: any[] = [];
+  const reactionCalls: any[] = [];
 
   (ch as any).client = {
     im: {
@@ -40,6 +41,12 @@ function createTestChannel() {
           return { data: {} };
         }),
         delete: vi.fn(async () => ({ data: {} })),
+      },
+      messageReaction: {
+        create: vi.fn(async (payload: any) => {
+          reactionCalls.push(payload);
+          return { data: { reaction_id: `reaction-${reactionCalls.length}` } };
+        }),
       },
       image: { create: vi.fn() },
       file: { create: vi.fn() },
@@ -90,7 +97,7 @@ function createTestChannel() {
     }),
   };
 
-  return { ch, createCalls, patchCalls, requestCalls };
+  return { ch, createCalls, patchCalls, requestCalls, reactionCalls };
 }
 
 afterEach(() => {
@@ -291,5 +298,18 @@ describe('FeishuChannel files', () => {
     expect(createCalls).toHaveLength(1);
     expect(createCalls[0].data.msg_type).toBe('file');
     expect(JSON.parse(createCalls[0].data.content)).toEqual({ file_key: 'file-key-1' });
+  });
+
+  it('adds message reactions through the message reaction API', async () => {
+    const { ch, reactionCalls } = createTestChannel();
+
+    await ch.setMessageReaction('chat-1', 'msg-123', ['Get']);
+
+    expect(reactionCalls).toEqual([
+      {
+        path: { message_id: 'msg-123' },
+        data: { reaction_type: { emoji_type: 'Get' } },
+      },
+    ]);
   });
 });

@@ -85,6 +85,7 @@ const SHUTDOWN_EXIT_CODE: Record<ShutdownSignal, number> = {
   SIGINT: 130,
   SIGTERM: 143,
 };
+const FEISHU_FILE_STAGE_REACTION = 'Get';
 
 function describeError(err: unknown): string {
   if (!(err instanceof Error)) return String(err ?? 'unknown error');
@@ -573,6 +574,15 @@ export class FeishuBot extends Bot {
     };
   }
 
+  private async safeSetMessageReaction(chatId: string, messageId: string, reactions: string[]) {
+    if (!supportsChannelCapability((this as any).channel, 'messageReactions')) return;
+    const setReaction = (this.channel as any)?.setMessageReaction;
+    if (typeof setReaction !== 'function') return;
+    try {
+      await setReaction.call(this.channel, chatId, messageId, reactions);
+    } catch {}
+  }
+
   // ---- streaming bridge -----------------------------------------------------
 
   private async handleMessage(msg: FeishuMessage, ctx: FeishuContext) {
@@ -615,6 +625,7 @@ export class FeishuBot extends Bot {
           if (!staged.importedFiles.length) throw new Error('no files persisted');
           this.log(`[handleMessage] staged files chat=${ctx.chatId} session=${staged.sessionId} files=${staged.importedFiles.length}`);
           this.registerSessionMessage(ctx.chatId, ctx.messageId, session);
+          await this.safeSetMessageReaction(ctx.chatId, ctx.messageId, [FEISHU_FILE_STAGE_REACTION]);
         } catch (e: any) {
           this.log(`[handleMessage] stage files failed: ${e?.message || e}`);
         }
@@ -634,6 +645,7 @@ export class FeishuBot extends Bot {
       `[handleMessage] start chat=${ctx.chatId} agent=${session.agent} session=${session.sessionId || '(new)'} ` +
       `files=${files.length} prompt="${prompt.slice(0, 100)}"`,
     );
+    const waiting = this.sessionHasPendingWork(session);
     const taskId = this.createTaskId(session);
     this.beginTask({
       taskId,
@@ -648,7 +660,7 @@ export class FeishuBot extends Bot {
 
     const model = session.modelId || this.modelForAgent(session.agent);
     const effort = this.effortForAgent(session.agent);
-    const placeholderId = await this.channel.sendStreamingCard(ctx.chatId, buildInitialPreviewMarkdown(session.agent, model, effort), {
+    const placeholderId = await this.channel.sendStreamingCard(ctx.chatId, buildInitialPreviewMarkdown(session.agent, model, effort, waiting), {
       replyTo: ctx.messageId || undefined,
       keyboard: stopKeyboard,
     });

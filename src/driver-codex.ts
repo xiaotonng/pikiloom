@@ -327,6 +327,18 @@ function buildCodexCumulativeUsage(raw: any): CodexCumulativeUsage | null {
   return { input: input ?? 0, output: output ?? 0, cached: cached ?? 0 };
 }
 
+function buildCodexContextUsage(raw: any): number | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const total = numberOrNull(raw.totalTokens, raw.total_tokens);
+  if (total != null && total >= 0) return total;
+
+  const input = numberOrNull(raw.inputTokens, raw.input_tokens);
+  const output = numberOrNull(raw.outputTokens, raw.output_tokens);
+  if (input != null && output != null) return input + output;
+  if (input != null) return input;
+  return null;
+}
+
 
 function applyCodexTokenUsage(
   s: {
@@ -351,6 +363,8 @@ function applyCodexTokenUsage(
   if (lastOutput != null) s.outputTokens = lastOutput;
   if (lastCached != null) s.cachedInputTokens = lastCached;
   if (lastCacheCreation != null) s.cacheCreationInputTokens = lastCacheCreation;
+  const lastContextUsage = buildCodexContextUsage(last);
+  if (lastContextUsage != null) s.contextUsedTokens = lastContextUsage;
 
   const totalUsage = info.total ?? info.totalTokenUsage ?? info.total_token_usage ?? rawUsage.total ?? rawUsage;
   const total = buildCodexCumulativeUsage(totalUsage);
@@ -361,9 +375,9 @@ function applyCodexTokenUsage(
     if (lastCached == null) s.cachedInputTokens = prev ? Math.max(0, total.cached - prev.cached) : total.cached;
   }
   // NOTE: do NOT set s.contextUsedTokens from cumulative totals —
-  // codexUsageTotalTokens sums input+output+cached+reasoning across all turns,
-  // which is NOT the current context-window occupancy. Let computeContext()
-  // fall back to the per-turn input/cached/cacheCreation tokens instead.
+  // those counters span the full thread, not the current turn. Use the per-turn
+  // `last` usage only. `cached_input_tokens` is already a subset of
+  // `input_tokens`, so adding it again inflates the context percentage.
   const contextWindow = numberOrNull(
     info.modelContextWindow,
     info.model_context_window,

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pikiclaw Weekly Release</title>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --bg-card: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.4);
+            --border: #334155;
+            --gradient: linear-gradient(135deg, #0f172a 0%, #020617 100%);
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--gradient);
+            color: var(--text-main);
+            width: 1200px;
+            height: 630px; /* Standard Twitter Image Size */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Abstract Background Elements */
+        .bg-glow-1 {
+            position: absolute;
+            top: -150px;
+            left: -150px;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            border-radius: 50%;
+            z-index: 0;
+        }
+        
+        .bg-glow-2 {
+            position: absolute;
+            bottom: -200px;
+            right: -100px;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(168, 85, 247, 0.3) 0%, transparent 70%);
+            border-radius: 50%;
+            z-index: 0;
+        }
+
+        .container {
+            z-index: 1;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(20px);
+            padding: 48px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 40px;
+        }
+
+        .title-group h1 {
+            font-size: 48px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 8px;
+            background: linear-gradient(to right, #fff, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .title-group p {
+            font-size: 20px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .stats-badge {
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid var(--accent);
+            padding: 12px 24px;
+            border-radius: 9999px;
+            text-align: right;
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .stats-badge .number {
+            font-size: 32px;
+            font-weight: 800;
+            color: var(--accent);
+            line-height: 1;
+        }
+
+        .stats-badge .label {
+            font-size: 14px;
+            color: var(--text-main);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 4px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+            flex-grow: 1;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            transition: transform 0.2s;
+        }
+
+        .card-icon {
+            font-size: 32px;
+            margin-bottom: 16px;
+        }
+
+        .card-title {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: #e2e8f0;
+        }
+
+        .card-desc {
+            font-size: 16px;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        .footer {
+            margin-top: 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid var(--border);
+            padding-top: 24px;
+        }
+
+        .version {
+            font-size: 16px;
+            font-family: monospace;
+            color: #a855f7;
+            background: rgba(168, 85, 247, 0.1);
+            padding: 6px 12px;
+            border-radius: 8px;
+        }
+
+        .npm-command {
+            font-family: monospace;
+            font-size: 18px;
+            color: #10b981;
+            background: rgba(16, 185, 129, 0.1);
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px dashed #10b981;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="bg-glow-1"></div>
+    <div class="bg-glow-2"></div>
+
+    <div class="container">
+        <div class="header">
+            <div class="title-group">
+                <h1>pikiclaw</h1>
+                <p>Command local Claude, Codex & Gemini via best IM.</p>
+            </div>
+            <div class="stats-badge">
+                <div class="number">40</div>
+                <div class="label">Releases This Week</div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-icon">🧠</div>
+                <div class="card-title">Triple Engine CLI Support</div>
+                <div class="card-desc">Seamless integration with the official <b>Claude Code</b>, <b>Codex CLI</b>, and <b>Gemini CLI</b>. Unified session management via driver registry.</div>
+            </div>
+            
+            <div class="card">
+                <div class="card-icon">💬</div>
+                <div class="card-title">Multi-Channel IM & Codex Human-Loop</div>
+                <div class="card-desc">Control your local agents from anywhere via <b>Telegram</b> & <b>Feishu</b>. Features live streaming, automatic Codex inputs via chat, and rich attachments.</div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon">⚡</div>
+                <div class="card-title">Real-time Web Dashboard</div>
+                <div class="card-desc">Full observability at localhost:3939. Monitor host status, active sessions, CPU/RAM, token usage, and live session streaming.</div>
+            </div>
+
+            <div class="card">
+                <div class="card-icon">🖥️</div>
+                <div class="card-title">GUI & Desktop Automation</div>
+                <div class="card-desc">Equip agents with eyes & hands. <b>Playwright MCP</b> for browser automation and <b>Appium Mac2</b> for macOS desktop control (click, type, snapshot).</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="version">Current: v0.2.53 (Rapid Iteration)</div>
+            <div class="npm-command">&gt; npx pikiclaw@latest</div>
+        </div>
+    </div>
+</body>
+</html>

@@ -596,9 +596,10 @@ export class TelegramBot extends Bot {
       sourceMessageId: ctx.messageId,
     });
     const stopKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId));
+    const waiting = this.sessionHasPendingWork(session);
     let phId: number | null = null;
     if (canEditMessages) {
-      const placeholderId = await ctx.reply(buildInitialPreviewHtml(session.agent), { parseMode: 'HTML', messageThreadId, keyboard: stopKeyboard });
+      const placeholderId = await ctx.reply(buildInitialPreviewHtml(session.agent, waiting), { parseMode: 'HTML', messageThreadId, keyboard: stopKeyboard });
       phId = typeof placeholderId === 'number' ? placeholderId : null;
       if (phId != null) {
         this.registerSessionMessage(ctx.chatId, phId, session);

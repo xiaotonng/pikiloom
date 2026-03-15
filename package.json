@@ -1,6 +1,6 @@
 {
   "name": "pikiclaw",
-  "version": "0.2.53",
+  "version": "0.2.54",
   "description": "Put the world's smartest AI agents in your pocket. Command local Claude & Gemini via IM. | 让最好用的 IM 变成你电脑上的顶级 Agent 控制台",
   "type": "module",
   "bin": {
@@ -31,7 +31,7 @@
     "command": "set -ae && . ./.env && set +a && tsx src/run.ts",
     "build:dashboard": "tsx scripts/build-dashboard.ts",
     "build": "npm run build:dashboard && tsc",
-    "prepublishOnly": "npm run build",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:e2e": "set -ae && . ./.env && set +a && vitest run --config vitest.e2e.config.ts test/e2e/",
     "test:watch": "vitest"

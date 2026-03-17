@@ -15,7 +15,7 @@ import {
   type ModelListOpts, type ModelListResult,
   type UsageOpts, type UsageResult, type UsageWindowInfo,
   run, agentLog, detectAgentBin, buildStreamPreviewMeta,
-  pushRecentActivity, firstNonEmptyLine, shortValue, normalizeErrorMessage,
+  appendSystemPrompt, pushRecentActivity, firstNonEmptyLine, shortValue, normalizeErrorMessage,
   listPikiclawSessions, findPikiclawSession, isPendingSessionId,
   mergeManagedAndNativeSessions,
   roundPercent, emptyUsage, Q,
@@ -48,7 +48,10 @@ function geminiCmd(o: StreamOpts): string[] {
   }
   if (o.geminiExtraArgs?.length) args.push(...o.geminiExtraArgs);
   // gemini's -p requires the prompt as its value (not via stdin)
-  args.push('-p', o.prompt);
+  const promptText = o.geminiSystemInstruction
+    ? appendSystemPrompt(o.geminiSystemInstruction, o.prompt)
+    : o.prompt;
+  args.push('-p', promptText);
   return args;
 }
 

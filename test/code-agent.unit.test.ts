@@ -675,6 +675,10 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(env.GEMINI_CLI_SYSTEM_SETTINGS_PATH).toContain('gemini-system-settings.json');
 
     const settings = JSON.parse(fs.readFileSync(copiedSettingsFile, 'utf-8'));
+    expect(settings.fileFiltering).toEqual({
+      respectGitIgnore: false,
+      respectGeminiIgnore: false,
+    });
     expect(settings.mcpServers?.pikiclaw?.command).toBeTruthy();
     expect(settings.mcpServers?.pikiclaw?.env?.MCP_CALLBACK_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(settings.mcpServers?.pikiclaw?.trust).toBe(true);

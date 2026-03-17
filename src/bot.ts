@@ -1168,6 +1168,7 @@ export class Bot {
       geminiModel: cs.agent === 'gemini' ? resolvedModel : (this.agentConfigs.gemini?.model || ''),
       geminiApprovalMode: this.geminiApprovalMode,
       geminiSandbox: this.geminiSandbox,
+      geminiSystemInstruction: effectiveSystemPrompt || undefined,
       geminiExtraArgs: this.geminiExtraArgs.length ? this.geminiExtraArgs : undefined,
       // MCP bridge
       mcpSendFile,

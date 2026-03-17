@@ -226,6 +226,12 @@ function buildClaudeMcpConfig(servers: RegisteredMcpServer[]) {
 
 function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
   return {
+    // Session attachments live under .pikiclaw/... and should remain readable to
+    // Gemini's built-in file tools even when the project ignores that directory.
+    fileFiltering: {
+      respectGitIgnore: false,
+      respectGeminiIgnore: false,
+    },
     mcpServers: Object.fromEntries(servers.map(server => [
       server.name,
       { command: server.command, args: server.args, ...(server.env ? { env: server.env } : {}), trust: true },

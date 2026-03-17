@@ -117,6 +117,7 @@ export interface StreamOpts {
   geminiModel?: string;
   geminiApprovalMode?: string;
   geminiSandbox?: boolean;
+  geminiSystemInstruction?: string;
   geminiExtraArgs?: string[];
   /** Override stdin payload (used for stream-json multimodal input) */
   _stdinOverride?: string;

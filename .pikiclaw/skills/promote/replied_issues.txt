@@ -3,3 +3,14 @@ https://github.com/JohannOosthuizen/Gemini-CLI-Telegram-Bot/issues/2
 https://github.com/anthropics/claude-code/issues/18189
 https://github.com/RichardAtCT/claude-code-telegram/issues/126
 https://github.com/jiroshimaya/fictional-scientists/issues/24
+https://github.com/anthropics/claude-plugins-official/issues/798
+https://github.com/anthropics/claude-code/issues/36986
+https://github.com/zliu63/lailabot/issues/8
+https://github.com/anthropics/claude-code/issues/37197
+https://github.com/RichardAtCT/claude-code-telegram/issues/159
+
+https://github.com/m1heng/claude-plugin-weixin/issues/1
+https://github.com/m1heng/clawdbot-feishu/issues/428
+https://github.com/m1heng/clawdbot-feishu/issues/384
+https://github.com/m1heng/clawdbot-feishu/issues/394
+https://github.com/qingpingwang/remote-claude-code/issues/3

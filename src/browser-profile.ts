@@ -174,14 +174,17 @@ export function getManagedBrowserMcpArgs(
   profileDir = getManagedBrowserProfileDir(),
   options: ManagedBrowserMcpOptions = {},
 ): string[] {
+  const outputDir = path.dirname(profileDir);
   if (options.cdpEndpoint) {
-    return ['--cdp-endpoint', options.cdpEndpoint];
+    return ['--cdp-endpoint', options.cdpEndpoint, '--output-dir', outputDir];
   }
   return [
     ...PLAYWRIGHT_MCP_BROWSER_ARGS,
     ...(options.headless ? ['--headless'] : []),
     '--user-data-dir',
     profileDir,
+    '--output-dir',
+    outputDir,
   ];
 }
 

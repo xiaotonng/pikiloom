@@ -222,6 +222,7 @@ Relevant environment variables:
 
 ## Roadmap
 
+- **ACP (Agent Client Protocol) adoption** — unified driver for any ACP-compatible agent, replacing per-agent CLI output parsing. See [ACP Migration Plan](docs/acp-migration.md)
 - Expand session-scoped MCP bridge into a more complete top-level tool layer
 - Improve GUI automation, especially browser + desktop tool coordination
 - More IM channels (WhatsApp, etc.)

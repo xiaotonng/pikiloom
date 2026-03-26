@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pikiclaw v0.2.72 Before / After</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    padding: 40px 20px;
+  }
+  .card {
+    width: 720px;
+    background: #161b22;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid #30363d;
+  }
+  .header {
+    padding: 28px 32px 20px;
+    text-align: center;
+    border-bottom: 1px solid #30363d;
+  }
+  .header h1 {
+    color: #f0f6fc;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+  .header .sub {
+    color: #7d8590;
+    font-size: 13px;
+    margin-top: 6px;
+  }
+  .columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .col {
+    padding: 24px 28px 28px;
+  }
+  .col-before {
+    border-right: 1px solid #30363d;
+  }
+  .col-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .col-before .col-label { color: #f85149; }
+  .col-after .col-label  { color: #3fb950; }
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .col-before .dot { background: #f85149; }
+  .col-after  .dot { background: #3fb950; }
+
+  .item {
+    margin-bottom: 16px;
+  }
+  .item:last-child { margin-bottom: 0; }
+  .item-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .col-before .item-title { color: #f0f6fc; }
+  .col-after  .item-title { color: #f0f6fc; }
+  .item-desc {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #7d8590;
+  }
+  .col-after .item-desc {
+    color: #9eaab6;
+  }
+  .highlight {
+    color: #3fb950;
+    font-weight: 600;
+  }
+  .dim {
+    color: #f85149;
+    font-weight: 600;
+  }
+
+  .footer {
+    border-top: 1px solid #30363d;
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .footer .stats {
+    color: #7d8590;
+    font-size: 12px;
+  }
+  .footer .stats span {
+    color: #3fb950;
+    font-weight: 600;
+  }
+  .footer .cmd {
+    background: #1f6feb22;
+    border: 1px solid #1f6feb55;
+    color: #58a6ff;
+    font-size: 12px;
+    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace;
+    padding: 5px 12px;
+    border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+
+  <div class="header">
+    <h1>pikiclaw   v0.2.67 → v0.2.72</h1>
+    <div class="sub">2 days · 5 releases · 35 files changed</div>
+  </div>
+
+  <div class="columns">
+    <!-- BEFORE -->
+    <div class="col col-before">
+      <div class="col-label"><span class="dot"></span> Before</div>
+
+      <div class="item">
+        <div class="item-title">Claude Code 单向输出</div>
+        <div class="item-desc">只能发指令等结果，任务跑偏只能 <span class="dim">取消重来</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">Codex RPC 偶发挂死</div>
+        <div class="item-desc">进程退出后 pending 调用 <span class="dim">永久无响应</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">/models 一键切换</div>
+        <div class="item-desc">点错按钮直接换模型，<span class="dim">容易误操作</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">会话恢复靠重启</div>
+        <div class="item-desc">切换 session 后丢失 runtime，<span class="dim">需要手动重建</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">三套私有 stdout 解析</div>
+        <div class="item-desc">Claude / Codex / Gemini 各自维护 driver，<span class="dim">无统一协议</span></div>
+      </div>
+    </div>
+
+    <!-- AFTER -->
+    <div class="col col-after">
+      <div class="col-label"><span class="dot"></span> After</div>
+
+      <div class="item">
+        <div class="item-title">Steer 实时改方向</div>
+        <div class="item-desc">Claude Code 双向 stream-json，<span class="highlight">运行中从 IM 插话</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">RPC 超时 + 自动回收</div>
+        <div class="item-desc">进程退出自动 resolve pending，<span class="highlight">长任务不再挂起</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">/models 先选后确认</div>
+        <div class="item-desc">Draft → Confirm 两步操作，<span class="highlight">不会误切模型</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">会话热恢复</div>
+        <div class="item-desc">hydrateSessionRuntime 自动重建，<span class="highlight">切换即用</span></div>
+      </div>
+
+      <div class="item">
+        <div class="item-title">ACP 统一协议规划</div>
+        <div class="item-desc">三阶段迁移到 Agent Client Protocol，<span class="highlight">一套 driver 通吃</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="stats"><span>+2,154</span> lines · <span>5</span> versions in 2 days</div>
+    <div class="cmd">npx pikiclaw@latest</div>
+  </div>
+
+</div>
+</body>
+</html>

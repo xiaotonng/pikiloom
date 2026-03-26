@@ -350,7 +350,7 @@ export async function executeCommandAction(
 
     case 'session.switch': {
       const chat = bot.chat(chatId);
-      const result = await bot.fetchSessions(chat.agent);
+      const result = await bot.fetchSessions(chat.agent, bot.chatWorkdir(chatId));
       if (!result.ok) return { kind: 'noop', message: 'Failed to load sessions' };
 
       const session = result.sessions.find(entry => entry.sessionId === action.sessionId);

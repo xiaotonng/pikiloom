@@ -55,7 +55,7 @@ export function getStartData(bot: Bot, chatId: ChatId): StartData {
   return {
     ...intro,
     agent: cs.agent,
-    workdir: bot.workdir,
+    workdir: bot.chatWorkdir(chatId),
     agentDetails,
     commands,
   };
@@ -119,7 +119,7 @@ export function summarizeSessionRun(session: Pick<SessionInfo, 'running' | 'runS
 
 export async function getSessionsPageData(bot: Bot, chatId: ChatId, page: number, pageSize = 5): Promise<SessionsPageData> {
   const cs = bot.chat(chatId);
-  const res = await bot.fetchSessions(cs.agent);
+  const res = await bot.fetchSessions(cs.agent, bot.chatWorkdir(chatId));
   const sessions = res.ok ? res.sessions : [];
   const total = sessions.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -242,7 +242,7 @@ export interface SkillsListData {
 
 export function getSkillsListData(bot: Bot, chatId: ChatId): SkillsListData {
   const cs = bot.chat(chatId);
-  const skills = bot.fetchSkills().skills
+  const skills = bot.fetchSkills(bot.chatWorkdir(chatId)).skills
     .map(skill => {
       const command = buildSkillCommandName(skill.name);
       if (!command) return null;
@@ -255,7 +255,7 @@ export function getSkillsListData(bot: Bot, chatId: ChatId): SkillsListData {
       };
     })
     .filter((skill): skill is SkillEntryData => !!skill);
-  return { agent: cs.agent, workdir: bot.workdir, skills };
+  return { agent: cs.agent, workdir: bot.chatWorkdir(chatId), skills };
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +329,7 @@ function buildEffortData(bot: Bot, agent: Agent): ModelsListData['effort'] {
 export async function getModelsListData(bot: Bot, chatId: ChatId): Promise<ModelsListData> {
   const cs = bot.chat(chatId);
   const currentModel = bot.modelForAgent(cs.agent);
-  const res = await bot.fetchModels(cs.agent);
+  const res = await bot.fetchModels(cs.agent, bot.chatWorkdir(chatId));
   return {
     agent: cs.agent,
     currentModel,
@@ -400,20 +400,20 @@ function relSkillPath(workdir: string, filePath: string): string {
 }
 
 export function resolveSkillPrompt(bot: Bot, chatId: ChatId, cmd: string, args: string): { prompt: string; skillName: string } | null {
-  const skills = bot.fetchSkills().skills;
+  const wd = bot.chatWorkdir(chatId);
+  const skills = bot.fetchSkills(wd).skills;
   const skill = indexSkillsByCommand(skills).get(cmd);
   if (!skill) return null;
-  const cs = bot.chat(chatId);
   const extra = args.trim();
   const suffix = extra ? ` Additional context: ${extra}` : '';
-  const workdirHint = `[Project directory: ${bot.workdir}]\n\n`;
+  const workdirHint = `[Project directory: ${wd}]\n\n`;
   let prompt: string;
-  const paths = getProjectSkillPaths(bot.workdir, skill.name);
+  const paths = getProjectSkillPaths(wd, skill.name);
   const skillFile = paths.claudeSkillFile || paths.sharedSkillFile || paths.agentsSkillFile;
   if (skillFile) {
     prompt = `${workdirHint}Read the skill definition at \`${skillFile}\` and execute the instructions defined there.${suffix}`;
   } else {
-    const fallbackPath = `${bot.workdir}/.pikiclaw/skills/${skill.name}/SKILL.md`;
+    const fallbackPath = `${wd}/.pikiclaw/skills/${skill.name}/SKILL.md`;
     prompt = `${workdirHint}Read the skill definition at \`${fallbackPath}\` and execute the instructions defined there.${suffix}`;
   }
   return { prompt, skillName: skill.name };

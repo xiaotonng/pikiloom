@@ -484,8 +484,9 @@ export class FeishuBot extends Bot {
       return;
     }
 
-    const browsePath = path.dirname(this.workdir);
-    const view = buildSwitchWorkdirCard(this.workdir, browsePath);
+    const wd = this.chatWorkdir(ctx.chatId);
+    const browsePath = path.dirname(wd);
+    const view = buildSwitchWorkdirCard(wd, browsePath);
     await ctx.channel.sendCard(ctx.chatId, view);
   }
 
@@ -937,7 +938,7 @@ export class FeishuBot extends Bot {
   private async cmdSkill(cmd: string, args: string, ctx: FeishuContext) {
     const resolved = resolveSkillPrompt(this, ctx.chatId, cmd, args);
     if (!resolved) {
-      await ctx.reply(`Skill not found for command /${cmd} in:\n\`${this.workdir}\``);
+      await ctx.reply(`Skill not found for command /${cmd} in:\n\`${this.chatWorkdir(ctx.chatId)}\``);
       return;
     }
     this.log(`skill: ${resolved.skillName} agent=${this.chat(ctx.chatId).agent}${args.trim() ? ` args="${args.trim()}"` : ''}`);
@@ -1041,7 +1042,8 @@ export class FeishuBot extends Bot {
     const [pathId, pageRaw] = data.slice(5).split(':');
     const browsePath = resolveFeishuRegisteredPath(parseInt(pathId, 10));
     if (!browsePath) return true;
-    const view = buildSwitchWorkdirCard(this.workdir, browsePath, parseInt(pageRaw, 10) || 0);
+    const wd = this.chatWorkdir(ctx.chatId);
+    const view = buildSwitchWorkdirCard(wd, browsePath, parseInt(pageRaw, 10) || 0);
     await ctx.channel.editCard(ctx.chatId, ctx.messageId, view);
     return true;
   }

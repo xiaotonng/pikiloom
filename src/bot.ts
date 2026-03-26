@@ -453,6 +453,8 @@ export interface ChatState {
   codexCumulative?: CodexCumulativeUsage;
   modelId?: string | null;
   activeSessionKey?: string | null;
+  /** Per-chat workdir override; null = use global bot.workdir. */
+  workdir?: string | null;
 }
 
 export interface SessionRuntime {
@@ -592,6 +594,11 @@ export class Bot {
     return s;
   }
 
+  /** Effective workdir for a chat — per-chat override or global fallback. */
+  chatWorkdir(chatId: ChatId): string {
+    return this.chats.get(chatId)?.workdir || this.workdir;
+  }
+
   protected sessionKey(agent: Agent, sessionId: string): string {
     return `${agent}:${sessionId}`;
   }
@@ -671,6 +678,7 @@ export class Bot {
       cs.workspacePath = session.workspacePath;
       cs.codexCumulative = session.codexCumulative;
       cs.modelId = session.modelId ?? null;
+      cs.workdir = session.workdir;
       if (previousSessionKey && previousSessionKey !== session.key) this.maybeEvictSessionRuntime(previousSessionKey);
       return;
     }
@@ -681,8 +689,9 @@ export class Bot {
     if (previousSessionKey) this.maybeEvictSessionRuntime(previousSessionKey);
   }
 
-  protected resetChatConversation(cs: ChatState) {
+  protected resetChatConversation(cs: ChatState, opts?: { clearWorkdir?: boolean }) {
     this.applySessionSelection(cs, null);
+    if (opts?.clearWorkdir) cs.workdir = null;
   }
 
   protected adoptSession(cs: ChatState, session: Pick<SessionInfo, 'agent' | 'sessionId' | 'workdir' | 'workspacePath' | 'model'>) {
@@ -733,9 +742,10 @@ export class Bot {
     const selected = this.getSelectedSession(cs);
     if (selected) return selected;
 
+    const wd = this.chatWorkdir(chatId);
     const staged = stageSessionFiles({
       agent: cs.agent,
-      workdir: this.workdir,
+      workdir: wd,
       files: [],
       sessionId: null,
       title: title || 'New session',
@@ -1098,8 +1108,8 @@ export class Bot {
     return this.agentConfigs[agent]?.model || '';
   }
 
-  fetchSessions(agent: Agent) {
-    return getSessions({ agent, workdir: this.workdir });
+  fetchSessions(agent: Agent, workdir?: string) {
+    return getSessions({ agent, workdir: workdir || this.workdir });
   }
 
   fetchSessionTail(agent: Agent, sessionId: string, limit?: number, workdir = this.workdir) {
@@ -1110,13 +1120,15 @@ export class Bot {
     return listAgents(options);
   }
 
-  fetchSkills() {
-    initializeProjectSkills(this.workdir);
-    return listSkills(this.workdir);
+  fetchSkills(workdir?: string) {
+    const wd = workdir || this.workdir;
+    initializeProjectSkills(wd);
+    return listSkills(wd);
   }
 
-  fetchModels(agent: Agent) {
-    return listModels(agent, { workdir: this.workdir, currentModel: this.modelForAgent(agent) });
+  fetchModels(agent: Agent, workdir?: string) {
+    const wd = workdir || this.workdir;
+    return listModels(agent, { workdir: wd, currentModel: this.modelForAgent(agent) });
   }
 
   setDefaultAgent(agent: Agent) {
@@ -1158,7 +1170,7 @@ export class Bot {
     return {
       version: VERSION, uptime: Date.now() - this.startedAt,
       memRss: mem.rss, memHeap: mem.heapUsed, pid: process.pid,
-      workdir: selectedSession?.workdir || this.workdir, agent: cs.agent, model, sessionId: cs.sessionId,
+      workdir: this.chatWorkdir(chatId), agent: cs.agent, model, sessionId: cs.sessionId,
       workspacePath: cs.workspacePath ?? null,
       running: fallbackTask, activeTasksCount: this.activeTasks.size, stats: this.stats,
       usage: getUsage({ agent: cs.agent, model }),
@@ -1203,7 +1215,7 @@ export class Bot {
     }
     this.workdir = resolvedPath;
     for (const [, cs] of this.chats) {
-      this.resetChatConversation(cs);
+      this.resetChatConversation(cs, { clearWorkdir: true });
     }
     for (const [key, session] of this.sessionStates) {
       if (session.workdir === old && !session.runningTaskIds.size) this.sessionStates.delete(key);

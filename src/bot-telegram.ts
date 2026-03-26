@@ -399,8 +399,9 @@ export class TelegramBot extends Bot {
   }
 
   private async cmdSwitch(ctx: TgContext) {
-    const browsePath = path.dirname(this.workdir);
-    const view = buildSwitchWorkdirView(this.workdir, browsePath);
+    const wd = this.chatWorkdir(ctx.chatId);
+    const browsePath = path.dirname(wd);
+    const view = buildSwitchWorkdirView(wd, browsePath);
     await ctx.reply(
       view.text,
       { parseMode: 'HTML', keyboard: view.keyboard },
@@ -847,7 +848,8 @@ export class TelegramBot extends Bot {
       await ctx.answerCallback('Expired, use /switch again');
       return true;
     }
-    const view = buildSwitchWorkdirView(this.workdir, browsePath, parseInt(pageRaw, 10) || 0);
+    const wd = this.chatWorkdir(ctx.chatId);
+    const view = buildSwitchWorkdirView(wd, browsePath, parseInt(pageRaw, 10) || 0);
     await ctx.editReply(ctx.messageId, view.text, { parseMode: 'HTML', keyboard: view.keyboard });
     await ctx.answerCallback();
     return true;
@@ -1038,7 +1040,7 @@ export class TelegramBot extends Bot {
   private async cmdSkill(cmd: string, args: string, ctx: TgContext) {
     const resolved = resolveSkillPrompt(this, ctx.chatId, cmd, args);
     if (!resolved) {
-      await ctx.reply(`Skill not found for command /${cmd} in:\n<code>${escapeHtml(this.workdir)}</code>`, { parseMode: 'HTML' });
+      await ctx.reply(`Skill not found for command /${cmd} in:\n<code>${escapeHtml(this.chatWorkdir(ctx.chatId))}</code>`, { parseMode: 'HTML' });
       return;
     }
     this.log(`skill: ${resolved.skillName} agent=${this.chat(ctx.chatId).agent}${args.trim() ? ` args="${args.trim()}"` : ''}`);

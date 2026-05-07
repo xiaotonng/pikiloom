@@ -46,3 +46,7 @@ https://github.com/chenhg5/cc-connect/issues/740
 https://github.com/chenhg5/cc-connect/issues/733
 https://github.com/m1heng/clawdbot-feishu/issues/406
 https://github.com/chenhg5/cc-connect/issues/761
+https://github.com/RichardAtCT/claude-code-telegram/issues/174
+https://github.com/RichardAtCT/claude-code-telegram/issues/176
+https://github.com/chenhg5/cc-connect/issues/829
+https://github.com/anthropics/claude-code/issues/49826

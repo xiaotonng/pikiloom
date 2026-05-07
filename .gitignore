@@ -4,8 +4,8 @@ node_modules/
 dist/
 dashboard/dist/
 *.tgz
+tmp/
+dashboard-loaded.png
 .pikiclaw/*
 !.pikiclaw/skills/
 !.pikiclaw/skills/**
-tmp/
-dashboard-loaded.png

@@ -22,7 +22,7 @@ import type { LivePreviewRenderer } from '../telegram/live-preview.js';
 import type { StreamPreviewRenderInput } from '../../bot/render-shared.js';
 import {
   footerStatusSymbol,
-  formatFooterSummary,
+  formatFooterParts,
   trimActivityForPreview,
   buildProviderUsageLines,
   extractFinalReplyData,
@@ -49,7 +49,8 @@ function formatPreviewFooter(
   meta?: import('../../bot/bot.js').StreamPreviewMeta | null,
   decorations?: { model?: string | null; effort?: string | null },
 ): string {
-  return `${footerStatusSymbol('running')} ${formatFooterSummary(agent, elapsedMs, meta, null, decorations)}`;
+  const parts = formatFooterParts(agent, elapsedMs, meta, null, decorations);
+  return `${footerStatusSymbol('running')} ${parts.identity}\n*${parts.runtime}*`;
 }
 
 function formatFinalFooter(
@@ -59,7 +60,8 @@ function formatFinalFooter(
   contextPercent?: number | null,
   decorations?: { model?: string | null; effort?: string | null },
 ): string {
-  return `${footerStatusSymbol(status)} ${formatFooterSummary(agent, elapsedMs, null, contextPercent ?? null, decorations)}`;
+  const parts = formatFooterParts(agent, elapsedMs, null, contextPercent ?? null, decorations);
+  return `${footerStatusSymbol(status)} ${parts.identity}\n*${parts.runtime}*`;
 }
 
 function truncateLabel(label: string, maxChars = 24): string {

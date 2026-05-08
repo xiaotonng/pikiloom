@@ -92,6 +92,13 @@ export interface FooterDecorations {
   effort?: string | null;
 }
 
+export interface FooterParts {
+  /** Identity line — `agent` or `agent · model`. */
+  identity: string;
+  /** Runtime line — `effort? · ctx%? · time`. Always contains at least the elapsed time. */
+  runtime: string;
+}
+
 /**
  * Drop a leading `provider/` segment from long model ids so the footer stays
  * readable on narrow IM clients. `anthropic/claude-sonnet-4` → `claude-sonnet-4`,
@@ -105,20 +112,32 @@ function compactModelLabel(model: string): string {
   return slashIdx > 0 ? trimmed.slice(slashIdx + 1) : trimmed;
 }
 
-export function formatFooterSummary(
+/**
+ * Split footer fields into a primary identity line (agent + model) and a
+ * secondary runtime line (effort, context%, elapsed). Channel renderers
+ * compose the two lines with their own visual styling so narrow IM clients
+ * never have to soft-wrap a single dense line.
+ */
+export function formatFooterParts(
   agent: Agent,
   elapsedMs: number,
   meta?: StreamPreviewMeta | null,
   contextPercent?: number | null,
   decorations?: FooterDecorations,
-): string {
-  const parts: string[] = [agent];
-  if (decorations?.model) parts.push(compactModelLabel(decorations.model));
-  if (decorations?.effort) parts.push(decorations.effort);
+): FooterParts {
+  const identityParts: string[] = [agent];
+  if (decorations?.model) identityParts.push(compactModelLabel(decorations.model));
+
+  const runtimeParts: string[] = [];
+  if (decorations?.effort) runtimeParts.push(decorations.effort);
   const ctx = contextPercent ?? meta?.contextPercent ?? null;
-  if (ctx != null) parts.push(`${ctx}%`);
-  parts.push(fmtCompactUptime(Math.max(0, Math.round(elapsedMs))));
-  return parts.join(' · ');
+  if (ctx != null) runtimeParts.push(`${ctx}%`);
+  runtimeParts.push(fmtCompactUptime(Math.max(0, Math.round(elapsedMs))));
+
+  return {
+    identity: identityParts.join(' · '),
+    runtime: runtimeParts.join(' · '),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +223,6 @@ export function buildProviderUsageLines(usage: ProviderUsageSnapshot): ProviderU
 
 export interface FinalReplyData {
   footerStatus: FooterStatus;
-  footerSummary: string;
   activityNarrative: string | null;
   activityCommandSummary: string | null;
   thinkingDisplay: string | null;
@@ -217,10 +235,6 @@ export interface FinalReplyData {
 export function extractFinalReplyData(agent: Agent, result: StreamResult): FinalReplyData {
   const footerStatus: FooterStatus = result.incomplete || !result.ok ? 'failed' : 'done';
   const elapsedMs = result.elapsedS * 1000;
-  const footerSummary = formatFooterSummary(agent, elapsedMs, null, result.contextPercent ?? null, {
-    model: result.model,
-    effort: result.thinkingEffort,
-  });
 
   let activityNarrative: string | null = null;
   let activityCommandSummary: string | null = null;
@@ -259,7 +273,6 @@ export function extractFinalReplyData(agent: Agent, result: StreamResult): Final
 
   return {
     footerStatus,
-    footerSummary,
     activityNarrative,
     activityCommandSummary,
     thinkingDisplay,

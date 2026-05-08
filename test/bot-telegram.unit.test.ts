@@ -78,9 +78,9 @@ describe('TelegramBot.sendFinalReply', () => {
     }, 99);
     expect(failed.finalEdit.text).toContain('Incomplete Response');
     expect(failed.finalEdit.text).toContain('Claude hit usage limit');
-    // Footer carries model + effort decorations now, so just assert the agent /
-    // status / elapsed parts without locking in the exact decoration count.
-    expect(failed.finalEdit.text).toMatch(/✗ claude · .*17s/);
+    // Footer is now split across two lines: identity (agent · model) and a
+    // runtime row (effort · ctx · elapsed). Match across the newline.
+    expect(failed.finalEdit.text).toMatch(/✗ claude[\s\S]*17s/);
     expect(failed.finalEdit.opts?.keyboard).toEqual({ inline_keyboard: [] });
 
     const truncated = await renderFinalReply('claude', {
@@ -104,7 +104,7 @@ describe('TelegramBot.sendFinalReply', () => {
       contextPercent: 25.7,
       activity: 'Ran: /bin/zsh -lc npm run build\nRan: /bin/zsh -lc npm test',
     });
-    expect(summarized.finalEdit.text).toMatch(/✓ codex · .*25\.7% · 1m25s/);
+    expect(summarized.finalEdit.text).toMatch(/✓ codex[\s\S]*25\.7% · 1m25s/);
     expect(summarized.finalEdit.text).toContain('<i>commands: 2 done</i>');
     expect(summarized.finalEdit.text).not.toContain('cached:');
     expect(summarized.finalEdit.text).not.toContain('npm run build');
@@ -520,9 +520,9 @@ describe('TelegramBot.handleMessage streaming', () => {
 
         expect((channel as any).sendMessageDraft).toBeUndefined();
         expect(vi.mocked(ctx.reply)).toHaveBeenCalledWith(
-          // Initial placeholder now includes resolved model + effort between the
-          // agent label and the elapsed counter.
-          expect.stringMatching(/● codex · .*0s/),
+          // Initial placeholder splits identity (agent · model) and runtime
+          // (effort · elapsed) across two lines.
+          expect.stringMatching(/● codex[\s\S]*0s/),
           expect.objectContaining({ messageThreadId: 42, parseMode: 'HTML' }),
         );
         expect(sends).toHaveLength(0);
@@ -531,9 +531,9 @@ describe('TelegramBot.handleMessage streaming', () => {
         expect(previews).toContain('改动已经落下去了，现在跑相关单测确认结果');
         expect(previews).toContain('最后确认只需要展示 reasoning 的尾段就够了');
         expect(previews).toContain('Plan 1/2');
-        expect(previews).toMatch(/● codex · .*4\.2% · /);
-        expect(previews).toMatch(/● codex · .*5s/);
-        expect(previews).toMatch(/● codex · .*10s/);
+        expect(previews).toMatch(/● codex[\s\S]*4\.2% · /);
+        expect(previews).toMatch(/● codex[\s\S]*5s/);
+        expect(previews).toMatch(/● codex[\s\S]*10s/);
         expect(previews).not.toContain('Ran:');
         expect(previews).not.toContain('npm run build');
         expect(previews).not.toContain('pwd');

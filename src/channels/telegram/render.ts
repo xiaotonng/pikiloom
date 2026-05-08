@@ -23,7 +23,7 @@ import {
 import type { FooterStatus, ProviderUsageSnapshot, StreamPreviewRenderInput } from '../../bot/render-shared.js';
 import {
   footerStatusSymbol,
-  formatFooterSummary,
+  formatFooterParts,
   trimActivityForPreview,
   buildProviderUsageLines,
   extractFinalReplyData,
@@ -308,7 +308,9 @@ export function formatPreviewFooterHtml(
   meta?: StreamPreviewMeta | null,
   decorations?: { model?: string | null; effort?: string | null },
 ): string {
-  return escapeHtml(`${footerStatusSymbol('running')} ${formatFooterSummary(agent, elapsedMs, meta, null, decorations)}`);
+  const parts = formatFooterParts(agent, elapsedMs, meta, null, decorations);
+  const primary = escapeHtml(`${footerStatusSymbol('running')} ${parts.identity}`);
+  return `${primary}\n<i>${escapeHtml(parts.runtime)}</i>`;
 }
 
 function formatFinalFooterHtml(
@@ -318,7 +320,9 @@ function formatFinalFooterHtml(
   contextPercent?: number | null,
   decorations?: { model?: string | null; effort?: string | null },
 ): string {
-  return escapeHtml(`${footerStatusSymbol(status)} ${formatFooterSummary(agent, elapsedMs, null, contextPercent ?? null, decorations)}`);
+  const parts = formatFooterParts(agent, elapsedMs, null, contextPercent ?? null, decorations);
+  const primary = escapeHtml(`${footerStatusSymbol(status)} ${parts.identity}`);
+  return `${primary}\n<i>${escapeHtml(parts.runtime)}</i>`;
 }
 
 export function formatProviderUsageLines(usage: ProviderUsageSnapshot): string[] {

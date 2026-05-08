@@ -17,7 +17,7 @@ import {
   type SessionInfo,
   // shared helpers
   Q, run, agentError, agentLog, agentWarn,
-  appendSystemPrompt, buildStreamPreviewMeta, pushRecentActivity,
+  appendSystemPrompt, buildStreamPreviewMeta, computeContext, pushRecentActivity,
   summarizeClaudeToolUse, summarizeClaudeToolResult, joinErrorMessages, parseTodoWriteAsPlan,
   IMAGE_EXTS, mimeForExt,
   listPikiclawSessions, findPikiclawSession, isPendingSessionId,
@@ -695,7 +695,11 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     cacheCreationInputTokens: s.cacheCreationInputTokens,
     contextWindow: s.contextWindow,
     contextUsedTokens: s.contextUsedTokens,
-    contextPercent: roundPercent((s.contextUsedTokens || 0) / (s.contextWindow || 0)),
+    // Reuse the same calc as the live preview (computeContext) so the final
+    // footer % matches the running %. Previously this passed a fraction
+    // (used/window) into roundPercent, which expects a percent — divide-by-100
+    // bug that made the final read ~12% as ~0.1%.
+    contextPercent: computeContext(s).contextPercent,
     codexCumulative: null,
     error,
     plan: s.plan,

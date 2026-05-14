@@ -115,8 +115,13 @@ export const CLI_TOOLS: RecommendedCli[] = [
       statusArgv: ['vercel', 'whoami'],
       loginArgv:  ['vercel', 'login'],
       logoutArgv: ['vercel', 'logout'],
-      loginHint:   'Opens a browser for Vercel OAuth.',
-      loginHintZh: '将打开浏览器完成 Vercel OAuth 授权。',
+      // `vercel login` opens an interactive picker (email / GitHub / GitLab /
+      // Bitbucket / SAML) that needs a real TTY. Surface the official command.
+      manualLoginCommands: [
+        { label: 'Sign in to Vercel', cmd: 'vercel login' },
+      ],
+      loginHint:   'Run `vercel login` in your own terminal — it interactively asks which login method to use, which doesn\'t render well here. After signing in, click "Re-check status".',
+      loginHintZh: '请在自己的终端里运行 `vercel login` —— 该命令需要交互式选择登录方式（邮箱 / GitHub / GitLab 等），不适合在此面板里完成。登录后回到这里点击「重新检测状态」。',
     },
   },
   {
@@ -193,8 +198,13 @@ export const CLI_TOOLS: RecommendedCli[] = [
       statusArgv: ['heroku', 'whoami'],
       loginArgv:  ['heroku', 'login'],
       logoutArgv: ['heroku', 'logout'],
-      loginHint:   'Opens a browser for Heroku OAuth.',
-      loginHintZh: '将打开浏览器完成 Heroku OAuth 授权。',
+      // `heroku login` prompts "Press any key to open up the browser to login
+      // or q to exit" — a hard TTY dependency. Surface the official command.
+      manualLoginCommands: [
+        { label: 'Sign in to Heroku', cmd: 'heroku login' },
+      ],
+      loginHint:   'Run `heroku login` in your own terminal — the CLI prompts "Press any key to open the browser", which requires a real TTY. After signing in, click "Re-check status".',
+      loginHintZh: '请在自己的终端里运行 `heroku login` —— 该命令会提示「Press any key」，必须在交互式终端里完成。登录后回到这里点击「重新检测状态」。',
     },
   },
 
@@ -275,11 +285,21 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
     auth: {
       type: 'oauth-web',
-      statusArgv: ['gcloud', 'auth', 'list', '--filter=status:ACTIVE', '--format=value(account)'],
+      // `gcloud auth list ... --format=value(account)` exits 0 even when no
+      // account is signed in (just prints an empty line). Require non-empty
+      // output so an empty list isn't mistaken for ready.
+      statusArgv:         ['gcloud', 'auth', 'list', '--filter=status:ACTIVE', '--format=value(account)'],
+      statusReadyPattern: '\\S',
       loginArgv:  ['gcloud', 'auth', 'login'],
       logoutArgv: ['gcloud', 'auth', 'revoke'],
-      loginHint:   'Opens a browser for Google OAuth.',
-      loginHintZh: '将打开浏览器完成 Google OAuth 授权。',
+      // `gcloud auth login` orchestrates a local callback server + interactive
+      // prompts — needs a real TTY. ADC for SDK code is a separate command.
+      manualLoginCommands: [
+        { label: 'Sign in (user credentials)',                    cmd: 'gcloud auth login' },
+        { label: 'Optional: Application Default Credentials',     cmd: 'gcloud auth application-default login' },
+      ],
+      loginHint:   'Run `gcloud auth login` in your own terminal — it relies on a local callback server and interactive prompts that don\'t work here. SDK code paths use Application Default Credentials, which is a separate command. After signing in, click "Re-check status".',
+      loginHintZh: '请在自己的终端里运行 `gcloud auth login` —— 它依赖本地回调服务器与交互式提示，不能在此面板里完成。SDK 用的 Application Default 凭证是另一个命令。登录后回到这里点击「重新检测状态」。',
     },
   },
 
@@ -306,8 +326,16 @@ export const CLI_TOOLS: RecommendedCli[] = [
       statusArgv: ['lark-cli', 'auth', 'status'],
       loginArgv:  ['lark-cli', 'auth', 'login', '--recommend'],
       logoutArgv: ['lark-cli', 'auth', 'logout'],
-      loginHint:   'First run `lark-cli config init` in a terminal to register your Feishu app, then click below to sign in via OAuth.',
-      loginHintZh: '首次使用先在终端运行 `lark-cli config init` 注册飞书应用，再点这里走 OAuth 浏览器登录。建议同步安装配套 Skills：`npx skills add larksuite/cli -y -g`。',
+      // Lark CLI sign-in has two ordered steps and renders a terminal QR that
+      // doesn't fit a streamed-output panel. Both commands run in the user's
+      // own terminal; only after step 2 does `lark-cli auth status` exit 0,
+      // so re-check naturally rejects "only step 1 completed".
+      manualLoginCommands: [
+        { label: 'Step 1 — Register a Feishu app (one-time setup)', cmd: 'lark-cli config init --new' },
+        { label: 'Step 2 — Sign in via Device Flow OAuth',          cmd: 'lark-cli auth login --recommend' },
+      ],
+      loginHint:   'Lark CLI sign-in has two steps. Run them in order in your own terminal — `lark-cli` prints a QR/Device-Flow URL that doesn\'t render well in this panel. Both steps must complete before authorization counts as successful. After step 2 finishes, click "Re-check status" below. Tip: `npx skills add larksuite/cli -y -g` installs the matching Skills.',
+      loginHintZh: '飞书 CLI 登录分两步，请在自己的终端里依序运行：先用第 1 步注册飞书应用，再用第 2 步完成 OAuth 授权 —— 两步全部完成后才算授权成功。`lark-cli` 登录时打印的二维码 / Device Flow URL 不适合在此面板内展示。完成第 2 步后回到这里点击「重新检测状态」。建议同步安装配套 Skills：`npx skills add larksuite/cli -y -g`。',
     },
   },
 
@@ -319,7 +347,7 @@ export const CLI_TOOLS: RecommendedCli[] = [
     description: 'Talk to 墨问 (Mowen) — query notes, search users, view activity from your agent',
     descriptionZh: '墨问官方 CLI — 查我的笔记、搜用户、看动态，给 Agent 一手接入墨问内容',
     category: 'content',
-    iconUrl: 'https://pub-sdn-001.mowen.cn/fe/assets/mowen-note.svg',
+    iconUrl: 'https://github.com/mowenxd.png?size=80',
     homepage: 'https://github.com/mowenxd/cli',
     recommendedScope: 'global',
     versionArgv: ['mocli', '--version'],

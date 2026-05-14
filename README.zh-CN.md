@@ -165,6 +165,25 @@ npx pikiclaw@latest --doctor   # 仅检查并诊断当前环境
 
 </details>
 
+<details>
+<summary><b>想跑在服务器上？官方支持 Docker。</b></summary>
+
+```bash
+docker run -d --name pikiclaw -p 3939:3939 \
+  -e TELEGRAM_BOT_TOKEN=... \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v pikiclaw-config:/home/piki/.pikiclaw \
+  -v pikiclaw-workspace:/workspace \
+  ghcr.io/xiaotonng/pikiclaw:latest
+```
+
+官方多架构镜像（`linux/amd64` + `linux/arm64`）已内置 `claude-code`、
+`codex`、`gemini-cli`。仓库根目录提供了 `docker-compose.yml` 示例 ——
+完整说明（鉴权方式、卷布局、反向代理 / TLS、固定 agent CLI 版本）
+见 [docs/DOCKER.md](docs/DOCKER.md)。
+
+</details>
+
 ---
 
 ## 典型的应用场景

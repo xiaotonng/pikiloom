@@ -9,6 +9,58 @@ LOG_FILE="${DEV_DIR}/dev.log"
 # Do not hop into the production/self-bootstrap `npx pikiclaw@latest` chain.
 mkdir -p "${DEV_DIR}"
 
+# Decide whether to detach early.
+#
+# Why this happens FIRST, before any kill / build:
+# dev.sh restarts the running pikiclaw runtime, and when invoked from inside an
+# agent session (Codex app-server, Claude `-p`, …) that runtime IS the host
+# process for the agent. If we kill the runtime while still living in the
+# agent's bash subtree, the agent's stdio breaks mid-script: Codex cancels the
+# current turn and tears down the bash subprocess, killing dev.sh before it can
+# hand off to nohup, so the new dev never starts. Detaching first severs us
+# from that subtree so the subsequent kill is safe.
+#
+# Priority:
+#   already detached (PIKICLAW_DEV_DETACHED=1)   -> no, we ARE the worker
+#   PIKICLAW_DEV_BACKGROUND=1                    -> yes
+#   PIKICLAW_DEV_FOREGROUND=1                    -> no
+#   no controlling TTY (agent Bash tool, piped)  -> yes
+#   otherwise                                    -> no (interactive terminal)
+_should_detach=0
+if [[ "${PIKICLAW_DEV_DETACHED:-0}" == "1" ]]; then
+  _should_detach=0
+elif [[ "${PIKICLAW_DEV_BACKGROUND:-0}" == "1" ]]; then
+  _should_detach=1
+elif [[ "${PIKICLAW_DEV_FOREGROUND:-0}" == "1" ]]; then
+  _should_detach=0
+elif [[ ! -t 1 ]]; then
+  _should_detach=1
+fi
+
+if (( _should_detach )); then
+  : > "${LOG_FILE}"
+  # nohup ignores SIGHUP so the worker outlives this shell; disown removes it
+  # from the job table so the calling agent's bash doesn't track it.
+  # setsid isn't portable to macOS, but nohup + redirect + disown is enough
+  # because the worker is reparented to init once we exit immediately below.
+  nohup env PIKICLAW_DEV_DETACHED=1 bash "$0" "$@" </dev/null >>"${LOG_FILE}" 2>&1 &
+  _bg_pid=$!
+  disown "$_bg_pid" 2>/dev/null || true
+  cat <<EOF
+[dev.sh] detached worker spawned (pid=${_bg_pid}); restart proceeds outside caller's process tree
+[dev.sh]   log:  ${LOG_FILE}     (tail -f to follow)
+[dev.sh]   stop: pkill -f 'tsx src/cli/main.ts --no-daemon'
+[dev.sh]   force foreground next time: PIKICLAW_DEV_FOREGROUND=1 npm run dev
+EOF
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Below runs either as the TTY foreground process, or as the detached worker.
+# Both are now safe to kill the running pikiclaw runtime — neither shares a
+# stdio/process-group dependency with the agent that invoked us.
+# ---------------------------------------------------------------------------
+
 # Kill any previous dev processes (npm -> bash -> tsx -> node tree)
 _killed=0
 # 1) Kill by "tsx src/cli.ts --no-daemon" pattern (the actual node worker)
@@ -27,18 +79,13 @@ if (( _killed )); then
 fi
 rm -f "${DEV_DIR}/dev.pid"
 
-# Foreground when invoked from a real terminal; detach when piped (e.g. an
-# agent's Bash tool call, or `npm run dev > /tmp/x.log`). Set
-# PIKICLAW_DEV_FOREGROUND=1 to force foreground regardless of TTY, or
-# PIKICLAW_DEV_BACKGROUND=1 to force detach.
-_dev_foreground=1
-if [[ "${PIKICLAW_DEV_BACKGROUND:-0}" == "1" ]]; then
-  _dev_foreground=0
-elif [[ "${PIKICLAW_DEV_FOREGROUND:-0}" == "1" ]]; then
-  _dev_foreground=1
-elif [[ ! -t 1 ]]; then
-  _dev_foreground=0
-fi
+# Remember whether this invocation is the detached worker, BEFORE the env
+# scrub below wipes PIKICLAW_DEV_DETACHED along with the rest of PIKICLAW_*.
+# The flag controls whether we truncate the log (the worker must not — its
+# parent already did, and the worker's own stdout/stderr is being appended
+# to that file).
+_is_detached_worker=0
+[[ "${PIKICLAW_DEV_DETACHED:-0}" == "1" ]] && _is_detached_worker=1
 
 # Dev isolates setting.json only. The managed browser profile intentionally
 # stays at ~/.pikiclaw/browser/chrome-profile so dev and the main runtime reuse
@@ -56,34 +103,18 @@ done < <(env | grep -oE '^(PIKICLAW_|CLAUDECODE|CLAUDE_CODE_|CLAUDE_MODEL|CLAUDE
 export PIKICLAW_CONFIG="${DEV_DIR}/setting.json"
 export PIKICLAW_LOG_LEVEL="${PIKICLAW_LOG_LEVEL:-debug}"
 
-if (( _dev_foreground )); then
-  echo $$ > "${DEV_DIR}/dev.pid"
-  trap 'rm -f "${DEV_DIR}/dev.pid"' EXIT
-  : > "${LOG_FILE}"
-  {
-    npm run build:dashboard
-    npx tsx src/cli/main.ts --no-daemon "$@"
-  } 2>&1 | node scripts/retained-tee.mjs "${LOG_FILE}"
-else
-  # Build dashboard synchronously so a build failure is visible to the caller
-  # (the agent's Bash tool / CI), not silently swallowed in the detached log.
-  : > "${LOG_FILE}"
-  npm run build:dashboard 2>&1 | tee -a "${LOG_FILE}"
+echo $$ > "${DEV_DIR}/dev.pid"
+trap 'rm -f "${DEV_DIR}/dev.pid"' EXIT
 
-  # Detach with nohup (portable across macOS / Linux — `setsid` isn't on macOS).
-  # nohup ignores SIGHUP so the daemon outlives the calling shell.
-  nohup bash -c '
-    exec npx tsx src/cli/main.ts --no-daemon "$@" 2>&1 \
-      | node scripts/retained-tee.mjs "'"${LOG_FILE}"'"
-  ' _ "$@" </dev/null >/dev/null 2>&1 &
-  _bg_pid=$!
-  disown "$_bg_pid" 2>/dev/null || true
-  echo "$_bg_pid" > "${DEV_DIR}/dev.pid"
-
-  cat <<EOF
-[dev.sh] dev daemon detached (no TTY); wrapper pid=${_bg_pid}
-[dev.sh]   log:  ${LOG_FILE}     (tail -f to follow)
-[dev.sh]   stop: pkill -f 'tsx src/cli/main.ts --no-daemon'
-[dev.sh]   force foreground next time: PIKICLAW_DEV_FOREGROUND=1 npm run dev
-EOF
+# TTY mode truncates here. The detached worker inherits an already-truncated
+# log from its parent (see early-detach branch above) AND has been writing its
+# own stdout/stderr to that file since spawn, so re-truncating would wipe its
+# own startup chatter.
+if (( ! _is_detached_worker )); then
+  : > "${LOG_FILE}"
 fi
+
+{
+  npm run build:dashboard
+  npx tsx src/cli/main.ts --no-daemon "$@"
+} 2>&1 | node scripts/retained-tee.mjs "${LOG_FILE}"

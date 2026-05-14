@@ -15,6 +15,8 @@ import type { RichMessage, MessageBlock } from '../../types';
 export function AssistantMsg({ message, t }: { message: RichMessage; t: (k: string) => string }) {
   const { activityBlocks, thinkingBlocks, planBlocks, subAgentBlocks, outputBlocks } = categorizeAssistantBlocks(message.blocks);
   const latestPlan = [...planBlocks].reverse().find(block => hasPlan(block.plan));
+  const hasContent = activityBlocks.length > 0 || subAgentBlocks.length > 0 || !!latestPlan?.plan || thinkingBlocks.length > 0 || outputBlocks.length > 0;
+  if (!hasContent) return null;
   return (
     <div className="space-y-3">
       {activityBlocks.length > 0 && <ActivitySection blocks={activityBlocks} t={t} />}
@@ -26,6 +28,15 @@ export function AssistantMsg({ message, t }: { message: RichMessage; t: (k: stri
       {outputBlocks.length > 0 && <OutputBlock blocks={outputBlocks} />}
     </div>
   );
+}
+
+export function hasRenderableAssistant(message: RichMessage): boolean {
+  const { activityBlocks, thinkingBlocks, planBlocks, subAgentBlocks, outputBlocks } = categorizeAssistantBlocks(message.blocks);
+  return outputBlocks.length > 0
+    || activityBlocks.length > 0
+    || subAgentBlocks.length > 0
+    || thinkingBlocks.length > 0
+    || planBlocks.some(b => hasPlan(b.plan));
 }
 
 export function categorizeAssistantBlocks(blocks: MessageBlock[]): {

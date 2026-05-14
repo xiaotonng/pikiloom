@@ -1,16 +1,18 @@
 /**
- * CLI auth session runner — spawns the sign-in child process, captures output,
- * and reports lifecycle events via an EventEmitter the HTTP layer streams over
- * SSE.
+ * CLI auth + install runner.
  *
- * For oauth-web CLIs (`gh`, `wrangler`, `vercel`, …) the login command opens a
- * browser and waits until the user completes OAuth. We stream the CLI's output
- * live so the UI can show the device-code / one-time-code. When the child exits
- * (or while it's still running, for long-lived ones), we poll the status
- * command to confirm the sign-in stuck — some CLIs stay alive after success.
+ * Two flows share a single streaming-child-session core:
  *
- * For token CLIs we don't use this runner — tokens come in via a plain HTTP
- * POST and we apply them synchronously.
+ *   - oauth-web: spawn `loginArgv`, stream stdout/stderr to the UI, poll
+ *     `statusArgv` in the background, and settle when the CLI reports ready.
+ *     Used by CLIs that print a device code / one-time-code non-interactively
+ *     (gh, wrangler, supabase, …). CLIs whose sign-in needs a real TTY use
+ *     `manualLoginCommands` instead and never reach this runner.
+ *   - install: spawn the `npm install -g <pkg>` argv, stream output, re-detect
+ *     once the child exits.
+ *
+ * Token CLIs (aws, mocli) skip this entirely — credentials come in via a plain
+ * POST and are applied synchronously by `applyCliToken`.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -71,7 +73,7 @@ export function cancelAuthSession(sessionId: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Start a new oauth-web session
+// Shared streaming-child session core
 // ---------------------------------------------------------------------------
 
 export interface StartAuthSessionResult {
@@ -79,13 +81,27 @@ export interface StartAuthSessionResult {
   sessionId: string;
 }
 
-export async function startCliAuthSession(cliId: string): Promise<StartAuthSessionResult | { ok: false; error: string }> {
-  const cli = getRecommendedCli(cliId);
-  if (!cli) return { ok: false, error: `unknown cli: ${cliId}` };
-  if (cli.auth.type !== 'oauth-web' || !cli.auth.loginArgv) {
-    return { ok: false, error: `cli ${cliId} does not support oauth-web sign-in` };
-  }
+interface StreamingSessionOpts {
+  cli: RecommendedCli;
+  argv: string[];
+  env: NodeJS.ProcessEnv;
+  shell?: boolean;
+  /**
+   * When true, poll the CLI's status command in the background and settle as
+   * soon as it reports ready — used for long-running login children that don't
+   * exit on their own. When false (install), settle on child close only.
+   */
+  pollUntilReady: boolean;
+  /**
+   * Decide the final ok flag once the child has exited and a fresh status has
+   * been read. For login: ready === true ⇒ ok. For install: child exit 0 AND
+   * binary now detected.
+   */
+  computeOk: (exitCode: number | null, finalStatus: CliStatus | undefined) => boolean;
+}
 
+function startStreamingSession(opts: StreamingSessionOpts): StartAuthSessionResult {
+  const { cli, argv, env, shell, pollUntilReady, computeOk } = opts;
   const sessionId = randomUUID();
   const events = new EventEmitter();
   // Unlimited listeners — SSE clients may resubscribe multiple times.
@@ -93,7 +109,7 @@ export async function startCliAuthSession(cliId: string): Promise<StartAuthSessi
 
   const session: AuthSession & { _child?: ChildProcess } = {
     sessionId,
-    cliId,
+    cliId: cli.id,
     startedAt: Date.now(),
     events,
     done: false,
@@ -103,17 +119,20 @@ export async function startCliAuthSession(cliId: string): Promise<StartAuthSessi
   };
   SESSIONS.set(sessionId, session);
 
-  const [cmd, ...args] = cli.auth.loginArgv;
+  const [cmd, ...args] = argv;
   const child = spawn(cmd, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', CI: '' },
+    env,
+    shell,
     windowsHide: true,
   });
   session._child = child;
 
   const pushOutput = (chunk: string) => {
     session.backlog.push(chunk);
-    if (session.backlog.length > BACKLOG_LINES) session.backlog.splice(0, session.backlog.length - BACKLOG_LINES);
+    if (session.backlog.length > BACKLOG_LINES) {
+      session.backlog.splice(0, session.backlog.length - BACKLOG_LINES);
+    }
     events.emit('event', { type: 'output', chunk } satisfies AuthSessionEvent);
   };
 
@@ -123,57 +142,83 @@ export async function startCliAuthSession(cliId: string): Promise<StartAuthSessi
     events.emit('event', { type: 'error', message: err.message } satisfies AuthSessionEvent);
   });
 
-  // Background poller — checks status every 2s. When the CLI finishes (or we
-  // detect "ready"), emit a status event and close.
-  const pollDeadline = Date.now() + POLL_TIMEOUT_MS;
   let settled = false;
-  const settle = async (ok: boolean, exitCode: number | null) => {
+  let poller: NodeJS.Timeout | undefined;
+  const settle = async (exitCode: number | null) => {
     if (settled) return;
     settled = true;
-    clearInterval(poller);
-    invalidateCliStatus(cliId);
+    if (poller) clearInterval(poller);
+    invalidateCliStatus(cli.id);
     let finalStatus: CliStatus | undefined;
     try { finalStatus = await detectCli(cli); } catch { /* best-effort */ }
     if (finalStatus) {
       events.emit('event', { type: 'status', status: finalStatus } satisfies AuthSessionEvent);
     }
-    session.ok = ok && (finalStatus?.state === 'ready');
+    session.ok = computeOk(exitCode, finalStatus);
     session.exitCode = exitCode;
     session.done = true;
     events.emit('event', { type: 'done', ok: session.ok, exitCode } satisfies AuthSessionEvent);
   };
 
-  const poller = setInterval(async () => {
-    if (settled) return;
-    if (Date.now() > pollDeadline) {
-      child.kill('SIGTERM');
-      void settle(false, null);
-      return;
-    }
-    try {
-      invalidateCliStatus(cliId);
-      const status = await detectCli(cli);
-      events.emit('event', { type: 'status', status } satisfies AuthSessionEvent);
-      if (status.state === 'ready') {
-        if (!child.killed) child.kill('SIGTERM');
-        void settle(true, child.exitCode);
+  if (pollUntilReady) {
+    const pollDeadline = Date.now() + POLL_TIMEOUT_MS;
+    poller = setInterval(async () => {
+      if (settled) return;
+      if (Date.now() > pollDeadline) {
+        child.kill('SIGTERM');
+        void settle(null);
+        return;
       }
-    } catch { /* ignore polling errors */ }
-  }, POLL_INTERVAL_MS);
+      try {
+        invalidateCliStatus(cli.id);
+        const status = await detectCli(cli);
+        events.emit('event', { type: 'status', status } satisfies AuthSessionEvent);
+        if (status.state === 'ready') {
+          if (!child.killed) child.kill('SIGTERM');
+          void settle(child.exitCode);
+        }
+      } catch { /* ignore polling errors */ }
+    }, POLL_INTERVAL_MS);
+  }
 
-  child.on('close', (code) => {
-    void settle(code === 0, code);
-  });
+  child.on('close', (code) => { void settle(code); });
 
   return { ok: true, sessionId };
 }
 
 // ---------------------------------------------------------------------------
+// oauth-web login
+// ---------------------------------------------------------------------------
+
+export async function startCliAuthSession(
+  cliId: string,
+): Promise<StartAuthSessionResult | { ok: false; error: string }> {
+  const cli = getRecommendedCli(cliId);
+  if (!cli) return { ok: false, error: `unknown cli: ${cliId}` };
+  if (cli.auth.type !== 'oauth-web' || !cli.auth.loginArgv) {
+    return { ok: false, error: `cli ${cliId} does not support oauth-web sign-in` };
+  }
+  // CLIs configured for manual login should never spawn here — guard so a
+  // misbehaving client can't end-run the documented terminal flow.
+  if (cli.auth.manualLoginCommands && cli.auth.manualLoginCommands.length > 0) {
+    return { ok: false, error: `cli ${cliId} uses manual sign-in (run the commands in your own terminal)` };
+  }
+
+  return startStreamingSession({
+    cli,
+    argv: cli.auth.loginArgv,
+    env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', CI: '' },
+    pollUntilReady: true,
+    computeOk: (_exit, status) => status?.state === 'ready',
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Auto-install — npm-based, safe-to-run install commands
 //
-// Reuses the same SESSIONS map and SSE protocol as oauth-web. We deliberately
-// allow ONLY `npm install -g <pkg>` style commands — brew/apt/dnf/winget/scoop
-// flows often need sudo or interactive confirmation and stay manual.
+// Reuses the streaming session core. We deliberately allow ONLY
+// `npm install -g <pkg>` style commands — brew/apt/dnf/winget/scoop flows
+// often need sudo or interactive confirmation and stay manual.
 // ---------------------------------------------------------------------------
 
 export interface AutoInstallSpec {
@@ -218,66 +263,16 @@ export async function startCliInstallSession(
   const spec = resolveAutoInstallSpec(cli, currentPlatform());
   if (!spec) return { ok: false, error: `no auto-install command available for ${cliId}` };
 
-  const sessionId = randomUUID();
-  const events = new EventEmitter();
-  events.setMaxListeners(0);
-
-  const session: AuthSession & { _child?: ChildProcess } = {
-    sessionId,
-    cliId,
-    startedAt: Date.now(),
-    events,
-    done: false,
-    ok: false,
-    exitCode: null,
-    backlog: [],
-  };
-  SESSIONS.set(sessionId, session);
-
-  const [cmd, ...args] = spec.argv;
-  const child = spawn(cmd, args, {
-    stdio: ['ignore', 'pipe', 'pipe'],
+  return startStreamingSession({
+    cli,
+    argv: spec.argv,
     env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', CI: '1' },
     // npm on Windows is npm.cmd — needs shell resolution. spawn() args are
     // still passed argv-style; we don't concat into a shell string.
     shell: process.platform === 'win32',
-    windowsHide: true,
+    pollUntilReady: false,
+    computeOk: (exit, status) => exit === 0 && (status ? status.state !== 'not_installed' : true),
   });
-  session._child = child;
-
-  const pushOutput = (chunk: string) => {
-    session.backlog.push(chunk);
-    if (session.backlog.length > BACKLOG_LINES) session.backlog.splice(0, session.backlog.length - BACKLOG_LINES);
-    events.emit('event', { type: 'output', chunk } satisfies AuthSessionEvent);
-  };
-
-  child.stdout?.on('data', (buf: Buffer) => pushOutput(buf.toString('utf8')));
-  child.stderr?.on('data', (buf: Buffer) => pushOutput(buf.toString('utf8')));
-  child.on('error', (err) => {
-    events.emit('event', { type: 'error', message: err.message } satisfies AuthSessionEvent);
-  });
-
-  let settled = false;
-  child.on('close', async (code) => {
-    if (settled) return;
-    settled = true;
-    invalidateCliStatus(cliId);
-    let finalStatus: CliStatus | undefined;
-    try { finalStatus = await detectCli(cli); } catch { /* best-effort */ }
-    if (finalStatus) {
-      events.emit('event', { type: 'status', status: finalStatus } satisfies AuthSessionEvent);
-    }
-    // Install succeeded if the npm exit is 0 AND detection now sees the binary.
-    // Auth state is intentionally NOT required — for token / oauth CLIs the
-    // user still needs to sign in afterwards, which is a separate flow.
-    const installed = finalStatus ? finalStatus.state !== 'not_installed' : code === 0;
-    session.ok = code === 0 && installed;
-    session.exitCode = code;
-    session.done = true;
-    events.emit('event', { type: 'done', ok: session.ok, exitCode: code } satisfies AuthSessionEvent);
-  });
-
-  return { ok: true, sessionId };
 }
 
 // ---------------------------------------------------------------------------

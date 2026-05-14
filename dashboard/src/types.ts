@@ -653,6 +653,8 @@ export interface CliInstallSpec {
 export interface CliAuthSpec {
   type: CliAuthType;
   statusArgv?: string[];
+  /** statusArgv stdout must match this pattern for the CLI to be considered authed. */
+  statusReadyPattern?: string;
   loginArgv?: string[];
   logoutArgv?: string[];
   tokenFields?: McpCredentialField[];
@@ -660,6 +662,8 @@ export interface CliAuthSpec {
   envKey?: string;
   loginHint?: string;
   loginHintZh?: string;
+  /** When set, the dashboard surfaces these as copyable commands instead of spawning loginArgv. */
+  manualLoginCommands?: { label?: string; cmd: string }[];
 }
 
 export interface CliCatalogItem {

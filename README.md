@@ -165,6 +165,26 @@ npx pikiclaw@latest --doctor   # Environment health check only
 
 </details>
 
+<details>
+<summary><b>Want to run it on a server? Docker is supported.</b></summary>
+
+```bash
+docker run -d --name pikiclaw -p 3939:3939 \
+  -e TELEGRAM_BOT_TOKEN=... \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v pikiclaw-config:/home/piki/.pikiclaw \
+  -v pikiclaw-workspace:/workspace \
+  ghcr.io/xiaotonng/pikiclaw:latest
+```
+
+The official multi-arch image (`linux/amd64` + `linux/arm64`) bakes in
+`claude-code`, `codex`, and `gemini-cli`. A `docker-compose.yml` example
+ships in the repo root — see [docs/DOCKER.md](docs/DOCKER.md) for the
+full reference (auth flows, volume layout, reverse-proxy / TLS, pinning
+agent CLI versions).
+
+</details>
+
 ---
 
 ## How People Are Using It

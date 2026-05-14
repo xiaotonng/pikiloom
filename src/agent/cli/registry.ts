@@ -52,10 +52,27 @@ export interface CliAuthSpec {
    * Kept as argv (not string) to avoid shell quoting surprises.
    */
   statusArgv?: string[];
-  /** Argv for the interactive login — used for oauth-web. */
+  /**
+   * When set, statusArgv exit 0 alone is not enough — its stdout must also
+   * match this pattern. Use for CLIs (e.g. `gcloud auth list … --format=value`)
+   * that exit 0 with empty output when no account is signed in.
+   */
+  statusReadyPattern?: string;
+  /**
+   * Argv for the interactive sign-in — used by the streamed oauth-web flow.
+   * Skip when `manualLoginCommands` is set: those CLIs need a real TTY.
+   */
   loginArgv?: string[];
   /** Argv for logout / credential wipe. */
   logoutArgv?: string[];
+  /**
+   * Officially documented sign-in commands the user runs in their own terminal.
+   * Set this when the CLI's login flow needs a TTY (interactive prompts) or
+   * emits output the streamed panel can't render (QR codes, alt-screen). The
+   * dashboard surfaces these as copyable commands plus a "re-check status"
+   * button instead of spawning `loginArgv`.
+   */
+  manualLoginCommands?: { label?: string; cmd: string }[];
   /** For token auth: fields to collect from the user. */
   tokenFields?: CredentialField[];
   /**

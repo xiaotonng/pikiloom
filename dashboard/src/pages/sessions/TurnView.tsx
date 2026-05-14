@@ -6,7 +6,7 @@ import { cn, getAgentMeta } from '../../utils';
 import { BrandIcon } from '../../components/BrandIcon';
 import { mdComponents, mdPlugins } from './markdown';
 import { isContinuationSummary } from './utils';
-import { AssistantMsg } from './AssistantContent';
+import { AssistantMsg, hasRenderableAssistant } from './AssistantContent';
 import type { MessageBlock, StreamPreviewMeta } from '../../types';
 import type { Turn } from './utils';
 
@@ -26,6 +26,9 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
   // the turn also contains an assistant response.
   const isSystemMsg = turn.user && isContinuationSummary(turn.user.text);
   const handleFork = onFork && typeof turnIndex === 'number' ? () => onFork(turnIndex) : undefined;
+  // Skip the assistant header entirely when there's nothing to put under it —
+  // a phantom header reads as "Claude said something invisible" to users.
+  const showAssistant = !!turn.assistant && hasRenderableAssistant(turn.assistant);
 
   return (
     <div className="session-turn">
@@ -39,11 +42,13 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
           </ReactMarkdown>
         </div>
       )}
-      {turn.assistant && <TurnDivider agent={agent} meta={meta} model={model} effort={effort} providerName={providerName} previewMeta={turn.assistant.usage ?? null} />}
-      {turn.assistant && (
-        <div className="mb-6">
-          <AssistantMsg message={turn.assistant} t={t} />
-        </div>
+      {showAssistant && (
+        <>
+          <TurnDivider agent={agent} meta={meta} model={model} effort={effort} providerName={providerName} previewMeta={turn.assistant!.usage ?? null} />
+          <div className="mb-6">
+            <AssistantMsg message={turn.assistant!} t={t} />
+          </div>
+        </>
       )}
     </div>
   );

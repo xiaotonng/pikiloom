@@ -7,26 +7,47 @@ import { lastNLines } from './utils';
 import { shortenModel } from '../../utils';
 import type { StreamPlan, StreamSubAgent } from '../../types';
 
+export interface LiveStreamView {
+  phase: 'streaming' | 'done';
+  text: string;
+  thinking: string;
+  activity?: string;
+  plan?: StreamPlan | null;
+  subAgents?: StreamSubAgent[] | null;
+  error?: string | null;
+}
+
+export function liveStreamHasBody(stream: LiveStreamView): boolean {
+  return !!stream.text
+    || !!stream.thinking
+    || !!(stream.activity && stream.activity.split('\n').filter(Boolean).length)
+    || hasPlan(stream.plan)
+    || !!(stream.subAgents && stream.subAgents.length);
+}
+
+/** True when the live preview will render any visible element (body or error tile). */
+export function liveStreamShouldRender(stream: LiveStreamView): boolean {
+  if (liveStreamHasBody(stream)) return true;
+  return stream.phase === 'done' && !!stream.error;
+}
+
 /* ── Live streaming preview ── */
 export function LivePreview({
   stream,
   t,
 }: {
-  stream: {
-    phase: 'streaming' | 'done';
-    text: string;
-    thinking: string;
-    activity?: string;
-    plan?: StreamPlan | null;
-    subAgents?: StreamSubAgent[] | null;
-  };
+  stream: LiveStreamView;
   t: (k: string) => string;
 }) {
   const showPlan = hasPlan(stream.plan);
+  const hasAnyBody = liveStreamHasBody(stream);
   const [activityOpen, setActivityOpen] = useState(false);
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const activityScrollRef = useRef<HTMLDivElement>(null);
   const thinkingScrollRef = useRef<HTMLDivElement>(null);
+  // Stream finished with no body — surface the error inline so the user sees
+  // *why* the assistant turn is empty instead of a silent phantom.
+  const renderEmptyFailure = stream.phase === 'done' && !hasAnyBody;
 
   const activityLines = useMemo(() =>
     (stream.activity || '').split('\n').filter(Boolean),
@@ -118,6 +139,18 @@ export function LivePreview({
       {!stream.text && stream.phase === 'streaming' && (
         <div className="py-1">
           <ThinkingDots className="text-fg-5" />
+        </div>
+      )}
+
+      {/* Stream finished with no body — surface the error inline so the user
+          sees *why* the assistant turn is empty instead of a silent phantom. */}
+      {renderEmptyFailure && stream.error && (
+        <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 text-[12.5px] leading-[1.7] text-fg-3">
+          <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-rose-400/70 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-[11px] font-mono uppercase tracking-wide text-rose-300/80">{t('hub.streamFailed') || 'Stream ended without a reply'}</div>
+            <div className="mt-0.5 break-words">{stream.error}</div>
+          </div>
         </div>
       )}
     </div>

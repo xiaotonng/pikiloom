@@ -19,11 +19,15 @@ import { startDashboard, type DashboardServer } from '../dashboard/server.js';
 import { buildSetupGuide, collectSetupState, hasReadyAgent, isSetupReady } from './onboarding.js';
 import {
   buildRestartCommand,
+  clearDaemonPidFile,
   clearRestartStateFile,
   consumeRestartStateFile,
   createRestartStateFilePath,
+  isProcessAlive,
   PROCESS_RESTART_EXIT_CODE,
+  readDaemonPidFile,
   requestProcessRestart,
+  writeDaemonPidFile,
 } from '../core/process-control.js';
 import { runSetupWizard } from './setup-wizard.js';
 import { FROM_LAUNCHD_ENV, maybePromptAutostart } from './autostart.js';
@@ -61,6 +65,11 @@ async function runDaemon(userArgs: string[]): Promise<never> {
   const forwardedArgs = userArgs.filter(a => !DAEMON_STRIP_ARGS.has(a));
   const restartCmd = process.env.PIKICLAW_RESTART_CMD;
   const restartStateFile = createRestartStateFilePath(process.pid);
+
+  // Publish the daemon PID so `pikiclaw stop` can find it. Clean up on any
+  // exit path so a stale file never points at someone else's PID.
+  writeDaemonPidFile(process.pid);
+  process.once('exit', clearDaemonPidFile);
 
   // Auto-start enrollment: only when the user explicitly typed `--daemon`
   // (the watchdog itself is on by default, so we use the explicit flag as
@@ -164,10 +173,12 @@ function parseArgs(argv: string[]) {
     fullAccess: null, safeMode: false, allowedIds: null,
     timeout: null, version: false, help: false, doctor: false, setup: false,
     noDashboard: false, dashboardPort: null, daemon: true,
+    stop: false,
   };
   const it = argv[Symbol.iterator]();
   for (const arg of it) {
     switch (arg) {
+      case 'stop': args.stop = true; break;
       case '-t': case '--token': args.token = it.next().value; break;
       case '-a': case '--agent': args.agent = it.next().value; break;
       case '-m': case '--model': args.model = it.next().value; break;
@@ -227,6 +238,7 @@ validated channels are enabled, they launch simultaneously.
 Usage:
   npx pikiclaw                              # auto-detect from config/env
   npx pikiclaw -w ~/project                 # set working directory
+  npx pikiclaw stop                         # stop the running daemon
 
 Options:
   -t, --token <token>       Channel auth token (env: PIKICLAW_TOKEN)
@@ -349,6 +361,82 @@ function installRestartSignalHandler(): void {
   });
 }
 
+/**
+ * Top-level shutdown safety net. Channels install their own SIGINT/SIGTERM
+ * handlers that do per-channel cleanup with a 3 s unref-ed force-exit timer,
+ * but those handlers only exist while a channel is running and silently fail
+ * if cleanup throws before the timer is set. This handler is the last-resort
+ * guarantee: once the user hits Ctrl+C, the process exits within the grace
+ * window no matter what state we're in.
+ */
+function installTopLevelShutdownHandler(): void {
+  const GRACE_MS = 5_000;
+  let shuttingDown = false;
+  const onSignal = (sig: 'SIGINT' | 'SIGTERM') => {
+    const exitCode = sig === 'SIGINT' ? 130 : 143;
+    if (shuttingDown) {
+      // Second Ctrl+C — bail immediately.
+      processLog(`${sig} again, forcing immediate exit`);
+      process.exit(exitCode);
+    }
+    shuttingDown = true;
+    processLog(`${sig} received, shutting down (force exit in ${GRACE_MS / 1000}s)...`);
+    setTimeout(() => process.exit(exitCode), GRACE_MS);
+  };
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+}
+
+/* ── Phase: stop subcommand ───────────────────────────────────────── */
+
+/**
+ * Find and terminate the running daemon. Reads the PID file written by
+ * `runDaemon`, sends SIGTERM, waits briefly, escalates to SIGKILL if the
+ * process is still alive. Never returns — always exits.
+ */
+async function handleStopCommand(): Promise<never> {
+  const pid = readDaemonPidFile();
+  if (!pid) {
+    process.stderr.write('pikiclaw stop: no daemon PID file found (is pikiclaw running in daemon mode?)\n');
+    process.exit(1);
+  }
+  if (!isProcessAlive(pid)) {
+    process.stdout.write(`pikiclaw stop: daemon (pid ${pid}) is not running, clearing stale PID file\n`);
+    clearDaemonPidFile();
+    process.exit(0);
+  }
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ESRCH') {
+      process.stdout.write(`pikiclaw stop: daemon (pid ${pid}) already exited\n`);
+      clearDaemonPidFile();
+      process.exit(0);
+    }
+    process.stderr.write(`pikiclaw stop: failed to signal pid ${pid}: ${err}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(`pikiclaw stop: SIGTERM → pid ${pid}\n`);
+
+  // Poll for up to 8 s; daemon's child needs ~3 s for its force-exit timer.
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      clearDaemonPidFile();
+      process.stdout.write(`pikiclaw stop: daemon (pid ${pid}) stopped\n`);
+      process.exit(0);
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+
+  // Escalate to SIGKILL.
+  process.stderr.write(`pikiclaw stop: daemon (pid ${pid}) still alive after 8s, sending SIGKILL\n`);
+  try { process.kill(pid, 'SIGKILL'); } catch {}
+  clearDaemonPidFile();
+  process.exit(0);
+}
+
 /* ── Phase: doctor check ──────────────────────────────────────────── */
 
 /** Run setup diagnostics and exit (--doctor). */
@@ -432,12 +520,16 @@ async function runSetupPhase(
   const needsSetup = channels.length === 0 || !tokenProvided || !hasReadyAgent(setupState);
 
   if (useDashboard) {
+    // Suppress the browser pop on auto-start when there's no user-facing
+    // terminal: launchd-spawned bots, Docker/headless server runs, or when
+    // the user explicitly set PIKICLAW_OPEN_BROWSER=0.
+    const openBrowser =
+      !process.env[FROM_LAUNCHD_ENV]
+      && !envBool('PIKICLAW_DOCKER', false)
+      && envBool('PIKICLAW_OPEN_BROWSER', true);
     dashboard = await startDashboard({
       port: args.dashboardPort || 3939,
-      // Suppress the browser pop on auto-start: launchd has no user-facing
-      // terminal and the user did not just type a command, so a tab spawn
-      // would be unsolicited.
-      open: !process.env[FROM_LAUNCHD_ENV],
+      open: openBrowser,
     });
 
     if (needsSetup) {
@@ -627,6 +719,7 @@ export async function main() {
 
   if (args.version) { process.stdout.write(`pikiclaw ${VERSION}\n`); process.exit(0); }
   if (args.help) printHelp();
+  if (args.stop) await handleStopCommand();
 
   // Persist workdir for fresh (non-daemon-child) launches.
   userConfig = persistWorkdir(args, userConfig);
@@ -634,8 +727,10 @@ export async function main() {
   // Daemon mode: become watchdog (never returns in daemon mode).
   await enterDaemonIfNeeded(args);
 
-  // Child / no-daemon process: install restart signal handler.
+  // Child / no-daemon process: install restart signal handler + top-level
+  // shutdown safety net so Ctrl+C always brings the process down.
   installRestartSignalHandler();
+  installTopLevelShutdownHandler();
 
   // Apply config overrides from CLI args.
   const configOverrides: Partial<UserConfig> = {};

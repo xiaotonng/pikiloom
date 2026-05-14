@@ -1288,6 +1288,14 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
             pendingBlocks = text ? [{ type: 'text', content: text }, ...imageBlocks] : [...imageBlocks];
           }
         } else if (ev.type === 'assistant') {
+          // `model:"<synthetic>"` is Claude CLI's marker for a turn that ended
+          // without producing real output (stream killed mid-flight, tool result
+          // arrived without follow-up, etc.). It writes the text "No response
+          // requested." but it's a placeholder, not content — surfacing it makes
+          // a failed turn look like Claude said something. Skip it so the turn
+          // either collapses to a bare user message (no phantom header) or, if
+          // a live stream is still attached, the error tile takes over.
+          if (ev.message?.model === '<synthetic>') continue;
           if (pendingRole === 'user') flush();
           pendingRole = 'assistant';
           const u = ev.message?.usage;

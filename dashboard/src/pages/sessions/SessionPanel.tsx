@@ -9,7 +9,7 @@ import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
 import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent } from '../../types';
 import { TurnView, UserBubble, TurnDivider } from './TurnView';
-import { LivePreview, ThinkingDots } from './LivePreview';
+import { LivePreview, ThinkingDots, liveStreamShouldRender } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
 import {
@@ -80,6 +80,7 @@ export const SessionPanel = memo(function SessionPanel({
     effort?: string | null;
     previewMeta?: StreamPreviewMeta | null;
     subAgents?: StreamSubAgent[] | null;
+    error?: string | null;
   } | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [streamPhase, setStreamPhase] = useState<string | null>(null);
@@ -343,6 +344,7 @@ export const SessionPanel = memo(function SessionPanel({
           effort: state.effort ?? null,
           previewMeta: state.previewMeta ?? null,
           subAgents: state.previewMeta?.subAgents ?? null,
+          error: null,
         });
       }
       setStreaming(true);
@@ -363,6 +365,9 @@ export const SessionPanel = memo(function SessionPanel({
       // cleared atomically with the history update inside loadLatestTurns to avoid
       // the intermediate "empty" render that causes a scroll jump.
       setStreaming(false);
+      // Mark the live preview as finished and forward any error from the
+      // snapshot so a content-less failure surfaces a reason instead of a phantom.
+      setLiveStream(prev => prev ? { ...prev, phase: 'done', error: state.error ?? null } : prev);
       const hasMoreQueued = !!state.queuedTaskIds?.length;
       if (prevPhaseRef.current !== 'done') {
         if (!hasMoreQueued) clearPendingOnLoadRef.current = true;
@@ -673,8 +678,9 @@ export const SessionPanel = memo(function SessionPanel({
                 )}
               </div>
             )}
-            {/* Live stream preview */}
-            {liveStream && (
+            {/* Live stream preview — skip entirely when the stream has nothing to show
+                (no body, no error). Prevents a phantom header above an empty body. */}
+            {liveStream && liveStreamShouldRender(liveStream) && (
               <div className="mb-6">
                 <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} />
                 <LivePreview stream={liveStream} t={t} />

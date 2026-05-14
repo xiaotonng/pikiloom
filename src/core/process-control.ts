@@ -11,6 +11,48 @@ import { pathContainsSegment } from './platform.js';
 export const PROCESS_RESTART_EXIT_CODE = 75;
 export const PROCESS_RESTART_STATE_FILE_ENV = 'PIKICLAW_RESTART_STATE_FILE';
 
+const DAEMON_PID_FILENAME = 'pikiclaw.pid';
+
+/** Path to the daemon PID file used by `pikiclaw stop`. */
+export function getDaemonPidFilePath(): string {
+  return path.join(os.homedir(), '.pikiclaw', DAEMON_PID_FILENAME);
+}
+
+export function writeDaemonPidFile(pid: number = process.pid): void {
+  const filePath = getDaemonPidFilePath();
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, String(pid), 'utf8');
+  } catch {}
+}
+
+export function clearDaemonPidFile(): void {
+  try { fs.unlinkSync(getDaemonPidFilePath()); } catch {}
+}
+
+export function readDaemonPidFile(): number | null {
+  try {
+    const raw = fs.readFileSync(getDaemonPidFilePath(), 'utf8').trim();
+    const pid = Number.parseInt(raw, 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True if a process with `pid` is currently running (POSIX kill -0 / win32 tasklist). */
+export function isProcessAlive(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    // EPERM means the process exists but we cannot signal it — still alive.
+    return code === 'EPERM';
+  }
+}
+
 interface RestartStateFile {
   version: 1;
   env: Record<string, string>;

@@ -127,7 +127,11 @@ export async function detectCli(cli: RecommendedCli): Promise<CliStatus> {
   }
 
   const result = await runArgv(cli.auth.statusArgv, 6_000);
-  const state: CliState = result.ok ? 'ready' : 'installed_not_auth';
+  // Some CLIs (gcloud) report success via exit 0 but emit empty output when no
+  // account is configured — fall back to a content check when declared.
+  const patternOk = !cli.auth.statusReadyPattern
+    || new RegExp(cli.auth.statusReadyPattern).test(result.stdout);
+  const state: CliState = (result.ok && patternOk) ? 'ready' : 'installed_not_auth';
   const status: CliStatus = {
     id: cli.id, binary: cli.binary, state, version,
     authDetail: state === 'ready' ? trimDetail(result.stdout) : trimDetail(result.stderr || result.stdout),

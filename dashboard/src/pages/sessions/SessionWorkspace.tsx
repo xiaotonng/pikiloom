@@ -866,7 +866,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
               const isActive = slotIdx === activeSlotIndex;
               return (
                 <div
-                  key={sKey(slot.agent, slot.sessionId)}
+                  key={slot.mountKey || sKey(slot.agent, slot.sessionId)}
                   className={cn(
                     'min-w-0 overflow-hidden rounded-xl border bg-panel flex flex-col transition-[border-color,box-shadow] duration-200',
                     isActive

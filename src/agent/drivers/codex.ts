@@ -356,6 +356,28 @@ function codexToolKind(name: unknown): string {
   return parts[parts.length - 1] || raw;
 }
 
+function codexToolName(item: any): string {
+  return typeof item?.tool === 'string' && item.tool.trim()
+    ? item.tool.trim()
+    : (typeof item?.name === 'string' ? item.name.trim() : '');
+}
+
+function codexToolArgs(item: any): unknown {
+  return item?.arguments ?? item?.input ?? item?.args ?? item?.parameters ?? item?.params ?? item?.call?.arguments ?? null;
+}
+
+function commandPreview(command: unknown, max = 160): string {
+  const raw = typeof command === 'string' ? command.trim() : '';
+  if (!raw) return '';
+  const oneLine = raw.split('\n').map(line => line.trim()).find(Boolean) || raw;
+  return shortValue(oneLine, max);
+}
+
+function summarizeCodexCommand(command: unknown): string {
+  const preview = commandPreview(command);
+  return preview ? `Bash: ${preview}` : 'Bash';
+}
+
 function compactPathTarget(value: unknown, max = 80): string {
   const raw = typeof value === 'string' ? value.trim() : '';
   if (!raw) return '';
@@ -367,10 +389,16 @@ function compactPathTarget(value: unknown, max = 80): string {
 }
 
 function summarizeCodexToolCall(item: any): CodexActiveToolCall | null {
-  const kind = codexToolKind(item?.tool);
+  const rawName = codexToolName(item);
+  const kind = codexToolKind(rawName);
+  const args = parseCodexArguments(codexToolArgs(item));
   switch (kind) {
     case 'apply_patch': return { kind, summary: 'Edit files' };
-    case 'exec_command': return { kind, summary: 'Run shell command' };
+    case 'exec_command': {
+      const command = args && typeof args === 'object' && !Array.isArray(args) ? (args as any).cmd : null;
+      const preview = commandPreview(command);
+      return { kind, summary: preview ? `Bash: ${preview}` : 'Bash' };
+    }
     case 'update_plan': return { kind, summary: 'Update plan' };
     case 'request_user_input': return { kind, summary: 'Request user input' };
     case 'view_image': return { kind, summary: 'Inspect image' };
@@ -393,6 +421,21 @@ function summarizeCodexFileChange(item: any): string {
 function summarizeCodexRawResponseItem(item: any): string | null {
   if (!item || typeof item !== 'object') return null;
   switch (item.type) {
+    case 'function_call': {
+      const name = typeof item.name === 'string' ? item.name.trim() : '';
+      if (!name) return null;
+      const tool = summarizeCodexToolCall({
+        name,
+        arguments: item.arguments,
+      });
+      return tool?.summary || shortValue(name, 120);
+    }
+    case 'function_call_output': {
+      const output = formatCodexArguments(item.output).trim();
+      if (!output || output === 'Plan updated') return null;
+      const firstLine = firstNonEmptyLine(output);
+      return firstLine ? `Result: ${shortValue(firstLine, 140)}` : null;
+    }
     case 'web_search_call': {
       const action = item.action || {};
       if (action.type === 'search') {
@@ -410,8 +453,7 @@ function summarizeCodexRawResponseItem(item: any): string | null {
       return name ? `Use ${name}` : 'Use tool';
     }
     case 'local_shell_call': {
-      const command = shortValue(item.action?.command || item.action?.cmd, 120);
-      return command ? `Run shell command: ${command}` : 'Run shell command';
+      return summarizeCodexCommand(item.action?.command || item.action?.cmd);
     }
     default:
       return null;
@@ -628,7 +670,10 @@ function buildCodexActivityPreview(s: {
     if (lines[lines.length - 1] !== failure) lines.push(failure);
   }
   if (s.completedCommands > 0) lines.push(s.completedCommands === 1 ? 'Executed 1 command.' : `Executed ${s.completedCommands} commands.`);
-  if (s.activeCommands.size > 0) lines.push(s.activeCommands.size === 1 ? 'Running 1 command...' : `Running ${s.activeCommands.size} commands...`);
+  for (const summary of s.activeCommands.values()) {
+    const running = summary.endsWith('...') ? summary : `${summary}...`;
+    if (lines[lines.length - 1] !== running) lines.push(running);
+  }
   for (const tool of s.activeToolCalls.values()) {
     const running = tool.summary.endsWith('...') ? tool.summary : `${tool.summary}...`;
     if (lines[lines.length - 1] !== running) lines.push(running);
@@ -910,7 +955,9 @@ function handleItemStarted(item: any, s: CodexStreamState, emit: () => void): vo
     if (phase !== 'final_answer') { s.commentaryByItem.set(item.id, item.text || ''); emit(); }
   }
   if (item.type === 'commandExecution' && item.id && item.command) {
-    s.activeCommands.set(item.id, item.command);
+    const summary = summarizeCodexCommand(item.command);
+    pushRecentActivity(s.recentNarrative, summary);
+    s.activeCommands.set(item.id, summary);
     emit();
   }
   if (item.id && isCodexToolCallItem(item)) {
@@ -1865,7 +1912,10 @@ function getCodexUsageFromStateDb(home: string): UsageResult | null {
   if (!dbPath) return null;
   try {
     const query = "SELECT ts || '|' || message FROM logs WHERE message LIKE '%codex.rate_limits%' ORDER BY ts DESC LIMIT 1;";
-    const out = execSync(`sqlite3 -noheader ${Q(dbPath)} ${Q(query)}`, { encoding: 'utf-8', timeout: 3000 }).trim();
+    // stdio: 'pipe' keeps sqlite3 stderr ("no such table", "unable to open") out
+    // of pikiclaw's own stderr — this probe is best-effort and the catch below
+    // already swallows failures.
+    const out = execSync(`sqlite3 -noheader ${Q(dbPath)} ${Q(query)}`, { encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     if (!out) return null;
     const sep = out.indexOf('|');
     const rawTs = sep >= 0 ? out.slice(0, sep) : '';

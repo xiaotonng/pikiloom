@@ -1,0 +1,87 @@
+# Pikiclaw — docker-compose example
+#
+# Quick start:
+#   1. cp .env.example .env   (then edit credentials — at minimum one IM token
+#                              and one agent API key)
+#   2. docker compose up -d
+#   3. open http://localhost:3939
+#
+# This file ships an opinionated default: a single `pikiclaw` service, two
+# named volumes (config + workspace), no host bind-mounts (so it Just Works on
+# any host OS). For first-party agent OAuth (browser-based login), uncomment
+# the bind mounts that copy `~/.claude`, `~/.codex`, `~/.gemini` from your host.
+#
+# See docs/DOCKER.md for the full reference.
+
+services:
+  pikiclaw:
+    image: ghcr.io/xiaotonng/pikiclaw:latest
+    # To build from a checkout instead of pulling, comment `image:` above and
+    # uncomment the block below.
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: pikiclaw
+    restart: unless-stopped
+    ports:
+      # Web dashboard. Bind to 127.0.0.1 if you don't want it reachable from
+      # outside the host (recommended unless you put a reverse proxy in front).
+      - "3939:3939"
+    environment:
+      # ─── Agent API keys (set whichever ones you actually use) ──────────────
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
+      # ─── IM channels — provide at least one ────────────────────────────────
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_ALLOWED_CHAT_IDS: ${FEISHU_ALLOWED_CHAT_IDS:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DINGTALK_CLIENT_ID: ${DINGTALK_CLIENT_ID:-}
+      DINGTALK_CLIENT_SECRET: ${DINGTALK_CLIENT_SECRET:-}
+
+      # ─── General pikiclaw behavior ─────────────────────────────────────────
+      DEFAULT_AGENT: ${DEFAULT_AGENT:-claude}
+      PIKICLAW_WORKDIR: /workspace
+      PIKICLAW_TIMEOUT: ${PIKICLAW_TIMEOUT:-1800}
+      PIKICLAW_FULL_ACCESS: ${PIKICLAW_FULL_ACCESS:-true}
+      PIKICLAW_ALLOWED_IDS: ${PIKICLAW_ALLOWED_IDS:-}
+
+      # ─── Per-agent tuning (optional) ──────────────────────────────────────
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-}
+      CLAUDE_PERMISSION_MODE: ${CLAUDE_PERMISSION_MODE:-bypassPermissions}
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_REASONING_EFFORT: ${CODEX_REASONING_EFFORT:-xhigh}
+      CODEX_FULL_ACCESS: ${CODEX_FULL_ACCESS:-true}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+
+    volumes:
+      # setting.json, sessions, MCP/CLI state, etc.
+      - pikiclaw-config:/home/piki/.pikiclaw
+      # Projects the agent can read/write. Either a named volume or a host
+      # bind mount — the latter is what you want if your code lives on the
+      # host and you intend to edit it from the IDE as well.
+      - pikiclaw-workspace:/workspace
+      # Uncomment to reuse a host-side OAuth login for an agent CLI. The host
+      # path's uid must match PUID (default 1000) or the agent CLI will refuse
+      # to read the token file.
+      # - ${HOME}/.claude:/home/piki/.claude
+      # - ${HOME}/.codex:/home/piki/.codex
+      # - ${HOME}/.gemini:/home/piki/.gemini
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3939/api/state"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  pikiclaw-config:
+  pikiclaw-workspace:

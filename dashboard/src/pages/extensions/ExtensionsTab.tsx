@@ -2007,6 +2007,104 @@ function CliInstallPanel({
 }
 
 /**
+ * Manual sign-in panel — shown when a CLI declares `manualLoginCommands`.
+ *
+ * Some CLIs (`lark-cli` today) emit interactive output during login — QR codes,
+ * full-screen prompts — that render badly in a cramped streamed-output box. For
+ * those we show the official command(s) instead and let the user run them in
+ * their own terminal. The "Re-check status" button re-detects auth state.
+ */
+function CliManualSignInPanel({
+  cliId,
+  locale,
+  hint,
+  commands,
+  onSignedIn,
+  onCancel,
+}: {
+  cliId: string;
+  locale: string;
+  hint?: string;
+  commands: { label?: string; cmd: string }[];
+  onSignedIn: () => void;
+  onCancel: () => void;
+}) {
+  const [checking, setChecking] = useState(false);
+  const [checkMsg, setCheckMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Guard against double-counting "all steps done" — recheck must observe a
+  // fresh `ready` from the backend before reporting sign-in success. Multi-step
+  // CLIs (Lark) only flip status to ready after the *final* step.
+  const recheck = useCallback(async () => {
+    setChecking(true);
+    setCheckMsg(null);
+    setErrorMsg(null);
+    try {
+      const r = await api.refreshCli(cliId);
+      if (!r.ok) {
+        setErrorMsg(r.error || L(locale, '检测失败', 'Detection failed'));
+        return;
+      }
+      if (r.status?.state === 'ready') {
+        onSignedIn();
+        return;
+      }
+      const stepCount = commands.length;
+      setCheckMsg(stepCount > 1
+        ? L(
+            locale,
+            `尚未检测到登录。请依次完成上面 ${stepCount} 步后再重试 —— 任一步漏掉都不会算授权成功。`,
+            `Not signed in yet. Run all ${stepCount} steps above in order — sign-in only counts as successful after every step completes.`,
+          )
+        : L(
+            locale,
+            '尚未检测到登录，请先在终端完成上述命令。',
+            'Not signed in yet — finish the command above in your terminal first.',
+          ));
+    } catch (e: any) {
+      setErrorMsg(e?.message || 'failed');
+    } finally {
+      setChecking(false);
+    }
+  }, [cliId, locale, onSignedIn, commands.length]);
+
+  return (
+    <div className="space-y-3">
+      {hint && <div className="text-[12px] leading-relaxed text-fg-4">{hint}</div>}
+      <InstallCommandBlock commands={commands} locale={locale} />
+      {errorMsg && <div className="text-[12px] text-[var(--th-err)]">{errorMsg}</div>}
+      {checkMsg && !errorMsg && <div className="text-[12px] text-fg-4">{checkMsg}</div>}
+      <div className="flex items-center gap-2">
+        <Button variant="primary" size="sm" onClick={recheck} disabled={checking}>
+          <span className="inline-flex items-center gap-1.5">
+            {checking && (
+              <svg
+                width="12" height="12" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                className="animate-spin"
+                style={{ animationDuration: '0.9s' }}
+                aria-hidden="true"
+              >
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+              </svg>
+            )}
+            <span>
+              {checking
+                ? L(locale, '检测中…', 'Checking…')
+                : L(locale, '重新检测状态', 'Re-check status')}
+            </span>
+          </span>
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={checking}>
+          {L(locale, '关闭', 'Close')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Interactive sign-in panel.
  *   - For oauth-web: starts the auth session, streams output via SSE, polls until
  *     the CLI reports ready, then closes.
@@ -2108,6 +2206,19 @@ function CliSignInPanel({
 
   if (cli.auth.type === 'oauth-web') {
     const hint = locale === 'zh-CN' ? (cli.auth.loginHintZh || cli.auth.loginHint) : cli.auth.loginHint;
+    const manualCommands = cli.auth.manualLoginCommands;
+    if (manualCommands && manualCommands.length > 0) {
+      return (
+        <CliManualSignInPanel
+          cliId={cli.id}
+          locale={locale}
+          hint={hint}
+          commands={manualCommands}
+          onSignedIn={onSignedIn}
+          onCancel={onCancel}
+        />
+      );
+    }
     return (
       <div className="space-y-3">
         {hint && <div className="text-[12px] leading-relaxed text-fg-4">{hint}</div>}

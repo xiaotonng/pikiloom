@@ -696,6 +696,7 @@ export class FeishuBot extends Bot {
       startedAt: start,
       sourceMessageId: ctx.messageId,
     });
+    this.emitStreamQueued(session.key, taskId);
     const queuePosition = waiting ? this.getQueuePosition(session.key, taskId) : 0;
     const placeholderKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId), { queued: waiting });
 
@@ -721,12 +722,14 @@ export class FeishuBot extends Bot {
       try {
         task = this.markTaskRunning(taskId, () => abortController.abort());
         if (!task || task.cancelled) {
+          this.emitStreamCancelled(taskId, session.key);
           if (placeholderId) {
             try { await this.channel.deleteMessage(ctx.chatId, placeholderId); } catch {}
           }
           this.debug(`[handleMessage] skipped cancelled queued task chat=${ctx.chatId} msg=${ctx.messageId}`);
           return;
         }
+        this.emitStreamStart(taskId, session);
         // Task is now running — update keyboard from Recall/Steer to Stop
         const runningKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId));
         if (placeholderId && waiting) {
@@ -757,7 +760,8 @@ export class FeishuBot extends Bot {
 
         const result = await this.runStream(prompt, session, files, (nextText, nextThinking, nextActivity = '', meta, plan) => {
           livePreview?.update(nextText, nextThinking, nextActivity, meta, plan);
-        }, undefined, mcpSendFile, abortController.signal, this.createInteractionHandler(ctx.chatId, taskId, session.key), (steer) => {
+          this.emitStreamText(taskId, session.key, nextText, nextThinking, nextActivity, meta, plan);
+        }, undefined, mcpSendFile, abortController.signal, this.createInteractionHandler(ctx.chatId, taskId), (steer) => {
           const currentTask = this.activeTasks.get(taskId);
           if (!currentTask || currentTask.cancelled || currentTask.status !== 'running') return;
           currentTask.steer = steer;
@@ -765,12 +769,21 @@ export class FeishuBot extends Bot {
         await livePreview?.settle();
 
         if (task?.freezePreviewOnAbort && result.stopReason === 'interrupted') {
+          this.emitStreamDone(taskId, session.key, {
+            sessionId: result.sessionId || session.sessionId,
+            incomplete: true,
+          });
           const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, placeholderId, livePreview);
           this.registerSessionMessages(ctx.chatId, frozenMessageIds, session);
           this.debug(`[handleMessage] steer handoff preserved previous preview chat=${ctx.chatId} task=${taskId}`);
           return;
         }
 
+        this.emitStreamDone(taskId, session.key, {
+          sessionId: result.sessionId || session.sessionId,
+          incomplete: !!result.incomplete,
+          ...(result.ok ? {} : { error: result.error || result.message }),
+        });
         const finalReplyIds = await this.sendFinalReply(ctx, placeholderId, session.agent, result);
         this.registerSessionMessages(ctx.chatId, finalReplyIds, session);
         this.debug(
@@ -781,12 +794,21 @@ export class FeishuBot extends Bot {
         await this.notifyBackgroundCompletion(ctx, session, taskId, { result });
       } catch (e: any) {
         if (task?.freezePreviewOnAbort && abortController.signal.aborted) {
+          this.emitStreamDone(taskId, session.key, {
+            sessionId: session.sessionId,
+            incomplete: true,
+          });
           const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, placeholderId, livePreview);
           this.registerSessionMessages(ctx.chatId, frozenMessageIds, session);
           this.debug(`[handleMessage] steer handoff preserved preview after abort chat=${ctx.chatId} task=${taskId}`);
           return;
         }
         const msgText = String(e?.message || e || 'Unknown error');
+        this.emitStreamDone(taskId, session.key, {
+          sessionId: session.sessionId,
+          incomplete: true,
+          error: msgText,
+        });
         this.warn(
           `[handleMessage] end chat=${ctx.chatId} agent=${session.agent} ok=false session=${session.sessionId || '(new)'} ` +
           `elapsed=${((Date.now() - start) / 1000).toFixed(1)}s error="${msgText.slice(0, 240)}" tools=-`,

@@ -349,7 +349,7 @@ describe('Bot.runStream interaction handler (IM path)', () => {
     cs.agent = 'codex';
 
     // Simulate the IM path: provide onInteraction to runStream
-    const interactionHandler = (bot as any).createInteractionHandler(1, 'task-im', 'codex:sess-im');
+    const interactionHandler = (bot as any).createInteractionHandler(1, 'task-im');
 
     const resultPromise = bot.runStream('do something', cs, [], () => {}, undefined, undefined, undefined, interactionHandler);
 

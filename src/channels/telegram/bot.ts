@@ -654,6 +654,7 @@ export class TelegramBot extends Bot {
       startedAt: start,
       sourceMessageId: ctx.messageId,
     });
+    this.emitStreamQueued(session.key, taskId);
     const waiting = this.sessionHasPendingWork(session);
     const queuePosition = waiting ? this.getQueuePosition(session.key, taskId) : 0;
     const placeholderKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId), { queued: waiting });
@@ -680,12 +681,14 @@ export class TelegramBot extends Bot {
       try {
         task = this.markTaskRunning(taskId, () => abortController.abort());
         if (!task || task.cancelled) {
+          this.emitStreamCancelled(taskId, session.key);
           if (phId != null) {
             try { await this.channel.deleteMessage(ctx.chatId, phId); } catch {}
           }
           this.debug(`[handleMessage] skipped cancelled queued task chat=${ctx.chatId} msg=${ctx.messageId}`);
           return;
         }
+        this.emitStreamStart(taskId, session);
         // Task is now running — update keyboard from Recall/Steer to Stop
         const runningKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId));
         if (phId != null && waiting) {
@@ -717,7 +720,8 @@ export class TelegramBot extends Bot {
         this.interactionThreadIds.set(taskId, messageThreadId);
         const result = await this.runStream(prompt, session, files, (nextText, nextThinking, nextActivity = '', meta, plan) => {
           livePreview?.update(nextText, nextThinking, nextActivity, meta, plan);
-        }, undefined, mcpSendFile, abortController.signal, this.createInteractionHandler(ctx.chatId, taskId, session.key), (steer) => {
+          this.emitStreamText(taskId, session.key, nextText, nextThinking, nextActivity, meta, plan);
+        }, undefined, mcpSendFile, abortController.signal, this.createInteractionHandler(ctx.chatId, taskId), (steer) => {
           const currentTask = this.activeTasks.get(taskId);
           if (!currentTask || currentTask.cancelled || currentTask.status !== 'running') return;
           currentTask.steer = steer;
@@ -725,12 +729,21 @@ export class TelegramBot extends Bot {
         await livePreview?.settle();
 
         if (task?.freezePreviewOnAbort && result.stopReason === 'interrupted') {
+          this.emitStreamDone(taskId, session.key, {
+            sessionId: result.sessionId || session.sessionId,
+            incomplete: true,
+          });
           const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, phId, livePreview);
           this.registerSessionMessages(ctx.chatId, frozenMessageIds, session);
           this.debug(`[handleMessage] steer handoff preserved previous preview chat=${ctx.chatId} task=${taskId}`);
           return;
         }
 
+        this.emitStreamDone(taskId, session.key, {
+          sessionId: result.sessionId || session.sessionId,
+          incomplete: !!result.incomplete,
+          ...(result.ok ? {} : { error: result.error || result.message }),
+        });
         this.debug(
           `[handleMessage] done agent=${session.agent} ok=${result.ok} session=${result.sessionId || '?'} elapsed=${result.elapsedS.toFixed(1)}s edits=${livePreview?.getEditCount() || 0} ` +
           `tokens=in:${fmtTokens(result.inputTokens)}/cached:${fmtTokens(result.cachedInputTokens)}/out:${fmtTokens(result.outputTokens)}`
@@ -742,12 +755,21 @@ export class TelegramBot extends Bot {
         this.debug(`[handleMessage] final reply sent to chat=${ctx.chatId}`);
       } catch (e: any) {
         if (task?.freezePreviewOnAbort && abortController.signal.aborted) {
+          this.emitStreamDone(taskId, session.key, {
+            sessionId: session.sessionId,
+            incomplete: true,
+          });
           const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, phId, livePreview);
           this.registerSessionMessages(ctx.chatId, frozenMessageIds, session);
           this.debug(`[handleMessage] steer handoff preserved preview after abort chat=${ctx.chatId} task=${taskId}`);
           return;
         }
         const msgText = String(e?.message || e || 'Unknown error');
+        this.emitStreamDone(taskId, session.key, {
+          sessionId: session.sessionId,
+          incomplete: true,
+          error: msgText,
+        });
         this.warn(`[handleMessage] task failed chat=${ctx.chatId} session=${session.sessionId} error=${msgText}`);
         const errorHtml = `<b>Error</b>\n\n<code>${escapeHtml(msgText.slice(0, 500))}</code>`;
         if (phId != null) {

@@ -28,6 +28,11 @@ export function liveStreamHasBody(stream: LiveStreamView): boolean {
 /** True when the live preview will render any visible element (body or error tile). */
 export function liveStreamShouldRender(stream: LiveStreamView): boolean {
   if (liveStreamHasBody(stream)) return true;
+  // Streaming with no body yet — still render so the TurnDivider header and the
+  // internal ThinkingDots fill the "waiting for the first token" window. Without
+  // this branch, IM-initiated turns (no pendingPrompt to bridge) show nothing
+  // between session-start and the first text chunk.
+  if (stream.phase === 'streaming') return true;
   return stream.phase === 'done' && !!stream.error;
 }
 

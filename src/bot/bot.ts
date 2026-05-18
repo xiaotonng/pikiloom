@@ -635,6 +635,68 @@ export class Bot {
     } catch { /* dashboard not loaded yet — ignore */ }
   }
 
+  /**
+   * Stream-lifecycle helpers. The dashboard mirrors a running turn by reading
+   * `streamSnapshots`, which is built exclusively from `emitStream` calls.
+   * IM channels run `runStream` directly (not via `submitSessionTask`), so
+   * without these calls the dashboard never sees IM-initiated turns. Routing
+   * every IM handler through these helpers (and refactoring submitSessionTask
+   * to use them) keeps the two surfaces consistent: each side can observe
+   * whatever the other side started.
+   *
+   * Each helper resolves the live `task.sessionKey` so the event lands on the
+   * current snapshot after a pending→native session id promotion.
+   */
+  private liveSessionKey(taskId: string, fallback: string): string {
+    return this.activeTasks.get(taskId)?.sessionKey || fallback;
+  }
+
+  protected emitStreamQueued(sessionKey: string, taskId: string) {
+    this.emitStream(sessionKey, { type: 'queued', taskId, position: this.getQueuePosition(sessionKey, taskId) });
+  }
+
+  protected emitStreamStart(taskId: string, session: Pick<SessionRuntime, 'key' | 'agent' | 'sessionId' | 'workdir' | 'modelId' | 'thinkingEffort'>) {
+    const cfg = this.resolveSessionStreamConfig(session);
+    const key = this.liveSessionKey(taskId, session.key);
+    this.debug(`[stream-lifecycle] start task=${taskId} key=${key} sessionId=${session.sessionId || '(pending)'} model=${cfg.model || '-'}`);
+    this.emitStream(key, {
+      type: 'start', taskId, agent: session.agent, sessionId: session.sessionId,
+      model: cfg.model, effort: cfg.effort,
+    });
+  }
+
+  protected emitStreamText(
+    taskId: string,
+    fallbackKey: string,
+    text: string,
+    thinking: string,
+    activity = '',
+    meta?: StreamPreviewMeta,
+    plan?: StreamPreviewPlan | null,
+  ) {
+    const key = this.liveSessionKey(taskId, fallbackKey);
+    const snap = this.streamSnapshots.get(key);
+    this.debug(`[stream-lifecycle] text task=${taskId} key=${key} bytes=${text.length}/${thinking.length} snap=${snap ? snap.phase : 'NONE'}`);
+    this.emitStream(key, {
+      type: 'text', text, thinking, activity, plan: plan ?? null, previewMeta: meta ?? null,
+    });
+  }
+
+  protected emitStreamDone(taskId: string, fallbackKey: string, opts: { sessionId: string | null; incomplete: boolean; error?: string }) {
+    const key = this.liveSessionKey(taskId, fallbackKey);
+    this.debug(`[stream-lifecycle] done task=${taskId} key=${key} sessionId=${opts.sessionId || '(none)'} incomplete=${opts.incomplete}`);
+    this.emitStream(key, {
+      type: 'done', taskId,
+      sessionId: opts.sessionId,
+      incomplete: opts.incomplete,
+      ...(opts.error ? { error: opts.error } : {}),
+    });
+  }
+
+  protected emitStreamCancelled(taskId: string, fallbackKey: string) {
+    this.emitStream(this.liveSessionKey(taskId, fallbackKey), { type: 'cancelled', taskId });
+  }
+
   private keepAliveProc: ReturnType<typeof spawn> | null = null;
   private keepAlivePulseTimer: ReturnType<typeof setInterval> | null = null;
   private sessionChains = new Map<string, Promise<void>>();
@@ -1428,7 +1490,6 @@ export class Bot {
   protected createInteractionHandler(
     chatId: ChatId,
     taskId: string,
-    sessionKey: string,
   ): (request: AgentInteraction) => Promise<Record<string, any> | null> {
     return async (request) => {
       const active = this.beginHumanLoopPrompt({
@@ -1448,7 +1509,12 @@ export class Bot {
         questions: request.questions,
         currentIndex: active.prompt.currentIndex,
       };
-      this.emitStream(sessionKey, { type: 'interaction', taskId, interaction: interactionSnapshot });
+      // Resolve sessionKey live at emit time — the task entry tracks promotion
+      // (pending → native id), so a key captured at handler-creation time would
+      // go stale on the very first turn of a fresh session and the dashboard
+      // SSE event would land on an already-moved snapshot.
+      const task = this.activeTasks.get(taskId);
+      if (task) this.emitStream(task.sessionKey, { type: 'interaction', taskId, interaction: interactionSnapshot });
 
       // Dashboard sessions reply through SSE + REST (no IM render). When an IM
       // bot is also attached, its renderInteractionPrompt override would still
@@ -1528,7 +1594,6 @@ export class Bot {
     const taskId = `ext-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const prompt = opts.prompt.trim();
     const attachments = opts.attachments || [];
-    const currentSessionKey = () => this.activeTasks.get(taskId)?.sessionKey || session.key;
 
     this.beginTask({
       taskId,
@@ -1540,19 +1605,18 @@ export class Bot {
       startedAt: Date.now(),
       sourceMessageId: opts.sourceMessageId ?? taskId,
     });
-    this.emitStream(session.key, { type: 'queued', taskId, position: this.getQueuePosition(session.key, taskId) });
+    this.emitStreamQueued(session.key, taskId);
 
     void this.queueSessionTask(session, async () => {
       const abortController = new AbortController();
       const task = this.markTaskRunning(taskId, () => abortController.abort());
       if (task?.cancelled) {
-        this.emitStream(currentSessionKey(), { type: 'cancelled', taskId });
+        this.emitStreamCancelled(taskId, session.key);
         this.finishTask(taskId);
         return;
       }
 
-      const startConfig = this.resolveSessionStreamConfig(session);
-      this.emitStream(currentSessionKey(), { type: 'start', taskId, agent: session.agent, sessionId: session.sessionId, model: startConfig.model, effort: startConfig.effort });
+      this.emitStreamStart(taskId, session);
       try {
         const result = await this.runStream(
           prompt,
@@ -1560,19 +1624,17 @@ export class Bot {
           attachments,
           (text, thinking, activity, meta, plan) => {
             opts.onText?.(text, thinking, activity, meta, plan);
-            this.emitStream(currentSessionKey(), { type: 'text', text, thinking, activity, plan, previewMeta: meta ?? null });
+            this.emitStreamText(taskId, session.key, text, thinking, activity, meta, plan);
           },
           undefined,
           undefined,
           abortController.signal,
-          this.createInteractionHandler(opts.chatId ?? 'dashboard', taskId, currentSessionKey()),
+          this.createInteractionHandler(opts.chatId ?? 'dashboard', taskId),
           undefined,
           undefined,
           opts.forkOf ? { forkOf: opts.forkOf } : undefined,
         );
-        this.emitStream(currentSessionKey(), {
-          type: 'done',
-          taskId,
+        this.emitStreamDone(taskId, session.key, {
           sessionId: result.sessionId || session.sessionId,
           incomplete: !!result.incomplete,
           ...(result.ok ? {} : { error: result.error || result.message }),
@@ -1583,9 +1645,7 @@ export class Bot {
           this.debug(`[goal-continuation] enqueue failed: ${err?.message || err}`);
         }
       } catch (error: any) {
-        this.emitStream(currentSessionKey(), {
-          type: 'done',
-          taskId,
+        this.emitStreamDone(taskId, session.key, {
           sessionId: session.sessionId,
           incomplete: true,
           error: error?.message || String(error),

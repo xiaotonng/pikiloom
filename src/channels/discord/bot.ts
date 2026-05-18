@@ -448,12 +448,18 @@ export class DiscordBot extends Bot {
       startedAt: Date.now(),
       sourceMessageId: ctx.messageId,
     });
+    this.emitStreamQueued(session.key, taskId);
 
     void this.queueSessionTask(session, async () => {
       const abortController = new AbortController();
       const task = this.markTaskRunning(taskId, () => abortController.abort());
-      if (task?.cancelled) { this.finishTask(taskId); return; }
+      if (task?.cancelled) {
+        this.emitStreamCancelled(taskId, session.key);
+        this.finishTask(taskId);
+        return;
+      }
 
+      this.emitStreamStart(taskId, session);
       let typingTimer: ReturnType<typeof setInterval> | null = null;
       try {
         await this.channel.sendTyping(ctx.chatId).catch(() => {});
@@ -466,14 +472,26 @@ export class DiscordBot extends Bot {
           prompt,
           session,
           msg.files,
-          () => {},
+          (text, thinking, activity, meta, plan) => {
+            this.emitStreamText(taskId, session.key, text, thinking, activity, meta, plan);
+          },
           undefined,
           this.createMcpSendFile(ctx.chatId),
           abortController.signal,
-          this.createInteractionHandler(ctx.chatId, taskId, session.key),
+          this.createInteractionHandler(ctx.chatId, taskId),
         );
+        this.emitStreamDone(taskId, session.key, {
+          sessionId: result.sessionId || session.sessionId,
+          incomplete: !!result.incomplete,
+          ...(result.ok ? {} : { error: result.error || result.message }),
+        });
         await this.sendResult(ctx.chatId, result);
       } catch (error) {
+        this.emitStreamDone(taskId, session.key, {
+          sessionId: session.sessionId,
+          incomplete: true,
+          error: describeError(error),
+        });
         await ctx.reply(`Error: ${describeError(error)}`);
       } finally {
         if (typingTimer) clearInterval(typingTimer);

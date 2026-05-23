@@ -28,6 +28,7 @@ import {
   stripInjectedPrompts, sanitizeSessionUserPreviewText, computeContext, readTailLines, applyTurnWindow,
   roundPercent, toIsoFromEpochSeconds, labelFromWindowMinutes,
   usageWindowFromRateLimit, parseJsonTail, emptyUsage,
+  attachAgentImage, codexHome,
   Q,
 } from '../index.js';
 import {
@@ -517,6 +518,30 @@ function formatCodexPlanSummary(plan: StreamPreviewPlan): string {
   return lines.join('\n').trim();
 }
 
+/**
+ * Resolve the on-disk path Codex writes generated images to. Format:
+ *   `$CODEX_HOME/generated_images/<sessionId>/<call_id>.png`
+ *
+ * The developer-message Codex injects when its built-in `image_gen` tool fires
+ * documents this convention (`Generated images are saved to … as …/<id>.png`).
+ * We honour `$CODEX_HOME`; the SKILL.md prescribes `.png` as the only output
+ * format for the built-in tool.
+ */
+function codexImagePathFor(sessionId: string, callId: string): string {
+  return path.join(codexHome(), 'generated_images', sessionId, `${callId}.png`);
+}
+
+/** Build an image MessageBlock from a Codex `image_generation_call` payload. */
+function buildCodexImageBlock(sessionId: string, payload: any, phase?: 'commentary' | 'final_answer'): MessageBlock | null {
+  const callId = typeof payload?.id === 'string' ? payload.id
+    : typeof payload?.call_id === 'string' ? payload.call_id
+    : '';
+  if (!callId) return null;
+  const filePath = codexImagePathFor(sessionId, callId);
+  const caption = typeof payload?.revised_prompt === 'string' ? payload.revised_prompt : undefined;
+  return attachAgentImage({ imagePath: filePath, caption, phase });
+}
+
 function buildCodexAssistantText(blocks: MessageBlock[]): string {
   const finalText = blocks
     .filter(block => block.type === 'text' && block.phase === 'final_answer' && block.content.trim())
@@ -841,6 +866,16 @@ interface CodexStreamState {
   recentFailures: string[];
   completedCommands: number;
   plan: StreamPreviewPlan | null;
+  /** Image blocks emitted this turn by Codex's built-in `image_gen` tool. */
+  imageBlocks: MessageBlock[];
+  /** call_id → revised_prompt while an image is generating. Lets us emit the
+   *  block on `image_generation_end` even if the live payload lacked the
+   *  prompt (some Codex versions only emit it on `_start`). */
+  pendingImageGen: Map<string, { revisedPrompt?: string }>;
+  /** Count of image generations currently in flight (start - end). Surfaced
+   *  to the live preview as `meta.generatingImages` so renderers can show a
+   *  "Generating image…" chip while the actual block has yet to land. */
+  generatingImages: number;
 }
 
 function createCodexStreamState(opts: StreamOpts): CodexStreamState {
@@ -870,6 +905,9 @@ function createCodexStreamState(opts: StreamOpts): CodexStreamState {
     recentNarrative: [], recentFailures: [],
     completedCommands: 0,
     plan: null,
+    imageBlocks: [],
+    pendingImageGen: new Map(),
+    generatingImages: 0,
   };
 }
 
@@ -976,6 +1014,19 @@ function handleItemStarted(item: any, s: CodexStreamState, emit: () => void): vo
     const toolCall = summarizeCodexToolCall(item);
     if (toolCall) { s.activeToolCalls.set(item.id, toolCall); emit(); }
   }
+  // Codex's built-in `image_gen` tool surfaces as a distinct item type. Track
+  // the in-flight count so renderers can show "Generating image…" while the
+  // bytes are being written. Item id naming differs across Codex versions
+  // (`imageGenerationCall` / `image_generation_call`); accept either form.
+  if (item.id && (item.type === 'imageGenerationCall' || item.type === 'image_generation_call')) {
+    s.generatingImages++;
+    s.pendingImageGen.set(item.id, {
+      revisedPrompt: typeof item.revisedPrompt === 'string' ? item.revisedPrompt
+        : typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+    });
+    pushRecentActivity(s.recentNarrative, 'Generating image...');
+    emit();
+  }
 }
 
 function handleAgentMessageDelta(params: any, s: CodexStreamState, emit: () => void): void {
@@ -1023,6 +1074,34 @@ function handleRawResponseItemCompleted(item: any, s: CodexStreamState, emit: ()
       : '';
     if (summary) {
       s.thinkParts.push(summary);
+      emit();
+      return;
+    }
+  }
+  // image_generation_call: Codex's built-in image_gen has just finished writing
+  // the file at $CODEX_HOME/generated_images/<sessionId>/<id>.png. Read it into
+  // an image MessageBlock so the bot's final-reply path can dispatch it to IM
+  // channels and the dashboard renders it inline.
+  if (item?.type === 'image_generation_call' || item?.type === 'imageGenerationCall') {
+    const callId = typeof item.id === 'string' ? item.id
+      : typeof item.call_id === 'string' ? item.call_id : '';
+    if (callId) {
+      // Merge a revised_prompt from the start event (if we recorded one) with
+      // anything on the completion item — different Codex builds emit it on
+      // different events.
+      const pending = s.pendingImageGen.get(callId);
+      s.pendingImageGen.delete(callId);
+      if (s.generatingImages > 0) s.generatingImages--;
+      const revisedPrompt = typeof item.revised_prompt === 'string' ? item.revised_prompt
+        : typeof item.revisedPrompt === 'string' ? item.revisedPrompt
+        : pending?.revisedPrompt;
+      if (s.sessionId) {
+        const block = buildCodexImageBlock(s.sessionId, { id: callId, revised_prompt: revisedPrompt });
+        if (block) {
+          s.imageBlocks.push(block);
+          pushRecentActivity(s.recentNarrative, 'Image ready');
+        }
+      }
       emit();
       return;
     }
@@ -1343,6 +1422,7 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
       contextWindow: s.contextWindow, ...computeContext(s),
       codexCumulative: s.codexCumulative, error, stopReason, incomplete: !ok,
       activity: s.activity.trim() || null,
+      assistantBlocks: s.imageBlocks.length ? [...s.imageBlocks] : undefined,
     };
   } finally {
     unsubscribeNotifications();
@@ -1825,6 +1905,18 @@ function getCodexSessionMessagesFromRollout(opts: SessionMessagesOpts): SessionM
         continue;
       }
 
+      // image_generation_call: Codex's built-in `image_gen` tool — surface the
+      // file on disk as an image block so historical sessions render images
+      // (not just text). Path: $CODEX_HOME/generated_images/<sessionId>/<id>.png
+      if (payload.type === 'image_generation_call' || payload.type === 'imageGenerationCall') {
+        const block = buildCodexImageBlock(opts.sessionId, payload);
+        if (block) {
+          ensureAssistant().blocks.push(block);
+          sawAssistantResponseItems = true;
+        }
+        continue;
+      }
+
       const fallbackSummary = summarizeCodexRawResponseItem(payload);
       if (fallbackSummary) {
         ensureAssistant().blocks.push({
@@ -2070,7 +2162,51 @@ class CodexDriver implements AgentDriver {
 
   async getUsageLive(opts: UsageOpts): Promise<UsageResult> { return getCodexUsageLive(); }
 
+  async deleteNativeSession(workdir: string, sessionId: string): Promise<string[]> {
+    return deleteNativeCodexSession(workdir, sessionId);
+  }
+
   shutdown() { shutdownCodexServer(); }
+}
+
+/**
+ * Locate and remove the codex rollout file backing a session. Codex stores
+ * sessions under `~/.codex/sessions/<year>/<month>/<day>/rollout-<...>.jsonl`,
+ * keyed by `meta.sessionId` inside the file rather than the filename — so we
+ * walk the tree and match on the parsed head metadata, scoped to `workdir`.
+ */
+async function deleteNativeCodexSession(workdir: string, sessionId: string): Promise<string[]> {
+  const home = getHome();
+  if (!home || !sessionId) return [];
+  const sessionsDir = path.join(home, '.codex', 'sessions');
+  if (!fs.existsSync(sessionsDir)) return [];
+  const resolvedWorkdir = path.resolve(workdir);
+  const removed: string[] = [];
+
+  const walk = (dir: string): boolean => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return false; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (walk(full)) return true;
+        continue;
+      }
+      if (!entry.name.startsWith('rollout-') || !entry.name.endsWith('.jsonl')) continue;
+      try {
+        const meta = readCodexSessionHead(full);
+        if (!meta || meta.sessionId !== sessionId) continue;
+        if (path.resolve(meta.cwd) !== resolvedWorkdir) continue;
+        fs.rmSync(full, { force: true });
+        removed.push(full);
+        return true;
+      } catch { /* skip */ }
+    }
+    return false;
+  };
+
+  walk(sessionsDir);
+  return removed;
 }
 
 registerDriver(new CodexDriver());

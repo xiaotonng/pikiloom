@@ -43,6 +43,7 @@ import {
 } from './utils.js';
 import { getDriver } from './driver.js';
 import { collapseSkillPrompt } from './skills.js';
+import { SESSION_RUNNING_THRESHOLD_MS } from '../core/constants.js';
 
 // ---------------------------------------------------------------------------
 // Private helpers
@@ -694,6 +695,103 @@ export function findPikiclawSession(workdir: string, agent: Agent, sessionId: st
   return listPikiclawSessions(workdir, agent).find(entry => entry.sessionId === sessionId) || null;
 }
 
+export interface DeleteAgentSessionOpts {
+  workdir: string;
+  agent: Agent;
+  sessionId: string;
+  /**
+   * Also delete the agent's native session file (Claude jsonl / Codex rollout /
+   * Gemini chat). Defaults to false — by default we only clean pikiclaw's own
+   * index and per-session directory so the agent CLI can still resume the
+   * conversation outside pikiclaw.
+   */
+  purgeNative?: boolean;
+}
+
+export interface DeleteAgentSessionResult {
+  ok: boolean;
+  /** True if a managed session record was removed from the index. */
+  recordRemoved: boolean;
+  /** Absolute paths of pikiclaw-owned directories that were removed. */
+  pikiclawPathsRemoved: string[];
+  /** Absolute paths of native agent files removed when purgeNative was set. */
+  nativePathsRemoved: string[];
+  /**
+   * Set when the operation refused to act because the session is still running
+   * (record marked 'running' AND not stale). Caller should surface this to the
+   * user, not auto-force.
+   */
+  refusedReason: 'session-running' | null;
+}
+
+/**
+ * Delete a pikiclaw-managed session. Two scopes:
+ *   - default: drop the index entry + recursively delete the per-session dir
+ *     under `<workdir>/.pikiclaw/sessions/<agent>/<sessionId>/` (and the legacy
+ *     `workspaces/` path). Native agent transcript is left in place so the
+ *     user can still resume the conversation outside pikiclaw.
+ *   - `purgeNative: true`: also call the driver's `deleteNativeSession` to
+ *     remove the underlying jsonl/rollout file.
+ *
+ * Refuses to delete a session whose record is currently marked running and
+ * not stale (active process or recent mtime) — caller should stop the
+ * stream first.
+ *
+ * Sessions that exist only in the agent's native store (no pikiclaw record)
+ * are still purgeable when `purgeNative` is set.
+ */
+export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<DeleteAgentSessionResult> {
+  const resolvedWorkdir = path.resolve(opts.workdir);
+  const { agent, sessionId } = opts;
+  const result: DeleteAgentSessionResult = {
+    ok: false,
+    recordRemoved: false,
+    pikiclawPathsRemoved: [],
+    nativePathsRemoved: [],
+    refusedReason: null,
+  };
+
+  const index = loadSessionIndex(resolvedWorkdir);
+  const recordIdx = index.sessions.findIndex(s => s.agent === agent && s.sessionId === sessionId);
+  const record = recordIdx >= 0 ? index.sessions[recordIdx] : null;
+
+  if (record && record.runState === 'running' && !isRunningSessionStale(record, SESSION_RUNNING_THRESHOLD_MS)) {
+    result.refusedReason = 'session-running';
+    return result;
+  }
+
+  if (record) {
+    index.sessions.splice(recordIdx, 1);
+    writeSessionIndex(resolvedWorkdir, index.sessions);
+    result.recordRemoved = true;
+  }
+
+  for (const dir of [sessionDirPath(resolvedWorkdir, agent, sessionId), legacySessionWorkspacePath(resolvedWorkdir, agent, sessionId)]) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      result.pikiclawPathsRemoved.push(dir);
+    } catch (err) {
+      agentLog(`[sessions] failed to remove ${dir}: ${(err as Error).message}`);
+    }
+  }
+
+  if (opts.purgeNative) {
+    try {
+      const driver = getDriver(agent);
+      if (typeof driver.deleteNativeSession === 'function') {
+        const removed = await driver.deleteNativeSession(resolvedWorkdir, sessionId);
+        result.nativePathsRemoved = Array.isArray(removed) ? removed : [];
+      }
+    } catch (err) {
+      agentLog(`[sessions] native session purge failed for ${agent}/${sessionId}: ${(err as Error).message}`);
+    }
+  }
+
+  result.ok = true;
+  return result;
+}
+
 /**
  * Look up the persisted model and thinkingEffort for an existing session.
  * Returns null values when the session is not found or fields are not set.
@@ -1048,27 +1146,52 @@ export function deriveUserStatus(outcome: SessionClassification['outcome']): 're
 
 export async function exportSession(opts: ExportSessionOpts): Promise<ExportSessionResult> {
   try {
-    const result = await getSessionMessages({ ...opts, agent: opts.agent });
+    // Rich mode so we can include image blocks in the export. The session
+    // pipeline always returns plain messages even when rich is set; rich is
+    // additive.
+    const result = await getSessionMessages({ ...opts, agent: opts.agent, rich: true });
     if (!result.ok) return { ok: false, content: '', filename: '', error: result.error };
 
     const messages = result.messages;
+    const richMessages = result.richMessages;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     let content: string;
     let ext: string;
 
     switch (opts.format) {
-      case 'json':
-        content = JSON.stringify({ agent: opts.agent, sessionId: opts.sessionId, exportedAt: new Date().toISOString(), messages }, null, 2);
+      case 'json': {
+        // Materialize image bytes into inline data URLs so the JSON is a
+        // self-contained artefact (no dangling filesystem references).
+        const { materializeImage } = await import('./images.js');
+        const enrichedRichMessages = richMessages?.map(message => ({
+          ...message,
+          blocks: message.blocks.map(block => {
+            if (block.type !== 'image') return block;
+            const resolved = materializeImage(block);
+            if (!resolved) return block;
+            return {
+              ...block,
+              content: `data:${resolved.mime};base64,${resolved.bytes.toString('base64')}`,
+            };
+          }),
+        }));
+        content = JSON.stringify({
+          agent: opts.agent,
+          sessionId: opts.sessionId,
+          exportedAt: new Date().toISOString(),
+          messages,
+          richMessages: enrichedRichMessages,
+        }, null, 2);
         ext = 'json';
         break;
+      }
       case 'text':
         content = messages.map(m => `[${m.role}]\n${m.text}`).join('\n\n---\n\n');
         ext = 'txt';
         break;
       case 'markdown':
       default:
-        content = `# Session Export (${opts.agent}, ${timestamp})\n\n` +
-          messages.map(m => `## ${m.role === 'user' ? 'User' : 'Assistant'}\n\n${m.text}`).join('\n\n---\n\n');
+        content = await renderMarkdownExport(opts.agent, timestamp, messages, richMessages);
         ext = 'md';
         break;
     }
@@ -1078,6 +1201,44 @@ export async function exportSession(opts: ExportSessionOpts): Promise<ExportSess
   } catch (e: any) {
     return { ok: false, content: '', filename: '', error: e.message };
   }
+}
+
+/**
+ * Render an export-friendly markdown view. Each turn renders the role header,
+ * the text body, and (for image blocks) an inlined `![caption](data:…)` ref
+ * so the markdown is self-contained and renders correctly in any viewer
+ * (VSCode preview, GitHub, etc.) without external file lookups.
+ */
+async function renderMarkdownExport(
+  agent: Agent,
+  timestamp: string,
+  messages: TailMessage[],
+  richMessages: RichMessage[] | undefined,
+): Promise<string> {
+  const lines: string[] = [`# Session Export (${agent}, ${timestamp})`, ''];
+  const { materializeImage } = await import('./images.js');
+  // Walk by index so we can pair messages[i] with richMessages[i] when present.
+  const indexed = richMessages?.length === messages.length ? richMessages : null;
+  const sections: string[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const sectionHeader = `## ${m.role === 'user' ? 'User' : 'Assistant'}`;
+    const sectionParts: string[] = [sectionHeader, '', m.text];
+    const rich = indexed?.[i];
+    if (rich) {
+      for (const block of rich.blocks) {
+        if (block.type !== 'image') continue;
+        const resolved = materializeImage(block);
+        if (!resolved) continue;
+        const altText = (block.imageCaption || '').replace(/[\r\n]+/g, ' ').slice(0, 120);
+        const dataUrl = `data:${resolved.mime};base64,${resolved.bytes.toString('base64')}`;
+        sectionParts.push('', `![${altText}](${dataUrl})`);
+        if (block.imageCaption) sectionParts.push('', `_${altText}_`);
+      }
+    }
+    sections.push(sectionParts.join('\n'));
+  }
+  return lines.join('\n') + sections.join('\n\n---\n\n');
 }
 
 export function importSession(opts: ImportSessionOpts): ImportSessionResult {
@@ -1121,8 +1282,19 @@ function parseMarkdownConversation(content: string): TailMessage[] {
   for (const section of sections) {
     const firstLine = section.split('\n')[0].trim().toLowerCase();
     const role: 'user' | 'assistant' = firstLine.includes('user') ? 'user' : 'assistant';
-    const text = section.split('\n').slice(1).join('\n').replace(/^---\s*$/m, '').trim();
-    if (text) messages.push({ role, text });
+    // Strip inlined image data URLs (`![alt](data:image/...;base64,...)`) so
+    // the imported text body stays readable. The base64 payload itself isn't
+    // re-attached as a MessageBlock because the import API returns plain
+    // TailMessages; downstream agents that re-process the export will see the
+    // alt text "[image: alt]" placeholder where the markdown image stood.
+    const stripped = section
+      .split('\n')
+      .slice(1)
+      .join('\n')
+      .replace(/^---\s*$/m, '')
+      .replace(/!\[([^\]]*)\]\(data:image\/[a-zA-Z0-9.+-]+;base64,[^)]+\)/g, (_, alt) => alt ? `[image: ${alt}]` : '[image]')
+      .trim();
+    if (stripped) messages.push({ role, text: stripped });
   }
   return messages;
 }

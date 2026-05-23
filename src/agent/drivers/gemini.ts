@@ -15,7 +15,7 @@ import {
   type StreamOpts, type StreamResult,
   type SessionListResult, type SessionInfo, type SessionTailOpts, type SessionTailResult,
   type SessionMessagesOpts, type SessionMessagesResult,
-  type TailMessage,
+  type TailMessage, type RichMessage, type MessageBlock,
   type ModelListOpts, type ModelListResult,
   type UsageOpts, type UsageResult, type UsageWindowInfo,
   run, agentLog, buildStreamPreviewMeta,
@@ -23,6 +23,7 @@ import {
   sanitizeSessionUserPreviewText, emitSessionIdUpdate,
   listPikiclawSessions, findPikiclawSession, isPendingSessionId,
   mergeManagedAndNativeSessions, applyTurnWindow,
+  stripInjectedPrompts, attachAgentImage,
   roundPercent, emptyUsage, Q,
 } from '../index.js';
 import { getHome } from '../../core/platform.js';
@@ -502,6 +503,87 @@ function extractGeminiText(content: any): string {
   return parts.join('\n').trim();
 }
 
+// Gemini's -p mode is text-only, so pikiclaw concatenates its system-prompt
+// blocks ([Browser Automation], [Artifact Return], …) onto the user's prompt
+// before invoking the CLI. That means the JSONL "user" message we read back
+// later contains those orchestrator-injected blocks AND the gemini-CLI-emitted
+// `--- Content from referenced files ---` markers it appends when expanding
+// `@<path>` references. Both are noise for the dashboard / IM render path —
+// the helpers below strip them so the displayed user bubble matches what the
+// human actually typed, and surface staged image attachments as image blocks
+// instead of raw `@<path>` text.
+const GEMINI_SYSTEM_BLOCK_SENTINELS = [
+  '[Artifact Return]',
+  '[Asking the user]',
+  '[Browser Automation]',
+  '[Session Workspace]',
+];
+
+const GEMINI_REFERENCED_FILES_BLOCK_RE =
+  /\n*--- Content from referenced files ---[\s\S]*?--- End of content ---\n*/g;
+
+const GEMINI_FILE_REF_RE = /(^|\s)@(?:"([^"]+)"|([^\s"@]+))/g;
+
+function stripGeminiSystemPreamble(text: string): string {
+  let cur = text.replace(/^\s+/, '');
+  while (true) {
+    const sentinel = GEMINI_SYSTEM_BLOCK_SENTINELS.find(s => cur.startsWith(s));
+    if (!sentinel) break;
+    const blockEnd = cur.indexOf('\n\n');
+    if (blockEnd < 0) return '';
+    cur = cur.slice(blockEnd + 2).replace(/^\s+/, '');
+  }
+  return cur;
+}
+
+function cleanGeminiUserText(rawText: string): string {
+  if (!rawText) return '';
+  let text = stripInjectedPrompts(rawText);
+  text = stripGeminiSystemPreamble(text);
+  text = text.replace(GEMINI_REFERENCED_FILES_BLOCK_RE, '\n');
+  return text.trim();
+}
+
+/**
+ * Build a (text, image blocks) pair for a rendered user bubble. `@<path>`
+ * references that resolve to readable image files are lifted into image
+ * blocks; refs that don't resolve are left in the text so the user can still
+ * see what they wrote.
+ */
+function buildGeminiUserMessageContent(
+  rawText: string,
+  workdir: string,
+): { text: string; blocks: MessageBlock[] } {
+  const cleaned = cleanGeminiUserText(rawText);
+  if (!cleaned) return { text: '', blocks: [] };
+  const blocks: MessageBlock[] = [];
+  const textOnly = cleaned.replace(GEMINI_FILE_REF_RE, (match, lead, quoted, bare) => {
+    const ref = String(quoted || bare || '').trim();
+    if (!ref) return match;
+    const abs = path.isAbsolute(ref) ? ref : path.resolve(workdir, ref);
+    const block = attachAgentImage({ imagePath: abs });
+    if (block) {
+      blocks.push(block);
+      return lead || '';
+    }
+    return match;
+  });
+  return { text: textOnly.replace(/\n{3,}/g, '\n\n').trim(), blocks };
+}
+
+/** Drop the attachment `@<path>` refs entirely so they don't surface as raw
+ *  paths in plain-text contexts (tail snippets, sidebar previews). Newlines
+ *  in the surrounding prose are preserved. */
+function dropGeminiFileRefs(text: string): string {
+  return text.replace(GEMINI_FILE_REF_RE, '$1');
+}
+
+/** Single-line variant for session list titles where the bubble shape is a
+ *  one-liner — collapses every whitespace run to a single space. */
+function flattenGeminiUserText(rawText: string): string {
+  return dropGeminiFileRefs(cleanGeminiUserText(rawText)).replace(/\s+/g, ' ').trim();
+}
+
 function normalizeGeminiSessionTitle(value: unknown): string | null {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return null;
@@ -572,6 +654,14 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
       const data = loadGeminiSessionData(filePath);
       if (!data?.sessionId) continue;
 
+      // Gemini CLI writes stub session files for internal bookkeeping —
+      // e.g. `sessionId: "a2a-server"` for its built-in a2a server, plus
+      // abandoned UUID-named sessions that were created but never received a
+      // turn. Both share the same shape: metadata only, no `messages` array.
+      // They have nothing to render in the sidebar, so skip them.
+      const messages = Array.isArray(data.messages) ? data.messages : [];
+      if (messages.length === 0) continue;
+
       const sessionId = String(data.sessionId);
       const updatedAt = data.lastUpdated || data.startTime || data.createdAt || null;
 
@@ -586,10 +676,9 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
       let lastQuestion: string | null = null;
       let lastAnswer: string | null = null;
       let lastMessageText: string | null = null;
-      const messages = Array.isArray(data.messages) ? data.messages : [];
       for (const msg of messages) {
         if (msg.type === 'user') {
-          const text = sanitizeSessionUserPreviewText(extractGeminiText(msg.content));
+          const text = sanitizeSessionUserPreviewText(flattenGeminiUserText(extractGeminiText(msg.content)));
           if (!title) title = normalizeGeminiSessionTitle(text);
           if (text) {
             lastQuestion = shortValue(text, 500);
@@ -603,7 +692,7 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
           }
         }
       }
-      const numTurns = messages.filter((m: any) => m.type === 'user' && extractGeminiText(m.content)).length;
+      const numTurns = messages.filter((m: any) => m.type === 'user' && flattenGeminiUserText(extractGeminiText(m.content))).length;
       sessionsById.set(sessionId, {
         sessionId,
         agent: 'gemini',
@@ -689,7 +778,8 @@ function getGeminiSessionTail(opts: SessionTailOpts): SessionTailResult {
       const type = typeof msg?.type === 'string' ? msg.type.trim().toLowerCase() : '';
       const role = type === 'user' ? 'user' : (type === 'gemini' || type === 'model' || type === 'assistant') ? 'assistant' : null;
       if (!role) continue;
-      const text = extractGeminiText(msg?.content);
+      const rawText = extractGeminiText(msg?.content);
+      const text = role === 'user' ? dropGeminiFileRefs(cleanGeminiUserText(rawText)) : rawText;
       if (text) allMsgs.push({ role, text });
     }
     return { ok: true, messages: allMsgs.slice(-limit), error: null };
@@ -710,14 +800,27 @@ function getGeminiSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
     const data = loadGeminiSessionData(filePath);
     const messages = Array.isArray(data?.messages) ? data.messages : [];
     const allMsgs: TailMessage[] = [];
+    const richMsgs: RichMessage[] = [];
     for (const msg of messages) {
       const type = typeof msg?.type === 'string' ? msg.type.trim().toLowerCase() : '';
       const role = type === 'user' ? 'user' : (type === 'gemini' || type === 'model' || type === 'assistant') ? 'assistant' : null;
       if (!role) continue;
-      const text = extractGeminiText(msg?.content);
-      if (text) allMsgs.push({ role, text });
+      const rawText = extractGeminiText(msg?.content);
+      if (role === 'user') {
+        const { text, blocks: imageBlocks } = buildGeminiUserMessageContent(rawText, opts.workdir);
+        if (!text && !imageBlocks.length) continue;
+        allMsgs.push({ role, text });
+        const blocks: MessageBlock[] = [];
+        if (text) blocks.push({ type: 'text', content: text });
+        blocks.push(...imageBlocks);
+        richMsgs.push({ role, text, blocks });
+      } else {
+        if (!rawText) continue;
+        allMsgs.push({ role, text: rawText });
+        richMsgs.push({ role, text: rawText, blocks: [{ type: 'text', content: rawText }] });
+      }
     }
-    return applyTurnWindow(allMsgs, opts);
+    return applyTurnWindow(allMsgs, opts, opts.rich ? richMsgs : undefined);
   } catch (e: any) {
     return { ok: false, messages: [], totalTurns: 0, error: e.message };
   }
@@ -932,6 +1035,12 @@ class GeminiDriver implements AgentDriver {
 
   async getUsageLive(_opts: UsageOpts): Promise<UsageResult> {
     return getGeminiUsageLive();
+  }
+
+  async deleteNativeSession(workdir: string, sessionId: string): Promise<string[]> {
+    const file = findGeminiSessionFile(workdir, sessionId);
+    if (!file) return [];
+    try { fs.rmSync(file, { force: true }); return [file]; } catch { return []; }
   }
 
   shutdown() {}

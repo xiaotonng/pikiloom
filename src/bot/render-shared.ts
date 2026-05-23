@@ -6,8 +6,12 @@
  */
 
 import type { Agent, StreamPreviewMeta, StreamPreviewPlan, StreamResult } from './bot.js';
+import type { MessageBlock } from '../agent/index.js';
+import { materializeImage } from '../agent/index.js';
 import { fmtUptime, formatThinkingForDisplay, thinkLabel } from './bot.js';
 import { formatActivityCommandSummary, parseActivitySummary, renderPlanForPreview, summarizeActivityForPreview } from './streaming.js';
+import { supportsChannelCapability, type Channel } from '../channels/base.js';
+import { agentLog, agentWarn } from '../agent/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -227,6 +231,66 @@ export function buildProviderUsageLines(usage: ProviderUsageSnapshot): ProviderU
   }
 
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Image block dispatch — channel-agnostic
+// ---------------------------------------------------------------------------
+
+export interface DispatchImageOpts {
+  chatId: number | string;
+  replyTo?: number | string;
+  messageThreadId?: number;
+  /** Optional log sink — same shape channels already use. */
+  log?: (message: string) => void;
+}
+
+export interface DispatchedImage {
+  /** Message id returned by the channel send, when one was returned. */
+  messageId: number | string | null;
+  caption?: string;
+}
+
+/**
+ * Iterate an assistant turn's image MessageBlocks and dispatch each through
+ * the channel's `sendImage` capability. No-op when the channel doesn't claim
+ * `sendImage`. Errors per image are logged but don't block the rest of the
+ * dispatch — the text reply path is responsible for the user-visible summary.
+ *
+ * Returns the list of `{messageId, caption}` entries so the caller can register
+ * them with the session for "reply to continue" linkage.
+ */
+export async function dispatchImageBlocks(
+  channel: Channel,
+  blocks: MessageBlock[] | undefined,
+  opts: DispatchImageOpts,
+): Promise<DispatchedImage[]> {
+  if (!blocks?.length) return [];
+  if (!supportsChannelCapability(channel, 'sendImage')) return [];
+
+  const out: DispatchedImage[] = [];
+  let index = 0;
+  for (const block of blocks) {
+    if (block.type !== 'image') continue;
+    index++;
+    const materialized = materializeImage(block);
+    if (!materialized) {
+      (opts.log || agentLog)(`[image-dispatch] skipped block #${index}: could not materialize bytes`);
+      continue;
+    }
+    try {
+      const messageId = await channel.sendImage(opts.chatId, materialized.bytes, {
+        mime: materialized.mime,
+        caption: materialized.caption,
+        replyTo: opts.replyTo,
+        messageThreadId: opts.messageThreadId,
+      });
+      out.push({ messageId, caption: materialized.caption });
+    } catch (err: any) {
+      (opts.log || agentWarn)(`[image-dispatch] send failed #${index}: ${err?.message || err}`);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

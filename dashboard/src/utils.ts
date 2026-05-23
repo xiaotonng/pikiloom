@@ -241,11 +241,18 @@ const SESSION_PREVIEW_IGNORED_USER_PATTERNS = [
 
 const SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE = /\[Image:[^\]]+\]/gi;
 const SESSION_PREVIEW_FILE_PLACEHOLDER_RE = /\[Attached file:[^\]]+\]/gi;
+// Claude TUI prepends `@/abs/path/image.png` mentions to the prompt (see
+// src/agent/drivers/claude-tui.ts). The backend's `sanitizeSessionUserPreviewText`
+// already strips these from `lastQuestion`; the client-side strip is defensive
+// for stale cached snapshots that pre-date the backend fix. Keep in lock-step
+// with src/agent/utils.ts:CLAUDE_AT_MENTION_IMAGE_RE.
+const CLAUDE_AT_MENTION_IMAGE_RE = /(^|\s)@(\/[^\s@\n]+\.(?:png|jpe?g|gif|webp|svg))(?=\s|$)/gi;
 
 function cleanSessionPreviewText(text?: string | null): string {
   return String(text || '')
     .replace(SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE, ' ')
     .replace(SESSION_PREVIEW_FILE_PLACEHOLDER_RE, ' ')
+    .replace(CLAUDE_AT_MENTION_IMAGE_RE, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

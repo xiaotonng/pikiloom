@@ -21,6 +21,7 @@ import {
   getManagedBrowserProfileDir,
   prepareManagedBrowserForAutomation,
 } from './browser-profile.js';
+import { PIKICLAW_BROWSER_CDP_URL_ENV } from './core/constants.js';
 import { writeScopedLog } from './core/logging.js';
 
 export type ManagedBrowserConnectionMode = 'attach' | 'launch' | 'unavailable';
@@ -50,6 +51,38 @@ let inflight: Promise<ManagedBrowserSnapshot> | null = null;
 
 function log(message: string, level: 'debug' | 'info' | 'warn' | 'error' = 'debug'): void {
   writeScopedLog('browser-supervisor', message, { level, stream: 'stderr' });
+}
+
+/**
+ * Normalize an external CDP URL (trailing slashes stripped, blank → null).
+ * Returns the user-configured remote endpoint when {@link PIKICLAW_BROWSER_CDP_URL_ENV}
+ * is set; in that case every supervisor codepath bypasses local Chrome
+ * launching.
+ */
+function getRemoteCdpUrl(): string | null {
+  const raw = String(process.env[PIKICLAW_BROWSER_CDP_URL_ENV] || '').trim();
+  if (!raw) return null;
+  return raw.replace(/\/+$/, '');
+}
+
+/**
+ * Snapshot for the remote-CDP path. The URL is taken on trust as configured —
+ * health is verified by {@link pingCdpEndpoint} before caching, and by the
+ * usual freshness check on every reuse.
+ */
+async function snapshotRemote(remoteUrl: string, now: number): Promise<ManagedBrowserSnapshot> {
+  if (cached?.cdpEndpoint === remoteUrl && now - cached.validatedAt < HEALTH_CACHE_MS) {
+    return snapshotFromCache(cached);
+  }
+  const healthy = await pingCdpEndpoint(remoteUrl);
+  if (!healthy) {
+    if (cached?.cdpEndpoint === remoteUrl) cached = null;
+    log(`remote CDP endpoint ${remoteUrl} not reachable`, 'warn');
+    return { cdpEndpoint: null, connectionMode: 'unavailable' };
+  }
+  cached = { cdpEndpoint: remoteUrl, connectionMode: 'attach', validatedAt: now };
+  log(`using remote CDP endpoint ${remoteUrl} (from ${PIKICLAW_BROWSER_CDP_URL_ENV})`);
+  return snapshotFromCache(cached);
 }
 
 function snapshotFromCache(state: CachedState): ManagedBrowserSnapshot {
@@ -114,6 +147,8 @@ async function freshenCacheIfPossible(now: number): Promise<ManagedBrowserSnapsh
  * is already reachable. Never starts a new Chrome process.
  */
 export async function probeManagedBrowser(): Promise<ManagedBrowserSnapshot> {
+  const remoteUrl = getRemoteCdpUrl();
+  if (remoteUrl) return snapshotRemote(remoteUrl, Date.now());
   const fresh = await freshenCacheIfPossible(Date.now());
   if (fresh) return fresh;
   return { cdpEndpoint: null, connectionMode: 'unavailable' };
@@ -123,12 +158,22 @@ export async function probeManagedBrowser(): Promise<ManagedBrowserSnapshot> {
  * Idempotent prepare. Returns a healthy CDP endpoint, launching Chrome only
  * when no reachable managed instance is available. Concurrent callers share
  * one in-flight preparation promise (singleflight).
+ *
+ * When {@link PIKICLAW_BROWSER_CDP_URL_ENV} is set we skip the local-launch
+ * branch entirely and just verify the remote endpoint — no `findChromeExecutable`
+ * lookup, no SIGKILL of detected pids on restart.
  */
 export async function ensureManagedBrowser(
   opts: EnsureManagedBrowserOptions = {},
 ): Promise<ManagedBrowserSnapshot> {
   const { headless = false, force = false } = opts;
   const now = Date.now();
+
+  const remoteUrl = getRemoteCdpUrl();
+  if (remoteUrl) {
+    if (force && cached?.cdpEndpoint === remoteUrl) cached = null;
+    return snapshotRemote(remoteUrl, now);
+  }
 
   if (!force) {
     const fresh = await freshenCacheIfPossible(now);
@@ -193,6 +238,17 @@ export function restartManagedBrowser(reason: string): Promise<void> {
     return Promise.resolve();
   }
   lastRestartAt = now;
+
+  // Remote CDP path: we don't own the Chrome process (it's a sidecar / external
+  // service), so don't SIGKILL anything — just drop the cache so the next
+  // ensure re-probes the endpoint.
+  const remoteUrl = getRemoteCdpUrl();
+  if (remoteUrl) {
+    log(`invalidating remote CDP cache (${remoteUrl}): ${reason}`, 'warn');
+    cached = null;
+    return Promise.resolve();
+  }
+
   log(`restarting managed browser: ${reason}`, 'warn');
   restartInflight = (async () => {
     try {

@@ -554,6 +554,88 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     void loadSessionsForWorkspace(wsPath, { force: true });
   }, [loadSessionsForWorkspace]);
 
+  /* ── Delete single session ─────────────────────────────── */
+  type DeleteSessionTarget = {
+    workdir: string;
+    agent: string;
+    sessionId: string;
+    title: string;
+  };
+  const [confirmDeleteSession, setConfirmDeleteSession] = useState<DeleteSessionTarget | null>(null);
+  const [deleteSessionPurgeNative, setDeleteSessionPurgeNative] = useState(false);
+  const [deletingSession, setDeletingSession] = useState(false);
+  const toastSession = useStore(s => s.toast);
+
+  /* ── Session row actions popover (anchored to kebab button) ─── */
+  const [sessionMenu, setSessionMenu] = useState<{
+    /** Bottom-right corner of the kebab — menu's right edge aligns to anchor.right. */
+    anchor: { right: number; bottom: number };
+    target: DeleteSessionTarget;
+  } | null>(null);
+
+  const handleSessionMenuOpen = useCallback((anchor: DOMRect, session: SessionInfo, wsPath: string) => {
+    setSessionMenu({
+      anchor: { right: anchor.right, bottom: anchor.bottom },
+      target: {
+        workdir: wsPath,
+        agent: session.agent || '',
+        sessionId: session.sessionId,
+        title: sessionListDisplayText(session).slice(0, 120) || session.sessionId.slice(0, 16),
+      },
+    });
+  }, []);
+
+  // Close popover on outside click, scroll, resize, or Escape.
+  useEffect(() => {
+    if (!sessionMenu) return;
+    const close = () => setSessionMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [sessionMenu]);
+
+  const openDeleteSessionModal = useCallback((target: DeleteSessionTarget) => {
+    setDeleteSessionPurgeNative(false);
+    setConfirmDeleteSession(target);
+    setSessionMenu(null);
+  }, []);
+
+  const executeDeleteSession = useCallback(async () => {
+    const target = confirmDeleteSession;
+    if (!target) return;
+    setDeletingSession(true);
+    try {
+      const res = await api.deleteSession(target.workdir, target.agent, target.sessionId, deleteSessionPurgeNative);
+      if (!res.ok) {
+        const msg = res.error?.includes('still running') ? t('session.deleteRunningError') : (res.error || t('session.deleteFailed'));
+        toastSession(msg, false);
+        return;
+      }
+      // Drop from the workspace's session list and any open slots.
+      setSessionsMap(prev => {
+        const list = prev[target.workdir];
+        if (!list) return prev;
+        const filtered = list.filter(s => !(s.agent === target.agent && s.sessionId === target.sessionId));
+        if (filtered.length === list.length) return prev;
+        return { ...prev, [target.workdir]: filtered };
+      });
+      setOpenSessions(prev => prev.filter(s => !(s.workdir === target.workdir && s.agent === target.agent && s.sessionId === target.sessionId)));
+      setConfirmDeleteSession(null);
+    } catch (err: any) {
+      toastSession(err?.message || t('session.deleteFailed'), false);
+    } finally {
+      setDeletingSession(false);
+    }
+  }, [confirmDeleteSession, deleteSessionPurgeNative, t, toastSession]);
+
   /* ── New session — transition after InputComposer creates it ── */
   const [newSessionPendingPrompt, setNewSessionPendingPrompt] = useState<string | null>(null);
   const [newSessionPendingImageUrls, setNewSessionPendingImageUrls] = useState<string[]>([]);
@@ -774,6 +856,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                 onExtensions={setExtensionsWorkdir}
                 onWarmSession={scheduleSessionWarmup}
                 onCancelWarmSession={cancelScheduledWarmup}
+                onSessionMenuOpen={handleSessionMenuOpen}
                 t={t}
               />
             ))
@@ -1000,6 +1083,102 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         </div>
       </Modal>
 
+      {/* Session row actions popover — anchored under the kebab button */}
+      {sessionMenu && (() => {
+        const MENU_WIDTH = 160;
+        // Right-align to the kebab; clamp to viewport with 8px margins.
+        const left = Math.max(8, Math.min(sessionMenu.anchor.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
+        const top = Math.min(sessionMenu.anchor.bottom + 4, window.innerHeight - 60);
+        return (
+          <div
+            className="fixed z-[60] min-w-[160px] rounded-md border border-edge bg-panel/95 backdrop-blur-md py-1"
+            style={{
+              left,
+              top,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.20), 0 2px 6px rgba(0,0,0,0.10)',
+            }}
+            onMouseDown={e => e.stopPropagation()}
+            role="menu"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => openDeleteSessionModal(sessionMenu.target)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] text-fg-2 hover:bg-panel-h/60 hover:text-red-400 transition-colors"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a2 2 0 012-2h2a2 2 0 012 2v2" />
+              </svg>
+              {t('session.delete')}
+            </button>
+          </div>
+        );
+      })()}
+
+      {/* Confirm delete session modal — choose between pikiclaw-only and purge-native */}
+      <Modal
+        open={!!confirmDeleteSession}
+        onClose={() => !deletingSession && setConfirmDeleteSession(null)}
+      >
+        <ModalHeader
+          title={t('session.deleteTitle')}
+          onClose={() => !deletingSession && setConfirmDeleteSession(null)}
+        />
+        <div className="text-[13px] text-fg-3 leading-relaxed">
+          {t('session.deleteHint')}
+        </div>
+        {confirmDeleteSession && (
+          <div className="mt-3 rounded-md bg-inset/50 border border-edge/30 px-3 py-2 text-[11px] text-fg-4 break-all">
+            <span className="font-mono text-fg-5">{confirmDeleteSession.agent}</span>
+            <span className="mx-1.5 text-fg-5/50">·</span>
+            <span>{confirmDeleteSession.title}</span>
+          </div>
+        )}
+        <div className="mt-4 space-y-2">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="delete-session-scope"
+              checked={!deleteSessionPurgeNative}
+              onChange={() => setDeleteSessionPurgeNative(false)}
+              disabled={deletingSession}
+              className="mt-0.5"
+            />
+            <div className="flex-1">
+              <div className="text-[12px] text-fg-2">{t('session.deletePikiclawOnly')}</div>
+              <div className="text-[11px] text-fg-5 leading-snug mt-0.5">{t('session.deletePikiclawOnlyHint')}</div>
+            </div>
+          </label>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="delete-session-scope"
+              checked={deleteSessionPurgeNative}
+              onChange={() => setDeleteSessionPurgeNative(true)}
+              disabled={deletingSession}
+              className="mt-0.5"
+            />
+            <div className="flex-1">
+              <div className="text-[12px] text-fg-2">{t('session.deletePurgeNative')}</div>
+              <div className="text-[11px] text-fg-5 leading-snug mt-0.5">{t('session.deletePurgeNativeHint')}</div>
+            </div>
+          </label>
+        </div>
+        <div className="flex justify-end gap-2 mt-4">
+          <Button variant="ghost" onClick={() => setConfirmDeleteSession(null)} disabled={deletingSession}>
+            {t('modal.cancel')}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={executeDeleteSession}
+            disabled={deletingSession}
+            className="!bg-red-500/90 !border-red-500/50 hover:!bg-red-500 !text-white"
+          >
+            {deletingSession ? t('session.deleting') : t('modal.remove')}
+          </Button>
+        </div>
+      </Modal>
+
       {/* Workspace extensions modal */}
       <WorkspaceExtensionsModal
         open={!!extensionsWorkdir}
@@ -1183,6 +1362,7 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
   onExtensions,
   onWarmSession,
   onCancelWarmSession,
+  onSessionMenuOpen,
   t,
 }: {
   workspace: WorkspaceEntry;
@@ -1198,6 +1378,7 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
   onExtensions: (wsPath: string) => void;
   onWarmSession: (s: SessionInfo, wsPath: string) => void;
   onCancelWarmSession: (s: SessionInfo, wsPath: string) => void;
+  onSessionMenuOpen: (anchor: DOMRect, s: SessionInfo, wsPath: string) => void;
   t: (key: string) => string;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -1292,6 +1473,8 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
                     onClick={() => onSelectSession(session, wsPath)}
                     onWarm={() => onWarmSession(session, wsPath)}
                     onCancelWarm={() => onCancelWarmSession(session, wsPath)}
+                    onShowMenu={anchor => onSessionMenuOpen(anchor, session, wsPath)}
+                    menuLabel={t('session.openActions')}
                   />
                 );
               })}
@@ -1325,6 +1508,8 @@ const SessionCard = memo(function SessionCard({
   onClick,
   onWarm,
   onCancelWarm,
+  onShowMenu,
+  menuLabel,
 }: {
   session: SessionInfo;
   isSelected: boolean;
@@ -1334,6 +1519,10 @@ const SessionCard = memo(function SessionCard({
   onClick: () => void;
   onWarm: () => void;
   onCancelWarm: () => void;
+  /** Called when the user clicks the kebab — receives its bounding rect so the
+   * parent can anchor a popover menu to it (no mouse coordinates needed). */
+  onShowMenu: (anchor: DOMRect) => void;
+  menuLabel: string;
 }) {
   const meta = getAgentMeta(session.agent || '');
   const displayState = sessionDisplayState(session);
@@ -1343,7 +1532,10 @@ const SessionCard = memo(function SessionCard({
   const indentPx = forkDepth > 0 ? Math.min(forkDepth, 3) * 14 : 0;
   const baseLeftPx = isOpen ? 10 : 12;
 
+  const kebabRef = useRef<HTMLButtonElement | null>(null);
+
   return (
+    <div className="relative group">
     <button
       onClick={onClick}
       onMouseEnter={onWarm}
@@ -1376,7 +1568,7 @@ const SessionCard = memo(function SessionCard({
         {modelShort && (
           <span className="truncate max-w-[72px] font-mono text-fg-5/40 text-[9px]">{modelShort}</span>
         )}
-        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+        <div className="ml-auto flex items-center gap-1.5 shrink-0 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
           {!!session.numTurns && (
             <span className="flex items-center gap-0.5 text-fg-5/50 tabular-nums">
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="opacity-50">
@@ -1402,6 +1594,27 @@ const SessionCard = memo(function SessionCard({
         </div>
       )}
     </button>
+      {/* Kebab — hidden by default, fades in on row hover/focus. Anchors the
+          actions popover via getBoundingClientRect, so it never spawns at the
+          mouse pointer. */}
+      <button
+        ref={kebabRef}
+        type="button"
+        aria-label={menuLabel}
+        aria-haspopup="menu"
+        onMouseDown={e => { e.stopPropagation(); }}
+        onClick={e => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (kebabRef.current) onShowMenu(kebabRef.current.getBoundingClientRect());
+        }}
+        className="absolute top-1.5 right-1.5 p-1 rounded text-fg-5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-panel-h hover:text-fg-2 transition-opacity"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+        </svg>
+      </button>
+    </div>
   );
 });
 

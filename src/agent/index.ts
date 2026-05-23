@@ -40,6 +40,23 @@ export type {
 } from './types.js';
 export { IMAGE_EXTS } from './types.js';
 
+// ── Re-export: image pipeline ──────────────────────────────────────────────
+export {
+  attachAgentImage,
+  attachInlineImage,
+  materializeImage,
+  rewriteImageBlocksForTransport,
+  resolveAllowedAttachmentPath,
+  allowedAttachmentRoots,
+  decodeAttachmentPathParam,
+  sessionAttachmentsDir,
+  codexHome,
+  type AttachAgentImageOpts,
+  type AttachInlineImageOpts,
+  type MaterializedImage,
+  type TransportContext,
+} from './images.js';
+
 // ── Re-export: utilities ────────────────────────────────────────────────────
 export {
   Q, agentLog, agentWarn, agentError,
@@ -53,6 +70,7 @@ export {
   parseJsonTail, modelFamily, normalizeClaudeModelId, emptyUsage,
   readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText,
   SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
+  CLAUDE_AT_MENTION_IMAGE_RE, extractClaudeAtMentionImagePaths, stripClaudeAtMentionImages,
   isPendingSessionId, emitSessionIdUpdate,
   sessionListDisplayTitle,
 } from './utils.js';
@@ -67,6 +85,8 @@ export {
   applyTurnWindow, applyTurnFilter,
   classifySession, deriveUserStatus,
   exportSession, importSession,
+  deleteAgentSession,
+  type DeleteAgentSessionOpts, type DeleteAgentSessionResult,
   isProcessAlive, isRunningSessionStale, reconcileOrphanedRunningSessions,
 } from './session.js';
 

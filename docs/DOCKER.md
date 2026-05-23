@@ -119,6 +119,7 @@ ones inside Docker:
 | `PIKICLAW_FULL_ACCESS` | `true`     | Codex full-access + Claude bypassPermissions |
 | `PIKICLAW_DOCKER`    | `1`          | Suppresses host-side actions (xdg-open, launchd) |
 | `PIKICLAW_OPEN_BROWSER` | `0`       | Don't try to open a host browser at boot |
+| `PIKICLAW_BROWSER_CDP_URL` | —      | Attach to an external Chrome DevTools Protocol endpoint (e.g. `http://chromium:9222`) instead of launching local Chrome. See §7. |
 | `DEFAULT_AGENT`      | `claude`     | `claude` / `codex` / `gemini` |
 | `CLAUDE_MODEL` / `CODEX_MODEL` / `GEMINI_MODEL` | — | Override default model |
 | `TELEGRAM_BOT_TOKEN` | —            | Telegram channel |
@@ -152,7 +153,73 @@ The image bundles **`gh`** (GitHub CLI) for agent skills that lean on it
 (release / PR triage, issue automation, …). Run `docker exec -it pikiclaw gh
 auth login` once to attach a token, or pass `GH_TOKEN` as a container env var.
 
-## 6. Reverse proxy / TLS
+## 6. Browser automation (remote Chrome via CDP)
+
+The base image **does not bundle Chrome** — a headless Chromium + Xvfb + fonts
+would push the image past 1 GB and the browser still wouldn't be useful for
+sites that require an interactive sign-in. Instead, pikiclaw can attach to
+*any* external Chrome DevTools Protocol endpoint via
+`PIKICLAW_BROWSER_CDP_URL`. The recommended pattern is to run a sidecar
+container that ships a real Chromium plus a web-VNC interface for logging
+into sites:
+
+```yaml
+services:
+  pikiclaw:
+    image: ghcr.io/xiaotonng/pikiclaw:latest
+    environment:
+      PIKICLAW_BROWSER_CDP_URL: http://chromium:9222
+    depends_on: [chromium]
+    # …rest of the pikiclaw service as before
+
+  chromium:
+    image: lscr.io/linuxserver/chromium:latest
+    container_name: pikiclaw-chromium
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: Etc/UTC
+      # Pass through the remote-debugging port so pikiclaw can attach.
+      CHROME_CLI: "--remote-debugging-address=0.0.0.0 --remote-debugging-port=9222"
+    ports:
+      - "3000:3000"   # web UI (KasmVNC) — open this in your browser to sign in
+      - "3001:3001"   # https variant of the web UI
+    volumes:
+      - chromium-config:/config
+    shm_size: 1gb
+    restart: unless-stopped
+
+volumes:
+  chromium-config:
+```
+
+How to use it:
+
+1. `docker compose up -d`
+2. Open `http://<host>:3000` in your browser — that's the Chromium running
+   inside the sidecar. Sign in to whichever sites the agent needs
+   (Google / GitHub / your internal SSO). The profile is persisted in the
+   `chromium-config` named volume, so logins survive restarts.
+3. Enable the browser tool in the pikiclaw dashboard (Extensions → Browser),
+   or set `PIKICLAW_BROWSER_ENABLED=true`.
+
+Pikiclaw will now drive the *same* Chromium session — every `browser_*` MCP
+tool call attaches to the running Chromium over CDP, so the agent inherits
+your logged-in state.
+
+Alternative endpoints that work the same way:
+
+- **`browserless/chrome`** — purpose-built CDP service, no VNC layer
+  (set `PIKICLAW_BROWSER_CDP_URL=http://browserless:3000`).
+- **An existing Chrome on the host** —
+  `PIKICLAW_BROWSER_CDP_URL=http://host.docker.internal:9222`
+  (Linux: add `extra_hosts: ["host.docker.internal:host-gateway"]`).
+
+When `PIKICLAW_BROWSER_CDP_URL` is set, pikiclaw never tries to launch or
+SIGKILL a local Chrome — the sidecar is treated as a managed external
+service.
+
+## 7. Reverse proxy / TLS
 
 The dashboard speaks plain HTTP. For internet-facing deployments put a TLS
 terminator in front (Caddy, Nginx, Traefik). Example Caddy snippet:
@@ -166,7 +233,7 @@ pikiclaw.example.com {
 The dashboard speaks WebSocket on `/ws`; most reverse proxies upgrade it
 transparently, but verify your proxy isn't stripping `Upgrade` headers.
 
-## 7. Updating
+## 8. Updating
 
 ```bash
 docker compose pull && docker compose up -d
@@ -175,7 +242,7 @@ docker compose pull && docker compose up -d
 The named volumes are preserved across pulls, so your `setting.json`,
 sessions, and agent auth survive.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Likely cause |
 |---------|--------------|
@@ -184,7 +251,7 @@ sessions, and agent auth survive.
 | Files written by the agent are owned by `1000:1000` on the host | Expected. Either run the container as your host uid (`--user $(id -u):$(id -g)`) or `chown` after. |
 | Dashboard reachable from localhost only | The compose file publishes on `0.0.0.0:3939`. Behind NAT / cloud, check your security group / firewall. |
 
-## 9. Building locally
+## 10. Building locally
 
 ```bash
 docker build -t pikiclaw:local .
@@ -250,6 +317,40 @@ volumes:
 
 容器内默认 uid 是 1000，与宿主机 uid 不一致时请用 `--build-arg PUID=…`
 重建，或对挂载目录执行 `chown`。
+
+### 浏览器自动化（外接 Chrome）
+
+镜像本身不打包 Chrome（避免镜像膨胀到 1GB+，且容器里没显示器也用不起来）。
+推荐做法是再起一个 Chromium 边车容器，pikiclaw 通过 CDP 端口接进去：
+
+```yaml
+services:
+  pikiclaw:
+    environment:
+      PIKICLAW_BROWSER_CDP_URL: http://chromium:9222
+    depends_on: [chromium]
+
+  chromium:
+    image: lscr.io/linuxserver/chromium:latest
+    environment:
+      CHROME_CLI: "--remote-debugging-address=0.0.0.0 --remote-debugging-port=9222"
+    ports:
+      - "3000:3000"   # 网页 VNC，给你自己登录用
+    volumes:
+      - chromium-config:/config
+    shm_size: 1gb
+```
+
+部署后用浏览器打开 `http://<服务器IP>:3000`，在容器里那个 Chromium 上登录
+Google / GitHub / 公司 SSO 等。登录态会持久化到 `chromium-config` 卷里。
+pikiclaw 通过 9222 端口 attach 同一份 Chromium，agent 自动继承你的登录态。
+
+也可以指向已有的 Chrome：
+`PIKICLAW_BROWSER_CDP_URL=http://host.docker.internal:9222`
+（Linux 宿主需要在 compose 里加 `extra_hosts: ["host.docker.internal:host-gateway"]`）。
+
+设置了 `PIKICLAW_BROWSER_CDP_URL` 之后，pikiclaw 不再尝试启动或杀掉本地 Chrome —
+sidecar 完全由你管。
 
 ### 更新
 

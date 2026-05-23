@@ -113,6 +113,14 @@ export interface StreamPreviewMeta {
    * user knows the turn is being routed through a third-party provider.
    */
   providerName?: string | null;
+  /**
+   * Number of image-generation calls currently in flight for this turn.
+   * Codex bumps this on `image_generation_start` and decrements on
+   * `image_generation_end`; other drivers surface analogous events. Renderers
+   * use this to display a "Generating image…" chip in the live preview before
+   * the finished image arrives in the assistant blocks.
+   */
+  generatingImages?: number;
 }
 
 /** A single step within a streaming plan preview. */
@@ -290,6 +298,14 @@ export interface StreamResult {
   stopReason: string | null;
   incomplete: boolean;
   activity: string | null;
+  /**
+   * Structured assistant blocks accumulated during the stream. Drivers that
+   * produce structured content (image generations, multimodal tool outputs)
+   * surface them here so the bot can dispatch images / artifacts to IM
+   * channels without having to re-read the session file. Text-only blocks
+   * are optional — `message` already carries the text body.
+   */
+  assistantBlocks?: MessageBlock[];
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +443,13 @@ export interface TailMessage { role: 'user' | 'assistant'; text: string; }
 
 /** A content block within a message — text, thinking, tool activity, image, or
  *  a `system_notice` (agent-runtime placeholder like Claude CLI's `model:"<synthetic>"`
- *  feedback events — surface as a notice, not as a real assistant reply). */
+ *  feedback events — surface as a notice, not as a real assistant reply).
+ *
+ *  Image blocks: `content` always carries a directly-renderable reference (a
+ *  `data:` URL for inline bytes, or an `attachment://` / HTTP URL when the
+ *  bytes live on disk and a transport-served reference is preferred). When the
+ *  bytes have a stable on-disk location, drivers also fill `imagePath` so IM
+ *  channels can stream straight from disk without a base64 round-trip. */
 export interface MessageBlock {
   type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'plan' | 'sub_agent' | 'system_notice';
   content: string;
@@ -437,6 +459,12 @@ export interface MessageBlock {
   plan?: StreamPreviewPlan | null;
   /** Set on `sub_agent` blocks — captures the Task invocation as a discrete unit. */
   subAgent?: StreamSubAgent | null;
+  /** Image block: authoritative on-disk path when the bytes live in a file. */
+  imagePath?: string;
+  /** Image block: MIME type (e.g. `image/png`). */
+  imageMime?: string;
+  /** Image block: optional caption — e.g. Codex `revised_prompt`, MCP tool description. */
+  imageCaption?: string;
 }
 
 /** Rich message with structured content blocks. */

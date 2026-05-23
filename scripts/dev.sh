@@ -95,9 +95,15 @@ _is_detached_worker=0
 # or Claude Code session. Without this, the dev process inherits agent permissions,
 # channel credentials, daemon flags, workdir overrides, etc. from the parent.
 # Use pattern-based unset to catch everything rather than maintaining an explicit list.
+#
+# Whitelist: user-set runtime switches for the Claude driver must survive the
+# scrub so the child runtime can see them. `PIKICLAW_CLAUDE_PRINT=1` forces
+# print mode (the new opt-out, since TUI is the default), `PIKICLAW_CLAUDE_TUI*`
+# covers the legacy on/off plus the `_DEBUG` / `_KEEP_API_KEY` sub-flags.
 while IFS= read -r _var; do
   unset "$_var"
-done < <(env | grep -oE '^(PIKICLAW_|CLAUDECODE|CLAUDE_CODE_|CLAUDE_MODEL|CLAUDE_PERMISSION_|CODEX_|GEMINI_|DEFAULT_AGENT|FEISHU_|TELEGRAM_|WEIXIN_)[^=]*' || true)
+done < <(env | grep -oE '^(PIKICLAW_|CLAUDECODE|CLAUDE_CODE_|CLAUDE_MODEL|CLAUDE_PERMISSION_|CODEX_|GEMINI_|DEFAULT_AGENT|FEISHU_|TELEGRAM_|WEIXIN_)[^=]*' \
+  | grep -vE '^PIKICLAW_CLAUDE_(TUI|PRINT)' || true)
 
 # Set dev-specific env AFTER the cleanup so they are not wiped.
 export PIKICLAW_CONFIG="${DEV_DIR}/setting.json"

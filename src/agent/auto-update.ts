@@ -166,7 +166,15 @@ async function runCommand(
     let finished = false;
     const child = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, npm_config_yes: 'true' },
+      // HOMEBREW_NO_AUTO_UPDATE=1 skips brew's implicit `brew update` before
+      // each command — we already resolve the latest version via the
+      // formulae.brew.sh API, so the refresh is redundant. NOTE: this does NOT
+      // prevent brew's vendor-install-ruby step, which contends with concurrent
+      // brew processes (Homebrew's launchd autoupdate, a manual brew run, etc.)
+      // on the `vendor-install-ruby` lockf and surfaces as "Failed to upgrade
+      // Homebrew Portable Ruby". Those transient collisions are handled by
+      // `isBrewBusyError` below, which downgrades the failure to a soft skip.
+      env: { ...process.env, npm_config_yes: 'true', HOMEBREW_NO_AUTO_UPDATE: '1' },
     });
     const timeoutMs = Math.max(500, opts.timeoutMs ?? AGENT_UPDATE_COMMAND_TIMEOUT_MS);
     const timer = setTimeout(() => {
@@ -251,9 +259,23 @@ function acquireUpdateLock(log: (message: string) => void): (() => void) | null 
   }
 }
 
-async function updateViaNpm(pkg: string): Promise<{ ok: boolean; detail: string | null }> {
+type UpdateResult = { ok: boolean; detail: string | null; busy?: boolean };
+
+async function updateViaNpm(pkg: string): Promise<UpdateResult> {
   const result = await runCommand('npm', ['install', '-g', `${pkg}@latest`]);
   return { ok: result.ok, detail: result.ok ? result.stdout.trim() || null : result.error };
+}
+
+/**
+ * Detects the transient brew contention surfaced when another brew process is
+ * already running its `vendor-install ruby` step (Homebrew's launchd
+ * autoupdate, a manual `brew upgrade`, etc.). We treat these as soft skips
+ * rather than failures so the dashboard doesn't shout an error at the user for
+ * what is really "try again in a minute".
+ */
+function isBrewBusyError(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /vendor-install ruby|already locked|Failed to upgrade Homebrew Portable Ruby|is already running/i.test(text);
 }
 
 // ---------------------------------------------------------------------------
@@ -297,11 +319,13 @@ async function fetchBrewCaskVersionFromApi(cask: string): Promise<string | null>
   }
 }
 
-async function updateViaBrew(cask: string): Promise<{ ok: boolean; detail: string | null }> {
+async function updateViaBrew(cask: string): Promise<UpdateResult> {
   const result = await runCommand('brew', ['upgrade', '--cask', cask], {
     timeoutMs: AGENT_UPDATE_COMMAND_TIMEOUT_MS,
   });
-  return { ok: result.ok, detail: result.ok ? result.stdout.trim() || null : result.error };
+  if (result.ok) return { ok: true, detail: result.stdout.trim() || null };
+  const busy = isBrewBusyError(result.stderr) || isBrewBusyError(result.error);
+  return { ok: false, detail: result.error, busy };
 }
 
 export function startAgentAutoUpdate(opts: {
@@ -361,6 +385,13 @@ export function startAgentAutoUpdate(opts: {
         if (result.ok) {
           opts.log(`agent auto-update: ${label} update completed`);
           setUpdateState(id, { updateAvailable: false, status: 'updated', detail: null, checkedAt: Date.now() });
+        } else if (result.busy) {
+          opts.log(`agent auto-update: ${label} deferred — another brew process is busy upgrading Homebrew`);
+          setUpdateState(id, {
+            status: 'skipped',
+            detail: 'another brew process is busy upgrading Homebrew — will retry on next startup',
+            checkedAt: Date.now(),
+          });
         } else {
           opts.log(`agent auto-update: ${label} update failed: ${result.detail || 'unknown error'}`);
           setUpdateState(id, { status: 'failed', detail: result.detail || 'unknown error', checkedAt: Date.now() });
@@ -430,7 +461,7 @@ export async function manualAgentUpdate(
 
   setUpdateState(id, { status: 'updating' });
 
-  let result: { ok: boolean; detail: string | null };
+  let result: UpdateResult;
   if (brewCask) {
     log(`manual update: updating ${label} via brew upgrade --cask ${brewCask}`);
     result = await updateViaBrew(brewCask);
@@ -443,6 +474,13 @@ export async function manualAgentUpdate(
     log(`manual update: ${label} update completed`);
     setUpdateState(id, { updateAvailable: false, status: 'updated', detail: null, checkedAt: Date.now() });
     return { ok: true, error: null };
+  }
+
+  if (result.busy) {
+    const detail = 'another brew process is busy upgrading Homebrew — please try again in a minute';
+    log(`manual update: ${label} deferred — ${detail}`);
+    setUpdateState(id, { status: 'skipped', detail, checkedAt: Date.now() });
+    return { ok: false, error: detail };
   }
 
   const error = result.detail || 'unknown error';

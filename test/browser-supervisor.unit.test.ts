@@ -267,4 +267,46 @@ describe('browser-supervisor', () => {
     await Promise.all([a, b, c]);
     expect(forceCloseMock).toHaveBeenCalledTimes(1);
   });
+
+  it('PIKICLAW_BROWSER_CDP_URL: bypasses local launch and attaches to remote endpoint', async () => {
+    process.env.PIKICLAW_BROWSER_CDP_URL = 'http://chromium:9222/';
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.startsWith('http://chromium:9222/') && url.endsWith('/json/version')) {
+          return new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://chromium:9222/devtools/browser/x' }), { status: 200 });
+        }
+        if (url.startsWith('http://chromium:9222/') && url.endsWith('/json')) {
+          return new Response(JSON.stringify([{ type: 'page', url: 'about:blank' }]), { status: 200 });
+        }
+        return new Response('', { status: 404 });
+      }));
+
+      const snap = await supervisor.ensureManagedBrowser();
+      expect(snap.connectionMode).toBe('attach');
+      // Trailing slash should be stripped when normalizing the env value.
+      expect(snap.cdpEndpoint).toBe('http://chromium:9222');
+      expect(prepareMock).not.toHaveBeenCalled();
+
+      // restart() under remote mode must not SIGKILL anything; just invalidate cache.
+      await supervisor.restartManagedBrowser('remote test');
+      expect(forceCloseMock).not.toHaveBeenCalled();
+      expect(supervisor.getCachedManagedBrowserEndpoint()).toBeNull();
+    } finally {
+      delete process.env.PIKICLAW_BROWSER_CDP_URL;
+    }
+  });
+
+  it('PIKICLAW_BROWSER_CDP_URL: reports unavailable when remote endpoint is unreachable', async () => {
+    process.env.PIKICLAW_BROWSER_CDP_URL = 'http://chromium:9222';
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })));
+      const snap = await supervisor.ensureManagedBrowser();
+      expect(snap.connectionMode).toBe('unavailable');
+      expect(snap.cdpEndpoint).toBeNull();
+      expect(prepareMock).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.PIKICLAW_BROWSER_CDP_URL;
+    }
+  });
 });

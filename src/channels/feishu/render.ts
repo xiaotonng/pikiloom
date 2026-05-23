@@ -28,6 +28,7 @@ import {
   extractFinalReplyData,
   extractStreamPreviewData,
 } from '../../bot/render-shared.js';
+export { dispatchImageBlocks } from '../../bot/render-shared.js';
 import {
   currentHumanLoopQuestion,
   humanLoopAnsweredCount,

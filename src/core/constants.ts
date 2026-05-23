@@ -69,6 +69,17 @@ export const PLAYWRIGHT_MCP_PACKAGE_VERSION = '0.0.75';
 export const PLAYWRIGHT_MCP_PACKAGE_SPEC = `${PLAYWRIGHT_MCP_PACKAGE_NAME}@${PLAYWRIGHT_MCP_PACKAGE_VERSION}`;
 export const PLAYWRIGHT_MCP_BROWSER_ARGS = ['--browser', 'chrome', '--viewport-size', '1920x1080'] as const;
 
+/**
+ * Env var name for pointing pikiclaw at an external Chrome DevTools Protocol
+ * endpoint (e.g. `http://chromium:9222`) instead of launching a local Chrome.
+ * Primary use cases: Docker deployments that run a sidecar like
+ * `lscr.io/linuxserver/chromium`, or attaching to a remote browser the user
+ * already manages. When set, browser-supervisor skips every local-launch
+ * codepath (no Chrome detection, no pid SIGKILL on restart) and pipes the URL
+ * through to Playwright MCP's `--cdp-endpoint`.
+ */
+export const PIKICLAW_BROWSER_CDP_URL_ENV = 'PIKICLAW_BROWSER_CDP_URL';
+
 /** Dashboard session pagination limits. */
 export const DASHBOARD_PAGINATION = {
   defaultPageSize: 6,

@@ -186,4 +186,67 @@ describe('Codex session history', () => {
       });
     });
   });
+
+  it('surfaces image_generation_call rollout entries as image MessageBlocks', async () => {
+    await withTempHome(async homeDir => {
+      const sessionId = 'sess-img';
+      const workdir = path.join(homeDir, 'project');
+      const workspacePath = path.join(workdir, '.pikiclaw', 'sessions', 'codex', sessionId, 'workspace');
+      const rolloutDir = path.join(homeDir, '.codex', 'sessions', '2026', '05', '23');
+      const imageDir = path.join(homeDir, '.codex', 'generated_images', sessionId);
+      const imageId = 'ig_test_image_id';
+      const imagePath = path.join(imageDir, `${imageId}.png`);
+      fs.mkdirSync(workdir, { recursive: true });
+      fs.mkdirSync(workspacePath, { recursive: true });
+      fs.mkdirSync(rolloutDir, { recursive: true });
+      fs.mkdirSync(imageDir, { recursive: true });
+
+      // Minimal 1×1 PNG so attachAgentImage finds a real file.
+      const pngBytes = Buffer.from(
+        '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4'
+        + '890000000a49444154789c63000100000005000156c2c4360000000049454e44ae426082',
+        'hex',
+      );
+      fs.writeFileSync(imagePath, pngBytes);
+
+      const rolloutPath = path.join(rolloutDir, `rollout-2026-05-23T15-26-11-${sessionId}.jsonl`);
+      fs.writeFileSync(rolloutPath, [
+        JSON.stringify({ timestamp: '2026-05-23T15:26:14Z', type: 'session_meta', payload: { id: sessionId, cwd: workdir } }),
+        JSON.stringify({ timestamp: '2026-05-23T15:26:16Z', type: 'event_msg', payload: { type: 'user_message', message: 'generate a cover image' } }),
+        JSON.stringify({
+          timestamp: '2026-05-23T15:27:43Z',
+          type: 'response_item',
+          payload: {
+            type: 'image_generation_call',
+            id: imageId,
+            status: 'generating',
+            revised_prompt: 'Use case: infographic-diagram\nPrimary request: cover image',
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-05-23T15:27:50Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: 'Done — generated the cover image.' }],
+          },
+        }),
+      ].join('\n'));
+
+      const result = await getSessionMessages({ agent: 'codex', sessionId, workdir, rich: true });
+      expect(result.ok).toBe(true);
+
+      const assistant = result.richMessages?.find(m => m.role === 'assistant');
+      expect(assistant).toBeTruthy();
+      const imageBlock = assistant?.blocks.find(b => b.type === 'image');
+      expect(imageBlock).toBeTruthy();
+      expect(imageBlock?.imagePath).toBe(imagePath);
+      expect(imageBlock?.imageMime).toBe('image/png');
+      expect(imageBlock?.imageCaption).toContain('infographic-diagram');
+      // Small image — inlined as data URL.
+      expect(imageBlock?.content.startsWith('data:image/png;base64,')).toBe(true);
+    });
+  });
 });

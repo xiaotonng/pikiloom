@@ -7,8 +7,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadUserConfig } from '../../core/config/user-config.js';
-import { listAgents, listSkills, type Agent, type SessionInfo } from '../../agent/index.js';
+import {
+  listAgents, listSkills,
+  decodeAttachmentPathParam, resolveAllowedAttachmentPath, rewriteImageBlocksForTransport,
+  type Agent, type SessionInfo, type SessionMessagesResult, type RichMessage,
+} from '../../agent/index.js';
 import { getSessionStatusForBot } from '../../bot/session-status.js';
+import { findPikiclawSession } from '../../agent/session.js';
 import {
   cancelSessionTask,
   stopSessionTasks,
@@ -28,6 +33,7 @@ import {
   updateSession, linkSessions,
   buildMigrationContext,
   exportSession, importSession,
+  deleteSession,
   loadWorkspaces, addWorkspace, removeWorkspace, updateWorkspace,
   resolveUserStatus,
   type UserStatus, type SessionQueryResult,
@@ -414,6 +420,37 @@ app.post('/api/session-hub/session/note', async (c) => {
   }
 });
 
+app.post('/api/session-hub/session/delete', async (c) => {
+  try {
+    const body = await c.req.json();
+    const workdir = typeof body?.workdir === 'string' ? body.workdir.trim() : '';
+    const agent = typeof body?.agent === 'string' ? body.agent.trim() : '';
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+    const purgeNative = body?.purgeNative === true;
+    if (!workdir || !agent || !sessionId) {
+      return c.json({ ok: false, error: 'workdir, agent, and sessionId are required' }, 400);
+    }
+    if (!runtime.isAgent(agent)) {
+      return c.json({ ok: false, error: `Unknown agent: ${agent}` }, 400);
+    }
+    runtime.debug(
+      `[sessions] endpoint=delete agent=${agent} session=${sessionId} workdir=${workdir} purgeNative=${purgeNative}`,
+    );
+    const result = await deleteSession({ workdir, agent: agent as Agent, sessionId, purgeNative });
+    if (result.refusedReason === 'session-running') {
+      return c.json({ ok: false, error: 'session is still running — stop it first' }, 409);
+    }
+    return c.json({
+      ok: true,
+      recordRemoved: result.recordRemoved,
+      pikiclawPathsRemoved: result.pikiclawPathsRemoved,
+      nativePathsRemoved: result.nativePathsRemoved,
+    });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
 app.post('/api/session-hub/session/link', async (c) => {
   try {
     const body = await c.req.json();
@@ -444,11 +481,84 @@ app.post('/api/session-hub/session/messages', async (c) => {
       turnLimit: Number.isFinite(turnLimit) ? turnLimit : undefined,
       rich,
     });
-    return c.json(result);
+    return c.json(rewriteSessionImagesForDashboard(result, agent, sessionId));
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
   }
 });
+
+// Rewrite oversized inline image data URLs into attachment HTTP URLs so
+// dashboard JSON payloads stay compact. Small inline images pass through.
+function rewriteSessionImagesForDashboard(
+  result: SessionMessagesResult,
+  agent: string,
+  sessionId: string,
+): SessionMessagesResult {
+  if (!result.richMessages?.length) return result;
+  const richMessages: RichMessage[] = result.richMessages.map(message => ({
+    ...message,
+    blocks: rewriteImageBlocksForTransport(message.blocks, { agent, sessionId }),
+  }));
+  return { ...result, richMessages };
+}
+
+// Attachment endpoint — serves on-disk images referenced by RichMessage image
+// blocks via opaque base64url path tokens. The allowlist (see images.ts)
+// confines reads to a known set of agent-managed dirs + the session's workdir.
+app.get('/api/sessions/:agent/:id/attachment', async (c) => {
+  const agent = c.req.param('agent') as Agent;
+  const sessionId = decodeURIComponent(c.req.param('id'));
+  const token = c.req.query('p') || '';
+  if (!token) return c.json({ ok: false, error: 'missing path parameter' }, 400);
+
+  let requestedPath: string;
+  try { requestedPath = decodeAttachmentPathParam(token); } catch {
+    return c.json({ ok: false, error: 'invalid path token' }, 400);
+  }
+  if (!requestedPath || requestedPath.includes('\0')) {
+    return c.json({ ok: false, error: 'invalid path' }, 400);
+  }
+
+  // Widen the allowlist with the session's recorded workdir when known —
+  // images generated under the project tree resolve cleanly.
+  const config = loadUserConfig();
+  const fallbackWorkdir = runtime.getRequestWorkdir(config);
+  const managed = findPikiclawSession(fallbackWorkdir, agent, sessionId);
+  const workdir = managed?.workdir || fallbackWorkdir;
+
+  const resolved = resolveAllowedAttachmentPath(requestedPath, workdir);
+  if (!resolved) return c.json({ ok: false, error: 'forbidden' }, 403);
+
+  let stat: fs.Stats;
+  try { stat = fs.statSync(resolved); } catch {
+    return c.json({ ok: false, error: 'not found' }, 404);
+  }
+  if (!stat.isFile()) return c.json({ ok: false, error: 'not a file' }, 400);
+
+  const ext = path.extname(resolved).toLowerCase();
+  const mime = mimeForExtFallback(ext);
+  const bytes = await fs.promises.readFile(resolved);
+  // The path is hash-immutable for agent-managed dirs (`ig_<sha>.png`, …) and
+  // the session lifecycle keeps the file stable — long cache is safe.
+  return c.body(bytes, 200, {
+    'Content-Type': mime,
+    'Content-Length': String(bytes.length),
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff',
+  });
+});
+
+function mimeForExtFallback(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.gif': return 'image/gif';
+    case '.webp': return 'image/webp';
+    case '.svg': return 'image/svg+xml';
+    default: return 'application/octet-stream';
+  }
+}
 
 app.post('/api/session-hub/migrate', async (c) => {
   try {

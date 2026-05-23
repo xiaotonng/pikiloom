@@ -361,6 +361,24 @@ export const api = {
       { workdir, agent, sessionId, note },
       opts,
     ),
+  deleteSession: (
+    workdir: string,
+    agent: string,
+    sessionId: string,
+    purgeNative: boolean,
+    opts?: ApiRequestOptions,
+  ) =>
+    post<{
+      ok: boolean;
+      recordRemoved?: boolean;
+      pikiclawPathsRemoved?: string[];
+      nativePathsRemoved?: string[];
+      error?: string;
+    }>(
+      '/api/session-hub/session/delete',
+      { workdir, agent, sessionId, purgeNative },
+      opts,
+    ),
   addWorkspace: (wsPath: string, name?: string, opts?: ApiRequestOptions) =>
     post<{ ok: boolean; workspace?: WorkspaceEntry; error?: string }>('/api/workspaces', { path: wsPath, name }, opts),
   removeWorkspace: (wsPath: string, opts?: ApiRequestOptions) =>

@@ -23,6 +23,8 @@ import {
   importSession as _importSession,
   findPikiclawSession,
   updateSessionMeta,
+  deleteAgentSession as _deleteAgentSession,
+  type DeleteAgentSessionOpts, type DeleteAgentSessionResult,
   collapseSkillPrompt,
   type Agent, type SessionInfo, type SessionListResult,
   type SessionTailResult, type SessionTailOpts,
@@ -326,6 +328,15 @@ export async function getWorkspaceOverviews(): Promise<WorkspaceOverview[]> {
 /** Update session metadata (status, note, classification, migration links). */
 export function updateSession(workdir: string, agent: Agent, sessionId: string, patch: SessionPatch): boolean {
   return updateSessionMeta(workdir, agent, sessionId, patch);
+}
+
+/**
+ * Delete a session. Re-exports the agent-layer primitive so dashboard routes
+ * stay in the bot/ layer for layering consistency. See
+ * {@link DeleteAgentSessionOpts}.
+ */
+export function deleteSession(opts: DeleteAgentSessionOpts): Promise<DeleteAgentSessionResult> {
+  return _deleteAgentSession(opts);
 }
 
 /** Link two sessions together (bidirectional). */

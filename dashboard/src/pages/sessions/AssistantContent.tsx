@@ -25,7 +25,7 @@ export function AssistantMsg({ message, t }: { message: RichMessage; t: (k: stri
       ) : null)}
       {latestPlan?.plan && <PlanProgressCard plan={latestPlan.plan} t={t} className="max-w-[760px]" />}
       {thinkingBlocks.length > 0 && <ThinkingSection blocks={thinkingBlocks} t={t} />}
-      {outputBlocks.length > 0 && <OutputBlock blocks={outputBlocks} />}
+      {outputBlocks.length > 0 && <OutputBlock blocks={outputBlocks} t={t} />}
       {noticeBlocks.length > 0 && <SystemNoticeSection blocks={noticeBlocks} t={t} />}
     </div>
   );
@@ -178,7 +178,65 @@ export function ThinkingExpandedContent({ scrollRef, text }: { scrollRef: React.
 /* ═══════════════════════════════════════════════════════════════
    Output — markdown
    ═══════════════════════════════════════════════════════════════ */
-export function OutputBlock({ blocks }: { blocks: MessageBlock[] }) {
+
+/**
+ * Single image card with a click-to-reveal "Prompt" disclosure. The full
+ * caption (Codex `revised_prompt`, MCP image description, …) can be long —
+ * showing a truncated preview crowds the chat layout and hides detail. The
+ * disclosure keeps the layout calm by default and surfaces the complete
+ * prompt only when the user explicitly asks for it.
+ */
+function ImageFigure({
+  block,
+  onLightbox,
+  t,
+}: {
+  block: MessageBlock;
+  onLightbox: (src: string) => void;
+  t: (k: string) => string;
+}) {
+  const caption = block.imageCaption?.trim() || '';
+  const [showPrompt, setShowPrompt] = useState(false);
+  return (
+    <figure className="flex flex-col gap-1.5 max-w-[400px]">
+      <img
+        src={block.content}
+        alt={caption || ''}
+        className="max-w-[400px] max-h-[300px] rounded-md border border-fg-6/50 object-contain cursor-zoom-in hover:opacity-90 transition-opacity"
+        onClick={() => onLightbox(block.content)}
+      />
+      {caption && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowPrompt(v => !v)}
+            aria-expanded={showPrompt}
+            className={cn(
+              'self-start inline-flex items-center gap-1 px-2 py-[3px] rounded-md',
+              'text-[11px] font-medium tracking-wide',
+              'border border-fg-6/40 bg-fg-6/[0.06] text-fg-3',
+              'hover:bg-fg-6/[0.12] hover:text-fg-2 hover:border-fg-6/60',
+              'transition-colors',
+            )}
+            title={showPrompt ? t('hub.imagePromptHide') : t('hub.imagePromptShow')}
+          >
+            <span aria-hidden className="text-[9px] leading-none">{showPrompt ? '▾' : '▸'}</span>
+            <span>{t('hub.imagePrompt')}</span>
+          </button>
+          {showPrompt && (
+            <div className="rounded-md border border-fg-6/30 bg-fg-6/[0.05] px-3 py-2 max-w-[400px] max-h-[260px] overflow-y-auto">
+              <div className="text-[11.5px] leading-[1.65] text-fg-3 whitespace-pre-wrap break-words">
+                {caption}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </figure>
+  );
+}
+
+export function OutputBlock({ blocks, t }: { blocks: MessageBlock[]; t: (k: string) => string }) {
   const textBlocks = blocks.filter(b => b.type === 'text');
   const imageBlocks = blocks.filter(b => b.type === 'image');
   const text = textBlocks.map(b => b.content).filter(Boolean).join('\n\n');
@@ -194,14 +252,9 @@ export function OutputBlock({ blocks }: { blocks: MessageBlock[] }) {
         </div>
       )}
       {imageBlocks.length > 0 && (
-        <div className="flex flex-wrap gap-2 mt-2">
+        <div className="flex flex-wrap gap-3 mt-2">
           {imageBlocks.map((img, i) => (
-            <img
-              key={i}
-              src={img.content}
-              className="max-w-[400px] max-h-[300px] rounded-md border border-fg-6/50 object-contain cursor-zoom-in hover:opacity-90 transition-opacity"
-              onClick={() => setLightboxSrc(img.content)}
-            />
+            <ImageFigure key={i} block={img} onLightbox={setLightboxSrc} t={t} />
           ))}
         </div>
       )}

@@ -1,7 +1,7 @@
 /**
  * Unit tests for code-agent.ts
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,7 +57,17 @@ function baseOpts(agent: 'codex' | 'claude' | 'gemini', extra: Partial<StreamOpt
 beforeEach(() => {
   fs.mkdirSync(fakeBin, { recursive: true });
   process.env.PATH = `${fakeBin}:${process.env.PATH}`;
+  // The fake `claude` scripts in this suite are designed for the print-mode
+  // driver: they emit JSONL to stdout and exit. The default TUI driver
+  // expects a real interactive `claude` writing a JSONL transcript file plus
+  // hook lifecycle events. Force print mode so the existing fixtures keep
+  // exercising the path they were written for.
+  process.env.PIKICLAW_CLAUDE_PRINT = '1';
   shutdownCodexServer();
+});
+
+afterEach(() => {
+  delete process.env.PIKICLAW_CLAUDE_PRINT;
 });
 
 describe('buildCodexTurnInput and usage helpers', () => {
@@ -84,6 +94,13 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(sanitizeSessionUserPreviewText('[Attached file: /tmp/shot.png]')).toBe('');
     expect(sanitizeSessionUserPreviewText('[Image: original 2316x1558] 帮我看一下这里为什么有间距')).toBe('帮我看一下这里为什么有间距');
     expect(sanitizeSessionUserPreviewText('正常问题')).toBe('正常问题');
+    // Claude TUI's `@/abs/path/file.ext` image mentions should not leak into
+    // session-list previews — they're an ingestion mechanism for the TUI, not
+    // user-authored text.
+    expect(sanitizeSessionUserPreviewText('@/Users/me/.pikiclaw/sessions/claude/x/workspace/image.png\n\n看一下截图')).toBe('看一下截图');
+    expect(sanitizeSessionUserPreviewText('@/tmp/a.jpg @/tmp/b.webp prompt')).toBe('prompt');
+    // Leaves unmatched bare @ tokens alone (not an image extension).
+    expect(sanitizeSessionUserPreviewText('@user mentions are not paths')).toBe('@user mentions are not paths');
   });
 
   it('prefers native session metadata while keeping pikiclaw workspace and run state', () => {
@@ -1300,6 +1317,69 @@ exit 1`;
       expect(result.ok).toBe(true);
       const userTexts = (result.messages || []).filter(m => m.role === 'user').map(m => m.text);
       expect(userTexts).toEqual(['pre-compaction opener', 'post-compaction prompt']);
+    });
+  });
+
+  it('lifts Claude TUI @/path image mentions into structured image blocks for the user bubble', async () => {
+    await withTempHome(async (homeDir) => {
+      // Claude TUI persists user `content` as a plain string with leading
+      // `@/abs/path/image.png` mentions because that's how it ingests local
+      // files (no stream-json image blocks like `-p` mode). The parser must
+      // recover those into structured `image` blocks so the dashboard renders
+      // thumbnails — and strip them from displayed text so the user bubble
+      // doesn't show a long absolute path.
+      const workdir = '/Users/test/tui';
+      const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-tui');
+      const sessionId = 'sess-tui-images';
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      // attachAgentImage only checks file existence + mime-by-extension; we
+      // don't need valid PNG bytes for the parser to succeed.
+      const imageA = path.join(homeDir, 'shot-a.png');
+      const imageB = path.join(homeDir, 'shot-b.jpg');
+      const missing = path.join(homeDir, 'gone.png');
+      fs.writeFileSync(imageA, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      fs.writeFileSync(imageB, Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
+
+      const events = [
+        // Single attachment, image lift + path strip from text.
+        { type: 'user', message: { role: 'user', content: `@${imageA}\n\nfirst question with screenshot` } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'first reply' }] } },
+        // Multiple attachments — both should lift, both paths should be stripped.
+        { type: 'user', message: { role: 'user', content: `@${imageA} @${imageB} side-by-side compare` } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'second reply' }] } },
+        // Missing file — keep the @-path in displayed text so the user sees
+        // what was attached when the underlying bytes are gone.
+        { type: 'user', message: { role: 'user', content: `@${missing}\n\nimage was deleted` } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'third reply' }] } },
+      ];
+      fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), events.map(e => JSON.stringify(e)).join('\n'));
+
+      const result = await getSessionMessages({ agent: 'claude', sessionId, workdir, rich: true } as any);
+      expect(result.ok).toBe(true);
+
+      const userTurns = (result.richMessages || []).filter(m => m.role === 'user');
+      expect(userTurns).toHaveLength(3);
+
+      // Turn 1: path stripped from text, one image block lifted.
+      expect(userTurns[0].text).toBe('first question with screenshot');
+      const t1Images = userTurns[0].blocks.filter(b => b.type === 'image');
+      expect(t1Images).toHaveLength(1);
+      expect(t1Images[0].imagePath).toBe(imageA);
+      expect(t1Images[0].imageMime).toBe('image/png');
+
+      // Turn 2: both paths stripped, both image blocks lifted in order.
+      expect(userTurns[1].text).toBe('side-by-side compare');
+      const t2Images = userTurns[1].blocks.filter(b => b.type === 'image');
+      expect(t2Images).toHaveLength(2);
+      expect(t2Images[0].imagePath).toBe(imageA);
+      expect(t2Images[1].imagePath).toBe(imageB);
+      expect(t2Images[1].imageMime).toBe('image/jpeg');
+
+      // Turn 3: missing file → mention stays in text, no image block.
+      expect(userTurns[2].text).toContain(missing);
+      const t3Images = userTurns[2].blocks.filter(b => b.type === 'image');
+      expect(t3Images).toHaveLength(0);
     });
   });
 

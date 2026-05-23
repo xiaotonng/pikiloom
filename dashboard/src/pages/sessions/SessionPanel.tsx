@@ -80,6 +80,7 @@ export const SessionPanel = memo(function SessionPanel({
     effort?: string | null;
     previewMeta?: StreamPreviewMeta | null;
     subAgents?: StreamSubAgent[] | null;
+    generatingImages?: number;
     error?: string | null;
   } | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -131,7 +132,14 @@ export const SessionPanel = memo(function SessionPanel({
   const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const scrollToBottomRef = useRef(false);
-  const loadingLatestRef = useRef(false);
+  // Re-entrancy guard for loadLatestTurns. Scoped to a specific session id so a
+  // fetch for sessionA can't block a fetch for sessionB — important during the
+  // pending→native promotion of a brand-new session: the in-flight `pending_xxx`
+  // fetch (which the server answers with "Session file not found") would
+  // otherwise lock out the subsequent native-UUID fetch via a boolean guard,
+  // and the panel ends up never seeing the lifted image block from history.
+  // `null` = idle.
+  const loadingLatestRef = useRef<string | null>(null);
   const loadingOlderRef = useRef(false);
   const localStreamPendingRef = useRef(hasInitialPending);
   const clearPendingOnLoadRef = useRef(false);
@@ -261,11 +269,24 @@ export const SessionPanel = memo(function SessionPanel({
   }, [workdir, session.agent, session.sessionId]);
 
   const loadLatestTurns = useCallback(async ({ keepOlder, force = false, scrollToBottom = false }: { keepOlder: boolean; force?: boolean; scrollToBottom?: boolean }) => {
-    if (loadingLatestRef.current) return false;
-    loadingLatestRef.current = true;
+    const callSessionId = session.sessionId;
+    // Per-session re-entrancy guard. A fetch already in flight for *this* session
+    // is dropped (genuine duplicate); a fetch for a *different* session never
+    // blocks — pending→native promotion needs the new fetch to fire even while
+    // the in-flight `pending_xxx` fetch (server replies "Session file not
+    // found") is still resolving.
+    if (loadingLatestRef.current === callSessionId) return false;
+    loadingLatestRef.current = callSessionId;
     try {
       const next = await fetchTurnWindow({ turnOffset: 0, turnLimit: SESSION_PAGE_TURNS }, { force });
       if (!next) return false;
+      // Drop stale results: if the panel's session id has rotated since this
+      // call started (e.g. promotion happened while we were awaiting), the
+      // response belongs to the old session and must not clobber the new
+      // session's history — which has already (or will shortly) be fetched
+      // separately. Without this guard, an empty/partial old result could
+      // overwrite a freshly loaded native-UUID history.
+      if (session.sessionId !== callSessionId) return false;
       // Set scroll flag right before setHistory so React batches both into
       // the same render and the layoutEffect sees the flag when turns update.
       if (scrollToBottom) scrollToBottomRef.current = true;
@@ -293,9 +314,13 @@ export const SessionPanel = memo(function SessionPanel({
       }
       return true;
     } finally {
-      loadingLatestRef.current = false;
+      // Only release the guard if we still own it for this session; a
+      // concurrent fetch for a different session may have replaced it already.
+      if (loadingLatestRef.current === callSessionId) {
+        loadingLatestRef.current = null;
+      }
     }
-  }, [fetchTurnWindow, clearPending]);
+  }, [fetchTurnWindow, clearPending, session.sessionId]);
 
   const loadOlderTurns = useCallback(async () => {
     if (!history?.hasOlder || loadingOlderRef.current) return;
@@ -389,6 +414,7 @@ export const SessionPanel = memo(function SessionPanel({
           effort: state.effort ?? null,
           previewMeta: state.previewMeta ?? null,
           subAgents: state.previewMeta?.subAgents ?? null,
+          generatingImages: state.previewMeta?.generatingImages ?? 0,
           error: null,
         });
       }

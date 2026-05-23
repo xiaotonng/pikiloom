@@ -23,7 +23,10 @@ import {
   IMAGE_EXTS, mimeForExt,
   listPikiclawSessions, findPikiclawSession, isPendingSessionId,
   mergeManagedAndNativeSessions,
-  readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE, applyTurnWindow, shortValue,
+  readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
+  CLAUDE_AT_MENTION_IMAGE_RE, extractClaudeAtMentionImagePaths, stripClaudeAtMentionImages,
+  attachAgentImage,
+  applyTurnWindow, shortValue,
   roundPercent, toIsoFromEpochSeconds, modelFamily, normalizeClaudeModelId, emptyUsage, normalizeUsageStatus,
   collapseSkillPrompt,
 } from '../index.js';
@@ -177,7 +180,7 @@ function isClaudeNativeSessionRunning(filePath: string, mtimeMs: number): boolea
   return false;
 }
 
-function claudeContextWindowFromModel(model: unknown): number | null {
+export function claudeContextWindowFromModel(model: unknown): number | null {
   const id = normalizeClaudeModelId(model).toLowerCase();
   if (!id) return null;
   if (id === 'haiku' || /^claude-haiku-/.test(id)) return 200_000;
@@ -199,7 +202,7 @@ const CLAUDE_MAX_OUTPUT_RESERVE = 20_000;
 const CLAUDE_AUTOCOMPACT_BUFFER = 13_000;
 const CLAUDE_USABLE_WINDOW_RESERVE = CLAUDE_MAX_OUTPUT_RESERVE + CLAUDE_AUTOCOMPACT_BUFFER;
 
-function claudeEffectiveContextWindow(advertised: number | null): number | null {
+export function claudeEffectiveContextWindow(advertised: number | null): number | null {
   if (advertised == null) return null;
   if (advertised <= CLAUDE_USABLE_WINDOW_RESERVE) return advertised;
   return advertised - CLAUDE_USABLE_WINDOW_RESERVE;
@@ -229,7 +232,53 @@ function recomputeClaudeContextUsed(s: any): void {
   s.contextUsedTokens = total > 0 ? total : null;
 }
 
-function claudeParse(ev: any, s: any) {
+/**
+ * Tool names whose `tool_result` image content does NOT count as
+ * assistant-generated output and must NOT be re-rendered in the assistant
+ * card. These tools merely read existing files (user attachments, project
+ * assets) — the bytes already lived somewhere the user can see them, so
+ * surfacing them again in the assistant block creates a duplicate of the
+ * user's own upload below Claude's text reply.
+ *
+ * Genuine image producers (MCP image-gen tools, mermaid-mcp, chart, dalle-mcp,
+ * Codex built-in image_gen, …) are NOT in this set and continue to render
+ * normally.
+ */
+const CLAUDE_FILE_READING_TOOLS = new Set(['Read']);
+
+function isClaudeFileReadingTool(toolName: string | null | undefined): boolean {
+  return !!toolName && CLAUDE_FILE_READING_TOOLS.has(toolName);
+}
+
+/**
+ * Walk a content array (assistant message body OR a tool_result.content array)
+ * and push any image entries into the stream state's `imageBlocks`, deduped by
+ * the first 64 chars of base64 data. Used during live parsing so the final
+ * StreamResult carries every image the turn produced.
+ */
+function accumulateClaudeImagesFromContent(content: any, s: any): void {
+  if (!Array.isArray(content)) return;
+  for (const entry of content) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (entry.type === 'image') {
+      const block = claudeImageBlockFromEntry(entry);
+      if (!block) continue;
+      const key = (entry.source?.data || '').slice(0, 64);
+      if (key && s.seenImageKeys?.has(key)) continue;
+      if (key) s.seenImageKeys?.add(key);
+      s.imageBlocks?.push(block);
+    } else if (entry.type === 'tool_result' && Array.isArray(entry.content)) {
+      // MCP / Skill tool_result with multimodal content — recurse for images,
+      // but skip tools that just read existing files (the bytes are already
+      // visible in the user's own upload bubble).
+      const toolName = entry.tool_use_id ? s.claudeToolsById?.get(entry.tool_use_id)?.name : null;
+      if (isClaudeFileReadingTool(toolName)) continue;
+      accumulateClaudeImagesFromContent(entry.content, s);
+    }
+  }
+}
+
+export function claudeParse(ev: any, s: any) {
   const t = ev.type || '';
   // Sub-agent events (Task tool spawns a child agent) carry parent_tool_use_id
   // pointing back to the parent's Task tool_use_id. They share the JSONL stream
@@ -317,6 +366,7 @@ function claudeParse(ev: any, s: any) {
     const th = contents.filter((b: any) => b?.type === 'thinking').map((b: any) => b.thinking || '').join('\n\n');
     const tx = contents.filter((b: any) => b?.type === 'text').map((b: any) => b.text || '').join('\n\n');
     const toolUses = contents.filter((b: any) => b?.type === 'tool_use');
+    accumulateClaudeImagesFromContent(contents, s);
     if (th && !s.thinking.trim()) s.thinking = th;
     if (tx && !s.text.trim()) s.text = tx;
     for (const block of toolUses) {
@@ -380,6 +430,14 @@ function claudeParse(ev: any, s: any) {
         continue;
       }
       pushRecentActivity(s.recentActivity, summarizeClaudeToolResult(tool, block, ev.tool_use_result));
+      // MCP / Skill tool_result with multimodal content — recurse for image
+      // entries so the final StreamResult carries them. Filesystem-reading
+      // tools (Read) are skipped: their image content is a copy of an
+      // existing file (often the user's own upload) and would otherwise be
+      // re-rendered below the assistant text.
+      if (Array.isArray(block.content) && !isClaudeFileReadingTool(tool?.name)) {
+        accumulateClaudeImagesFromContent(block.content, s);
+      }
     }
     s.activity = s.recentActivity.join('\n');
   }
@@ -419,7 +477,7 @@ function claudeParse(ev: any, s: any) {
   }
 }
 
-function createClaudeStreamState(opts: StreamOpts) {
+export function createClaudeStreamState(opts: StreamOpts) {
   // When BYOK is bound, the real context window (e.g. 1M for DeepSeek v4 Pro
   // via OpenRouter) comes from the provider's cached /models listing — cc
   // reports its own Claude-shaped fallback (200k) for unknown model ids, so
@@ -456,6 +514,14 @@ function createClaudeStreamState(opts: StreamOpts) {
     claudeToolsById: new Map<string, { name: string; summary: string }>(),
     seenClaudeToolIds: new Set<string>(),
     subAgents: new Map<string, StreamSubAgent>(),
+    // Image blocks accumulated during the turn (user-attached on the request
+    // side, MCP / Skill tool_result on the response side). Surfaced in the
+    // final StreamResult so IM channels can dispatch images at end-of-turn.
+    imageBlocks: [] as MessageBlock[],
+    /** Stable dedupe keys (sha-ish data prefixes) for image blocks already
+     *  added to `imageBlocks`. Lets repeated stream_event / assistant deltas
+     *  for the same image not pile up duplicates. */
+    seenImageKeys: new Set<string>(),
     // Wired to opts.onSessionId so claudeParse can broadcast id changes the
     // instant cc surfaces them (see emitSessionIdUpdate in agent/utils.ts).
     _emitSessionId: opts.onSessionId ?? null,
@@ -479,6 +545,8 @@ function resetClaudeTurnState(s: ReturnType<typeof createClaudeStreamState>, not
   s.claudeToolsById = new Map();
   s.subAgents = new Map();
   s.seenClaudeToolIds = new Set();
+  s.imageBlocks = [];
+  s.seenImageKeys = new Set();
   if (note) {
     pushRecentActivity(s.recentActivity, note);
     s.activity = s.recentActivity.join('\n');
@@ -774,6 +842,7 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     stopReason: s.stopReason,
     incomplete,
     activity: s.activity.trim() || null,
+    assistantBlocks: s.imageBlocks.length ? [...s.imageBlocks] : undefined,
   };
 }
 
@@ -796,7 +865,7 @@ export async function doClaudeStream(opts: StreamOpts): Promise<StreamResult> {
 // Sessions
 // ---------------------------------------------------------------------------
 
-const claudeProjectDirName = encodePathAsDirName;
+export const claudeProjectDirName = encodePathAsDirName;
 
 /** Read native Claude Code sessions from ~/.claude/projects/{dirName}/*.jsonl */
 function extractClaudeTailQA(filePath: string): { lastQuestion: string | null; lastAnswer: string | null; lastMessageText: string | null } {
@@ -1038,10 +1107,36 @@ function getClaudeSessionTail(opts: SessionTailOpts): SessionTailResult {
 // Session messages (full content)
 // ---------------------------------------------------------------------------
 
+/** Build an image MessageBlock from a Claude content entry of the shape
+ *  `{ type: 'image', source: { type: 'base64', media_type, data } }`. Returns
+ *  null when the source is missing or the encoded size exceeds the cap. */
+function claudeImageBlockFromEntry(entry: any): MessageBlock | null {
+  if (!entry || entry.type !== 'image' || !entry.source) return null;
+  const source = entry.source;
+  if (source.type !== 'base64' || typeof source.data !== 'string') return null;
+  // 12MB base64 ≈ 9MB binary — keep API payloads sane.
+  if (source.data.length > 12 * 1024 * 1024) return null;
+  const mime = (source.media_type || 'image/png').toLowerCase();
+  return { type: 'image', content: `data:${mime};base64,${source.data}`, imageMime: mime };
+}
+
 /** Extract structured content blocks from Claude message content.
  *  When `todoWriteToolIds` is provided, TodoWrite tool_use blocks are emitted
- *  as `plan` blocks and their IDs are tracked so tool_results can be skipped. */
-function extractClaudeBlocks(content: any, skipSystemBlocks = false, todoWriteToolIds?: Set<string>): MessageBlock[] {
+ *  as `plan` blocks and their IDs are tracked so tool_results can be skipped.
+ *
+ *  When a `tool_result` block carries multimodal content (`content: [{type:'image',...}, ...]`),
+ *  the inner image entries are emitted as siblings of the textual tool_result —
+ *  this is the path MCP image-returning tools (mermaid-mcp, chart, dalle-mcp, …)
+ *  travel through. Filesystem-reading tools (Claude's `Read`) are excluded
+ *  via `toolNamesByUseId`: their image content is just an echo of an existing
+ *  file (often the user's own attachment) and re-rendering it under the
+ *  assistant card produces a confusing duplicate. */
+function extractClaudeBlocks(
+  content: any,
+  skipSystemBlocks = false,
+  todoWriteToolIds?: Set<string>,
+  toolNamesByUseId?: ReadonlyMap<string, string>,
+): MessageBlock[] {
   if (typeof content === 'string') return [{ type: 'text', content }];
   if (!Array.isArray(content)) return [];
   const blocks: MessageBlock[] = [];
@@ -1071,12 +1166,20 @@ function extractClaudeBlocks(content: any, skipSystemBlocks = false, todoWriteTo
           ? block.content.filter((c: any) => c?.type === 'text').map((c: any) => c.text).join('\n')
           : '';
       blocks.push({ type: 'tool_result', content: resultText, toolId: block.tool_use_id });
-    } else if (block.type === 'image' && block.source?.type === 'base64' && block.source.data) {
-      const mediaType = block.source.media_type || 'image/png';
-      // Skip excessively large images (> 12MB base64 ≈ 9MB binary) to keep API payloads sane
-      if (block.source.data.length <= 12 * 1024 * 1024) {
-        blocks.push({ type: 'image', content: `data:${mediaType};base64,${block.source.data}` });
+      // Recurse into multimodal tool_result content so MCP-returned images
+      // (and any future non-text inner types) surface alongside the textual
+      // tool_result rather than being silently dropped. Skip file-reading
+      // tools — their image content is an echo, not a new asset.
+      const toolName = block.tool_use_id ? toolNamesByUseId?.get(block.tool_use_id) : undefined;
+      if (Array.isArray(block.content) && !isClaudeFileReadingTool(toolName)) {
+        for (const inner of block.content) {
+          const img = claudeImageBlockFromEntry(inner);
+          if (img) blocks.push(img);
+        }
       }
+    } else if (block.type === 'image') {
+      const img = claudeImageBlockFromEntry(block);
+      if (img) blocks.push(img);
     }
   }
   return blocks;
@@ -1104,6 +1207,23 @@ const SYSTEM_INJECTED_USER_TAGS = new Set([
   'tool-use-id',
   'output-file',
 ]);
+
+/**
+ * Detect Claude CLI's boilerplate `<synthetic>` responses that surface only
+ * because of TUI-resume bookkeeping — they carry no information for the user.
+ *
+ * The reproducible case: every `claude --resume <id>` in interactive mode
+ * writes a sentinel turn into the JSONL on startup, consisting of an
+ * `isMeta:true` user "Continue from where you left off." plus a `<synthetic>`
+ * "No response requested." acknowledgment. The print-mode driver doesn't hit
+ * this because `-p` skips the interactive resume nudge. Filtering it out here
+ * keeps the dashboard timeline clean across all driver paths.
+ */
+function isClaudeSyntheticResumeNoise(text: string): boolean {
+  const t = (text || '').trim().toLowerCase();
+  if (!t) return true;
+  return t === 'no response requested.' || t === 'no response requested';
+}
 
 /** Detect system-injected user events (compression summaries, interruption
  *  markers, task-notifications, IDE state, etc.) that should not render as a
@@ -1164,6 +1284,10 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
     const subAgentBlocksById = new Map<string, MessageBlock>();
     /** Tool ids belonging to sub-agents — their tool_results in user events are skipped from the parent activity. */
     const subAgentToolIds = new Set<string>();
+    /** Tool name keyed by tool_use_id — populated from assistant tool_use
+     *  events so the user-event tool_result loop can filter image content for
+     *  filesystem-reading tools (Read). */
+    const toolNamesByUseId = new Map<string, string>();
 
     const flush = () => {
       if (!pendingRole) return;
@@ -1181,6 +1305,7 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
       pendingUsage = null;
       subAgentBlocksById.clear();
       subAgentToolIds.clear();
+      toolNamesByUseId.clear();
     };
 
     for (const raw of lines) {
@@ -1273,6 +1398,19 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
                 if (resultText) {
                   pendingBlocks.push({ type: 'tool_result', content: resultText, toolId: toolUseId });
                 }
+                // Multimodal tool_result content from MCP servers can include
+                // image entries — surface them as siblings of the textual
+                // tool_result so the rendered turn carries the image. Skip
+                // filesystem-reading tools (Read): their image content is an
+                // echo of an existing file (e.g. the user's own attachment)
+                // and would otherwise be duplicated below the assistant text.
+                const toolName = toolNamesByUseId.get(toolUseId);
+                if (Array.isArray(block.content) && !isClaudeFileReadingTool(toolName)) {
+                  for (const inner of block.content) {
+                    const img = claudeImageBlockFromEntry(inner);
+                    if (img) pendingBlocks.push(img);
+                  }
+                }
               }
             }
             continue;
@@ -1286,8 +1424,40 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
           flush();
           const rawText = stripInjectedPrompts(extractClaudeText(ev.message?.content, true));
           const userBlocks = extractClaudeBlocks(ev.message?.content, true);
-          const imageBlocks = userBlocks.filter(b => b.type === 'image');
-          const text = rawText.replace(SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE, '').replace(/\s+/g, ' ').trim();
+          const imageBlocks: MessageBlock[] = userBlocks.filter(b => b.type === 'image');
+          // TUI mode (claude-tui.ts) persists user `content` as a plain string
+          // with leading `@/abs/path/image.png` mentions — that's how the TUI
+          // ingests local images (it can't accept stream-json image blocks like
+          // `-p` mode). The `extractClaudeBlocks` call above yields no image
+          // blocks for that shape; lift the mentions into structured image
+          // blocks via the shared pipeline so the dashboard renders thumbnails
+          // instead of raw paths. Also resolves the "first message drops the
+          // image" + "queued message drops the image" symptoms because the
+          // optimisticBridgesImages bridge (SessionPanel) was previously
+          // falling open: the server-side user text contained the @-path while
+          // the optimistic pendingPrompt did not, so the bridge's text-equality
+          // check failed and the no-image server bubble replaced the
+          // optimistic one.
+          let displayText = rawText;
+          if (typeof ev.message?.content === 'string' && imageBlocks.length === 0) {
+            const recoveredPaths = new Set<string>();
+            for (const absPath of extractClaudeAtMentionImagePaths(rawText)) {
+              const block = attachAgentImage({ imagePath: absPath });
+              if (!block) continue;
+              imageBlocks.push(block);
+              recoveredPaths.add(absPath);
+            }
+            // Only strip the mentions we successfully turned into image blocks;
+            // leave unresolved ones (file deleted/moved) in the text so the
+            // user sees what was attached even when we can't render it.
+            if (recoveredPaths.size) {
+              displayText = rawText.replace(
+                CLAUDE_AT_MENTION_IMAGE_RE,
+                (full, leading, p) => recoveredPaths.has(p) ? (leading || '') : full,
+              );
+            }
+          }
+          const text = displayText.replace(SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE, '').replace(/\s+/g, ' ').trim();
           if (text || imageBlocks.length) {
             pendingRole = 'user';
             pendingTextParts = text ? [text] : [];
@@ -1302,9 +1472,16 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
           // errors and other meaningful feedback aren't lost), but it renders
           // as a notice tile instead of impersonating a Claude turn.
           if (ev.message?.model === '<synthetic>') {
+            const noticeText = extractClaudeText(ev.message?.content, true).trim();
+            // Suppress TUI-resume startup noise. When `claude --resume <id>`
+            // boots in interactive mode it injects a sentinel turn — an
+            // `isMeta:true` user "Continue from where you left off." followed
+            // by a `<synthetic>` "No response requested." acknowledgment.
+            // This is harmless internal book-keeping; rendering it as a
+            // yellow notice on every TUI-mode turn just pollutes the UI.
+            if (isClaudeSyntheticResumeNoise(noticeText)) continue;
             if (pendingRole === 'user') flush();
             pendingRole = 'assistant';
-            const noticeText = extractClaudeText(ev.message?.content, true).trim();
             if (noticeText) pendingBlocks.push({ type: 'system_notice', content: noticeText });
             continue;
           }
@@ -1324,7 +1501,16 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
           }
           const text = extractClaudeText(ev.message?.content, true);
           if (text) pendingTextParts.push(text);
-          const blocks = extractClaudeBlocks(ev.message?.content, true, todoWriteToolIds);
+          // Record tool names from this assistant turn before extracting blocks
+          // so any tool_result that follows in a later user event can be
+          // attributed to the right tool (Read → skip image recursion, etc.).
+          const assistantContents = Array.isArray(ev.message?.content) ? ev.message.content : [];
+          for (const inner of assistantContents) {
+            if (inner?.type === 'tool_use' && typeof inner.id === 'string' && typeof inner.name === 'string') {
+              toolNamesByUseId.set(inner.id, inner.name);
+            }
+          }
+          const blocks = extractClaudeBlocks(ev.message?.content, true, todoWriteToolIds, toolNamesByUseId);
           // Convert sub-agent tool_use blocks into sub_agent placeholders we
           // can later mutate. Claude Code surfaces the Task tool as `Agent` in
           // its v2 stream format; accept both names so older sessions still
@@ -1656,6 +1842,33 @@ export function buildClaudeClearGoalPrompt(): string {
 // Driver
 // ---------------------------------------------------------------------------
 
+/**
+ * Claude turns default to the real interactive TUI under PTY — usage stays
+ * inside the Pro/Max subscription quota. `claude -p` calls (headless / print
+ * mode) bill against the separate Agent SDK credit pool that Anthropic split
+ * out on 2026-06-15, so we keep that off the hot path.
+ *
+ * Opt out to the legacy print path with `PIKICLAW_CLAUDE_PRINT=1` (also
+ * accepts `=true` / `=yes` / `=on`). For backwards compat the older
+ * `PIKICLAW_CLAUDE_TUI=0` / `=false` / `=no` / `=off` is honoured too.
+ *
+ * When TUI startup fails (node-pty missing, prebuilt helper unusable, PTY
+ * allocation refused in a sandbox, …) the dispatcher automatically falls
+ * through to the print-mode driver so pikiclaw still works — at the cost of
+ * the calls landing on the Agent SDK credit pool. The fallback is logged so
+ * users can investigate.
+ */
+export function isClaudePrintModeForced(): boolean {
+  const print = (process.env.PIKICLAW_CLAUDE_PRINT ?? '').trim().toLowerCase();
+  if (print === '1' || print === 'true' || print === 'yes' || print === 'on') return true;
+  // Legacy env var: PIKICLAW_CLAUDE_TUI=0 (or false/no/off) explicitly opts
+  // back to print mode. Truthy values are now the default behaviour and a
+  // no-op.
+  const tui = (process.env.PIKICLAW_CLAUDE_TUI ?? '').trim().toLowerCase();
+  if (tui === '0' || tui === 'false' || tui === 'no' || tui === 'off') return true;
+  return false;
+}
+
 class ClaudeDriver implements AgentDriver {
   readonly id = 'claude';
   readonly cmd = 'claude';
@@ -1668,7 +1881,20 @@ class ClaudeDriver implements AgentDriver {
   readonly acceptedProviderKinds = ['anthropic', 'openai-compatible'] as const;
 
   async doStream(opts: StreamOpts): Promise<StreamResult> {
-    return doClaudeStream(opts);
+    if (isClaudePrintModeForced()) {
+      agentLog('[claude] print mode forced via env, using -p');
+      return doClaudeStream(opts);
+    }
+    try {
+      const mod = await import('./claude-tui.js');
+      return await mod.doClaudeTuiStream(opts);
+    } catch (err: any) {
+      // TUI prerequisite failed (node-pty missing, PTY allocation refused,
+      // etc.). Fall back to print mode so pikiclaw stays functional — with
+      // the caveat that this turn lands on the Agent SDK credit pool.
+      agentWarn(`[claude] TUI unavailable (${err?.message || err}); falling back to -p — this turn bills the Agent SDK credit pool`);
+      return doClaudeStream(opts);
+    }
   }
 
   async getSessions(workdir: string, limit?: number): Promise<SessionListResult> {
@@ -1693,6 +1919,12 @@ class ClaudeDriver implements AgentDriver {
     return getClaudeUsageFromOAuth()
       || getClaudeUsageFromTelemetry(home, opts.model)
       || emptyUsage('claude', 'No recent Claude usage data found.');
+  }
+
+  async deleteNativeSession(workdir: string, sessionId: string): Promise<string[]> {
+    const file = claudeSessionTranscriptPath(workdir, sessionId);
+    if (!file || !fs.existsSync(file)) return [];
+    try { fs.rmSync(file, { force: true }); return [file]; } catch { return []; }
   }
 
   shutdown() {}

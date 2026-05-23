@@ -15,6 +15,9 @@ export interface LiveStreamView {
   plan?: StreamPlan | null;
   subAgents?: StreamSubAgent[] | null;
   error?: string | null;
+  /** Number of image-generation calls in flight — drives the
+   *  "Generating image…" chip while bytes have yet to land. */
+  generatingImages?: number;
 }
 
 export function liveStreamHasBody(stream: LiveStreamView): boolean {
@@ -144,6 +147,24 @@ export function LivePreview({
       {!stream.text && stream.phase === 'streaming' && (
         <div className="py-1">
           <ThinkingDots className="text-fg-5" />
+        </div>
+      )}
+
+      {/* Image generation in flight — surfaced as a distinct chip so the user
+          knows why the turn is taking longer than a typical text reply
+          (image_gen wall time is 60-90s). Disappears when the assistant block
+          arrives with the actual image. */}
+      {stream.phase === 'streaming' && (stream.generatingImages ?? 0) > 0 && (
+        <div className="flex items-center gap-2 text-[12px] text-fg-4">
+          <span className="relative inline-flex items-center justify-center w-3 h-3">
+            <span className="absolute inline-flex w-3 h-3 rounded-full bg-cyan-400/40 animate-ping" />
+            <span className="relative inline-block w-1.5 h-1.5 rounded-full bg-cyan-400/80" />
+          </span>
+          <span>
+            {stream.generatingImages === 1
+              ? 'Generating image…'
+              : `Generating ${stream.generatingImages} images…`}
+          </span>
         </div>
       )}
 

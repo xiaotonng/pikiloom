@@ -63,6 +63,14 @@ export interface AgentDriver {
   getUsageLive?(opts: UsageOpts): Promise<UsageResult>;
   /** Optional read-only snapshot of the agent's external config. */
   getNativeConfig?(): AgentNativeConfig | null;
+  /**
+   * Best-effort removal of the agent's native session record (Claude jsonl /
+   * Codex rollout / Gemini chat file). Returns the absolute paths removed.
+   * Drivers omit this when they have no on-disk session store. Errors should
+   * be swallowed and reflected as missing entries in the returned array —
+   * deletion is advisory cleanup, not a hard contract.
+   */
+  deleteNativeSession?(workdir: string, sessionId: string): Promise<string[]>;
   shutdown(): void;
 }
 

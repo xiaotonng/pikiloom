@@ -64,6 +64,7 @@ import {
   buildHumanLoopPromptHtml,
   buildStreamPreviewHtml,
   buildFinalReplyRender,
+  dispatchImageBlocks,
   escapeHtml,
   formatMenuLines,
   formatProviderUsageLines,
@@ -909,6 +910,20 @@ export class TelegramBot extends Bot {
         finalMsgId = await replacePreview(firstHtml);
       }
     }
+
+    // Dispatch any image MessageBlocks the agent produced this turn (Codex
+    // built-in `image_gen`, MCP / Skill tool_result images, …). Each goes out
+    // as a separate Telegram photo with the optional caption attached.
+    const dispatched = await dispatchImageBlocks(this.channel, result.assistantBlocks, {
+      chatId: ctx.chatId,
+      replyTo: finalMsgId ?? phId ?? ctx.messageId,
+      messageThreadId: opts.messageThreadId,
+      log: (message) => this.debug(message),
+    });
+    for (const entry of dispatched) {
+      if (typeof entry.messageId === 'number') remember(entry.messageId);
+    }
+
     return { primaryMessageId: finalMsgId, messageIds };
   }
 

@@ -31,6 +31,7 @@ import {
   parseGfmTable,
 } from '../../bot/render-shared.js';
 export type { FooterStatus, ProviderUsageSnapshot, StreamPreviewRenderInput } from '../../bot/render-shared.js';
+export { dispatchImageBlocks } from '../../bot/render-shared.js';
 
 export interface FinalReplyRender {
   fullHtml: string;

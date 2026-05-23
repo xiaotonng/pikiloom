@@ -411,6 +411,12 @@ export interface MessageBlock {
   phase?: 'commentary' | 'final_answer';
   plan?: StreamPlan | null;
   subAgent?: StreamSubAgent | null;
+  /** Image block: authoritative on-disk path (server-side, opaque to client). */
+  imagePath?: string;
+  /** Image block: MIME type. */
+  imageMime?: string;
+  /** Image block: optional caption (e.g. Codex `revised_prompt`). */
+  imageCaption?: string;
 }
 
 export interface RichMessage {
@@ -445,6 +451,9 @@ export interface StreamPreviewMeta {
   /** BYOK provider name (e.g. "OpenRouter") when the agent is bound to a
    *  Profile; absent for native-auth turns. Drives the "via <provider>" tag. */
   providerName?: string | null;
+  /** Number of image-generation calls currently in flight for this turn.
+   *  Renderers show a "Generating image…" indicator while > 0. */
+  generatingImages?: number;
 }
 
 export interface StreamSubAgent {

@@ -208,6 +208,7 @@ export function buildStreamPreviewMeta(s: {
   contextWindow: number | null; contextUsedTokens?: number | null;
   byokProviderName?: string | null;
   subAgents?: ReadonlyMap<string, StreamSubAgent> | null;
+  generatingImages?: number;
 }): StreamPreviewMeta {
   const ctx = computeContext(s);
   const meta: StreamPreviewMeta = {
@@ -217,6 +218,7 @@ export function buildStreamPreviewMeta(s: {
   };
   if (s.byokProviderName) meta.providerName = s.byokProviderName;
   if (s.subAgents && s.subAgents.size > 0) meta.subAgents = Array.from(s.subAgents.values());
+  if (s.generatingImages && s.generatingImages > 0) meta.generatingImages = s.generatingImages;
   return meta;
 }
 
@@ -399,10 +401,38 @@ export const SESSION_PREVIEW_IGNORED_USER_PATTERNS = [
 export const SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE = /\[Image:[^\]]+\]/gi;
 export const SESSION_PREVIEW_FILE_PLACEHOLDER_RE = /\[Attached file:[^\]]+\]/gi;
 
+/**
+ * Claude TUI mode prepends `@/abs/path/file.ext` mentions to the prompt as
+ * positional argv (see `src/agent/drivers/claude-tui.ts`) — that's how the TUI
+ * ingests local image files. The mentions end up baked into the JSONL user
+ * `content` string verbatim. This regex captures them so:
+ *   - the dashboard's user bubble (via `getClaudeSessionMessages`) can lift
+ *     them into structured `image` blocks for thumbnail rendering;
+ *   - session-list previews don't surface a long absolute path.
+ * Whitespace-free paths only — matches what `claude-tui.ts` emits.
+ */
+export const CLAUDE_AT_MENTION_IMAGE_RE = /(^|\s)@(\/[^\s@\n]+\.(?:png|jpe?g|gif|webp|svg))(?=\s|$)/gi;
+
+/** Pull the absolute paths out of every image-mention in `text`. */
+export function extractClaudeAtMentionImagePaths(text: string): string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  for (const m of text.matchAll(CLAUDE_AT_MENTION_IMAGE_RE)) out.push(m[2]);
+  return out;
+}
+
+/** Remove image @-mentions from `text` while preserving the leading boundary
+ *  character (start-of-string or whitespace) so adjacent content stays joinable. */
+export function stripClaudeAtMentionImages(text: string): string {
+  if (!text) return text;
+  return text.replace(CLAUDE_AT_MENTION_IMAGE_RE, (_full, leading) => leading || '');
+}
+
 export function sanitizeSessionUserPreviewText(text: string): string {
   const cleaned = stripInjectedPrompts(text)
     .replace(SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE, ' ')
     .replace(SESSION_PREVIEW_FILE_PLACEHOLDER_RE, ' ')
+    .replace(CLAUDE_AT_MENTION_IMAGE_RE, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (!cleaned) return '';

@@ -91,6 +91,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const [selectedEffort, setSelectedEffort] = useState('');
   const [imageAttachments, setImageAttachments] = useState<ComposerImageAttachment[]>([]);
   const [previewImageId, setPreviewImageId] = useState<string | null>(null);
+  const [queuedPreviewUrl, setQueuedPreviewUrl] = useState<string | null>(null);
   const [pendingAgent, setPendingAgent] = useState<string | null>(null);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [pendingEffort, setPendingEffort] = useState<string | null>(null);
@@ -561,7 +562,19 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     ? ''
     : (selectedEffort || currentAgent?.selectedEffort || '');
   const effortLevels = EFFORT_OPTIONS[cascadeAgentId as keyof typeof EFFORT_OPTIONS] || [];
-  const activePreview = previewImageId ? imageAttachments.find(item => item.id === previewImageId) || null : null;
+  const previewAttachment = previewImageId ? imageAttachments.find(item => item.id === previewImageId) || null : null;
+  const activePreview: LightboxSource | null = previewAttachment
+    ? {
+        key: previewAttachment.id,
+        url: previewAttachment.previewUrl,
+        name: previewAttachment.file.name,
+        size: previewAttachment.file.size,
+        file: previewAttachment.file,
+        onRemove: () => removeImageAttachment(previewAttachment.id),
+      }
+    : queuedPreviewUrl
+      ? { key: queuedPreviewUrl, url: queuedPreviewUrl }
+      : null;
   const canSend = (!!input.trim() || imageAttachments.length > 0) && !sending && !!effectiveAgent;
 
   const resetCascade = () => {
@@ -690,12 +703,15 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                     {taskImages.length > 0 && (
                       <div className="flex items-center gap-1 shrink-0">
                         {taskImages.slice(0, 3).map((url, i) => (
-                          <img
+                          <button
                             key={`${url}-${i}`}
-                            src={url}
-                            alt=""
-                            className="h-5 w-5 rounded object-cover border border-warn/30"
-                          />
+                            type="button"
+                            onClick={() => setQueuedPreviewUrl(url)}
+                            title={t('hub.previewImage')}
+                            className="block h-5 w-5 shrink-0 overflow-hidden rounded border border-warn/30 transition-opacity hover:opacity-80"
+                          >
+                            <img src={url} alt="" className="h-full w-full object-cover" />
+                          </button>
                         ))}
                         {taskImages.length > 3 && (
                           <span className="text-[10px] text-fg-5/60">+{taskImages.length - 3}</span>
@@ -1060,61 +1076,75 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
       </div>
 
       <ComposerImageLightbox
-        attachment={activePreview}
-        onClose={() => setPreviewImageId(null)}
-        onRemove={removeImageAttachment}
+        source={activePreview}
+        onClose={() => { setPreviewImageId(null); setQueuedPreviewUrl(null); }}
         t={t}
       />
     </div>
   );
 });
 
-function ComposerImageLightbox({ attachment, onClose, onRemove, t }: {
-  attachment: ComposerImageAttachment | null;
+type LightboxSource = {
+  key: string;
+  url: string;
+  name?: string;
+  size?: number;
+  file?: File;
+  onRemove?: () => void;
+};
+
+function ComposerImageLightbox({ source, onClose, t }: {
+  source: LightboxSource | null;
   onClose: () => void;
-  onRemove: (id: string) => void;
   t: (k: string) => string;
 }) {
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => { setCopied(false); }, [attachment?.id]);
+  useEffect(() => { setCopied(false); }, [source?.key]);
 
   useEffect(() => {
-    if (!attachment) return;
+    if (!source) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [attachment, onClose]);
+  }, [source, onClose]);
 
-  if (!attachment) return null;
+  if (!source) return null;
+
+  const file = source.file;
+  const onRemove = source.onRemove;
 
   return createPortal(
     <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/72 px-4 py-6 backdrop-blur-sm" onClick={onClose}>
       <div className="w-full max-w-[1024px]" onClick={e => e.stopPropagation()}>
         <div className="mb-3 flex items-center gap-2 text-[11px] text-white/72">
-          <span className="truncate font-medium text-white/90">{attachment.file.name}</span>
-          <span>{formatFileSize(attachment.file.size)}</span>
+          {source.name && <span className="truncate font-medium text-white/90">{source.name}</span>}
+          {typeof source.size === 'number' && <span>{formatFileSize(source.size)}</span>}
           <div className="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              onClick={async () => {
-                if (!await copyImageFile(attachment.file)) return;
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1600);
-              }}
-              className="rounded-lg border border-white/12 bg-white/10 px-3 py-1.5 text-[11px] font-medium text-white/88 transition-colors hover:bg-white/14"
-            >
-              {copied ? t('hub.copied') : t('hub.copyImage')}
-            </button>
-            <button
-              type="button"
-              onClick={() => onRemove(attachment.id)}
-              className="rounded-lg border border-white/12 bg-white/10 px-3 py-1.5 text-[11px] font-medium text-white/88 transition-colors hover:bg-white/14"
-            >
-              {t('hub.removeImage')}
-            </button>
+            {file && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!await copyImageFile(file)) return;
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1600);
+                }}
+                className="rounded-lg border border-white/12 bg-white/10 px-3 py-1.5 text-[11px] font-medium text-white/88 transition-colors hover:bg-white/14"
+              >
+                {copied ? t('hub.copied') : t('hub.copyImage')}
+              </button>
+            )}
+            {onRemove && (
+              <button
+                type="button"
+                onClick={onRemove}
+                className="rounded-lg border border-white/12 bg-white/10 px-3 py-1.5 text-[11px] font-medium text-white/88 transition-colors hover:bg-white/14"
+              >
+                {t('hub.removeImage')}
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -1128,7 +1158,7 @@ function ComposerImageLightbox({ attachment, onClose, onRemove, t }: {
           </div>
         </div>
         <div className="overflow-hidden rounded-xl border border-white/10 bg-black/35 shadow-[0_20px_70px_rgba(0,0,0,0.45)]">
-          <img src={attachment.previewUrl} alt={attachment.file.name} className="max-h-[80vh] w-full object-contain" />
+          <img src={source.url} alt={source.name || ''} className="max-h-[80vh] w-full object-contain" />
         </div>
       </div>
     </div>,

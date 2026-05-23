@@ -272,7 +272,34 @@ class FeishuChannel extends Channel {
     editMessages: true,
     commandMenu: true,
     messageReactions: true,
+    sendImage: true,
   };
+
+  /** Implementation of Channel.sendImage — uploads the buffer as an image
+   *  message. When a caption is supplied, falls back to a post with both an
+   *  img tag and a text line (Feishu's `msg_type:'image'` doesn't have a
+   *  native caption field). */
+  override async sendImage(
+    chatId: number | string,
+    bytes: Buffer,
+    opts: { mime: string; caption?: string; replyTo?: number | string; messageThreadId?: number; filename?: string },
+  ): Promise<string | null> {
+    const caption = opts.caption?.trim() || '';
+    const replyTo = opts.replyTo ? String(opts.replyTo) : undefined;
+    const imageKey = await this.uploadImage(bytes);
+    if (caption) {
+      return await this.sendPost(String(chatId), buildPostContent([
+        [{ tag: 'img', image_key: imageKey }],
+        [{ tag: 'text', text: caption }],
+      ]), { replyTo });
+    }
+    const msgContent = JSON.stringify({ image_key: imageKey });
+    this._logOutgoing('sendImage', `${replyTo ? `reply_to=${replyTo}` : `chat=${chatId}`} bytes=${bytes.byteLength}`);
+    const resp = replyTo
+      ? await this.client.im.message.reply({ path: { message_id: replyTo }, data: { msg_type: 'image', content: msgContent } })
+      : await this.client.im.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: String(chatId), msg_type: 'image', content: msgContent } });
+    return requireMessageId(resp, 'send image');
+  }
 
   private appId: string;
   private appSecret: string;

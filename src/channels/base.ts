@@ -18,6 +18,8 @@ export interface ChannelCapabilities {
   typingIndicators: boolean;
   commandMenu: boolean;
   messageReactions: boolean;
+  /** Channel can send image bytes inline (vs only sending file references). */
+  sendImage: boolean;
 }
 
 export const DEFAULT_CHANNEL_CAPABILITIES: ChannelCapabilities = Object.freeze({
@@ -25,6 +27,7 @@ export const DEFAULT_CHANNEL_CAPABILITIES: ChannelCapabilities = Object.freeze({
   typingIndicators: false,
   commandMenu: false,
   messageReactions: false,
+  sendImage: false,
 });
 
 export type ChannelCapability = keyof ChannelCapabilities;
@@ -53,6 +56,23 @@ export abstract class Channel {
   abstract editMessage(chatId: number | string, msgId: number | string, text: string, opts?: SendOpts): Promise<void>;
   abstract deleteMessage(chatId: number | string, msgId: number | string): Promise<void>;
   abstract sendTyping(chatId: number | string, opts?: SendOpts): Promise<void>;
+
+  /**
+   * Send an image given in-memory bytes. Default implementation throws — only
+   * channels whose `capabilities.sendImage` is true must override. The bot
+   * uses `supportsChannelCapability(ch, 'sendImage')` to gate dispatch.
+   *
+   * `mime` is the explicit MIME type (e.g. `image/png`) so subclasses can pick
+   * the right native upload primitive (Telegram sendPhoto vs sendDocument;
+   * Feishu uploadImage `image_type=message`; WeChat image message vs file).
+   */
+  async sendImage(
+    _chatId: number | string,
+    _bytes: Buffer,
+    _opts: { mime: string; caption?: string; replyTo?: number | string; messageThreadId?: number; filename?: string },
+  ): Promise<number | string | null> {
+    throw new Error(`${this.constructor.name} does not implement sendImage`);
+  }
 
   async setMenu(_commands: MenuCommand[]): Promise<void> {}
   async clearMenu(): Promise<void> {}

@@ -20,7 +20,7 @@ import type {
   ModelListOpts, ModelListResult, ModelInfo, UsageOpts, UsageResult,
   SessionListOpts, SessionListResult, SessionTailOpts, SessionTailResult,
   SessionMessagesOpts, SessionMessagesResult,
-  StreamPreviewMeta, StreamSubAgent,
+  StreamPreviewMeta, StreamSubAgent, MessageBlock,
 } from './types.js';
 import {
   Q, agentLog, agentWarn, agentError, joinErrorMessages, normalizeErrorMessage,
@@ -229,6 +229,10 @@ export async function run(
     geminiToolsById: new Map<string, { name: string; summary: string }>(),
     // Claude-only: sub-agent invocations from the Task tool. Other drivers leave it empty.
     subAgents: new Map<string, StreamSubAgent>(),
+    // Image blocks collected during the stream (assistant images, MCP tool
+    // results, …). Surfaced on the StreamResult so IM channels can dispatch
+    // them at end-of-turn without re-reading the session file.
+    imageBlocks: [] as MessageBlock[],
     // Wired to opts.onSessionId so parsers can broadcast id changes the instant
     // the CLI surfaces them (see emitSessionIdUpdate in agent/utils.ts).
     _emitSessionId: opts.onSessionId ?? null,
@@ -349,6 +353,7 @@ export async function run(
     cacheCreationInputTokens: s.cacheCreationInputTokens, contextWindow: s.contextWindow,
     ...computeContext(s), codexCumulative: s.codexCumulative, error, stopReason: s.stopReason,
     incomplete, activity: s.activity.trim() || null,
+    assistantBlocks: s.imageBlocks.length ? [...s.imageBlocks] : undefined,
   };
 }
 

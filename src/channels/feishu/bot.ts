@@ -63,6 +63,7 @@ import {
   buildInitialPreviewMarkdown,
   buildHumanLoopPromptMarkdown,
   buildFinalReplyRender,
+  dispatchImageBlocks,
   renderCommandNotice,
   renderCommandSelectionCard,
   renderSessionTurnMarkdown,
@@ -957,6 +958,17 @@ export class FeishuBot extends Bot {
           if (sent) messageIds.push(sent);
         }
       }
+    }
+
+    // Dispatch any image MessageBlocks the agent produced this turn.
+    const lastId = messageIds[messageIds.length - 1];
+    const dispatched = await dispatchImageBlocks(this.channel, result.assistantBlocks, {
+      chatId: ctx.chatId,
+      replyTo: lastId,
+      log: (message) => this.debug(message),
+    });
+    for (const entry of dispatched) {
+      if (typeof entry.messageId === 'string') messageIds.push(entry.messageId);
     }
 
     return messageIds;

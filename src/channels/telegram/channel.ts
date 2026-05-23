@@ -250,6 +250,17 @@ function mimeTypeForFilename(filename: string): string {
   }
 }
 
+function extForMime(mime: string): string {
+  switch (mime.toLowerCase()) {
+    case 'image/png': return '.png';
+    case 'image/webp': return '.webp';
+    case 'image/gif': return '.gif';
+    case 'image/jpeg':
+    case 'image/jpg': return '.jpg';
+    default: return '.bin';
+  }
+}
+
 function isPollingConflictError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? '');
   return msg.startsWith('Telegram polling conflict:');
@@ -266,7 +277,26 @@ class TelegramChannel extends Channel {
     typingIndicators: true,
     commandMenu: true,
     messageReactions: true,
+    sendImage: true,
   };
+
+  /** Implementation of Channel.sendImage — wraps sendPhoto with an explicit
+   *  byte buffer + MIME. Used by the bot's final-reply dispatcher for image
+   *  MessageBlocks produced by the agent. */
+  override async sendImage(
+    chatId: number | string,
+    bytes: Buffer,
+    opts: { mime: string; caption?: string; replyTo?: number | string; messageThreadId?: number; filename?: string },
+  ): Promise<number | null> {
+    const filename = opts.filename || `image${extForMime(opts.mime)}`;
+    return this.sendPhoto(chatId, bytes, {
+      caption: opts.caption,
+      replyTo: opts.replyTo,
+      messageThreadId: opts.messageThreadId,
+      filename,
+      mimeType: opts.mime,
+    });
+  }
 
   private token: string;
   private base: string;

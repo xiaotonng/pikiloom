@@ -24,7 +24,7 @@ npx pikiclaw@latest
 <b>English</b> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<img src="docs/workspace.png" alt="Workspace" width="780">
+<img src="docs/promo-dashboard-workspace.png" alt="Workspace" width="780">
 
 </div>
 
@@ -312,8 +312,6 @@ The shape that truly matters: **You never have to leave your preferred environme
 - **Deeper Model Wrapping** — Building agent-on-arbitrary-model wrappers to support a wider array of domestic and open-source models seamlessly.
 - **Richer Tool Ecosystem** — Releasing official MCP packs, skill templates, and a community marketplace.
 - **Cross-Platform Computer-Use** — Extending desktop control drivers beyond macOS to support Windows and Linux.
-
-For protocol-level insights, see our [ACP Migration Plan](docs/acp-migration.md).
 
 ---
 

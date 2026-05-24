@@ -24,7 +24,7 @@ npx pikiclaw@latest
 <a href="README.md">English</a> | <b>简体中文</b>
 </p>
 
-<img src="docs/workspace.png" alt="工作区" width="780">
+<img src="docs/promo-dashboard-workspace.png" alt="工作区" width="780">
 
 </div>
 
@@ -311,8 +311,6 @@ docker run -d --name pikiclaw -p 3939:3939 \
 - **深化模型层包装** —— 构建基于任意模型的通用 Agent Wrapper，以便无缝驱动更多优秀的国产模型。
 - **完善工具生态** —— 推出官方推荐的 MCP 插件合集、Skill 模版库及社区应用市场。
 - **全平台的 Computer-use** —— 在已有的 macOS Peekaboo 驱动之外，加入适配 Windows / Linux 操作系统的桌面控制支持。
-
-想了解协议层的下一步动作，请参阅 [ACP 迁移计划](docs/acp-migration.md)。
 
 ---
 

@@ -18,15 +18,18 @@ export interface ActivitySummary {
 }
 
 /**
- * Shrink absolute paths that bloat IM cards on small screens. Anything past
- * 48 chars collapses to `…/<last-two-segments>` so directory context is kept
- * while the leading `/Users/…/long/project/root/` noise is dropped. Relative
- * paths and short absolute paths are passed through unchanged.
+ * Shrink absolute paths that bloat IM cards on small screens. Any absolute
+ * path with 4+ segments collapses to `…/<last-two-segments>` so directory
+ * context is kept while the leading `/Users/…/long/project/root/` noise is
+ * dropped. Length-based gating made the output inconsistent — borderline
+ * paths (47 chars) sat next to compacted ones (52 chars), making the activity
+ * list look broken. Relative paths and short paths (<4 segments, e.g.
+ * `~/foo`, `/tmp/x.log`) are passed through unchanged.
  */
 function compactActivityPath(token: string): string {
-  if (token.length <= 48 || !token.includes('/')) return token;
+  if (!token.includes('/')) return token;
   const segments = token.split('/').filter(Boolean);
-  if (segments.length < 2) return token;
+  if (segments.length < 4) return token;
   const tail = segments.slice(-2).join('/');
   return `…/${tail}`;
 }
@@ -43,6 +46,12 @@ function compactPathsInActivityLine(line: string): string {
 }
 
 const TOOL_DONE_RE = /^(.+?)\s+(done|failed)$/;
+/** "X -> Y" pattern produced by `summarizeClaudeToolResult` for tools whose
+ *  result has body text (im_ask_user, ToolSearch, MCP tools, …). The Y half
+ *  is the tool's response — capturing it lets us collapse the pre-event
+ *  (`Ask user: q`) and the post-event (`Ask user: q -> A: …`) into a single
+ *  line in the narrative instead of leaving both sitting around. */
+const TOOL_ARROW_RE = /^(.+?)\s*->\s*(.+)$/;
 
 const INJECTED_PROMPT_MARKERS = [
   '\n[Session Workspace]',
@@ -185,6 +194,21 @@ export function parseActivitySummary(activity: string): ActivitySummary {
       continue;
     }
 
+    // Pair "X" → "X -> Y" (im_ask_user, ToolSearch, MCP tools, … — any tool
+    // whose summarizeClaudeToolResult fell into the arrow branch). Without
+    // this, the IM card shows the question and the answered form side by
+    // side. We replace the pending entry with the full arrow form so the
+    // narrative carries the answer in a single line.
+    const arrowMatch = line.match(TOOL_ARROW_RE);
+    if (arrowMatch) {
+      const baseKey = arrowMatch[1].trim();
+      const idx = popPending(baseKey);
+      if (idx != null) {
+        narrative[idx] = line;
+        continue;
+      }
+    }
+
     pushPending(line, narrative.length);
     narrative.push(line);
   }
@@ -193,7 +217,38 @@ export function parseActivitySummary(activity: string): ActivitySummary {
     activeCommands += pending;
   }
 
-  return { narrative, failedCommands, completedCommands, activeCommands };
+  return { narrative: collapseConsecutiveDuplicates(narrative), failedCommands, completedCommands, activeCommands };
+}
+
+/**
+ * Walk the narrative and collapse runs of identical lines into `X ×N`. The
+ * input narrative often contains repeats when the model calls the same tool
+ * multiple times in a row (two consecutive `Edit README.md`, three `Read X`,
+ * …) — listing them N times wastes IM card real estate without adding
+ * information. Non-adjacent duplicates are preserved to keep the temporal
+ * order intact.
+ */
+function collapseConsecutiveDuplicates(narrative: string[]): string[] {
+  const out: string[] = [];
+  let runStart = -1;
+  let runCount = 0;
+  const flush = () => {
+    if (runStart < 0) return;
+    out.push(runCount > 1 ? `${narrative[runStart]} ×${runCount}` : narrative[runStart]);
+    runStart = -1;
+    runCount = 0;
+  };
+  for (let i = 0; i < narrative.length; i++) {
+    if (runStart >= 0 && narrative[i] === narrative[runStart]) {
+      runCount++;
+      continue;
+    }
+    flush();
+    runStart = i;
+    runCount = 1;
+  }
+  flush();
+  return out;
 }
 
 export function formatActivityCommandSummary(completedCommands: number, activeCommands: number, failedCommands = 0): string {

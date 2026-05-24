@@ -170,6 +170,18 @@ function requireMessageId(resp: any, action: string): string {
   throw new Error(`${action} failed: code=${code ?? '?'} msg=${msg}`);
 }
 
+/** Treat "card content didn't change" responses as a successful no-op edit. */
+function isFeishuNotModifiedMessage(msg: string): boolean {
+  if (!msg) return false;
+  const lower = msg.toLowerCase();
+  return lower.includes('not modified')
+    || lower.includes('not modify')
+    || lower.includes('content not change')
+    || lower.includes('same content')
+    || lower.includes('same as before')
+    || lower.includes('no change');
+}
+
 function buildPostContent(paragraphs: Array<Array<Record<string, unknown>>>, title = ''): string {
   return JSON.stringify({
     zh_cn: {
@@ -738,15 +750,30 @@ class FeishuChannel extends Channel {
 
     const card = buildCardFromView(view);
     this._logOutgoing('edit', `chat=${chatId} msg_id=${msgId} chars=${view.markdown.length} rows=${view.rows?.length || 0}`);
+    // The Lark SDK's response interceptor returns the JSON body for any HTTP 2xx, so
+    // Feishu application errors (`code != 0`) never throw — they look like success here.
+    // Inspect the response code ourselves so callers can fall back to a fresh send.
+    let resp: any;
     try {
-      await this.client.im.message.patch({
+      resp = await this.client.im.message.patch({
         path: { message_id: String(msgId) },
         data: { content: JSON.stringify(card) },
       });
     } catch (e: any) {
       const msg = String(e?.message || e).toLowerCase();
-      if (msg.includes('not modified') || msg.includes('edit is not allowed')) return;
-      throw e;
+      if (isFeishuNotModifiedMessage(msg)) return;
+      const err: any = e instanceof Error ? e : new Error(String(e ?? 'edit card failed'));
+      err.feishuEditFailed = true;
+      throw err;
+    }
+    const code = resp?.code;
+    if (code != null && code !== 0) {
+      const msg = String(resp?.msg ?? resp?.message ?? '').trim();
+      if (isFeishuNotModifiedMessage(msg)) return;
+      const err: any = new Error(`edit card failed: code=${code} msg=${msg || '(no message)'}`);
+      err.feishuCode = code;
+      err.feishuEditFailed = true;
+      throw err;
     }
   }
 

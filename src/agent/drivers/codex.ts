@@ -542,6 +542,34 @@ function buildCodexImageBlock(sessionId: string, payload: any, phase?: 'commenta
   return attachAgentImage({ imagePath: filePath, caption, phase });
 }
 
+/**
+ * Idempotently push the image MessageBlock for a Codex `image_gen` call to the
+ * stream state. Returns true if a block was emitted on this invocation.
+ *
+ * Codex emits image_generation_call across several inconsistent paths depending
+ * on the app-server build: `item/started`, `item/completed`, and
+ * `rawResponseItem/completed` may all fire — or some may be skipped (we've seen
+ * runs where only `image_generation_end` lands and the response item is frozen
+ * at status="generating", so no completion notification ever arrives). This
+ * helper lets every code path call into one place; the pendingImageGen map is
+ * the source of truth for "not yet emitted." On success we drop the pending
+ * entry and decrement the in-flight counter; on miss (file not yet on disk) we
+ * leave the entry so a later event — or the turn-end drain — can retry.
+ */
+function tryEmitCodexImageBlock(s: CodexStreamState, callId: string, revisedPrompt?: string): boolean {
+  if (!callId || !s.sessionId) return false;
+  const pending = s.pendingImageGen.get(callId);
+  if (!pending) return false;
+  const prompt = revisedPrompt ?? pending.revisedPrompt;
+  const block = buildCodexImageBlock(s.sessionId, { id: callId, revised_prompt: prompt });
+  if (!block) return false;
+  s.pendingImageGen.delete(callId);
+  if (s.generatingImages > 0) s.generatingImages--;
+  s.imageBlocks.push(block);
+  pushRecentActivity(s.recentNarrative, 'Image ready');
+  return true;
+}
+
 function buildCodexAssistantText(blocks: MessageBlock[]): string {
   const finalText = blocks
     .filter(block => block.type === 'text' && block.phase === 'final_answer' && block.content.trim())
@@ -1019,12 +1047,18 @@ function handleItemStarted(item: any, s: CodexStreamState, emit: () => void): vo
   // bytes are being written. Item id naming differs across Codex versions
   // (`imageGenerationCall` / `image_generation_call`); accept either form.
   if (item.id && (item.type === 'imageGenerationCall' || item.type === 'image_generation_call')) {
-    s.generatingImages++;
+    if (!s.pendingImageGen.has(item.id)) s.generatingImages++;
     s.pendingImageGen.set(item.id, {
       revisedPrompt: typeof item.revisedPrompt === 'string' ? item.revisedPrompt
         : typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
     });
     pushRecentActivity(s.recentNarrative, 'Generating image...');
+    // Some codex builds never fire a "completed" event for image_generation_call
+    // (rollout shows the item frozen at status="generating"). The PNG is on
+    // disk by the time item/started lands, so try an opportunistic emit here;
+    // tryEmit is a no-op when the file isn't ready yet — handleItemCompleted /
+    // rawResponseItem/completed / the turn-end drain will pick it up later.
+    tryEmitCodexImageBlock(s, item.id);
     emit();
   }
 }
@@ -1061,6 +1095,11 @@ function handleItemCompleted(item: any, s: CodexStreamState, emit: () => void): 
     pushRecentActivity(s.recentNarrative, summarizeCodexFileChange(item));
     emit();
   }
+  if (item.id && (item.type === 'imageGenerationCall' || item.type === 'image_generation_call')) {
+    const revised = typeof item.revised_prompt === 'string' ? item.revised_prompt
+      : typeof item.revisedPrompt === 'string' ? item.revisedPrompt : undefined;
+    if (tryEmitCodexImageBlock(s, item.id, revised)) emit();
+  }
 }
 
 function handleRawResponseItemCompleted(item: any, s: CodexStreamState, emit: () => void): void {
@@ -1086,22 +1125,13 @@ function handleRawResponseItemCompleted(item: any, s: CodexStreamState, emit: ()
     const callId = typeof item.id === 'string' ? item.id
       : typeof item.call_id === 'string' ? item.call_id : '';
     if (callId) {
-      // Merge a revised_prompt from the start event (if we recorded one) with
-      // anything on the completion item — different Codex builds emit it on
-      // different events.
-      const pending = s.pendingImageGen.get(callId);
-      s.pendingImageGen.delete(callId);
-      if (s.generatingImages > 0) s.generatingImages--;
+      // Merge revised_prompt from this event with anything we stashed earlier —
+      // different Codex builds attach it on different events. Idempotent helper
+      // handles the dedupe against item/started + handleItemCompleted paths.
       const revisedPrompt = typeof item.revised_prompt === 'string' ? item.revised_prompt
         : typeof item.revisedPrompt === 'string' ? item.revisedPrompt
-        : pending?.revisedPrompt;
-      if (s.sessionId) {
-        const block = buildCodexImageBlock(s.sessionId, { id: callId, revised_prompt: revisedPrompt });
-        if (block) {
-          s.imageBlocks.push(block);
-          pushRecentActivity(s.recentNarrative, 'Image ready');
-        }
-      }
+        : undefined;
+      tryEmitCodexImageBlock(s, callId, revisedPrompt);
       emit();
       return;
     }
@@ -1400,6 +1430,14 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
 
     if (!s.text.trim() && s.msgs.length) s.text = s.msgs.join('\n\n');
     if (!s.thinking.trim() && s.thinkParts.length) s.thinking = s.thinkParts.join('\n\n');
+    // Drain any image_gen calls that started but never received a completion
+    // event. We've observed runs where the response_item stays at
+    // status="generating" and no `rawResponseItem/completed` fires — the PNG
+    // is on disk, we just never got told to emit it. Try once at turn end;
+    // tryEmit is a no-op for already-emitted entries.
+    for (const callId of [...s.pendingImageGen.keys()]) {
+      tryEmitCodexImageBlock(s, callId);
+    }
 
     const ok = s.turnStatus === 'completed' && !timedOut && !interrupted;
     const error = s.turnError

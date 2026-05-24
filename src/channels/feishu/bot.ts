@@ -588,7 +588,7 @@ export class FeishuBot extends Bot {
     const markdown = `${buildHumanLoopPromptMarkdown(prompt)}${suffix ? `\n\n*${suffix}*` : ''}`;
     await this.channel.editMessage(chatId, String(messageId), markdown, {
       keyboard: this.buildHumanLoopKeyboard(promptId),
-    }).catch(() => {});
+    }).catch(err => this.debug(`[human-loop] refresh edit failed chat=${chatId} prompt=${promptId}: ${err?.message || err}`));
   }
 
   private async finalizeHumanLoopPrompt(prompt: ReturnType<FeishuBot['humanLoopPrompt']>, suffix: string) {
@@ -598,7 +598,7 @@ export class FeishuBot extends Bot {
     const markdown = `${buildHumanLoopPromptMarkdown(prompt)}\n\n*${suffix}*`;
     await this.channel.editMessage(prompt.chatId, String(messageId), markdown, {
       keyboard: { rows: [] },
-    }).catch(() => {});
+    }).catch(err => this.debug(`[human-loop] finalize edit failed chat=${prompt.chatId} prompt=${prompt.promptId}: ${err?.message || err}`));
   }
 
   protected override async renderInteractionPrompt(prompt: HumanLoopPromptState<string>, chatId: string): Promise<void> {
@@ -734,7 +734,11 @@ export class FeishuBot extends Bot {
         // Task is now running — update keyboard from Recall/Steer to Stop
         const runningKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId));
         if (placeholderId && waiting) {
-          try { await this.channel.editMessage(ctx.chatId, placeholderId, buildInitialPreviewMarkdown(session.agent, model, effort, false), { keyboard: runningKeyboard }); } catch {}
+          try {
+            await this.channel.editMessage(ctx.chatId, placeholderId, buildInitialPreviewMarkdown(session.agent, model, effort, false), { keyboard: runningKeyboard });
+          } catch (e: any) {
+            this.debug(`[handleMessage] queued→running keyboard refresh failed task=${taskId} placeholder=${placeholderId}: ${e?.message || e}`);
+          }
         }
         if (placeholderId) {
           livePreview = new LivePreview({
@@ -774,7 +778,8 @@ export class FeishuBot extends Bot {
             sessionId: result.sessionId || session.sessionId,
             incomplete: true,
           });
-          const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, placeholderId, livePreview);
+          const freezePlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
+          const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, freezePlaceholderId, livePreview);
           this.registerSessionMessages(ctx.chatId, frozenMessageIds, session);
           this.debug(`[handleMessage] steer handoff preserved previous preview chat=${ctx.chatId} task=${taskId}`);
           return;
@@ -785,7 +790,10 @@ export class FeishuBot extends Bot {
           incomplete: !!result.incomplete,
           ...(result.ok ? {} : { error: result.error || result.message }),
         });
-        const finalReplyIds = await this.sendFinalReply(ctx, placeholderId, session.agent, result);
+        // If LivePreview already gave up on the placeholder (Feishu rejected too
+        // many consecutive edits) skip the doomed edit attempt and send fresh.
+        const effectivePlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
+        const finalReplyIds = await this.sendFinalReply(ctx, effectivePlaceholderId, session.agent, result);
         this.registerSessionMessages(ctx.chatId, finalReplyIds, session);
         this.debug(
           `[handleMessage] end chat=${ctx.chatId} agent=${session.agent} ok=${result.ok} session=${result.sessionId || session.sessionId || '(new)'} ` +
@@ -794,12 +802,13 @@ export class FeishuBot extends Bot {
         );
         await this.notifyBackgroundCompletion(ctx, session, taskId, { result });
       } catch (e: any) {
+        const fallbackPlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
         if (task?.freezePreviewOnAbort && abortController.signal.aborted) {
           this.emitStreamDone(taskId, session.key, {
             sessionId: session.sessionId,
             incomplete: true,
           });
-          const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, placeholderId, livePreview);
+          const frozenMessageIds = await this.freezeSteerHandoffPreview(ctx, fallbackPlaceholderId, livePreview);
           this.registerSessionMessages(ctx.chatId, frozenMessageIds, session);
           this.debug(`[handleMessage] steer handoff preserved preview after abort chat=${ctx.chatId} task=${taskId}`);
           return;
@@ -815,15 +824,8 @@ export class FeishuBot extends Bot {
           `elapsed=${((Date.now() - start) / 1000).toFixed(1)}s error="${msgText.slice(0, 240)}" tools=-`,
         );
         const errorText = `**Error**\n\n\`${msgText.slice(0, 500)}\``;
-        if (placeholderId) {
-          try {
-            await this.channel.editMessage(ctx.chatId, placeholderId, errorText);
-          } catch {
-            await this.channel.send(ctx.chatId, errorText).catch(() => null);
-          }
-        } else {
-          await this.channel.send(ctx.chatId, errorText).catch(() => null);
-        }
+        await this.editOrSendFresh(ctx.chatId, fallbackPlaceholderId, errorText, { logTag: 'final-error' })
+          .catch(err => this.debug(`[handleMessage] error reply send failed chat=${ctx.chatId}: ${err?.message || err}`));
         await this.notifyBackgroundCompletion(ctx, session, taskId, { errorMessage: msgText, elapsedMs: Date.now() - start });
       } finally {
         livePreview?.dispose();
@@ -883,6 +885,45 @@ export class FeishuBot extends Bot {
     }
   }
 
+  /** Edit the placeholder if possible; otherwise send `text` as a fresh card
+   *  anchored to the placeholder so the user always sees the result. Returns
+   *  the message id that now carries `text` (the placeholder id if the edit
+   *  succeeded, or a newly-created id on fallback). */
+  private async editOrSendFresh(
+    chatId: string,
+    placeholderId: string | null,
+    text: string,
+    opts: { keyboard?: { rows: any[] }; logTag?: string } = {},
+  ): Promise<string | null> {
+    const tag = opts.logTag || 'editOrSendFresh';
+    if (placeholderId) {
+      try {
+        await this.channel.editMessage(chatId, placeholderId, text, opts.keyboard ? { keyboard: opts.keyboard } : undefined);
+        return placeholderId;
+      } catch (e: any) {
+        this.debug(`[${tag}] placeholder edit failed, falling back to send chat=${chatId} placeholder=${placeholderId}: ${e?.message || e}`);
+      }
+      // Try anchoring the fresh send to the placeholder so the result stays in
+      // the same visual thread.
+      try {
+        const sent = await this.channel.send(chatId, text, {
+          replyTo: placeholderId,
+          keyboard: opts.keyboard,
+        });
+        if (sent) return sent;
+      } catch (e: any) {
+        this.debug(`[${tag}] reply send failed, dropping reply anchor chat=${chatId} placeholder=${placeholderId}: ${e?.message || e}`);
+      }
+    }
+    // Last resort: standalone fresh card.
+    try {
+      return await this.channel.send(chatId, text, { keyboard: opts.keyboard });
+    } catch (e: any) {
+      this.warn(`[${tag}] all send paths failed chat=${chatId}: ${e?.message || e}`);
+      return null;
+    }
+  }
+
   private async freezeSteerHandoffPreview(
     ctx: FeishuContext,
     placeholderId: string | null,
@@ -891,14 +932,11 @@ export class FeishuBot extends Bot {
     if (!placeholderId) return [];
     const previewMarkdown = livePreview?.getRenderedPreview()?.trim() || '';
     if (!previewMarkdown) return [placeholderId];
-    try {
-      await this.channel.editMessage(ctx.chatId, placeholderId, previewMarkdown, {
-        keyboard: { rows: [] },
-      });
-      return [placeholderId];
-    } catch {
-      return [];
-    }
+    const finalId = await this.editOrSendFresh(ctx.chatId, placeholderId, previewMarkdown, {
+      keyboard: { rows: [] },
+      logTag: 'freeze-steer',
+    });
+    return finalId ? [finalId] : [];
   }
 
   private async sendFinalReply(
@@ -912,16 +950,10 @@ export class FeishuBot extends Bot {
 
     const MAX_CARD = FEISHU_BOT_CARD_MAX;
     if (rendered.fullText.length <= MAX_CARD) {
-      // Fits in one card — edit the placeholder
-      if (placeholderId) {
-        try {
-          await this.channel.editMessage(ctx.chatId, placeholderId, rendered.fullText);
-          messageIds.push(placeholderId);
-          return messageIds;
-        } catch {}
-      }
-      const sent = await this.channel.send(ctx.chatId, rendered.fullText);
-      if (sent) messageIds.push(sent);
+      // Fits in one card — try to edit the placeholder, fall back to a fresh
+      // card if Feishu rejected the patch (message too old, recalled, ...).
+      const finalId = await this.editOrSendFresh(ctx.chatId, placeholderId, rendered.fullText, { logTag: 'final-reply' });
+      if (finalId) messageIds.push(finalId);
     } else {
       // Split: first card has header + truncated body + footer, continuation as separate cards
       const maxFirst = MAX_CARD - rendered.headerText.length - rendered.footerText.length;
@@ -938,18 +970,8 @@ export class FeishuBot extends Bot {
       }
 
       const firstText = `${rendered.headerText}${firstBody}${rendered.footerText}`;
-      if (placeholderId) {
-        try {
-          await this.channel.editMessage(ctx.chatId, placeholderId, firstText);
-          messageIds.push(placeholderId);
-        } catch {
-          const sent = await this.channel.send(ctx.chatId, firstText);
-          if (sent) messageIds.push(sent);
-        }
-      } else {
-        const sent = await this.channel.send(ctx.chatId, firstText);
-        if (sent) messageIds.push(sent);
-      }
+      const firstId = await this.editOrSendFresh(ctx.chatId, placeholderId, firstText, { logTag: 'final-reply-head' });
+      if (firstId) messageIds.push(firstId);
 
       if (remaining.trim()) {
         const chunks = splitText(remaining, MAX_CARD);

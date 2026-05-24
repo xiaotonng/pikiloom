@@ -94,6 +94,9 @@ export class LivePreview {
   private latestActivity = '';
   private latestMeta: StreamPreviewMeta | null = null;
   private latestPlan: StreamPreviewPlan | null = null;
+  private consecutiveEditFailures = 0;
+  private placeholderAbandoned = false;
+  private static readonly MAX_CONSECUTIVE_EDIT_FAILURES = 3;
 
   constructor(options: LivePreviewOptions) {
     this.agent = options.agent;
@@ -232,6 +235,7 @@ export class LivePreview {
 
   private queuePreviewEdit(force = false) {
     if (!this.canEditMessages || this.placeholderMessageId == null) return;
+    if (this.placeholderAbandoned) return;
     const placeholderMessageId = this.placeholderMessageId;
     const preview = this.renderPreview();
     if (!preview) return;
@@ -244,12 +248,25 @@ export class LivePreview {
       .catch(() => {})
       .then(async () => {
         if (version !== this.previewVersion) return;
+        if (this.placeholderAbandoned) return;
         try {
           await this.channel.editMessage(this.chatId, placeholderMessageId, preview, { parseMode: this.parseMode, keyboard: this.keyboard });
+          this.consecutiveEditFailures = 0;
         } catch (error: any) {
-          this.log(`stream edit err: ${error?.message || error}`);
+          this.consecutiveEditFailures++;
+          this.log(`stream edit err (${this.consecutiveEditFailures}/${LivePreview.MAX_CONSECUTIVE_EDIT_FAILURES}): ${error?.message || error}`);
+          if (this.consecutiveEditFailures >= LivePreview.MAX_CONSECUTIVE_EDIT_FAILURES) {
+            this.placeholderAbandoned = true;
+            this.log(`placeholder abandoned after ${this.consecutiveEditFailures} consecutive failures — finalReply will fall back to a fresh card`);
+          }
         }
       });
+  }
+
+  /** True when streaming gave up on the placeholder (e.g. Feishu rejected too many
+   *  consecutive edits). The owner should send the final reply as a fresh card. */
+  isPlaceholderAbandoned(): boolean {
+    return this.placeholderAbandoned;
   }
 
   private async flushPreviewEdits() {

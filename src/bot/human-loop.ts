@@ -44,6 +44,13 @@ export interface HumanLoopPromptState<ChatId = number | string> {
   resolve: (response: Record<string, any> | null) => void;
   reject: (error: Error) => void;
   messageIds: Array<number | string>;
+  /**
+   * Internal pickers (channel-local command UIs) borrow the human-loop state
+   * machine without being a real "agent asked a question" event. When true,
+   * the post-resolution decision-echo hook is suppressed so /agents et al.
+   * don't surface "✓ Answered · agent.switch" noise.
+   */
+  silent?: boolean;
 }
 
 export function createEmptyHumanLoopAnswer(): HumanLoopAnswerState {
@@ -163,4 +170,74 @@ export function buildHumanLoopResponse(prompt: HumanLoopPromptState): Record<str
     answers[question.id] = summarizeHumanLoopAnswer(prompt, question).values;
   }
   return prompt.resolveWith(answers);
+}
+
+/**
+ * Lifecycle status of a resolved prompt — used by channels to pick the right
+ * rendering (closed card vs cancelled card vs echo-only).
+ */
+export type ResolvedHumanLoopStatus = 'answered' | 'cancelled';
+
+export interface ResolvedHumanLoopRow {
+  /** Header label for the question, or the question prompt if no header. */
+  label: string;
+  /** Friendly display value (the option label when known, else the value). */
+  display: string;
+  /** True when this question was explicitly skipped. */
+  skipped: boolean;
+  /** True when the channel should treat the value as a secret. */
+  secret: boolean;
+}
+
+export interface ResolvedHumanLoopAnswers {
+  status: ResolvedHumanLoopStatus;
+  rows: ResolvedHumanLoopRow[];
+  /** Compact one-line answer summary suitable for echo messages. */
+  display: string;
+}
+
+function displayValueForOption(question: HumanLoopQuestion, value: string): string {
+  const match = question.options?.find(opt => opt.value === value);
+  return match?.label || value;
+}
+
+/**
+ * Build a channel-agnostic summary of a prompt's resolved answers. Used by the
+ * base bot's `onInteractionAnswered` hook so each channel renders the same
+ * closed-state view + echo message without diverging.
+ */
+export function summarizeResolvedHumanLoopAnswers(
+  prompt: HumanLoopPromptState,
+  status: ResolvedHumanLoopStatus = 'answered',
+): ResolvedHumanLoopAnswers {
+  const rows: ResolvedHumanLoopRow[] = [];
+  const compactParts: string[] = [];
+  for (const question of prompt.questions) {
+    const answer = prompt.answers[question.id] || createEmptyHumanLoopAnswer();
+    let display: string;
+    if (answer.skipped) {
+      display = '(skip)';
+    } else if (question.secret && (answer.selectedValue || answer.freeformText)) {
+      display = '(hidden)';
+    } else {
+      const parts: string[] = [];
+      if (answer.selectedValue) parts.push(displayValueForOption(question, answer.selectedValue));
+      const freeform = answer.freeformText?.trim();
+      if (freeform) parts.push(freeform);
+      display = parts.length ? parts.join(' · ') : '(no answer)';
+    }
+    const label = (question.header || question.prompt || question.id).trim();
+    rows.push({
+      label,
+      display,
+      skipped: !!answer.skipped,
+      secret: !!question.secret,
+    });
+    compactParts.push(display);
+  }
+  return {
+    status,
+    rows,
+    display: compactParts.join(' · '),
+  };
 }

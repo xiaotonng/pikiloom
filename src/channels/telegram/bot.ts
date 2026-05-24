@@ -12,6 +12,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   Bot, type Agent, type SessionRuntime, type StreamResult,
+  type ImTaskPresenter, type ImTaskPresenterOpts,
   fmtTokens, fmtUptime, fmtBytes, buildPrompt,
   parseAllowedChatIds,
 } from '../../bot/bot.js';
@@ -62,6 +63,7 @@ import {
 import {
   buildInitialPreviewHtml,
   buildHumanLoopPromptHtml,
+  buildAnsweredHumanLoopPromptHtml,
   buildStreamPreviewHtml,
   buildFinalReplyRender,
   dispatchImageBlocks,
@@ -74,10 +76,10 @@ import {
   renderSessionTurnHtml,
   truncateMiddle,
 } from './render.js';
-import { currentHumanLoopQuestion, humanLoopOptionSelected, type HumanLoopPromptState } from '../../bot/human-loop.js';
+import { currentHumanLoopQuestion, humanLoopOptionSelected, type HumanLoopPromptState, type ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
 import { TelegramChannel, type TgContext, type TgCallbackContext, type TgMessage } from './channel.js';
 import { splitText, supportsChannelCapability } from '../base.js';
-import { getActiveUserConfig } from '../../core/config/user-config.js';
+import { getActiveUserConfig, loadKnownChatIds } from '../../core/config/user-config.js';
 import { VERSION } from '../../core/version.js';
 
 
@@ -86,6 +88,27 @@ const telegramPreviewRenderer: LivePreviewRenderer = {
   renderInitial: buildInitialPreviewHtml,
   renderStream: buildStreamPreviewHtml,
 };
+
+/**
+ * Echo message rendered after a human-loop prompt resolves — a small chat
+ * message that records the decision in the conversation history (independent
+ * of the now-closed card above). Returns null when there's nothing useful to
+ * say (e.g. an empty cancellation).
+ */
+function buildInteractionEchoHtml(summary: ResolvedHumanLoopAnswers): string | null {
+  if (summary.status === 'cancelled') {
+    return `<i>⊘ Prompt cancelled.</i>`;
+  }
+  if (!summary.rows.length) return null;
+  if (summary.rows.length === 1) {
+    return `<b>✓ Answered</b> · ${escapeHtml(summary.rows[0].display)}`;
+  }
+  const lines = ['<b>✓ Answered</b>'];
+  for (const row of summary.rows) {
+    lines.push(`• ${escapeHtml(row.label)}: ${escapeHtml(row.display)}`);
+  }
+  return lines.join('\n');
+}
 
 type ShutdownSignal = 'SIGINT' | 'SIGTERM';
 type ProcessSignal = ShutdownSignal | 'SIGUSR2';
@@ -117,6 +140,11 @@ export class TelegramBot extends Bot {
     if (config.telegramAllowedChatIds) {
       for (const id of parseAllowedChatIds(config.telegramAllowedChatIds)) this.allowedChatIds.add(id);
     }
+    // Restore chats persisted across restarts so sendStartupNotice can greet
+    // them even when the env-based hand-off was lost (crash-style respawn).
+    for (const id of loadKnownChatIds('telegram')) {
+      for (const parsed of parseAllowedChatIds(id)) this.allowedChatIds.add(parsed);
+    }
     this.token = String(config.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
     if (!this.token) throw new Error('Missing Telegram token. Configure via dashboard or set TELEGRAM_BOT_TOKEN');
   }
@@ -135,6 +163,9 @@ export class TelegramBot extends Bot {
 
     const mergedAllowed = parseAllowedChatIds(process.env.PIKICLAW_ALLOWED_IDS || '');
     for (const id of parseAllowedChatIds(String(config.telegramAllowedChatIds || ''))) mergedAllowed.add(id);
+    for (const id of loadKnownChatIds('telegram')) {
+      for (const parsed of parseAllowedChatIds(id)) mergedAllowed.add(parsed);
+    }
     this.allowedChatIds = mergedAllowed;
   }
 
@@ -544,27 +575,122 @@ export class TelegramBot extends Bot {
     return { inline_keyboard };
   }
 
-  private async refreshHumanLoopPrompt(chatId: number, promptId: string, opts: { submitted?: boolean; suffix?: string } = {}) {
+  private async refreshHumanLoopPrompt(chatId: number, promptId: string) {
     const prompt = this.humanLoopPrompt(promptId);
     if (!prompt) return;
     const messageId = prompt.messageIds[0];
     if (typeof messageId !== 'number') return;
-    const html = `${buildHumanLoopPromptHtml(prompt)}${opts.suffix ? `\n\n<i>${escapeHtml(opts.suffix)}</i>` : ''}`;
-    await this.channel.editMessage(chatId, messageId, html, {
+    await this.channel.editMessage(chatId, messageId, buildHumanLoopPromptHtml(prompt), {
       parseMode: 'HTML',
-      keyboard: opts.submitted ? { inline_keyboard: [] } : this.buildHumanLoopKeyboard(promptId),
+      keyboard: this.buildHumanLoopKeyboard(promptId),
     }).catch(() => {});
   }
 
-  private async finalizeHumanLoopPrompt(prompt: ReturnType<TelegramBot['humanLoopPrompt']>, suffix: string) {
-    if (!prompt) return;
+  protected override async onInteractionAnswered(
+    prompt: HumanLoopPromptState<number>,
+    summary: ResolvedHumanLoopAnswers,
+  ): Promise<void> {
     const messageId = prompt.messageIds[0];
-    if (typeof messageId !== 'number') return;
-    const html = `${buildHumanLoopPromptHtml(prompt)}\n\n<i>${escapeHtml(suffix)}</i>`;
-    await this.channel.editMessage(prompt.chatId, messageId, html, {
-      parseMode: 'HTML',
-      keyboard: { inline_keyboard: [] },
-    }).catch(() => {});
+    const chatId = prompt.chatId;
+    const closedHtml = buildAnsweredHumanLoopPromptHtml(prompt, summary);
+    if (typeof messageId === 'number') {
+      try {
+        await this.channel.editMessage(chatId, messageId, closedHtml, {
+          parseMode: 'HTML',
+          keyboard: { inline_keyboard: [] },
+        });
+      } catch (err: any) {
+        this.debug(`[human-loop] close-card edit failed chat=${chatId} prompt=${prompt.promptId}: ${err?.message || err}`);
+      }
+    }
+    const echoLines = buildInteractionEchoHtml(summary);
+    if (!echoLines) return;
+    try {
+      await this.channel.send(chatId, echoLines, { parseMode: 'HTML' });
+    } catch (err: any) {
+      this.debug(`[human-loop] echo send failed chat=${chatId} prompt=${prompt.promptId}: ${err?.message || err}`);
+    }
+  }
+
+  /**
+   * IM presenter for programmatic submissions (e.g. /goal-driven turns) so
+   * they stream to Telegram the same way a typed message does — placeholder
+   * card, LivePreview edits, sendFinalReply at the end. Without this, /goal
+   * just emits a confirmation reply and the rest of the turn is invisible.
+   */
+  protected override async createImTaskPresenter(opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
+    if (typeof opts.chatId !== 'number') return null;
+    const chatId = opts.chatId;
+    const startTimeMs = Date.now();
+    const startConfig = this.resolveSessionStreamConfig(opts.session);
+    const canEditMessages = supportsChannelCapability((this as any).channel, 'editMessages');
+    const canSendTyping = supportsChannelCapability((this as any).channel, 'typingIndicators');
+    let phId: number | null = null;
+    if (canEditMessages) {
+      try {
+        const sent = await this.channel.send(
+          chatId,
+          buildInitialPreviewHtml(opts.agent, startConfig.model, startConfig.effort, false),
+          { parseMode: 'HTML' },
+        );
+        phId = typeof sent === 'number' ? sent : null;
+        if (phId != null) this.registerSessionMessage(chatId, phId, opts.session);
+      } catch (e: any) {
+        this.debug(`[im-presenter telegram] placeholder send failed chat=${chatId}: ${e?.message || e}`);
+      }
+    }
+    this.registerTaskPlaceholders(opts.taskId, [phId]);
+
+    let livePreview: LivePreview | null = null;
+    if (phId != null || canSendTyping) {
+      livePreview = new LivePreview({
+        agent: opts.agent,
+        chatId,
+        placeholderMessageId: phId,
+        channel: this.channel,
+        renderer: telegramPreviewRenderer,
+        streamEditIntervalMs: opts.agent === 'codex' ? 400 : 800,
+        startTimeMs,
+        canEditMessages,
+        canSendTyping,
+        model: startConfig.model,
+        effort: startConfig.effort,
+        log: (msg) => this.debug(msg),
+      });
+      livePreview.start();
+    }
+
+    const session = opts.session;
+    return {
+      onText: (text, thinking, activity, meta, plan) => {
+        livePreview?.update(text, thinking, activity, meta, plan);
+      },
+      onSuccess: async (result) => {
+        try { await livePreview?.settle(); } catch {}
+        const finalReply = await this.sendFinalReply({ chatId }, phId, opts.agent, result);
+        this.registerSessionMessages(chatId, finalReply.messageIds, session);
+      },
+      onFailure: async (error) => {
+        try { await livePreview?.settle(); } catch {}
+        const errorHtml = `<b>Error</b>\n\n<code>${escapeHtml(error.slice(0, 500))}</code>`;
+        if (phId != null) {
+          try {
+            await this.channel.editMessage(chatId, phId, errorHtml, { parseMode: 'HTML', keyboard: { inline_keyboard: [] } });
+            this.registerSessionMessage(chatId, phId, session);
+            return;
+          } catch {}
+        }
+        try {
+          const sent = await this.channel.send(chatId, errorHtml, { parseMode: 'HTML' });
+          this.registerSessionMessage(chatId, typeof sent === 'number' ? sent : null, session);
+        } catch (e: any) {
+          this.debug(`[im-presenter telegram] error send failed chat=${chatId}: ${e?.message || e}`);
+        }
+      },
+      dispose: () => {
+        livePreview?.dispose();
+      },
+    };
   }
 
   protected override async renderInteractionPrompt(prompt: HumanLoopPromptState<number>, chatId: number): Promise<void> {
@@ -592,8 +718,8 @@ export class TelegramBot extends Bot {
         await ctx.reply('Please answer the active prompt using the buttons above.');
         return;
       }
-      if (result.completed) await this.finalizeHumanLoopPrompt(result.prompt, 'Answer submitted.');
-      else await this.refreshHumanLoopPrompt(ctx.chatId, result.prompt.promptId);
+      // Completed prompts close themselves via onInteractionAnswered.
+      if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, result.prompt.promptId);
       return;
     }
 
@@ -751,7 +877,10 @@ export class TelegramBot extends Bot {
         );
         this.debug(`[handleMessage] response preview: "${result.message.slice(0, 150)}"`);
 
-        const finalReply = await this.sendFinalReply(ctx, phId, session.agent, result, { messageThreadId });
+        const finalReply = await this.sendFinalReply(
+          { chatId: ctx.chatId, replyTo: ctx.messageId, messageThreadId },
+          phId, session.agent, result,
+        );
         this.registerSessionMessages(ctx.chatId, finalReply.messageIds, session);
         this.debug(`[handleMessage] final reply sent to chat=${ctx.chatId}`);
       } catch (e: any) {
@@ -845,11 +974,10 @@ export class TelegramBot extends Bot {
   }
 
   private async sendFinalReply(
-    ctx: TgContext,
+    anchor: { chatId: number; replyTo?: number; messageThreadId?: number },
     phId: number | null,
     agent: Agent,
     result: StreamResult,
-    opts: { messageThreadId?: number } = {},
   ): Promise<{ primaryMessageId: number | null; messageIds: number[] }> {
     const rendered = buildFinalReplyRender(agent, result);
     const messageIds: number[] = [];
@@ -857,15 +985,15 @@ export class TelegramBot extends Bot {
       if (typeof messageId === 'number' && !messageIds.includes(messageId)) messageIds.push(messageId);
       return messageId;
     };
-    const sendFinalText = (text: string, replyTo?: number | null) => this.channel.send(ctx.chatId, text, {
+    const sendFinalText = (text: string, replyTo?: number | null) => this.channel.send(anchor.chatId, text, {
       parseMode: 'HTML',
-      replyTo: replyTo ?? ctx.messageId,
-      messageThreadId: opts.messageThreadId,
+      replyTo: replyTo ?? anchor.replyTo,
+      messageThreadId: anchor.messageThreadId,
     });
     const replacePreview = async (text: string) => {
       if (phId != null) {
         try {
-          await this.channel.editMessage(ctx.chatId, phId, text, { parseMode: 'HTML', keyboard: { inline_keyboard: [] } });
+          await this.channel.editMessage(anchor.chatId, phId, text, { parseMode: 'HTML', keyboard: { inline_keyboard: [] } });
           return remember(phId);
         } catch {}
       }
@@ -898,11 +1026,11 @@ export class TelegramBot extends Bot {
         for (let i = 0; i < chunks.length; i++) {
           const isLast = i === chunks.length - 1;
           const chunkText = isLast ? `${chunks[i]}${rendered.footerHtml}` : chunks[i];
-          remember(await sendFinalText(chunkText, finalMsgId ?? phId ?? ctx.messageId));
+          remember(await sendFinalText(chunkText, finalMsgId ?? phId ?? anchor.replyTo));
         }
         // Safety: re-clear the Stop keyboard on the placeholder in case the first edit silently failed
         if (phId != null) {
-          try { await this.channel.editMessage(ctx.chatId, phId, firstHtml || '(done)', { parseMode: 'HTML', keyboard: { inline_keyboard: [] } }); } catch {}
+          try { await this.channel.editMessage(anchor.chatId, phId, firstHtml || '(done)', { parseMode: 'HTML', keyboard: { inline_keyboard: [] } }); } catch {}
         }
       } else {
         // Body fits on first message; only footer pushes it over — keep together
@@ -915,9 +1043,9 @@ export class TelegramBot extends Bot {
     // built-in `image_gen`, MCP / Skill tool_result images, …). Each goes out
     // as a separate Telegram photo with the optional caption attached.
     const dispatched = await dispatchImageBlocks(this.channel, result.assistantBlocks, {
-      chatId: ctx.chatId,
-      replyTo: finalMsgId ?? phId ?? ctx.messageId,
-      messageThreadId: opts.messageThreadId,
+      chatId: anchor.chatId,
+      replyTo: finalMsgId ?? phId ?? anchor.replyTo,
+      messageThreadId: anchor.messageThreadId,
       log: (message) => this.debug(message),
     });
     for (const entry of dispatched) {
@@ -1052,8 +1180,7 @@ export class TelegramBot extends Bot {
       return true;
     }
     if (action === 'cancel') {
-      const cancelled = this.humanLoopCancel(promptId, 'Prompt cancelled from Telegram.');
-      await this.finalizeHumanLoopPrompt(cancelled, 'Cancelled.');
+      this.humanLoopCancel(promptId, 'Prompt cancelled from Telegram.');
       await ctx.answerCallback('Cancelled.');
       return true;
     }
@@ -1063,8 +1190,7 @@ export class TelegramBot extends Bot {
         await ctx.answerCallback('This prompt is no longer active.');
         return true;
       }
-      if (result.completed) await this.finalizeHumanLoopPrompt(result.prompt, 'Answer submitted.');
-      else await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
+      if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
       await ctx.answerCallback(result.completed ? 'Submitted.' : 'Skipped.');
       return true;
     }
@@ -1091,8 +1217,7 @@ export class TelegramBot extends Bot {
         await ctx.answerCallback('This prompt is no longer active.');
         return true;
       }
-      if (result.completed) await this.finalizeHumanLoopPrompt(result.prompt, 'Answer submitted.');
-      else await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
+      if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
       await ctx.answerCallback(result.completed ? 'Submitted.' : 'Recorded.');
       return true;
     }

@@ -6,7 +6,7 @@
  */
 
 import type { Agent, StreamResult } from '../../bot/bot.js';
-import type { HumanLoopPromptState } from '../../bot/human-loop.js';
+import type { HumanLoopPromptState, ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
 import type {
   CommandActionButton,
   CommandItemState,
@@ -231,6 +231,21 @@ export function buildHumanLoopPromptMarkdown(prompt: HumanLoopPromptState): stri
   return lines.join('\n\n');
 }
 
+/**
+ * Closed-state rendering for a resolved human-loop card. Collapsed to the
+ * title + one row per question showing the chosen answer. No buttons, no
+ * pending-state copy.
+ */
+export function buildAnsweredHumanLoopPromptMarkdown(prompt: HumanLoopPromptState, summary: ResolvedHumanLoopAnswers): string {
+  const symbol = summary.status === 'cancelled' ? '⊘' : '✓';
+  const lines = [`**${symbol} ${prompt.title}**`];
+  if (summary.status === 'cancelled') lines.push('*Cancelled.*');
+  for (const row of summary.rows) {
+    lines.push(`${row.label}: **${row.display}**`);
+  }
+  return lines.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // LivePreview renderer — produces Markdown for Feishu card elements
 // ---------------------------------------------------------------------------
@@ -254,11 +269,18 @@ function buildPreviewMarkdown(input: StreamPreviewRenderInput, options?: { inclu
   const parts: string[] = [];
 
   if (data.planDisplay) {
-    parts.push(`**Plan**\n${stripCodeFences(data.planDisplay)}`);
+    // First line of planDisplay is already "Plan N/M" — promote it to the
+    // bold header instead of stacking a second "**Plan**" line above it.
+    const text = stripCodeFences(data.planDisplay);
+    const nl = text.indexOf('\n');
+    parts.push(nl >= 0 ? `**${text.slice(0, nl)}**${text.slice(nl)}` : `**${text}**`);
   }
 
   if (data.activityDisplay) {
     parts.push(`**Activity**\n${stripCodeFences(trimActivityForPreview(data.activityDisplay, data.maxActivity))}`);
+  }
+  if (data.subAgentsDisplay) {
+    parts.push(`**Sub-agent**\n${stripCodeFences(data.subAgentsDisplay)}`);
   }
 
   if (data.thinkDisplay && !data.display) {

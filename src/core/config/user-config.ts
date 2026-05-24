@@ -85,8 +85,17 @@ export interface UserConfig {
   workspaces?: WorkspaceEntry[];
   telegramBotToken?: string;
   telegramAllowedChatIds?: string;
+  /**
+   * Chat IDs the Telegram bot has interacted with, persisted across restarts.
+   * Populated automatically when a new chat sends a message; consumed at
+   * startup so `sendStartupNotice` can greet chats even after a crash-style
+   * respawn that bypasses the env-var hand-off.
+   */
+  telegramKnownChatIds?: string[];
   feishuAppId?: string;
   feishuAppSecret?: string;
+  /** Same as `telegramKnownChatIds` but for Feishu. */
+  feishuKnownChatIds?: string[];
   weixinBaseUrl?: string;
   weixinBotToken?: string;
   weixinAccountId?: string;
@@ -488,6 +497,43 @@ export function startUserConfigSync(options: SyncUserConfigOptions = {}): () => 
     userConfigSyncRaw = '';
     userConfigSyncOverrides = {};
   };
+}
+
+// ---------------------------------------------------------------------------
+// Known chat persistence
+// ---------------------------------------------------------------------------
+
+const KNOWN_CHAT_CONFIG_KEY = {
+  feishu: 'feishuKnownChatIds',
+  telegram: 'telegramKnownChatIds',
+} as const;
+
+/**
+ * Append `chatId` to the persisted known-chat list for `channelType` if it
+ * isn't already there. The list survives crashes (env-based hand-off does
+ * not) so `sendStartupNotice` can greet known chats after any restart path.
+ */
+export function recordKnownChatId(channelType: 'feishu' | 'telegram', chatId: string | number): void {
+  const id = String(chatId ?? '').trim();
+  if (!id) return;
+  const key = KNOWN_CHAT_CONFIG_KEY[channelType];
+  const config = loadUserConfig();
+  const existing = Array.isArray((config as any)[key]) ? ((config as any)[key] as string[]) : [];
+  if (existing.includes(id)) return;
+  const next = [...existing, id];
+  try {
+    saveUserConfig({ ...config, [key]: next });
+  } catch {}
+}
+
+/** Load the persisted known-chat list for a channel. */
+export function loadKnownChatIds(channelType: 'feishu' | 'telegram'): string[] {
+  const key = KNOWN_CHAT_CONFIG_KEY[channelType];
+  const config = loadUserConfig();
+  const list = (config as any)[key];
+  return Array.isArray(list)
+    ? list.map(v => String(v ?? '').trim()).filter(Boolean)
+    : [];
 }
 
 // ---------------------------------------------------------------------------

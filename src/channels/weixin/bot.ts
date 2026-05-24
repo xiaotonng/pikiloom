@@ -12,12 +12,15 @@ import {
   fmtBytes,
   normalizeAgent,
   parseAllowedChatIds,
+  type ImTaskPresenter,
+  type ImTaskPresenterOpts,
   type SessionRuntime,
   type StreamResult,
 } from '../../bot/bot.js';
 import {
   currentHumanLoopQuestion,
   type HumanLoopPromptState,
+  type ResolvedHumanLoopAnswers,
 } from '../../bot/human-loop.js';
 import {
   buildAgentsCommandView,
@@ -63,6 +66,24 @@ const SHUTDOWN_EXIT_CODE: Record<ShutdownSignal, number> = {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? 'unknown error');
+}
+
+/**
+ * Plain-text echo of a resolved human-loop prompt — WeChat doesn't render
+ * markdown or cards, so we keep the format minimal and obviously distinct
+ * from a regular agent reply.
+ */
+function buildInteractionEchoPlain(summary: ResolvedHumanLoopAnswers): string | null {
+  if (summary.status === 'cancelled') return '⊘ Prompt cancelled.';
+  if (!summary.rows.length) return null;
+  if (summary.rows.length === 1) {
+    return `✓ Answered · ${summary.rows[0].display}`;
+  }
+  const lines = ['✓ Answered'];
+  for (const row of summary.rows) {
+    lines.push(`• ${row.label}: ${row.display}`);
+  }
+  return lines.join('\n');
 }
 
 export class WeixinBot extends Bot {
@@ -173,7 +194,6 @@ export class WeixinBot extends Bot {
       const pending = this.pendingHumanLoopPrompt(ctx.chatId);
       if (pending) {
         this.humanLoopCancel(pending.promptId, 'Cancelled by user.');
-        await ctx.reply('已取消。');
       } else {
         await ctx.reply('没有正在等待的交互。');
       }
@@ -463,6 +483,7 @@ export class WeixinBot extends Bot {
           options,
           allowFreeform: false,
         }],
+        silent: true,
         resolveWith: (answers) => {
           const picked = answers['pick']?.[0] || '';
           if (!picked.startsWith('ws:')) return null;
@@ -609,12 +630,56 @@ export class WeixinBot extends Bot {
     return lines.join('\n');
   }
 
+  /**
+   * IM presenter for programmatic submissions (e.g. /goal-driven turns).
+   * WeChat has no edit / card primitive, so streaming preview isn't possible
+   * — the result is just posted once when the turn completes, mirroring
+   * handleMessage's plain-text path.
+   */
+  protected override async createImTaskPresenter(opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
+    const chatId = String(opts.chatId);
+    return {
+      onText: () => {
+        // No streaming render in WeChat — text accumulates and is sent once.
+      },
+      onSuccess: async (result) => {
+        await this.sendResult(chatId, result);
+      },
+      onFailure: async (error) => {
+        try {
+          await this.channel.send(chatId, `Error: ${error}`);
+        } catch (e: any) {
+          this.log(`[im-presenter weixin] error send failed: ${describeError(e)}`);
+        }
+      },
+      dispose: () => {},
+    };
+  }
+
   protected override async renderInteractionPrompt(prompt: HumanLoopPromptState, chatId: string | number): Promise<void> {
     const text = this.formatHumanLoopPromptText(prompt);
     try {
       await this.channel.send(String(chatId), text);
     } catch (error) {
       this.log(`weixin renderInteractionPrompt failed: ${describeError(error)}`);
+    }
+  }
+
+  /**
+   * WeChat has no message-edit primitive, so the original prompt text stays
+   * frozen in chat history. The echo message is the only way to record the
+   * decision — keep it short and prefix-marked so it's easy to skim.
+   */
+  protected override async onInteractionAnswered(
+    prompt: HumanLoopPromptState,
+    summary: ResolvedHumanLoopAnswers,
+  ): Promise<void> {
+    const text = buildInteractionEchoPlain(summary);
+    if (!text) return;
+    try {
+      await this.channel.send(String(prompt.chatId), text);
+    } catch (error) {
+      this.log(`weixin onInteractionAnswered echo failed: ${describeError(error)}`);
     }
   }
 
@@ -724,6 +789,7 @@ export class WeixinBot extends Bot {
           options,
           allowFreeform: false,
         }],
+        silent: true,
         resolveWith: (answers) => {
           const picked = answers['pick']?.[0];
           if (!picked) return null;
@@ -871,7 +937,7 @@ export class WeixinBot extends Bot {
         return;
       }
       if (result.completed) {
-        await ctx.reply('Answer submitted.');
+        // Closing message comes from onInteractionAnswered — no extra reply.
       } else if (result.advanced) {
         const next = this.humanLoopPrompt(pendingPrompt.promptId);
         if (next) await this.channel.send(ctx.chatId, this.formatHumanLoopPromptText(next));

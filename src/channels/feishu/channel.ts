@@ -24,6 +24,7 @@ import { FEISHU_LIMITS } from '../../core/constants.js';
 import { ChannelHealth } from '../health.js';
 import { adaptMarkdownForFeishu } from './markdown.js';
 import { writeScopedLog, type LogLevel } from '../../core/logging.js';
+import { recordKnownChatId } from '../../core/config/user-config.js';
 
 export { FeishuChannel };
 export type FeishuCardActionItem = lark.InteractiveCardActionItem;
@@ -520,7 +521,7 @@ class FeishuChannel extends Channel {
     }
 
     if (!this._isAllowed(chatId)) { this._debug(`[recv] blocked: chat=${chatId} not allowed`); return; }
-    this.knownChats.add(chatId);
+    this._trackChat(chatId);
 
     const sender = event.sender;
     // Skip messages from the bot itself
@@ -654,7 +655,7 @@ class FeishuChannel extends Channel {
     const messageId = String(event?.message_id || '').trim();
     if (!chatId || !messageId || !this._hRecall) return;
     if (!this._isAllowed(chatId)) { this._debug(`[message-recalled] blocked: chat=${chatId}`); return; }
-    this.knownChats.add(chatId);
+    this._trackChat(chatId);
     this._debug(`[recv] message_recalled chat=${chatId} msg=${messageId}`);
     await this._hRecall(messageId, chatId, event);
   }
@@ -681,7 +682,7 @@ class FeishuChannel extends Channel {
       }
       if (chatId) {
         this._openIdToChat.set(openId, chatId);
-        this.knownChats.add(chatId);
+        this._trackChat(chatId);
         this._debug(`[menu] resolved chat_id=${chatId} for open_id=${openId}`);
       }
       return chatId;
@@ -969,6 +970,17 @@ class FeishuChannel extends Channel {
 
   private _isAllowed(chatId: string): boolean {
     return this.allowedChatIds.size === 0 || this.allowedChatIds.has(chatId);
+  }
+
+  /**
+   * Add a chat to the in-memory `knownChats` set and persist it to setting.json
+   * so a future cold start (e.g. crash-respawn) can still address it. The
+   * persistence call is fire-and-forget — disk errors must not break receive.
+   */
+  private _trackChat(chatId: string): void {
+    if (this.knownChats.has(chatId)) return;
+    this.knownChats.add(chatId);
+    try { recordKnownChatId('feishu', chatId); } catch {}
   }
 
   private _isBotMentioned(msg: any): boolean {

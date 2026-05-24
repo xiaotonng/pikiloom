@@ -4,7 +4,7 @@
 
 import type { Agent, StreamPreviewMeta, StreamResult } from '../../bot/bot.js';
 import type { SkillsListData } from '../../bot/commands.js';
-import type { HumanLoopPromptState } from '../../bot/human-loop.js';
+import type { HumanLoopPromptState, ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
 import type {
   CommandActionButton,
   CommandItemState,
@@ -173,6 +173,21 @@ export function buildHumanLoopPromptHtml(prompt: HumanLoopPromptState): string {
     }
   }
 
+  return lines.join('\n');
+}
+
+/**
+ * Closed-state rendering for a resolved human-loop card. The original prompt
+ * collapses to a single header line plus one line per question showing the
+ * answer — no buttons, no "submit hint", just the decision frozen in place.
+ */
+export function buildAnsweredHumanLoopPromptHtml(prompt: HumanLoopPromptState, summary: ResolvedHumanLoopAnswers): string {
+  const symbol = summary.status === 'cancelled' ? '⊘' : '✓';
+  const lines = [`<b>${symbol} ${escapeHtml(prompt.title)}</b>`];
+  if (summary.status === 'cancelled') lines.push('<i>Cancelled.</i>');
+  for (const row of summary.rows) {
+    lines.push(`${escapeHtml(row.label)}: <b>${escapeHtml(row.display)}</b>`);
+  }
   return lines.join('\n');
 }
 
@@ -368,11 +383,21 @@ export function buildStreamPreviewHtml(input: StreamPreviewRenderInput): string 
   const parts: string[] = [];
 
   if (data.planDisplay) {
-    parts.push(`<blockquote><b>Plan</b>\n${escapeHtml(data.planDisplay)}</blockquote>`);
+    // The first line of planDisplay is already "Plan N/M" (rendered by
+    // renderPlanForPreview). Promote it to the bold heading and inline the
+    // rest, so the card doesn't show a redundant "Plan" line above "Plan N/M".
+    const planText = data.planDisplay;
+    const nl = planText.indexOf('\n');
+    const head = nl >= 0 ? planText.slice(0, nl) : planText;
+    const body = nl >= 0 ? planText.slice(nl + 1) : '';
+    parts.push(`<blockquote><b>${escapeHtml(head)}</b>${body ? `\n${escapeHtml(body)}` : ''}</blockquote>`);
   }
 
   if (data.activityDisplay) {
     parts.push(`<blockquote><b>Activity</b>\n${escapeHtml(trimActivityForPreview(data.activityDisplay, data.maxActivity))}</blockquote>`);
+  }
+  if (data.subAgentsDisplay) {
+    parts.push(`<blockquote><b>Sub-agent</b>\n${escapeHtml(data.subAgentsDisplay)}</blockquote>`);
   }
 
   if (data.thinkDisplay && !data.display) {

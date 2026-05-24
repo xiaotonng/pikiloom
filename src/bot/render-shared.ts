@@ -160,29 +160,39 @@ export function formatFooterParts(
 // Activity trimming
 // ---------------------------------------------------------------------------
 
+/**
+ * Trim the activity narrative for a streaming preview. Keeps the **most
+ * recent** lines that fit the budget — the user is watching the turn live,
+ * what just happened matters far more than what happened 30 tool-calls ago.
+ * A leading `...` marker signals "earlier activity dropped" when truncation
+ * happens; the tail order is preserved.
+ */
 export function trimActivityForPreview(text: string, maxChars = 900): string {
   if (text.length <= maxChars) return text;
 
   const lines = text.split('\n').filter(line => line.trim());
-  if (lines.length <= 1) return text.slice(0, Math.max(0, maxChars - 3)).trimEnd() + '...';
-
-  const tailCount = Math.min(2, Math.max(1, lines.length - 1));
-  const tail = lines.slice(-tailCount);
-  const headCandidates = lines.slice(0, Math.max(0, lines.length - tailCount));
-  const reserved = tail.join('\n').length + 5;
-  const budget = Math.max(0, maxChars - reserved);
-  const head: string[] = [];
-  let used = 0;
-
-  for (const line of headCandidates) {
-    const extra = line.length + (head.length ? 1 : 0);
-    if (used + extra > budget) break;
-    head.push(line);
-    used += extra;
+  if (lines.length <= 1) {
+    // Single very-long line — keep the trailing characters with a leading
+    // ellipsis so the freshest content is visible.
+    return '...' + text.slice(text.length - Math.max(0, maxChars - 3));
   }
 
-  if (!head.length) return text.slice(0, Math.max(0, maxChars - 3)).trimEnd() + '...';
-  return [...head, '...', ...tail].join('\n');
+  const ellipsis = '...';
+  const budget = Math.max(0, maxChars - ellipsis.length - 1);
+  const tail: string[] = [];
+  let used = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const extra = line.length + (tail.length ? 1 : 0);
+    if (used + extra > budget) break;
+    tail.unshift(line);
+    used += extra;
+  }
+  if (!tail.length) {
+    return ellipsis + '\n' + lines[lines.length - 1].slice(-Math.max(0, maxChars - ellipsis.length - 1));
+  }
+  if (tail.length === lines.length) return tail.join('\n');
+  return [ellipsis, ...tail].join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -369,10 +379,39 @@ export interface StreamPreviewData {
   thinkDisplay: string;
   planDisplay: string;
   activityDisplay: string;
+  /**
+   * Compact summary of any in-flight sub-agents (Claude `Task` tool spawns).
+   * Each line names the sub-agent's purpose + its most recent tool call so the
+   * IM card actually surfaces a signal during the (often-minutes) window while
+   * the parent is delegated. Empty string when no sub-agent is active.
+   */
+  subAgentsDisplay: string;
   maxActivity: number;
   label: string;
   thinkSnippet: string;
   preview: string;
+}
+
+/**
+ * Build the sub-agent block for the streaming preview. Sub-agents are
+ * deliberately isolated from parent activity (their tool list lives on each
+ * StreamSubAgent record), so we render a separate compact section showing each
+ * sub-agent's purpose + latest tool. Completed sub-agents are hidden — the
+ * parent's activity already reflects the Task `done` line.
+ */
+function renderSubAgentsForPreview(meta?: StreamPreviewMeta | null): string {
+  const subs = meta?.subAgents;
+  if (!subs?.length) return '';
+  const lines: string[] = [];
+  for (const sub of subs) {
+    if (sub.status !== 'running') continue;
+    const label = (sub.description || sub.kind || 'sub-agent').trim().slice(0, 80);
+    const lastTool = sub.tools.length ? sub.tools[sub.tools.length - 1].summary : 'starting…';
+    const modelTag = sub.model ? ` · ${sub.model}` : '';
+    lines.push(`↳ ${label}${modelTag}`);
+    lines.push(`  · ${lastTool}`);
+  }
+  return lines.join('\n');
 }
 
 export function extractStreamPreviewData(input: StreamPreviewRenderInput): StreamPreviewData {
@@ -382,6 +421,7 @@ export function extractStreamPreviewData(input: StreamPreviewRenderInput): Strea
   const thinkDisplay = formatThinkingForDisplay(input.thinking, maxBody);
   const planDisplay = renderPlanForPreview(input.plan ?? null);
   const activityDisplay = summarizeActivityForPreview(input.activity);
+  const subAgentsDisplay = renderSubAgentsForPreview(input.meta);
   const maxActivity = !display && !thinkDisplay && !planDisplay ? 2400 : 1400;
   const label = thinkLabel(input.agent);
 
@@ -394,6 +434,7 @@ export function extractStreamPreviewData(input: StreamPreviewRenderInput): Strea
     thinkDisplay,
     planDisplay,
     activityDisplay,
+    subAgentsDisplay,
     maxActivity,
     label,
     thinkSnippet,

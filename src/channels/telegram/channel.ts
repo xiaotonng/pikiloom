@@ -69,6 +69,7 @@ import {
 import { TELEGRAM_LIMITS } from '../../core/constants.js';
 import { ChannelHealth } from '../health.js';
 import { formatScopedLogLine, shouldLog, writeScopedLog, type LogLevel } from '../../core/logging.js';
+import { recordKnownChatId } from '../../core/config/user-config.js';
 
 // ---------------------------------------------------------------------------
 // Proxy support — automatically respects HTTPS_PROXY / HTTP_PROXY / NO_PROXY
@@ -661,10 +662,11 @@ class TelegramChannel extends Channel {
     }
   }
 
-  /** Track a chat ID; apply menu on first discovery. */
+  /** Track a chat ID; apply menu on first discovery and persist for restart. */
   private _trackChat(chatId: number) {
     if (this.knownChats.has(chatId)) return;
     this.knownChats.add(chatId);
+    try { recordKnownChatId('telegram', chatId); } catch {}
     this._applyMenuToChat(chatId).catch(() => {});
   }
 

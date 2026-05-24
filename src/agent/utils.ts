@@ -168,6 +168,42 @@ export function joinErrorMessages(errors: unknown[] | null | undefined): string 
   return errors.map(error => normalizeErrorMessage(error)).filter(Boolean).join('; ').trim();
 }
 
+/**
+ * Detect Claude Code's synthetic "API Error: …" assistant message. When the
+ * upstream Anthropic API returns a transient error (529 Overloaded, 5xx, gateway
+ * timeouts, …), the Claude CLI swallows it and replaces the assistant turn with
+ * a single `text` block whose body is literally `API Error: <reason>`. The
+ * turn's stop_reason still claims `end_turn`, so the driver can't distinguish
+ * it from a normal short reply without inspecting the text.
+ *
+ * Heuristics — keep them tight so real prose mentioning "API Error" doesn't
+ * trip the detector:
+ *  - exact prefix "API Error: "
+ *  - total length ≤ 200 chars (the synthetic line is always short)
+ *  - no newlines (legit prose containing "API Error" virtually always wraps)
+ *
+ * Returns the trimmed reason (e.g. "Overloaded", "Internal server error") when
+ * matched, otherwise null. Callers decide whether the reason is retryable —
+ * `looksRetryable` answers that.
+ */
+export function detectClaudeApiError(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const trimmed = text.trim();
+  if (trimmed.length > 200 || trimmed.includes('\n')) return null;
+  const m = trimmed.match(/^API Error:\s*(.+)$/i);
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * Retryable Claude Code API errors — transient upstream conditions that
+ * usually clear within seconds. Non-retryable conditions (auth, quota,
+ * context length) fall through and surface to the user immediately.
+ */
+export function isRetryableClaudeApiError(reason: string): boolean {
+  const r = reason.toLowerCase();
+  return /overloaded|overload|timeout|timed out|rate limit|500|502|503|504|529|temporar|gateway|connection|network|internal (server )?error/i.test(r);
+}
+
 export function appendSystemPrompt(base: string | undefined, extra: string): string {
   const lhs = String(base || '').trim();
   const rhs = String(extra || '').trim();
@@ -260,6 +296,10 @@ export function summarizeClaudeToolUse(name: string, input: any): string {
         return p ? `Send file: ${p}` : 'Send file';
       }
       if (bare === 'im_list_files') return 'List workspace files';
+      if (bare === 'im_ask_user') {
+        const q = shortValue(input?.question, 120);
+        return q ? `Ask user: ${q}` : 'Ask user';
+      }
       if (description) return `${tool}: ${description}`;
       const d = shortValue(input?.file_path || input?.path || input?.command || input?.query || input?.pattern || input?.url, 120);
       return d ? `${tool}: ${d}` : tool;

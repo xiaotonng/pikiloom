@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   Bot, normalizeAgent, type Agent, type SessionRuntime, type StreamResult,
+  type ImTaskPresenter, type ImTaskPresenterOpts,
   fmtTokens, buildPrompt,
   parseAllowedChatIds,
 } from '../../bot/bot.js';
@@ -62,6 +63,7 @@ import {
   feishuPreviewRenderer,
   buildInitialPreviewMarkdown,
   buildHumanLoopPromptMarkdown,
+  buildAnsweredHumanLoopPromptMarkdown,
   buildFinalReplyRender,
   dispatchImageBlocks,
   renderCommandNotice,
@@ -74,10 +76,10 @@ import {
   buildWorkspacesCard,
   resolveFeishuRegisteredPath,
 } from './render.js';
-import { currentHumanLoopQuestion, humanLoopOptionSelected, type HumanLoopPromptState } from '../../bot/human-loop.js';
+import { currentHumanLoopQuestion, humanLoopOptionSelected, type HumanLoopPromptState, type ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
 import { FeishuChannel, type FeishuContext, type FeishuCallbackContext, type FeishuMessage } from './channel.js';
 import { splitText, supportsChannelCapability } from '../base.js';
-import { getActiveUserConfig } from '../../core/config/user-config.js';
+import { getActiveUserConfig, loadKnownChatIds } from '../../core/config/user-config.js';
 import { VERSION } from '../../core/version.js';
 import { FEISHU_BOT_CARD_MAX } from '../../core/constants.js';
 
@@ -101,6 +103,24 @@ function describeError(err: unknown): string {
   const cause = (err as any)?.cause;
   if (cause && cause !== err) parts.push(`cause=${describeError(cause)}`);
   return parts.join(' | ');
+}
+
+/**
+ * Decision echo rendered as a separate Feishu message after a human-loop
+ * prompt resolves — so the answer becomes part of the conversation history
+ * rather than living only inside the now-closed card.
+ */
+function buildInteractionEchoMarkdown(summary: ResolvedHumanLoopAnswers): string | null {
+  if (summary.status === 'cancelled') return '*⊘ Prompt cancelled.*';
+  if (!summary.rows.length) return null;
+  if (summary.rows.length === 1) {
+    return `**✓ Answered** · ${summary.rows[0].display}`;
+  }
+  const lines = ['**✓ Answered**'];
+  for (const row of summary.rows) {
+    lines.push(`• ${row.label}: ${row.display}`);
+  }
+  return lines.join('\n');
 }
 
 function formatToolLog(activity: string | null | undefined): string {
@@ -169,6 +189,9 @@ export class FeishuBot extends Bot {
     if (process.env.FEISHU_ALLOWED_CHAT_IDS) {
       for (const id of parseAllowedChatIds(process.env.FEISHU_ALLOWED_CHAT_IDS)) this.allowedChatIds.add(id);
     }
+    // Restore chats persisted across restarts so sendStartupNotice can greet
+    // them even when the env-based hand-off was lost (crash-style respawn).
+    for (const id of loadKnownChatIds('feishu')) this.allowedChatIds.add(id);
 
     this.appId = String(config.feishuAppId || process.env.FEISHU_APP_ID || '').trim();
     this.appSecret = String(config.feishuAppSecret || process.env.FEISHU_APP_SECRET || '').trim();
@@ -580,25 +603,107 @@ export class FeishuBot extends Bot {
     return { rows };
   }
 
-  private async refreshHumanLoopPrompt(chatId: string, promptId: string, suffix?: string) {
+  private async refreshHumanLoopPrompt(chatId: string, promptId: string) {
     const prompt = this.humanLoopPrompt(promptId);
     if (!prompt) return;
     const messageId = prompt.messageIds[0];
     if (!messageId) return;
-    const markdown = `${buildHumanLoopPromptMarkdown(prompt)}${suffix ? `\n\n*${suffix}*` : ''}`;
-    await this.channel.editMessage(chatId, String(messageId), markdown, {
+    await this.channel.editMessage(chatId, String(messageId), buildHumanLoopPromptMarkdown(prompt), {
       keyboard: this.buildHumanLoopKeyboard(promptId),
     }).catch(err => this.debug(`[human-loop] refresh edit failed chat=${chatId} prompt=${promptId}: ${err?.message || err}`));
   }
 
-  private async finalizeHumanLoopPrompt(prompt: ReturnType<FeishuBot['humanLoopPrompt']>, suffix: string) {
-    if (!prompt) return;
+  protected override async onInteractionAnswered(
+    prompt: HumanLoopPromptState<string>,
+    summary: ResolvedHumanLoopAnswers,
+  ): Promise<void> {
     const messageId = prompt.messageIds[0];
-    if (!messageId) return;
-    const markdown = `${buildHumanLoopPromptMarkdown(prompt)}\n\n*${suffix}*`;
-    await this.channel.editMessage(prompt.chatId, String(messageId), markdown, {
-      keyboard: { rows: [] },
-    }).catch(err => this.debug(`[human-loop] finalize edit failed chat=${prompt.chatId} prompt=${prompt.promptId}: ${err?.message || err}`));
+    const chatId = prompt.chatId;
+    const closedMarkdown = buildAnsweredHumanLoopPromptMarkdown(prompt, summary);
+    if (messageId) {
+      try {
+        await this.channel.editMessage(chatId, String(messageId), closedMarkdown, {
+          keyboard: { rows: [] },
+        });
+      } catch (err: any) {
+        this.debug(`[human-loop] close-card edit failed chat=${chatId} prompt=${prompt.promptId}: ${err?.message || err}`);
+      }
+    }
+    const echoText = buildInteractionEchoMarkdown(summary);
+    if (!echoText) return;
+    try {
+      await this.channel.send(chatId, echoText);
+    } catch (err: any) {
+      this.debug(`[human-loop] echo send failed chat=${chatId} prompt=${prompt.promptId}: ${err?.message || err}`);
+    }
+  }
+
+  /**
+   * IM presenter for programmatic submissions (e.g. /goal-driven turns) so
+   * they stream to Feishu the same way a typed message does. Without this,
+   * /goal just emits a confirmation reply and the rest of the turn is
+   * invisible to the IM user.
+   */
+  protected override async createImTaskPresenter(opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
+    if (typeof opts.chatId !== 'string') return null;
+    const chatId = opts.chatId;
+    const startTimeMs = Date.now();
+    const startConfig = this.resolveSessionStreamConfig(opts.session);
+    const canEditMessages = supportsChannelCapability(this.channel, 'editMessages');
+    let placeholderId: string | null = null;
+    try {
+      placeholderId = await this.channel.send(
+        chatId,
+        buildInitialPreviewMarkdown(opts.agent, startConfig.model, startConfig.effort, false),
+      );
+      if (placeholderId) this.registerSessionMessage(chatId, placeholderId, opts.session);
+    } catch (e: any) {
+      this.debug(`[im-presenter feishu] placeholder send failed chat=${chatId}: ${e?.message || e}`);
+    }
+    this.registerTaskPlaceholders(opts.taskId, [placeholderId]);
+
+    let livePreview: LivePreview | null = null;
+    if (placeholderId) {
+      livePreview = new LivePreview({
+        agent: opts.agent,
+        chatId,
+        placeholderMessageId: placeholderId,
+        channel: this.channel,
+        renderer: feishuPreviewRenderer,
+        streamEditIntervalMs: 700,
+        startTimeMs,
+        canEditMessages,
+        canSendTyping: false,
+        parseMode: 'Markdown',
+        model: startConfig.model,
+        effort: startConfig.effort,
+        log: (msg) => this.debug(`[live-preview task=${opts.taskId}] ${msg}`),
+      });
+      livePreview.start();
+    }
+
+    const session = opts.session;
+    return {
+      onText: (text, thinking, activity, meta, plan) => {
+        livePreview?.update(text, thinking, activity, meta, plan);
+      },
+      onSuccess: async (result) => {
+        try { await livePreview?.settle(); } catch {}
+        const effectivePlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
+        const finalReplyIds = await this.sendFinalReply({ chatId }, effectivePlaceholderId, opts.agent, result);
+        this.registerSessionMessages(chatId, finalReplyIds, session);
+      },
+      onFailure: async (error) => {
+        try { await livePreview?.settle(); } catch {}
+        const fallbackPlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
+        const errorText = `**Error**\n\n\`${error.slice(0, 500)}\``;
+        await this.editOrSendFresh(chatId, fallbackPlaceholderId, errorText, { logTag: 'im-presenter-error' })
+          .catch(err => this.debug(`[im-presenter feishu] error send failed chat=${chatId}: ${err?.message || err}`));
+      },
+      dispose: () => {
+        livePreview?.dispose();
+      },
+    };
   }
 
   protected override async renderInteractionPrompt(prompt: HumanLoopPromptState<string>, chatId: string): Promise<void> {
@@ -629,8 +734,8 @@ export class FeishuBot extends Bot {
         await ctx.reply('Please answer the active prompt using the buttons above.');
         return;
       }
-      if (result.completed) await this.finalizeHumanLoopPrompt(result.prompt, 'Answer submitted.');
-      else await this.refreshHumanLoopPrompt(ctx.chatId, result.prompt.promptId);
+      // Completed prompts close themselves via onInteractionAnswered.
+      if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, result.prompt.promptId);
       return;
     }
 
@@ -793,7 +898,7 @@ export class FeishuBot extends Bot {
         // If LivePreview already gave up on the placeholder (Feishu rejected too
         // many consecutive edits) skip the doomed edit attempt and send fresh.
         const effectivePlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
-        const finalReplyIds = await this.sendFinalReply(ctx, effectivePlaceholderId, session.agent, result);
+        const finalReplyIds = await this.sendFinalReply({ chatId: ctx.chatId }, effectivePlaceholderId, session.agent, result);
         this.registerSessionMessages(ctx.chatId, finalReplyIds, session);
         this.debug(
           `[handleMessage] end chat=${ctx.chatId} agent=${session.agent} ok=${result.ok} session=${result.sessionId || session.sessionId || '(new)'} ` +
@@ -940,7 +1045,7 @@ export class FeishuBot extends Bot {
   }
 
   private async sendFinalReply(
-    ctx: FeishuContext,
+    anchor: { chatId: string },
     placeholderId: string | null,
     agent: Agent,
     result: StreamResult,
@@ -952,7 +1057,7 @@ export class FeishuBot extends Bot {
     if (rendered.fullText.length <= MAX_CARD) {
       // Fits in one card — try to edit the placeholder, fall back to a fresh
       // card if Feishu rejected the patch (message too old, recalled, ...).
-      const finalId = await this.editOrSendFresh(ctx.chatId, placeholderId, rendered.fullText, { logTag: 'final-reply' });
+      const finalId = await this.editOrSendFresh(anchor.chatId, placeholderId, rendered.fullText, { logTag: 'final-reply' });
       if (finalId) messageIds.push(finalId);
     } else {
       // Split: first card has header + truncated body + footer, continuation as separate cards
@@ -970,13 +1075,13 @@ export class FeishuBot extends Bot {
       }
 
       const firstText = `${rendered.headerText}${firstBody}${rendered.footerText}`;
-      const firstId = await this.editOrSendFresh(ctx.chatId, placeholderId, firstText, { logTag: 'final-reply-head' });
+      const firstId = await this.editOrSendFresh(anchor.chatId, placeholderId, firstText, { logTag: 'final-reply-head' });
       if (firstId) messageIds.push(firstId);
 
       if (remaining.trim()) {
         const chunks = splitText(remaining, MAX_CARD);
         for (const chunk of chunks) {
-          const sent = await this.channel.send(ctx.chatId, chunk);
+          const sent = await this.channel.send(anchor.chatId, chunk);
           if (sent) messageIds.push(sent);
         }
       }
@@ -985,7 +1090,7 @@ export class FeishuBot extends Bot {
     // Dispatch any image MessageBlocks the agent produced this turn.
     const lastId = messageIds[messageIds.length - 1];
     const dispatched = await dispatchImageBlocks(this.channel, result.assistantBlocks, {
-      chatId: ctx.chatId,
+      chatId: anchor.chatId,
       replyTo: lastId,
       log: (message) => this.debug(message),
     });
@@ -1098,15 +1203,13 @@ export class FeishuBot extends Bot {
     const prompt = this.humanLoopPrompt(promptId);
     if (!prompt) return true;
     if (action === 'cancel') {
-      const cancelled = this.humanLoopCancel(promptId, 'Prompt cancelled from Feishu.');
-      await this.finalizeHumanLoopPrompt(cancelled, 'Cancelled.');
+      this.humanLoopCancel(promptId, 'Prompt cancelled from Feishu.');
       return true;
     }
     if (action === 'skip') {
       const result = this.humanLoopSkip(promptId);
       if (!result) return true;
-      if (result.completed) await this.finalizeHumanLoopPrompt(result.prompt, 'Answer submitted.');
-      else await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
+      if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
       return true;
     }
     if (action === 'other') {
@@ -1122,8 +1225,7 @@ export class FeishuBot extends Bot {
       if (!option) return true;
       const result = this.humanLoopSelectOption(promptId, option.value);
       if (!result) return true;
-      if (result.completed) await this.finalizeHumanLoopPrompt(result.prompt, 'Answer submitted.');
-      else await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
+      if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, promptId);
       return true;
     }
     return true;

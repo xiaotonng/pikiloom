@@ -8,7 +8,7 @@ import { execSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { registerDriver, type AgentDriver } from '../driver.js';
 import {
-  type StreamOpts, type StreamResult, type StreamPreviewPlan, type StreamPreviewMeta, type StreamSubAgent,
+  type StreamOpts, type StreamResult, type StreamPreviewPlan, type StreamPreviewPlanStep, type StreamPreviewMeta, type StreamSubAgent,
   type SessionListResult, type SessionTailOpts, type SessionTailResult,
   type SessionMessagesOpts, type SessionMessagesResult,
   type TailMessage, type RichMessage, type MessageBlock,
@@ -19,6 +19,7 @@ import {
   Q, run, agentError, agentLog, agentWarn,
   appendSystemPrompt, buildStreamPreviewMeta, computeContext, pushRecentActivity,
   summarizeClaudeToolUse, summarizeClaudeToolResult, joinErrorMessages, parseTodoWriteAsPlan,
+  detectClaudeApiError, isRetryableClaudeApiError,
   emitSessionIdUpdate,
   IMAGE_EXTS, mimeForExt,
   listPikiclawSessions, findPikiclawSession, isPendingSessionId,
@@ -278,6 +279,47 @@ function accumulateClaudeImagesFromContent(content: any, s: any): void {
   }
 }
 
+/**
+ * Read the server-assigned task id from a TaskCreate tool_result. Claude
+ * surfaces it via the structured `ev.toolUseResult.task.id` companion field,
+ * with a textual fallback ("Task #N created successfully: …") that we parse
+ * if the structured form is missing.
+ */
+function readClaudeTaskCreateId(ev: any, block: any): string | null {
+  const structured = ev?.toolUseResult?.task?.id;
+  if (structured != null && String(structured).trim()) return String(structured).trim();
+  const content = block?.content;
+  if (typeof content === 'string') {
+    const match = content.match(/Task #(\d+)/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/**
+ * Rebuild s.plan from the accumulated TaskCreate / TaskUpdate state so the
+ * dashboard + IM plan card show the canonical Claude Code 2.x task progress.
+ * Order follows insertion order (matches the on-screen Claude task list).
+ */
+function rebuildClaudePlanFromTasks(s: any): void {
+  if (!s.claudeTaskOrder?.length) {
+    // Nothing to render — leave s.plan alone so TodoWrite-era data (if any)
+    // doesn't get clobbered by an empty rebuild.
+    return;
+  }
+  const steps: StreamPreviewPlanStep[] = [];
+  for (const id of s.claudeTaskOrder) {
+    const task = s.claudeTaskList.get(id);
+    if (!task) continue;
+    const lowered = String(task.status || '').toLowerCase();
+    const status = lowered === 'completed' ? 'completed'
+      : lowered === 'in_progress' || lowered === 'inprogress' ? 'inProgress'
+      : 'pending';
+    steps.push({ step: task.subject, status });
+  }
+  s.plan = { explanation: null, steps };
+}
+
 export function claudeParse(ev: any, s: any) {
   const t = ev.type || '';
   // Sub-agent events (Task tool spawns a child agent) carry parent_tool_use_id
@@ -373,12 +415,41 @@ export function claudeParse(ev: any, s: any) {
       const toolId = String(block?.id || '').trim();
       if (!toolId || s.seenClaudeToolIds.has(toolId)) continue;
       const toolName = String(block?.name || 'Tool').trim() || 'Tool';
-      // TodoWrite → update plan instead of adding activity noise
+      // TodoWrite → update plan instead of adding activity noise (Claude Code 1.x)
       if (toolName === 'TodoWrite') {
         const plan = parseTodoWriteAsPlan(block?.input);
         if (plan) s.plan = plan;
         s.seenClaudeToolIds.add(toolId);
         s.claudeToolsById.set(toolId, { name: toolName, summary: 'Update plan' });
+        continue;
+      }
+      // TaskCreate / TaskUpdate → 2.x plan tools. Same intent as TodoWrite, but
+      // emitted one task at a time. Buffer TaskCreate inputs until the matching
+      // tool_result arrives with the server-assigned id; apply TaskUpdate status
+      // changes against the running map. Both rebuild s.plan so the dashboard /
+      // IM plan card keeps surfacing total + current progress.
+      if (toolName === 'TaskCreate') {
+        const subject = typeof block?.input?.subject === 'string' ? block.input.subject.trim() : '';
+        if (subject) s.pendingClaudeTaskCreates.set(toolId, { subject });
+        s.seenClaudeToolIds.add(toolId);
+        s.claudeToolsById.set(toolId, { name: toolName, summary: subject ? `Create task: ${subject}` : 'Create task' });
+        continue;
+      }
+      if (toolName === 'TaskUpdate') {
+        const taskId = String(block?.input?.taskId ?? '').trim();
+        const rawStatus = String(block?.input?.status ?? '').trim().toLowerCase();
+        if (taskId) {
+          if (rawStatus === 'deleted') {
+            s.claudeTaskList.delete(taskId);
+            s.claudeTaskOrder = s.claudeTaskOrder.filter((id: string) => id !== taskId);
+          } else if (rawStatus) {
+            const existing = s.claudeTaskList.get(taskId);
+            if (existing) existing.status = rawStatus;
+          }
+          rebuildClaudePlanFromTasks(s);
+        }
+        s.seenClaudeToolIds.add(toolId);
+        s.claudeToolsById.set(toolId, { name: toolName, summary: `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}` });
         continue;
       }
       // Task → represents a sub-agent invocation. Carve it out as its own
@@ -417,9 +488,32 @@ export function claudeParse(ev: any, s: any) {
     const toolResults = contents.filter((b: any) => b?.type === 'tool_result');
     for (const block of toolResults) {
       const toolId = String(block?.tool_use_id || '').trim();
+      // Dedup against tool_results already pushed by the TUI hook stream —
+      // PreToolUse / PostToolUse arrive in real time, JSONL eventually
+      // delivers the same events at end-of-turn and would otherwise re-push
+      // each summary into activity / re-process TaskCreate's plan entry.
+      if (toolId && s.seenClaudeToolResultIds?.has(toolId)) continue;
+      if (toolId) {
+        if (!s.seenClaudeToolResultIds) s.seenClaudeToolResultIds = new Set<string>();
+        s.seenClaudeToolResultIds.add(toolId);
+      }
       const tool = toolId ? s.claudeToolsById.get(toolId) : undefined;
-      // Skip TodoWrite results from activity — plan card handles it
+      // Skip TodoWrite / TaskCreate / TaskUpdate results from activity — plan
+      // card handles them. TaskCreate's tool_result carries the assigned task
+      // id, which we splice into the running task list before skipping.
       if (tool?.name === 'TodoWrite') continue;
+      if (tool?.name === 'TaskCreate') {
+        const pending = toolId ? s.pendingClaudeTaskCreates.get(toolId) : undefined;
+        const assignedId = readClaudeTaskCreateId(ev, block);
+        if (pending && assignedId) {
+          s.pendingClaudeTaskCreates.delete(toolId);
+          if (!s.claudeTaskList.has(assignedId)) s.claudeTaskOrder.push(assignedId);
+          s.claudeTaskList.set(assignedId, { subject: pending.subject, status: 'pending' });
+          rebuildClaudePlanFromTasks(s);
+        }
+        continue;
+      }
+      if (tool?.name === 'TaskUpdate') continue;
       // Sub-agent tool_result closes out the sub-agent's lifecycle — flip its
       // status and skip the regular activity append (the sub-agent card carries
       // it). The result content text is the sub-agent's full response which
@@ -511,6 +605,17 @@ export function createClaudeStreamState(opts: StreamOpts) {
     activity: '',
     recentActivity: [] as string[],
     plan: null as StreamPreviewPlan | null,
+    // Claude Code 2.x replaced the single `TodoWrite` plan tool with two
+    // separate tools — `TaskCreate` (one task per call, server-assigned id)
+    // and `TaskUpdate` (taskId + status). We maintain an ordered map and
+    // rebuild s.plan whenever either fires so the dashboard / IM plan card
+    // keeps showing total / current progress just like the TodoWrite era.
+    claudeTaskList: new Map<string, { subject: string; status: string }>(),
+    claudeTaskOrder: [] as string[],
+    /** Pending TaskCreate tool_uses indexed by tool_use id — the input
+     *  carries the subject but Claude assigns the numeric task id only in
+     *  the matching tool_result, so we have to bridge the two halves. */
+    pendingClaudeTaskCreates: new Map<string, { subject: string }>(),
     claudeToolsById: new Map<string, { name: string; summary: string }>(),
     seenClaudeToolIds: new Set<string>(),
     subAgents: new Map<string, StreamSubAgent>(),
@@ -802,6 +907,19 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
 
   if (!s.text.trim() && s.msgs.length) s.text = s.msgs.join('\n\n');
   if (!s.thinking.trim() && s.thinkParts.length) s.thinking = s.thinkParts.join('\n\n');
+
+  // Catch the Claude CLI's synthetic "API Error: …" assistant body (transient
+  // Anthropic 5xx / 529 Overloaded). Without this rewrite the raw error string
+  // gets surfaced into the IM card as if it were Claude's reply, and the
+  // retry wrapper in `doClaudeStream` can't tell a transient failure apart
+  // from a real short reply.
+  const apiErrorReason = detectClaudeApiError(s.text);
+  if (apiErrorReason) {
+    agentWarn(`[claude] upstream API error detected: ${apiErrorReason}`);
+    s.stopReason = 'api_error';
+    s.text = '';
+    if (!s.errors) s.errors = [`Anthropic API error: ${apiErrorReason}`];
+  }
 
   const errorText = joinErrorMessages(s.errors);
   const ok = procOk && !s.errors && !timedOut && !interrupted;
@@ -1869,6 +1987,104 @@ export function isClaudePrintModeForced(): boolean {
   return false;
 }
 
+/**
+ * Single-attempt dispatch: print mode when forced via env, otherwise TUI mode
+ * with print-mode fallback if TUI prerequisites are missing (node-pty absent,
+ * PTY allocation refused, …).
+ */
+async function doClaudeStreamOnce(opts: StreamOpts): Promise<StreamResult> {
+  if (isClaudePrintModeForced()) {
+    agentLog('[claude] print mode forced via env, using -p');
+    return doClaudeStream(opts);
+  }
+  try {
+    const mod = await import('./claude-tui.js');
+    return await mod.doClaudeTuiStream(opts);
+  } catch (err: any) {
+    // TUI prerequisite failed (node-pty missing, PTY allocation refused, etc.).
+    // Fall back to print mode so pikiclaw stays functional — with the caveat
+    // that this turn lands on the Agent SDK credit pool.
+    agentWarn(`[claude] TUI unavailable (${err?.message || err}); falling back to -p — this turn bills the Agent SDK credit pool`);
+    return doClaudeStream(opts);
+  }
+}
+
+/**
+ * Backoff schedule (in ms) for retrying transient Anthropic upstream failures
+ * — 529 Overloaded, 5xx, gateway timeouts. Total wait budget ~30s before we
+ * surface the failure to the user. Non-retryable errors (auth, quota,
+ * context-length) skip the loop and fail fast.
+ */
+const CLAUDE_API_RETRY_BACKOFFS_MS = [4000, 12000];
+
+function makeOverloadFriendlyResult(result: StreamResult, reason: string, attempts: number): StreamResult {
+  const wait = CLAUDE_API_RETRY_BACKOFFS_MS.slice(0, attempts).reduce((sum, ms) => sum + ms, 0);
+  const elapsedNote = wait > 0 ? ` (retried ${attempts}× over ${Math.round(wait / 1000)}s)` : '';
+  const message = [
+    `Anthropic API temporarily overloaded${elapsedNote}.`,
+    `Reason from upstream: ${reason}.`,
+    'Please re-send your last message in a moment — your session is intact and will resume from where it stopped.',
+  ].join(' ');
+  return {
+    ...result,
+    ok: false,
+    incomplete: true,
+    stopReason: 'api_error',
+    message,
+    error: `Anthropic API error: ${reason}`,
+  };
+}
+
+/**
+ * Driver-entry wrapper. Detects the Claude CLI's synthetic "API Error: …"
+ * assistant turn and re-issues the request with backoff for retryable upstream
+ * conditions (Overloaded, 5xx, timeouts). Non-retryable failures surface
+ * immediately. After the budget is exhausted, the final result carries a
+ * friendly human-readable explanation in `message` so the IM card doesn't
+ * dump raw "API Error: Overloaded" text on the user.
+ */
+async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
+  let lastResult = await doClaudeStreamOnce(opts);
+  let attempts = 0;
+  // Use the error text recorded by detectClaudeApiError-driven branches to
+  // decide retry: lastResult.error is "Anthropic API error: <reason>" on
+  // detection, undefined otherwise.
+  const reasonOf = (r: StreamResult): string | null => {
+    if (r.stopReason !== 'api_error') return null;
+    const m = (r.error || '').match(/^Anthropic API error:\s*(.+)$/i);
+    return m ? m[1].trim() : null;
+  };
+  while (attempts < CLAUDE_API_RETRY_BACKOFFS_MS.length) {
+    const reason = reasonOf(lastResult);
+    if (!reason || !isRetryableClaudeApiError(reason)) break;
+    const wait = CLAUDE_API_RETRY_BACKOFFS_MS[attempts];
+    attempts++;
+    agentWarn(`[claude] API error "${reason}", retry ${attempts}/${CLAUDE_API_RETRY_BACKOFFS_MS.length} after ${wait}ms`);
+    if (opts.abortSignal?.aborted) {
+      agentWarn('[claude] retry skipped — abort signal already fired');
+      break;
+    }
+    await new Promise(r => setTimeout(r, wait));
+    if (opts.abortSignal?.aborted) {
+      agentWarn('[claude] retry skipped after backoff — abort signal fired');
+      break;
+    }
+    // Resume the same session so we don't restart from scratch. The previous
+    // attempt may have written a synthetic "API Error" assistant block into
+    // the JSONL; Claude resumes past it and re-answers the user's prompt.
+    const nextOpts: StreamOpts = {
+      ...opts,
+      sessionId: lastResult.sessionId || opts.sessionId,
+    };
+    lastResult = await doClaudeStreamOnce(nextOpts);
+  }
+  const finalReason = reasonOf(lastResult);
+  if (finalReason) {
+    return makeOverloadFriendlyResult(lastResult, finalReason, attempts);
+  }
+  return lastResult;
+}
+
 class ClaudeDriver implements AgentDriver {
   readonly id = 'claude';
   readonly cmd = 'claude';
@@ -1881,20 +2097,7 @@ class ClaudeDriver implements AgentDriver {
   readonly acceptedProviderKinds = ['anthropic', 'openai-compatible'] as const;
 
   async doStream(opts: StreamOpts): Promise<StreamResult> {
-    if (isClaudePrintModeForced()) {
-      agentLog('[claude] print mode forced via env, using -p');
-      return doClaudeStream(opts);
-    }
-    try {
-      const mod = await import('./claude-tui.js');
-      return await mod.doClaudeTuiStream(opts);
-    } catch (err: any) {
-      // TUI prerequisite failed (node-pty missing, PTY allocation refused,
-      // etc.). Fall back to print mode so pikiclaw stays functional — with
-      // the caveat that this turn lands on the Agent SDK credit pool.
-      agentWarn(`[claude] TUI unavailable (${err?.message || err}); falling back to -p — this turn bills the Agent SDK credit pool`);
-      return doClaudeStream(opts);
-    }
+    return doClaudeWithRetry(opts);
   }
 
   async getSessions(workdir: string, limit?: number): Promise<SessionListResult> {

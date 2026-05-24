@@ -38,8 +38,11 @@ import {
   Q, agentLog, agentWarn, agentError,
   buildStreamPreviewMeta, computeContext, joinErrorMessages,
   emitSessionIdUpdate, normalizeClaudeModelId,
+  pushRecentActivity, summarizeClaudeToolUse, summarizeClaudeToolResult,
+  detectClaudeApiError,
 } from '../utils.js';
 import { encodePathAsDirName, getHome, whichSync } from '../../core/platform.js';
+import { stripAnsiEscapes } from '../../core/utils.js';
 import { AGENT_STREAM_HARD_KILL_GRACE_MS } from '../../core/constants.js';
 import {
   claudeParse, createClaudeStreamState,
@@ -147,12 +150,29 @@ const HOOK_SCRIPT = `#!/usr/bin/env node
 const fs = require("node:fs");
 const event = process.argv[2] || "";
 const stateFile = process.argv[3] || "";
+const toolEventsFile = process.argv[4] || "";
 let stdin = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (d) => { stdin += d; });
 process.stdin.on("end", () => {
   let payload = {};
   try { payload = stdin ? JSON.parse(stdin) : {}; } catch (_) {}
+  // Tool events go to an append-only JSONL. Sequential lifecycle events
+  // (SessionStart / UserPromptSubmit / Stop) still use the state file —
+  // they fire once each so the read-modify-write race is benign there.
+  if ((event === "PreToolUse" || event === "PostToolUse") && toolEventsFile) {
+    const line = JSON.stringify({
+      event,
+      at: Date.now(),
+      tool_use_id: typeof payload.tool_use_id === "string" ? payload.tool_use_id : null,
+      tool_name: typeof payload.tool_name === "string" ? payload.tool_name : null,
+      tool_input: payload.tool_input || null,
+      tool_response: payload.tool_response || null,
+    }) + "\\n";
+    try { fs.appendFileSync(toolEventsFile, line); } catch (_) {}
+    process.stdout.write(JSON.stringify({ continue: true }) + "\\n");
+    return;
+  }
   let state = {};
   try { state = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch (_) {}
   state.events = Array.isArray(state.events) ? state.events : [];
@@ -269,6 +289,192 @@ function makeTuiStreamBuffer(): TuiStreamBuffer {
  * (see `callClaudeParseForTui`) — otherwise `claudeParse`'s "fill if empty"
  * fallback would clobber the buffered streaming.
  */
+/**
+ * Pull the server-assigned task id out of a PostToolUse hook's tool_response.
+ * Claude Code's hook payload mirrors the JSONL tool_result shape — usually
+ * `{ task: { id, subject }, ...}` for TaskCreate. Falls back to scanning the
+ * textual response for "Task #N created" when the structured form is missing.
+ */
+function readAssignedTaskIdFromHookResponse(toolResponse: any): string | null {
+  const structured = toolResponse?.task?.id;
+  if (structured != null && String(structured).trim()) return String(structured).trim();
+  if (typeof toolResponse === 'string') {
+    const m = toolResponse.match(/Task #(\d+)/);
+    if (m) return m[1];
+  }
+  if (toolResponse && typeof toolResponse.result === 'string') {
+    const m = toolResponse.result.match(/Task #(\d+)/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/**
+ * Apply a single PreToolUse / PostToolUse hook event to the parser state.
+ * Mirrors what `claudeParse` would do for the matching JSONL tool_use /
+ * tool_result, but fires the instant Claude calls the tool — so the IM
+ * placeholder card actually updates during the turn instead of staying empty
+ * until Stop. Dedup with the eventual JSONL flush is via `tool_use_id`:
+ * claudeParse skips tools already in `s.seenClaudeToolIds`, and the new
+ * `s.seenClaudeToolResultIds` guards tool_result re-pushes.
+ */
+function applyHookToolEvent(ev: any, s: any): boolean {
+  const toolUseId = String(ev?.tool_use_id || '').trim();
+  const toolName = String(ev?.tool_name || '').trim();
+  if (!toolName || !toolUseId) return false;
+
+  if (ev.event === 'PreToolUse') {
+    if (s.seenClaudeToolIds.has(toolUseId)) return false;
+    if (toolName === 'TaskCreate') {
+      const subject = typeof ev.tool_input?.subject === 'string' ? ev.tool_input.subject.trim() : '';
+      if (subject) s.pendingClaudeTaskCreates.set(toolUseId, { subject });
+      s.seenClaudeToolIds.add(toolUseId);
+      s.claudeToolsById.set(toolUseId, { name: toolName, summary: subject ? `Create task: ${subject}` : 'Create task' });
+      return true;
+    }
+    if (toolName === 'TaskUpdate') {
+      const taskId = String(ev.tool_input?.taskId ?? '').trim();
+      const rawStatus = String(ev.tool_input?.status ?? '').trim().toLowerCase();
+      if (taskId) {
+        if (rawStatus === 'deleted') {
+          s.claudeTaskList.delete(taskId);
+          s.claudeTaskOrder = s.claudeTaskOrder.filter((id: string) => id !== taskId);
+        } else if (rawStatus) {
+          const existing = s.claudeTaskList.get(taskId);
+          if (existing) existing.status = rawStatus;
+        }
+        rebuildClaudePlanFromTasksFromState(s);
+      }
+      s.seenClaudeToolIds.add(toolUseId);
+      s.claudeToolsById.set(toolUseId, { name: toolName, summary: `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}` });
+      return true;
+    }
+    if (toolName === 'TodoWrite') {
+      const plan = parseTodoWriteAsPlanLite(ev.tool_input);
+      if (plan) s.plan = plan;
+      s.seenClaudeToolIds.add(toolUseId);
+      s.claudeToolsById.set(toolUseId, { name: toolName, summary: 'Update plan' });
+      return true;
+    }
+    if (toolName === 'Task' || toolName === 'Agent') {
+      // Register the sub-agent so `meta.subAgents` lights up the new
+      // Sub-agent preview block. Sub-agents are isolated from parent activity
+      // by design (the dedicated section shows their own tool stream); pushing
+      // into parent recentActivity would re-introduce the noise the isolation
+      // is meant to prevent. Granular sub-agent tool calls land later via the
+      // sidecar pump → `routeClaudeSubAgentEvent`.
+      const input = ev.tool_input || {};
+      const desc = typeof input.description === 'string' ? input.description.trim() : '';
+      const kind = typeof input.subagent_type === 'string' ? input.subagent_type.trim() : '';
+      if (!s.subAgents.has(toolUseId)) {
+        s.subAgents.set(toolUseId, {
+          id: toolUseId,
+          kind: kind || null,
+          description: desc || null,
+          model: null,
+          tools: [],
+          status: 'running',
+        });
+      }
+      s.seenClaudeToolIds.add(toolUseId);
+      s.claudeToolsById.set(toolUseId, { name: toolName, summary: desc || kind || 'Sub-agent' });
+      return true;
+    }
+    const summary = summarizeClaudeToolUse(toolName, ev.tool_input || {});
+    pushRecentActivity(s.recentActivity, summary);
+    s.seenClaudeToolIds.add(toolUseId);
+    s.claudeToolsById.set(toolUseId, { name: toolName, summary });
+    s.activity = s.recentActivity.join('\n');
+    return true;
+  }
+
+  if (ev.event === 'PostToolUse') {
+    if (!s.seenClaudeToolResultIds) s.seenClaudeToolResultIds = new Set<string>();
+    if (s.seenClaudeToolResultIds.has(toolUseId)) return false;
+    if (toolName === 'TaskCreate') {
+      const pending = s.pendingClaudeTaskCreates.get(toolUseId);
+      const assignedId = readAssignedTaskIdFromHookResponse(ev.tool_response);
+      if (pending && assignedId) {
+        s.pendingClaudeTaskCreates.delete(toolUseId);
+        if (!s.claudeTaskList.has(assignedId)) s.claudeTaskOrder.push(assignedId);
+        s.claudeTaskList.set(assignedId, { subject: pending.subject, status: 'pending' });
+        rebuildClaudePlanFromTasksFromState(s);
+      }
+      s.seenClaudeToolResultIds.add(toolUseId);
+      return true;
+    }
+    if (toolName === 'TaskUpdate' || toolName === 'TodoWrite') {
+      s.seenClaudeToolResultIds.add(toolUseId);
+      return true;
+    }
+    if (toolName === 'Task' || toolName === 'Agent') {
+      // Sub-agent finished — flip its status so it drops out of the live
+      // Sub-agent preview block. The completion fact itself is implicit: the
+      // block stops listing this entry.
+      const sub = s.subAgents.get(toolUseId);
+      if (sub) sub.status = ev.tool_response?.is_error ? 'failed' : 'done';
+      s.seenClaudeToolResultIds.add(toolUseId);
+      return true;
+    }
+    const tool = s.claudeToolsById.get(toolUseId);
+    if (tool) {
+      const summary = summarizeClaudeToolResult(tool, { content: ev.tool_response }, ev.tool_response);
+      if (summary) {
+        pushRecentActivity(s.recentActivity, summary);
+        s.activity = s.recentActivity.join('\n');
+      }
+    }
+    s.seenClaudeToolResultIds.add(toolUseId);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Lite TodoWrite parser used by the hook path — avoids pulling parseTodoWriteAsPlan
+ * from agent/utils into this file's already-large import surface. Identical
+ * semantics for the legacy 1.x plan tool.
+ */
+function parseTodoWriteAsPlanLite(input: any): any {
+  if (!input || typeof input !== 'object') return null;
+  const rawTodos = Array.isArray(input.todos) ? input.todos : [];
+  if (!rawTodos.length) return null;
+  const steps: Array<{ step: string; status: string }> = [];
+  for (const todo of rawTodos) {
+    if (!todo || typeof todo !== 'object') continue;
+    const content = typeof todo.content === 'string' ? todo.content.trim() : '';
+    if (!content) continue;
+    const rawStatus = typeof todo.status === 'string' ? todo.status : 'pending';
+    const status = rawStatus === 'completed' ? 'completed'
+      : rawStatus === 'in_progress' ? 'inProgress'
+      : 'pending';
+    steps.push({ step: content, status });
+  }
+  if (!steps.length) return null;
+  return { explanation: null, steps };
+}
+
+/**
+ * Reimplementation of claude.ts's rebuildClaudePlanFromTasks (it's private to
+ * that module). Kept tiny and dependency-free so the hook code path stays
+ * independent of the JSONL parser's internals.
+ */
+function rebuildClaudePlanFromTasksFromState(s: any): void {
+  if (!s.claudeTaskOrder?.length) return;
+  const steps: Array<{ step: string; status: string }> = [];
+  for (const id of s.claudeTaskOrder) {
+    const task = s.claudeTaskList.get(id);
+    if (!task) continue;
+    const lowered = String(task.status || '').toLowerCase();
+    const status = lowered === 'completed' ? 'completed'
+      : lowered === 'in_progress' || lowered === 'inprogress' ? 'inProgress'
+      : 'pending';
+    steps.push({ step: task.subject, status });
+  }
+  s.plan = { explanation: null, steps };
+}
+
 function applyAssistantStreaming(s: any, msg: any, buf: TuiStreamBuffer): void {
   if (!msg || msg.model === '<synthetic>') return;
   const contents = Array.isArray(msg.content) ? msg.content : [];
@@ -387,20 +593,35 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   }
   const hookPath = path.join(workDir, 'hook.cjs');
   const statePath = path.join(workDir, 'state.json');
+  const toolEventsPath = path.join(workDir, 'tool-events.jsonl');
   const settingsPath = path.join(workDir, 'settings.json');
   const ptyLogPath = path.join(workDir, 'pty.log');
 
   try {
     fs.writeFileSync(hookPath, HOOK_SCRIPT, { mode: 0o755 });
     fs.writeFileSync(statePath, JSON.stringify({ events: [] }));
+    fs.writeFileSync(toolEventsPath, '');
     // Use the same Node binary that's running pikiclaw — `node` may not be on
     // PATH inside the claude TUI's hook subprocess on every distro.
     const nodeBin = Q(process.execPath);
-    const hookCmd = (event: string) => `${nodeBin} ${Q(hookPath)} ${event} ${Q(statePath)}`;
+    const hookCmd = (event: string) => `${nodeBin} ${Q(hookPath)} ${event} ${Q(statePath)} ${Q(toolEventsPath)}`;
+    // Pre/PostToolUse hooks give us a live event stream. Claude Code 2.x
+    // buffers the JSONL transcript and only flushes it when Stop fires, so
+    // without these hooks the dashboard / IM see absolutely no progress
+    // during a 30s+ turn. The hook script writes to tool-events.jsonl via
+    // atomic appends, sidestepping the read-modify-write race that affects
+    // the shared state.json file.
+    // Pre/PostToolUse require an explicit `matcher` field — without it Claude
+    // Code's hook dispatcher silently never fires the hook (the lifecycle
+    // hooks below don't need a matcher because they aren't tool-scoped).
+    // `*` matches every tool. Without this, the entire live-streaming wire-up
+    // is dead code.
     const settings = {
       hooks: {
         SessionStart: [{ hooks: [{ type: 'command', command: hookCmd('SessionStart'), timeout: 5 }] }],
         UserPromptSubmit: [{ hooks: [{ type: 'command', command: hookCmd('UserPromptSubmit'), timeout: 5 }] }],
+        PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: hookCmd('PreToolUse'), timeout: 5 }] }],
+        PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: hookCmd('PostToolUse'), timeout: 5 }] }],
         Stop: [{ hooks: [{ type: 'command', command: hookCmd('Stop'), timeout: 5 }] }],
       },
     };
@@ -566,9 +787,13 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     }
     // Capture stderr-ish bytes (TUI startup errors, "claude: command not
     // found"-style messages) for the final error payload when the run aborts
-    // before any JSONL is written. Keep the buffer bounded.
+    // before any JSONL is written. Strip ANSI on the way in — otherwise the
+    // raw PTY screen (cursor positions, SGR colours, column-aligned reply
+    // rendering) leaks into IM as gibberish like "[3G你把 [8Gsnipe …" when a
+    // user hits Stop before the JSONL has flushed any assistant text. Keep
+    // the buffer bounded after stripping.
     if (stderrCapture.length < 4096) {
-      stderrCapture += data;
+      stderrCapture += stripAnsiEscapes(data);
       if (stderrCapture.length > 4096) stderrCapture = stderrCapture.slice(0, 4096);
     }
   });
@@ -613,6 +838,27 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let promptNudged = false;
   let pollHandle: NodeJS.Timeout | null = null;
   let drainScheduled = false;
+  // Append-only tool-events log fed by PreToolUse / PostToolUse hooks. We
+  // tail it with the same incremental reader the JSONL transcript uses, so
+  // tool calls + plan changes surface live during the turn even while the
+  // canonical JSONL stays empty (Claude Code 2.x buffers the whole transcript
+  // until the Stop hook fires).
+  let toolEventsReadOffset = 0;
+  const drainToolEvents = (): boolean => {
+    if (!fs.existsSync(toolEventsPath)) return false;
+    const inc = readJsonlIncrement(toolEventsPath, toolEventsReadOffset);
+    toolEventsReadOffset = inc.offset;
+    let any = false;
+    for (const line of inc.lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed[0] !== '{') continue;
+      let ev: any;
+      try { ev = JSON.parse(trimmed); } catch { continue; }
+      try { if (applyHookToolEvent(ev, s)) any = true; }
+      catch (e: any) { agentWarn(`[claude-tui] hook tool event apply threw: ${e?.message || e}`); }
+    }
+    return any;
+  };
 
   // Sub-agent (Task tool) tracking. Claude Code does NOT inline sub-agent
   // events into the main JSONL — they go to a sidecar at
@@ -745,6 +991,14 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       }
     }
 
+    // Live tool-events stream — fed by Pre/PostToolUse hooks.  Order matters:
+    // we drain hooks BEFORE the JSONL tail above already ran so any hook
+    // events that beat their JSONL counterpart are recorded in
+    // seenClaudeToolIds first; subsequent JSONL pass deduplicates naturally.
+    // In practice JSONL doesn't land until Stop, so this is the only signal
+    // that fires during a normal turn.
+    if (drainToolEvents()) emit();
+
     // Sub-agent sidecar discovery + pump. Order matters: discovery first so a
     // newly-spawned sub-agent gets registered for tailing this same tick if
     // its events have already been written.
@@ -809,6 +1063,9 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     }
     if (touched) emit();
   }
+  // Final tool-events drain — any PreToolUse / PostToolUse hooks that fired
+  // between the last poll tick and process exit.
+  if (drainToolEvents()) emit();
   // Final sub-agent drain. The sub-agent's last events (closing tool_results)
   // may have landed after our last poll tick; mirror the main JSONL drain to
   // make sure sub.tools / sub.status carry the complete picture into the
@@ -832,6 +1089,19 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // doClaudeInteractiveStream so downstream consumers (finalizeStreamResult,
   // dashboard rendering) cannot tell the two paths apart.
   const errorText = joinErrorMessages(s.errors);
+  const cleanStderr = stderrCapture.trim();
+  // Detect Claude Code's synthetic "API Error: …" assistant reply (e.g.
+  // 529 Overloaded). The text gets rewritten so the IM card doesn't surface
+  // the raw "API Error: Overloaded" string to the user, and stopReason is
+  // upgraded so the ClaudeDriver retry wrapper can decide to re-issue the
+  // turn rather than letting the synthetic failure stick.
+  const apiErrorReason = detectClaudeApiError(s.text);
+  if (apiErrorReason) {
+    agentWarn(`[claude-tui] upstream API error detected: ${apiErrorReason}`);
+    s.stopReason = 'api_error';
+    s.text = '';
+    if (!s.errors) s.errors = [`Anthropic API error: ${apiErrorReason}`];
+  }
   // "ok" requires: process exited cleanly (or via our own SIGTERM after Stop
   // hook fired, which yields a non-zero exit), no errors from the parser, no
   // user abort, no timeout. SIGTERM-after-Stop is the normal happy path.
@@ -842,12 +1112,27 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     || (interrupted ? 'Interrupted by user.' : null)
     || (timedOut ? `Timed out after ${opts.timeout}s before the agent reported completion.` : null)
     || (!stopHookFired
-      ? (stderrCapture.trim()
+      ? (cleanStderr
         || `Claude TUI exited (code=${exitCode}, signal=${exitSignal ?? '-'}) without completing the turn.`)
       : null);
   const incomplete = !ok || s.stopReason === 'max_tokens' || s.stopReason === 'timeout';
   const elapsedS = (Date.now() - start) / 1000;
   agentLog(`[claude-tui] result ok=${ok} elapsed=${elapsedS.toFixed(1)}s text=${s.text.length}ch thinking=${s.thinking.length}ch session=${s.sessionId || '?'} stop=${stopHookFired}`);
+
+  // Build the message body. Order:
+  //   1. Any assistant text captured from JSONL (the canonical reply).
+  //   2. Parser-surfaced errors.
+  //   3. For interrupted runs with no text yet, a clear status — never the
+  //      raw PTY scrape (it would be a half-rendered TUI screen with no value
+  //      to the user, and pre-ANSI-strip used to render as garbled gibberish
+  //      in IM).
+  //   4. Fall back to ANSI-stripped stderrCapture for genuine startup
+  //      failures like "claude: command not found".
+  const messageBody = s.text.trim()
+    || errorText
+    || (interrupted ? '(Interrupted before any reply landed.)'
+        : procOk ? '(no textual response)'
+        : `Failed (exit=${exitCode}).\n\n${cleanStderr || '(no output)'}`);
 
   return {
     ok,
@@ -855,7 +1140,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     workspacePath: null,
     model: s.model,
     thinkingEffort: s.thinkingEffort,
-    message: s.text.trim() || errorText || (procOk ? '(no textual response)' : `Failed (exit=${exitCode}).\n\n${stderrCapture.trim() || '(no output)'}`),
+    message: messageBody,
     thinking: s.thinking.trim() || null,
     elapsedS,
     inputTokens: s.inputTokens,

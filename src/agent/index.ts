@@ -62,6 +62,7 @@ export {
   Q, agentLog, agentWarn, agentError,
   dedupeStrings, numberOrNull,
   normalizeStreamPreviewPlan, parseTodoWriteAsPlan, normalizeActivityLine, pushRecentActivity,
+  detectClaudeApiError, isRetryableClaudeApiError,
   firstNonEmptyLine, shortValue, normalizeErrorMessage, joinErrorMessages,
   appendSystemPrompt, mimeForExt, computeContext, buildStreamPreviewMeta,
   summarizeClaudeToolUse, summarizeClaudeToolResult,

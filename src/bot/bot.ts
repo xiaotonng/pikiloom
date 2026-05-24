@@ -35,9 +35,10 @@ import { terminateProcessTree } from '../core/process-control.js';
 import { expandTilde } from '../core/platform.js';
 import { VERSION } from '../core/version.js';
 import {
-  type HumanLoopPromptState, type HumanLoopQuestion,
+  type HumanLoopPromptState, type HumanLoopQuestion, type ResolvedHumanLoopAnswers, type ResolvedHumanLoopStatus,
   buildHumanLoopResponse, createEmptyHumanLoopAnswer, currentHumanLoopQuestion,
   isHumanLoopAwaitingText, setHumanLoopOption, setHumanLoopText, skipHumanLoopQuestion,
+  summarizeResolvedHumanLoopAnswers,
 } from './human-loop.js';
 import { writeScopedLog, type LogLevel } from '../core/logging.js';
 import {
@@ -318,6 +319,12 @@ export interface BeginHumanLoopPromptOpts {
   hint?: string | null;
   questions: HumanLoopQuestion[];
   resolveWith: (answers: Record<string, string[]>) => Record<string, any> | null;
+  /**
+   * Internal picker mode — skip the onInteractionAnswered hook so channel
+   * command UIs (WeChat /agents, /models, …) don't echo internal action
+   * values into the chat as user-facing decisions.
+   */
+  silent?: boolean;
 }
 
 export interface ActiveHumanLoopPrompt {
@@ -370,6 +377,41 @@ export interface SubmittedSessionTask {
   taskId: string;
   sessionKey: string;
   queued: true;
+}
+
+/**
+ * Per-task IM rendering hook. `submitSessionTask` (used by `/goal` setting,
+ * goal continuations, and other programmatic task submissions) only emits
+ * dashboard SSE by default; without a presenter the IM channel that triggered
+ * the task sees nothing after the initial reply. Each IM channel overrides
+ * `createImTaskPresenter` to spin up a placeholder + LivePreview + final
+ * reply just like a regular typed message — so goal-mode streams in IM look
+ * the same as normal Q&A.
+ */
+export interface ImTaskPresenterOpts {
+  chatId: ChatId;
+  taskId: string;
+  session: SessionRuntime;
+  agent: Agent;
+  prompt: string;
+  attachments: string[];
+}
+
+export interface ImTaskPresenter {
+  /** Stream callback — forwarded the same arguments runStream gives onText. */
+  onText: (
+    text: string,
+    thinking: string,
+    activity?: string,
+    meta?: StreamPreviewMeta,
+    plan?: StreamPreviewPlan | null,
+  ) => void;
+  /** Called after runStream resolves successfully. */
+  onSuccess: (result: StreamResult) => Promise<void>;
+  /** Called when runStream throws or the task is cancelled. */
+  onFailure: (error: string) => Promise<void>;
+  /** Always called once, success or fail, to free resources (e.g. LivePreview). */
+  dispose: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,6 +1424,7 @@ export class Bot {
       resolve: resolvePrompt,
       reject: rejectPrompt,
       messageIds: [],
+      silent: opts.silent,
     };
     this.humanLoopPrompts.set(promptId, prompt);
     const chatKey = String(opts.chatId);
@@ -1415,6 +1458,7 @@ export class Bot {
     this.removeHumanLoopPromptFromChat(prompt.chatId, promptId);
     prompt.resolve(buildHumanLoopResponse(prompt));
     this.emitInteractionResolved(prompt.taskId, promptId);
+    this.fireInteractionAnswered(prompt, 'answered');
     return prompt;
   }
 
@@ -1425,7 +1469,36 @@ export class Bot {
     this.removeHumanLoopPromptFromChat(prompt.chatId, promptId);
     if (error) prompt.reject(error);
     this.emitInteractionResolved(prompt.taskId, promptId);
+    this.fireInteractionAnswered(prompt, 'cancelled');
     return prompt;
+  }
+
+  /**
+   * Unified post-resolution hook for human-loop prompts. Each IM channel
+   * overrides `onInteractionAnswered` to (1) collapse the original prompt card
+   * to an answered/cancelled state and (2) echo the decision as a new chat
+   * message so scrolling back shows what the user picked. Dashboard sessions
+   * (chatId='dashboard') and channels that opt out remain silent.
+   */
+  private fireInteractionAnswered(prompt: HumanLoopPromptState<ChatId>, status: ResolvedHumanLoopStatus) {
+    if (prompt.silent) return;
+    if ((prompt.chatId as unknown) === 'dashboard') return;
+    const summary = summarizeResolvedHumanLoopAnswers(prompt, status);
+    void Promise.resolve()
+      .then(() => this.onInteractionAnswered(prompt, summary))
+      .catch(err => this.warn(`onInteractionAnswered failed: ${err?.message || err}`));
+  }
+
+  /**
+   * Channel hook fired after a human-loop prompt resolves (answered or
+   * cancelled). Default: no-op. Override in channel subclasses to update the
+   * original card and post a decision-echo message.
+   */
+  protected async onInteractionAnswered(
+    _prompt: HumanLoopPromptState<ChatId>,
+    _summary: ResolvedHumanLoopAnswers,
+  ): Promise<void> {
+    // Default: no-op.
   }
 
   private emitInteractionResolved(taskId: string, promptId: string) {
@@ -1594,10 +1667,11 @@ export class Bot {
     const taskId = `ext-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const prompt = opts.prompt.trim();
     const attachments = opts.attachments || [];
+    const chatId = opts.chatId ?? 'dashboard';
 
     this.beginTask({
       taskId,
-      chatId: opts.chatId ?? 'dashboard',
+      chatId,
       agent: session.agent,
       sessionKey: session.key,
       prompt,
@@ -1617,6 +1691,18 @@ export class Bot {
       }
 
       this.emitStreamStart(taskId, session);
+
+      // Wire up IM rendering for non-dashboard chats so /goal-driven tasks stream
+      // to the same channel that submitted them, matching handleMessage's UX.
+      const presenter = chatId !== 'dashboard'
+        ? await this.createImTaskPresenter({
+            chatId, taskId, session, agent: session.agent, prompt, attachments,
+          }).catch(err => {
+            this.warn(`[submitSessionTask] presenter setup failed task=${taskId}: ${err?.message || err}`);
+            return null;
+          })
+        : null;
+
       try {
         const result = await this.runStream(
           prompt,
@@ -1624,12 +1710,13 @@ export class Bot {
           attachments,
           (text, thinking, activity, meta, plan) => {
             opts.onText?.(text, thinking, activity, meta, plan);
+            presenter?.onText(text, thinking, activity, meta, plan);
             this.emitStreamText(taskId, session.key, text, thinking, activity, meta, plan);
           },
           undefined,
           undefined,
           abortController.signal,
-          this.createInteractionHandler(opts.chatId ?? 'dashboard', taskId),
+          this.createInteractionHandler(chatId, taskId),
           undefined,
           undefined,
           opts.forkOf ? { forkOf: opts.forkOf } : undefined,
@@ -1639,18 +1726,28 @@ export class Bot {
           incomplete: !!result.incomplete,
           ...(result.ok ? {} : { error: result.error || result.message }),
         });
+        if (presenter) {
+          try { await presenter.onSuccess(result); }
+          catch (e: any) { this.warn(`[submitSessionTask] presenter onSuccess failed task=${taskId}: ${e?.message || e}`); }
+        }
         try {
           this.maybeEnqueueGoalContinuation(session, opts, result);
         } catch (err: any) {
           this.debug(`[goal-continuation] enqueue failed: ${err?.message || err}`);
         }
       } catch (error: any) {
+        const errMsg = error?.message || String(error);
         this.emitStreamDone(taskId, session.key, {
           sessionId: session.sessionId,
           incomplete: true,
-          error: error?.message || String(error),
+          error: errMsg,
         });
+        if (presenter) {
+          try { await presenter.onFailure(errMsg); }
+          catch (e: any) { this.warn(`[submitSessionTask] presenter onFailure failed task=${taskId}: ${e?.message || e}`); }
+        }
       } finally {
+        presenter?.dispose();
         this.finishTask(taskId);
         this.syncSelectedChats(session);
       }
@@ -1660,6 +1757,15 @@ export class Bot {
     });
 
     return { ok: true, taskId, sessionKey: session.key, queued: true };
+  }
+
+  /**
+   * Channel hook — returns a presenter that streams the task's runStream
+   * output to the IM chat that submitted it. Default: null (dashboard-only
+   * chats and channels that haven't opted in stay silent in IM).
+   */
+  protected async createImTaskPresenter(_opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
+    return null;
   }
 
   /**
@@ -2434,9 +2540,16 @@ export class Bot {
       ),
       buildBrowserAutomationPrompt(browserEnabled),
     );
+    // mcpSystemPrompt carries behaviour directives (use im_ask_user instead of
+    // built-in AskUserQuestion, browser automation status, artifact delivery)
+    // that must apply on every turn, not just the first — on resume the CLI
+    // does not automatically re-inject the previous --append-system-prompt
+    // contents, so Claude silently regresses to the built-in tools on turn 2+.
+    // The caller-supplied `systemPrompt` (per-task scaffolding) remains
+    // first-turn-only since later turns inherit it via the session transcript.
     const effectiveSystemPrompt = isFirstTurnOfSession
       ? appendExtraPrompt(systemPrompt, mcpSystemPrompt)
-      : undefined;
+      : (mcpSystemPrompt || undefined);
     const syncNativeSessionId = (nativeSessionId: string) => {
       const resolvedSessionId = nativeSessionId.trim();
       if (!resolvedSessionId) return;

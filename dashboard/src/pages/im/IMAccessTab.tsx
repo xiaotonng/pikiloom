@@ -4,8 +4,7 @@ import { type Locale } from '../../i18n';
 import { useStore } from '../../store';
 import { BrandIcon } from '../../components/BrandIcon';
 import type { ChannelSetupState, UserConfig } from '../../types';
-import { Badge, Button, Spinner } from '../../components/ui';
-import { SettingRowAction, SettingRowCard, SettingRowField, SettingRowLead } from '../shared';
+import { Button, Row, RowGroup, Spinner, StatusPill, type StatusState } from '../../components/ui';
 
 type IMAccessTabProps = {
   onOpenWeixin: () => void;
@@ -245,47 +244,56 @@ function getStatusPresentation(
   };
 }
 
-function ChannelRow({
-  meta,
-  locale,
-}: {
-  meta: ChannelRowMeta;
-  locale: Locale;
-}) {
-  const copy = getCopy(locale);
+/**
+ * Map the legacy `statusVariant` (Badge tone) onto the canonical StatusPill
+ * states. Loading is treated as a 'running' pulse so the pill itself
+ * communicates motion without needing a separate spinner.
+ */
+function statusToPillState(variant: ChannelRowMeta['statusVariant'], loading?: boolean): StatusState {
+  if (loading) return 'running';
+  switch (variant) {
+    case 'ok': return 'ok';
+    case 'warn': return 'warn';
+    case 'accent': return 'info';
+    case 'muted': default: return 'idle';
+  }
+}
 
+function ChannelRow({ meta }: { meta: ChannelRowMeta }) {
   return (
-    <SettingRowCard>
-      <SettingRowLead
+    <Row>
+      <Row.Lead
         icon={<BrandIcon brand={meta.key} size={32} className="rounded-md" />}
         iconWrap={false}
         title={meta.title}
         subtitle={meta.subtitle}
       />
 
-      <SettingRowField label={copy.status}>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Badge variant={meta.statusVariant}>
-            {meta.loading && <Spinner className="h-3 w-3" />}
-            {meta.statusLabel}
-          </Badge>
-        </div>
-        <div className="mt-1 text-[13px] leading-relaxed text-fg-3 xl:truncate xl:whitespace-nowrap" title={meta.statusDescription}>
-          {meta.statusDescription}
-        </div>
-      </SettingRowField>
+      <Row.Status>
+        <StatusPill
+          state={statusToPillState(meta.statusVariant, meta.loading)}
+          label={meta.statusLabel}
+        />
+      </Row.Status>
 
-      <SettingRowField label={meta.summaryLabel}>
-        <div className="break-words text-[13px] leading-relaxed text-fg-3">{meta.summary}</div>
-      </SettingRowField>
+      <Row.Field>{meta.summary}</Row.Field>
 
-      <SettingRowAction>
-        <Button variant={meta.channel?.ready ? 'outline' : 'primary'} size="sm" onClick={meta.onAction} disabled={meta.actionDisabled}>
+      <Row.Action>
+        <Button
+          tone={meta.channel?.ready ? 'secondary' : 'primary'}
+          size="sm"
+          onClick={meta.onAction}
+          disabled={meta.actionDisabled}
+        >
           {meta.loading && <Spinner className="h-3 w-3" />}
           {meta.actionLabel}
         </Button>
-      </SettingRowAction>
-    </SettingRowCard>
+      </Row.Action>
+
+      {meta.statusDescription && meta.statusDescription !== meta.statusLabel && (
+        <Row.Description>{meta.statusDescription}</Row.Description>
+      )}
+    </Row>
   );
 }
 
@@ -354,10 +362,13 @@ export function IMAccessTab(props: IMAccessTabProps) {
   }, [channels, config, copy, loading, locale, props]);
 
   return (
-    <div className="animate-in space-y-3">
-      {rows.map(row => (
-        <ChannelRow key={row.key} meta={row} locale={locale} />
-      ))}
+    <div className="animate-in">
+      <RowGroup>
+        <Row.Header columns={[copy.status === '状态' ? '通道' : 'Channel', copy.status, copy.summary, '']} />
+        {rows.map(row => (
+          <ChannelRow key={row.key} meta={row} />
+        ))}
+      </RowGroup>
     </div>
   );
 }

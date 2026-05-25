@@ -47,7 +47,7 @@ cli/  →  dashboard/  →  channels/*  →  bot/  →  agent/  →  core/
 - **core/** — zero business-logic dependencies (constants, logging, config)
 - **agent/** — agent abstraction layer (drivers, sessions, streaming, MCP)
 - **bot/** — channel-agnostic bot orchestration
-- **channels/** — physically isolated IM implementations (Telegram, Feishu, WeChat)
+- **channels/** — physically isolated IM implementations (Telegram, Feishu, WeChat, Slack, Discord, DingTalk, WeCom)
 - **dashboard/** — Hono HTTP server + React SPA
 - **cli/** — entry points
 

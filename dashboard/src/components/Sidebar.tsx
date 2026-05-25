@@ -43,22 +43,26 @@ export function Sidebar({
   const confirming = restartPhase === 'confirm';
 
   return (
-    <header className="sticky top-0 z-40 bg-[var(--th-sidebar)] border-b border-edge backdrop-blur-[20px] [backdrop-filter:blur(20px)_saturate(1.2)]">
-      <div className="mx-auto flex min-h-14 max-w-[1180px] flex-wrap items-center gap-2.5 px-4 py-2">
-        {/* Logo */}
+    // Dim-chrome treatment: sidebar sits on surface[1], one notch darker than
+    // the content surface[0] below. Linear March 2026 refresh — "main content
+    // area takes precedence, sidebar a few notches dimmer". The hairline at
+    // the bottom is the only visual divider.
+    <header className="sticky top-0 z-40 border-b border-[var(--edge-subtle)] bg-[var(--surface-1)] backdrop-blur-[20px] [backdrop-filter:blur(20px)_saturate(1.1)]">
+      <div className="mx-auto flex min-h-13 max-w-[1180px] flex-wrap items-center gap-2.5 px-4 py-2">
+        {/* Logo — quieter, no gradient text, single icon tile */}
         <div className="mr-1.5 flex items-center gap-2.5 shrink-0">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md border border-edge bg-[linear-gradient(145deg,rgba(226,232,240,0.18),rgba(148,163,184,0.08))] shadow-[0_6px_18px_var(--th-glow-a)]">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-fg" strokeWidth="2.2" strokeLinecap="round"><path d="M13 2L3 14h8l-1 8 11-13h-8l1-7z"/></svg>
+          <div className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge-default)] bg-[var(--surface-2)] text-fg-2">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M13 2L3 14h8l-1 8 11-13h-8l1-7z"/></svg>
           </div>
           <div className="leading-none">
-            <div className="text-[14px] font-semibold tracking-tight text-gradient">Pikiclaw</div>
+            <div className="text-[13px] font-semibold tracking-tight text-fg">Pikiclaw</div>
           </div>
-          <span className="rounded-md border border-edge bg-panel px-1.5 py-0.5 text-[10px] font-mono text-fg-4">
+          <span className="rounded-md border border-[var(--edge-subtle)] bg-transparent px-1.5 py-0.5 text-[10px] font-mono text-fg-5">
             v{version}
           </span>
         </div>
 
-        {/* Tab navigation */}
+        {/* Tab navigation — icon-only-feel: minimal height, 1px accent on active */}
         <nav className="order-3 w-full md:order-none md:w-auto">
           <TabsList className="w-full overflow-x-auto md:w-auto">
             {tabs.map(item => (
@@ -67,9 +71,11 @@ export function Sidebar({
                 to={TAB_ROUTES[item.key]}
                 end={TAB_ROUTES[item.key] === '/'}
                 className={({ isActive }) => cn(
-                  'inline-flex h-8 items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-200',
-                  'focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_var(--th-glow-a)]',
-                  isActive ? 'bg-panel-h text-fg shadow-[0_1px_0_rgba(255,255,255,0.03)]' : 'text-fg-4 hover:bg-panel-alt hover:text-fg-2',
+                  'relative inline-flex h-8 items-center justify-center rounded-md px-3 text-[13px] font-medium transition-colors duration-200',
+                  'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow-a)]',
+                  isActive
+                    ? 'bg-[var(--surface-2)] text-fg'
+                    : 'text-fg-4 hover:text-fg-2 hover:bg-[var(--surface-2)]',
                 )}
               >
                 {item.label}
@@ -83,8 +89,8 @@ export function Sidebar({
 
         {/* Right-side actions */}
         <div className="flex items-center gap-1 shrink-0">
-          <div className="hidden items-center gap-1.5 rounded-full border border-edge bg-panel-alt px-2.5 py-1 text-[11px] text-fg-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:flex">
-            <Dot variant={appStatus.dotVariant} pulse={appStatus.dotPulse} />
+          <div className="hidden items-center gap-1.5 rounded-full border border-[var(--edge-subtle)] bg-transparent px-2.5 py-1 text-[11px] text-fg-3 md:flex">
+            <Dot tone={appStatus.dotVariant} pulse={appStatus.dotPulse} />
             <span className="font-medium">{appStatus.badgeContent}</span>
           </div>
           <Button

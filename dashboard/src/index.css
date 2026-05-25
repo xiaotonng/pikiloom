@@ -1,8 +1,34 @@
 @import "tailwindcss";
 
+/*
+ * ─────────────────────────────────────────────────────────────
+ * Design tokens
+ *
+ * Single source of truth for surfaces, edges, foreground, status,
+ * brand accent, ambient glow, radii, typography. Components consume
+ * these via Tailwind theme tokens (mapped in the `@theme` block at
+ * the bottom) or via the typed `tokens` module in `components/ui/tokens.ts`.
+ *
+ * Rules of thumb:
+ *   - Chrome (sidebar, dividers, frame) lives on the SURFACE ladder.
+ *     Stay achromatic.
+ *   - Color appears in exactly three places: status pills, agent
+ *     identity, and the one primary CTA accent. Nowhere else.
+ *   - Ambient streaming pulse uses `--brand-glow-*`, NOT a status colour.
+ * ─────────────────────────────────────────────────────────────
+ */
+
 /* ── Theme variables: dark (default) ── */
 :root {
   --th-surface: #080a0d;
+
+  /* Surface ladder — content sits on a higher rung than chrome. */
+  --surface-0: #06080b;   /* page bg behind everything */
+  --surface-1: #0a0d12;   /* sidebar / dim chrome */
+  --surface-2: rgba(255,255,255,0.025); /* card / row */
+  --surface-3: rgba(255,255,255,0.055); /* hover / pressed row */
+  --surface-elev: rgba(15,23,42,0.94);  /* modal / dropdown */
+
   --th-fg: rgba(248,250,252,0.94);
   --th-fg-2: rgba(248,250,252,0.80);
   --th-fg-3: rgba(226,232,240,0.66);
@@ -24,6 +50,10 @@
 
   --th-edge: rgba(148,163,184,0.18);
   --th-edge-h: rgba(148,163,184,0.32);
+  /* Hairline — the only allowed divider width. Used on cards, rows, inputs. */
+  --edge-subtle: rgba(148,163,184,0.10);
+  --edge-default: rgba(148,163,184,0.18);
+  --edge-strong: rgba(148,163,184,0.32);
 
   --th-inset-hl: rgba(255,255,255,0.05);
   --th-selected-bg: rgba(255,255,255,0.07);
@@ -32,6 +62,14 @@
   --th-primary: #f8fafc;
   --th-primary-fg: #09090b;
   --th-primary-h: #ffffff;
+
+  /* Brand — used ONLY on the primary CTA + the ambient streaming pulse.
+     Monochrome by default; glow is the only saturated brand colour. */
+  --brand-accent: #f8fafc;
+  --brand-accent-fg: #09090b;
+  --brand-glow-a: rgba(125,211,252,0.32);  /* cyan */
+  --brand-glow-b: rgba(167,139,250,0.24);  /* violet */
+  --brand-glow-idle: rgba(125,211,252,0);
 
   --th-sidebar: rgba(8,10,13,0.78);
   --th-header: rgba(8,10,13,0.74);
@@ -53,13 +91,19 @@
   --th-noise: 0.02;
   --th-card-shadow: 0 8px 30px rgba(2,6,23,0.14);
 
-  /* Status colors (shared) */
+  /* Status — color appears here, status pills, and the brand CTA only. */
   --th-ok: #34d399;
   --th-ok-glow: rgba(52,211,153,0.5);
   --th-warn: #fbbf24;
   --th-warn-glow: rgba(251,191,36,0.5);
   --th-err: #f87171;
   --th-err-glow: rgba(248,113,113,0.5);
+  --th-info: #7dd3fc;
+  --th-info-glow: rgba(125,211,252,0.45);
+  --th-running: #60a5fa;
+  --th-running-glow: rgba(96,165,250,0.45);
+  --th-idle: rgba(148,163,184,0.45);
+
   --th-badge-ok-text: #d1fae5;
   --th-badge-ok-bg: rgba(16,185,129,0.16);
   --th-badge-ok-border: rgba(52,211,153,0.28);
@@ -72,6 +116,12 @@
   --th-badge-accent-text: #bae6fd;
   --th-badge-accent-bg: rgba(14,165,233,0.18);
   --th-badge-accent-border: rgba(125,211,252,0.28);
+  --th-badge-info-text: #bae6fd;
+  --th-badge-info-bg: rgba(125,211,252,0.14);
+  --th-badge-info-border: rgba(125,211,252,0.30);
+  --th-badge-running-text: #dbeafe;
+  --th-badge-running-bg: rgba(96,165,250,0.16);
+  --th-badge-running-border: rgba(96,165,250,0.32);
   --th-badge-muted-text: rgba(226,232,240,0.74);
   --th-badge-muted-bg: rgba(15,23,42,0.34);
   --th-badge-muted-border: rgba(148,163,184,0.2);
@@ -80,6 +130,14 @@
 /* ── Light theme overrides ── */
 [data-theme="light"] {
   --th-surface: #eef2f6;
+
+  /* Surface ladder — chrome dimmer than content per Linear refresh. */
+  --surface-0: #eef2f6;
+  --surface-1: #e5e9ee;   /* sidebar a notch dimmer than content */
+  --surface-2: rgba(255,255,255,0.88);
+  --surface-3: rgba(255,255,255,0.98);
+  --surface-elev: rgba(255,255,255,0.98);
+
   --th-fg: rgba(15,23,42,0.98);
   --th-fg-2: rgba(15,23,42,0.88);
   --th-fg-3: rgba(30,41,59,0.78);
@@ -94,6 +152,15 @@
 
   --th-edge: rgba(15,23,42,0.10);
   --th-edge-h: rgba(15,23,42,0.16);
+  --edge-subtle: rgba(15,23,42,0.06);
+  --edge-default: rgba(15,23,42,0.10);
+  --edge-strong: rgba(15,23,42,0.18);
+
+  --brand-accent: #0f172a;
+  --brand-accent-fg: #f8fafc;
+  --brand-glow-a: rgba(56,189,248,0.24);
+  --brand-glow-b: rgba(139,92,246,0.18);
+  --brand-glow-idle: rgba(56,189,248,0);
 
   /* Form controls — pure white in light theme so inputs read as fillable. */
   --th-control-bg: #ffffff;
@@ -131,6 +198,12 @@
   --th-warn-glow: rgba(245,158,11,0.35);
   --th-err: #ef4444;
   --th-err-glow: rgba(239,68,68,0.35);
+  --th-info: #0ea5e9;
+  --th-info-glow: rgba(14,165,233,0.35);
+  --th-running: #3b82f6;
+  --th-running-glow: rgba(59,130,246,0.35);
+  --th-idle: rgba(71,85,105,0.45);
+
   --th-badge-ok-text: #166534;
   --th-badge-ok-bg: rgba(34,197,94,0.12);
   --th-badge-ok-border: rgba(34,197,94,0.22);
@@ -143,6 +216,12 @@
   --th-badge-accent-text: #0c4a6e;
   --th-badge-accent-bg: rgba(14,165,233,0.12);
   --th-badge-accent-border: rgba(14,165,233,0.22);
+  --th-badge-info-text: #0c4a6e;
+  --th-badge-info-bg: rgba(14,165,233,0.12);
+  --th-badge-info-border: rgba(14,165,233,0.22);
+  --th-badge-running-text: #1e3a8a;
+  --th-badge-running-bg: rgba(59,130,246,0.12);
+  --th-badge-running-border: rgba(59,130,246,0.24);
   --th-badge-muted-text: rgba(51,65,85,0.82);
   --th-badge-muted-bg: rgba(255,255,255,0.76);
   --th-badge-muted-border: rgba(15,23,42,0.12);
@@ -190,11 +269,29 @@
   --color-ok: var(--th-ok);
   --color-warn: var(--th-warn);
   --color-err: var(--th-err);
+  --color-info: var(--th-info);
+  --color-running: var(--th-running);
+  --color-idle: var(--th-idle);
+
+  /* Semantic surface ladder — prefer over panel/panel-alt going forward. */
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-elev: var(--surface-elev);
+
+  /* Hairline edge tokens — prefer over edge/edge-h. */
+  --color-edge-subtle: var(--edge-subtle);
+  --color-edge-default: var(--edge-default);
+  --color-edge-strong: var(--edge-strong);
+
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-accent-fg: var(--brand-accent-fg);
 
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
-  --radius-xl: 10px;
+  --radius-xl: 12px;
 }
 
 /* ── Global ── */
@@ -319,6 +416,63 @@ button:disabled { cursor: not-allowed; }
   transition: opacity 0.3s;
 }
 .card-glow:hover::before { opacity: 1; }
+
+/* ── Ambient streaming glow ──
+   Wraps any surface that's currently running an AI stream. Subtle cyan-violet
+   gradient ring + slow breathing pulse. Lovable / Vercel-style — calm when
+   idle (opacity 0), saturated and pulsing only while live. */
+@keyframes ambient-breath {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@keyframes ambient-rotate {
+  to { --ambient-angle: 360deg; }
+}
+@property --ambient-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+.ambient-glow {
+  position: relative;
+  isolation: isolate;
+}
+.ambient-glow::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--ambient-angle),
+    var(--brand-glow-idle) 0deg,
+    var(--brand-glow-a) 80deg,
+    var(--brand-glow-b) 160deg,
+    var(--brand-glow-idle) 240deg,
+    var(--brand-glow-idle) 360deg
+  );
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: xor;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.6s ease-out;
+}
+.ambient-glow[data-streaming="true"]::before {
+  opacity: 1;
+  animation: ambient-rotate 6s linear infinite, ambient-breath 2.4s ease-in-out infinite;
+}
+
+/* Tiny verb-phrase status pulse — used inside StatusPill when state="running". */
+@keyframes status-pulse-running {
+  0%, 100% { box-shadow: 0 0 0 0 var(--th-running-glow); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+.status-pulse-running {
+  animation: status-pulse-running 1.6s ease-out infinite;
+}
 
 /* ── Noise overlay ── */
 .noise-overlay::after {

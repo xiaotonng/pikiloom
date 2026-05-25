@@ -1,9 +1,41 @@
 import type { ReactNode } from 'react';
-import { Badge, Button, Card, Dot, Spinner } from '../components/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  DescriptionList,
+  Dot,
+  EmptyState,
+  Field,
+  LoadingDots,
+  Metric as MetricPrimitive,
+  PageHeader,
+  Row,
+  RowGroup,
+  Section,
+  Spinner,
+  StatusPill,
+  Tile,
+  type StatusState,
+} from '../components/ui';
 import { cn } from '../utils';
 
-export type Tone = 'ok' | 'warn' | 'err' | 'accent' | 'muted';
+/**
+ * Page-level composites — thin compatibility layer over the canonical
+ * primitives in `components/ui/`. Every component in this file is a
+ * one-line delegator so consumers don't need to migrate import paths in
+ * lock-step with the design-system refactor; they get the new look for free.
+ *
+ * Adding new things here is OK if they're truly *page-shape* (page hero,
+ * action bar). Anything reusable across pages belongs in `components/ui`.
+ */
 
+export type Tone = 'ok' | 'warn' | 'err' | 'accent' | 'muted';
+const TONE_TO_STATE: Record<Tone, StatusState> = {
+  ok: 'ok', warn: 'warn', err: 'err', accent: 'info', muted: 'idle',
+};
+
+/** Page hero — delegate to PageHeader. */
 export function TabHero({
   eyebrow,
   title,
@@ -15,18 +47,10 @@ export function TabHero({
   description: string;
   right?: ReactNode;
 }) {
-  return (
-    <div className="flex flex-col gap-4 rounded-xl border border-edge bg-[linear-gradient(180deg,var(--color-panel),var(--color-panel-alt))] p-5 shadow-[0_1px_0_rgba(255,255,255,0.03),0_20px_48px_rgba(2,6,23,0.18)] xl:flex-row xl:items-end xl:justify-between">
-      <div className="max-w-3xl">
-        <Badge variant="accent">{eyebrow}</Badge>
-        <div className="mt-3 text-[26px] font-semibold tracking-tight text-fg">{title}</div>
-        <div className="mt-2 text-sm leading-relaxed text-fg-4">{description}</div>
-      </div>
-      {right && <div className="flex shrink-0 flex-wrap items-center gap-2">{right}</div>}
-    </div>
-  );
+  return <PageHeader eyebrow={eyebrow} title={title} description={description} right={right} />;
 }
 
+/** Status badge — delegate to StatusPill. Loading uses the running-pulse pill. */
 export function StatusBadge({
   tone,
   label,
@@ -36,60 +60,37 @@ export function StatusBadge({
   label: string;
   loading?: boolean;
 }) {
-  return (
-    <Badge variant={tone === 'accent' ? 'accent' : tone === 'ok' ? 'ok' : tone === 'warn' ? 'warn' : tone === 'err' ? 'err' : 'muted'}>
-      {loading && <Spinner />}
-      {label}
-    </Badge>
-  );
+  if (loading) {
+    return (
+      <Badge tone={tone === 'accent' ? 'accent' : tone === 'ok' ? 'ok' : tone === 'warn' ? 'warn' : tone === 'err' ? 'err' : 'muted'}>
+        <Spinner />
+        {label}
+      </Badge>
+    );
+  }
+  return <StatusPill state={TONE_TO_STATE[tone]} label={label} />;
 }
 
-export function Metric({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-}) {
-  return (
-    <div className="rounded-xl border border-edge bg-panel-alt px-4 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-5">{label}</div>
-      <div className="mt-1 text-base font-semibold text-fg">{value}</div>
-      {hint && <div className="mt-1 text-xs leading-relaxed text-fg-4">{hint}</div>}
-    </div>
-  );
+/** Metric tile — delegate. */
+export function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return <MetricPrimitive label={label} value={value} hint={hint} />;
 }
 
+/** Description list — delegate. */
 export function DetailGrid({
   items,
 }: {
   items: Array<{ label: string; value: ReactNode; mono?: boolean }>;
 }) {
-  return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {items.map(item => (
-        <div key={item.label} className="rounded-xl border border-edge bg-panel-alt px-4 py-3">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-5">{item.label}</div>
-          <div className={cn('mt-1 break-words text-sm leading-relaxed text-fg-2', item.mono && 'font-mono text-[12px] text-fg-3')}>
-            {item.value}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+  return <DescriptionList items={items} columns={2} />;
 }
 
-export function StepList({
-  steps,
-}: {
-  steps: string[];
-}) {
+/** Vertical list of bordered step-tiles. */
+export function StepList({ steps }: { steps: string[] }) {
   return (
     <ol className="space-y-2 text-sm leading-relaxed text-fg-3">
       {steps.map(step => (
-        <li key={step} className="rounded-xl border border-edge bg-panel-alt px-3 py-2">
+        <li key={step} className="rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] px-3 py-2">
           {step}
         </li>
       ))}
@@ -110,13 +111,13 @@ export function ActionBar({
     <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <div className="flex flex-wrap items-center gap-2">
         {primary && (
-          <Button variant="primary" onClick={primary.onClick} disabled={primary.disabled}>
+          <Button tone="primary" onClick={primary.onClick} disabled={primary.disabled}>
             {primary.loading && <Spinner />}
             {primary.label}
           </Button>
         )}
         {secondary && (
-          <Button variant="outline" onClick={secondary.onClick} disabled={secondary.disabled}>
+          <Button tone="secondary" onClick={secondary.onClick} disabled={secondary.disabled}>
             {secondary.label}
           </Button>
         )}
@@ -138,44 +139,35 @@ export function StatusRail({
   pulse?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-full border border-edge bg-panel-alt px-3 py-1.5 text-xs text-fg-4">
-      <Dot variant={tone} pulse={pulse} />
+    <div className="flex items-center gap-2 rounded-full border border-[var(--edge-subtle)] bg-[var(--surface-2)] px-3 py-1.5 text-xs text-fg-4">
+      <Dot tone={tone} pulse={pulse} />
       <span className="font-semibold uppercase tracking-[0.16em] text-fg-5">{label}</span>
       <span className="text-fg-2">{value}</span>
     </div>
   );
 }
 
-export function SectionCard({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return <Card className={cn('p-4', className)}>{children}</Card>;
+export function SectionCard({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <Card padding="md" elevation="flat" className={className}>
+      {children}
+    </Card>
+  );
 }
 
-export function SettingRowCard({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className={cn(
-        'glass overflow-hidden rounded-md border border-edge shadow-[0_1px_0_rgba(255,255,255,0.02),0_4px_12px_rgba(15,23,42,0.05)]',
-        'transition-[border-color,background,transform,box-shadow] duration-200',
-        'grid gap-x-5 gap-y-2 px-4 py-2.5',
-        'xl:grid-cols-[minmax(0,205px)_minmax(220px,0.95fr)_minmax(0,1.15fr)_auto] xl:items-center',
-        className
-      )}
-    >
-      {children}
-    </div>
-  );
+/* ─────────────────────────────────────────────────────────────
+ * SettingRow* — preserved API delegating to the canonical Row primitives.
+ *
+ * The previous version rendered per-cell uppercase labels which produced
+ * variable-height cells and made columns drift between rows. The new Row
+ * is single-line-per-cell with full-width Description rows for secondary
+ * text, so the wrapper here drops the `label` prop's prominence — it
+ * still renders (for non-migrated consumers) but as a quiet inline prefix
+ * rather than a full second line.
+ * ─────────────────────────────────────────────────────────── */
+
+export function SettingRowCard({ children, className }: { children: ReactNode; className?: string }) {
+  return <Row inline={false} className={className}>{children}</Row>;
 }
 
 export function SettingRowLead({
@@ -191,29 +183,17 @@ export function SettingRowLead({
   subtitle?: ReactNode;
   badge?: ReactNode;
   className?: string;
-  /** When false, skip the bordered 32x32 wrapper so brand-colored logos
-   *  render edge-to-edge without a light frame. */
   iconWrap?: boolean;
 }) {
   return (
-    <div className={cn('flex items-center gap-2.5', className)}>
-      {iconWrap ? (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge bg-panel-alt text-fg-3">
-          {icon}
-        </div>
-      ) : (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center">
-          {icon}
-        </div>
-      )}
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="text-[14px] font-semibold text-fg">{title}</div>
-          {badge}
-        </div>
-        {subtitle && <div className="mt-0.5 text-[11px] leading-snug text-fg-5">{subtitle}</div>}
-      </div>
-    </div>
+    <Row.Lead
+      icon={icon}
+      title={title}
+      subtitle={subtitle}
+      badge={badge}
+      className={className}
+      iconWrap={iconWrap}
+    />
   );
 }
 
@@ -227,19 +207,15 @@ export function SettingRowField({
   className?: string;
 }) {
   return (
-    <div className={cn('min-w-0', className)}>
-      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-fg-5">{label}</div>
-      <div className="mt-1">{children}</div>
-    </div>
+    <Row.Field label={label} className={className}>
+      {children}
+    </Row.Field>
   );
 }
 
-export function SettingRowAction({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return <div className={cn('flex justify-start xl:justify-end', className)}>{children}</div>;
+export function SettingRowAction({ children, className }: { children: ReactNode; className?: string }) {
+  return <Row.Action className={className}>{children}</Row.Action>;
 }
+
+/* Re-export the canonical primitives so pages can switch over progressively. */
+export { Row, RowGroup, Section, Field, EmptyState, LoadingDots, Tile, PageHeader };

@@ -695,7 +695,6 @@ function ConnectedCard({
   onReauth?: () => void;
   onReconfigure?: () => void;
 }) {
-  const { hex } = brandInfo(item.iconSlug, item.name);
   const primaryLabel = (() => {
     switch (item.state) {
       case 'ready': return L(locale, '停用', 'Pause');
@@ -707,27 +706,23 @@ function ConnectedCard({
     }
   })();
 
+  // Neutral card surface — color identity lives in the brand avatar, not in
+  // the card background. Matches Linear's March 2026 "remove colored team
+  // icon backgrounds" rule.
   const cardStyle: CSSProperties = {
-    background: `linear-gradient(140deg, ${withAlpha(hex, 0.05)} 0%, ${withAlpha(hex, 0.01)} 60%, transparent 100%)`,
-    borderColor: withAlpha(hex, 0.18),
     animationDelay: `${Math.min(index, 8) * 40}ms`,
   };
 
   return (
     <div
       className={cn(
-        'group relative overflow-hidden rounded-xl border p-4',
-        'transition-[transform,box-shadow,border-color] duration-200',
-        'hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.09)]',
+        'group relative overflow-hidden rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] p-4',
+        'transition-[background,border-color] duration-200',
+        'hover:border-[var(--edge-default)] hover:bg-[var(--surface-3)]',
         'animate-in-up',
       )}
       style={cardStyle}
     >
-      <div
-        className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full opacity-40 blur-2xl transition-opacity duration-300 group-hover:opacity-60"
-        style={{ background: withAlpha(hex, 0.35) }}
-      />
-
       <div className="relative flex items-start gap-3">
         <BrandAvatar iconSlug={item.iconSlug} iconUrl={item.iconUrl} name={item.name} size={36} />
         <div className="min-w-0 flex-1">
@@ -747,9 +742,9 @@ function ConnectedCard({
         <StatePill state={item.state} locale={locale} />
       </div>
 
-      <div className="relative mt-3 flex items-center justify-between border-t border-edge/60 pt-3">
+      <div className="relative mt-3 flex items-center justify-between border-t border-[var(--edge-subtle)] pt-3">
         <span className="inline-flex items-center gap-1 text-[11px] text-fg-5">
-          <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex, opacity: 0.8 }} />
+          <span className="h-1.5 w-1.5 rounded-full bg-fg-6" />
           {authKindLabel(locale, item.auth)}
         </span>
         <div className="flex items-center gap-1">
@@ -805,9 +800,9 @@ function AvailableCard({
   return (
     <div
       className={cn(
-        'group relative flex flex-col gap-3 rounded-xl border border-edge bg-panel-alt p-4',
-        'transition-[transform,box-shadow,border-color] duration-200',
-        'hover:-translate-y-0.5 hover:border-edge-h hover:shadow-[0_12px_28px_rgba(15,23,42,0.09)]',
+        'group relative flex flex-col gap-3 rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] p-4',
+        'transition-[background,border-color] duration-200',
+        'hover:border-[var(--edge-default)] hover:bg-[var(--surface-3)]',
         'animate-in-up',
       )}
       style={{ animationDelay: `${Math.min(index, 12) * 30}ms` }}
@@ -873,22 +868,13 @@ function SkillConnectedCard({
   animationDelay?: string;
   onClick: () => void;
 }) {
-  const { hex } = brandInfo(undefined, item.name);
   return (
     <button
       type="button"
       onClick={onClick}
-      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-2xl border border-edge/70 bg-panel p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.09)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_var(--th-glow-a)]"
-      style={{
-        background: `linear-gradient(135deg, ${withAlpha(hex, 0.06)} 0%, ${withAlpha(hex, 0.02)} 100%), var(--th-panel)`,
-        animationDelay,
-      }}
+      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] p-4 text-left transition-[background,border-color] duration-200 hover:border-[var(--edge-default)] hover:bg-[var(--surface-3)] focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow-a)]"
+      style={{ animationDelay }}
     >
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full opacity-60"
-        style={{ background: `radial-gradient(closest-side, ${withAlpha(hex, 0.18)}, transparent 70%)` }}
-      />
       <div className="relative flex items-start gap-3">
         <BrandAvatar iconUrl={item.iconUrl} name={item.name} size={36} />
         <div className="min-w-0 flex-1">
@@ -937,12 +923,11 @@ function SkillAvailableCard({
   animationDelay?: string;
   onClick: () => void;
 }) {
-  const { hex } = brandInfo(undefined, item.name);
   return (
     <button
       type="button"
       onClick={onClick}
-      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-2xl border border-edge/60 bg-panel p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-edge hover:shadow-[0_12px_28px_rgba(15,23,42,0.07)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_var(--th-glow-a)]"
+      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] p-4 text-left transition-[background,border-color] duration-200 hover:border-[var(--edge-default)] hover:bg-[var(--surface-3)] focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow-a)]"
       style={{ animationDelay }}
     >
       <div className="flex items-start gap-3">
@@ -972,10 +957,7 @@ function SkillAvailableCard({
             <span>· {item.partial ? `${item.totalCount}+` : item.totalCount} skills</span>
           )}
         </span>
-        <span
-          className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors group-hover:text-primary"
-          style={{ background: `${withAlpha(hex, 0.08)}`, color: hex }}
-        >
+        <span className="inline-flex items-center gap-1 rounded-md border border-[var(--edge-subtle)] bg-transparent px-2.5 py-1 text-[11px] font-semibold text-fg-3 transition-colors group-hover:border-[var(--edge-default)] group-hover:text-fg">
           {L(locale, '查看 →', 'Browse →')}
         </span>
       </div>
@@ -2492,22 +2474,13 @@ function CliConnectedCard({
   locale,
   animationDelay,
 }: { item: CliCatalogItem; onClick: () => void; locale: string; animationDelay?: string }) {
-  const { hex } = brandInfo(item.iconSlug, item.name);
   return (
     <button
       type="button"
       onClick={onClick}
-      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-2xl border border-edge/70 bg-panel p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(15,23,42,0.09)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_var(--th-glow-a)]"
-      style={{
-        background: `linear-gradient(135deg, ${withAlpha(hex, 0.06)} 0%, ${withAlpha(hex, 0.02)} 100%), var(--th-panel)`,
-        animationDelay,
-      }}
+      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] p-4 text-left transition-[background,border-color] duration-200 hover:border-[var(--edge-default)] hover:bg-[var(--surface-3)] focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow-a)]"
+      style={{ animationDelay }}
     >
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full opacity-60"
-        style={{ background: `radial-gradient(closest-side, ${withAlpha(hex, 0.18)}, transparent 70%)` }}
-      />
       <div className="relative flex items-start gap-3">
         <BrandAvatar iconSlug={item.iconSlug} iconUrl={item.iconUrl} name={item.name} size={36} />
         <div className="min-w-0 flex-1">
@@ -2535,7 +2508,6 @@ function CliAvailableCard({
   locale,
   animationDelay,
 }: { item: CliCatalogItem; onClick: () => void; locale: string; animationDelay?: string }) {
-  const { hex } = brandInfo(item.iconSlug, item.name);
   const cta = item.state === 'not_installed'
     ? L(locale, '安装', 'Install')
     : item.state === 'installed_not_auth' ? L(locale, '登录', 'Sign in')
@@ -2544,7 +2516,7 @@ function CliAvailableCard({
     <button
       type="button"
       onClick={onClick}
-      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-2xl border border-edge/60 bg-panel p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-edge hover:shadow-[0_12px_28px_rgba(15,23,42,0.07)] focus-visible:outline-none focus-visible:shadow-[0_0_0_4px_var(--th-glow-a)]"
+      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] p-4 text-left transition-[background,border-color] duration-200 hover:border-[var(--edge-default)] hover:bg-[var(--surface-3)] focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow-a)]"
       style={{ animationDelay }}
     >
       <div className="flex items-start gap-3">
@@ -2569,10 +2541,7 @@ function CliAvailableCard({
             : item.auth.type === 'token' ? L(locale, 'Token', 'Token')
             : L(locale, '免配置', 'No auth')}
         </span>
-        <span
-          className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors group-hover:text-primary"
-          style={{ background: `${withAlpha(hex, 0.08)}`, color: hex }}
-        >
+        <span className="inline-flex items-center gap-1 rounded-md border border-[var(--edge-subtle)] bg-transparent px-2.5 py-1 text-[11px] font-semibold text-fg-3 transition-colors group-hover:border-[var(--edge-default)] group-hover:text-fg">
           {cta}
         </span>
       </div>

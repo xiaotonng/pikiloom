@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  getConfiguredRemoteCdpUrl,
   getManagedBrowserProfileDir,
   resolveManagedBrowserMcpCommand,
 } from '../src/browser-profile.ts';
@@ -9,6 +10,7 @@ import {
   _matchPlaywrightMcpProcessCommand,
   buildGuiSetupHints,
   buildSupplementalMcpServers,
+  resolveBridgeBrowserEndpoint,
   resolveGuiIntegrationConfig,
   resolveMcpServerCommand,
   resolveSendFilePath,
@@ -120,6 +122,52 @@ describe('resolveGuiIntegrationConfig', () => {
 
     expect(gui.browserEnabled).toBe(true);
   });
+
+  it('treats a configured remote CDP endpoint as implicitly enabling browser automation', () => {
+    const gui = resolveGuiIntegrationConfig({} as any, {
+      PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223',
+    });
+
+    expect(gui.browserEnabled).toBe(true);
+  });
+
+  it('lets an explicit PIKICLAW_BROWSER_ENABLED=false override the remote-CDP implicit enable', () => {
+    const gui = resolveGuiIntegrationConfig({} as any, {
+      PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223',
+      PIKICLAW_BROWSER_ENABLED: 'false',
+    });
+
+    expect(gui.browserEnabled).toBe(false);
+  });
+});
+
+describe('getConfiguredRemoteCdpUrl', () => {
+  it('returns the normalized endpoint and strips trailing slashes', () => {
+    expect(getConfiguredRemoteCdpUrl({ PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223/' })).toBe('http://chromium:9223');
+    expect(getConfiguredRemoteCdpUrl({ PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223' })).toBe('http://chromium:9223');
+  });
+
+  it('returns null when unset or blank', () => {
+    expect(getConfiguredRemoteCdpUrl({})).toBeNull();
+    expect(getConfiguredRemoteCdpUrl({ PIKICLAW_BROWSER_CDP_URL: '   ' })).toBeNull();
+  });
+});
+
+describe('resolveBridgeBrowserEndpoint', () => {
+  it('returns the remote endpoint unconditionally without probing local Chrome', async () => {
+    // A bogus profile dir would yield no local DevToolsActivePort; the remote
+    // override must win and short-circuit any local probe.
+    const result = await resolveBridgeBrowserEndpoint('/nonexistent/profile/dir', 'http://chromium:9223');
+
+    expect(result).toEqual({ endpoint: 'http://chromium:9223', mode: 'remote' });
+  });
+
+  it('falls back to none when no remote URL is set and no local Chrome is running', async () => {
+    const emptyProfile = makeTmpDir('pikiclaw-no-chrome-');
+    const result = await resolveBridgeBrowserEndpoint(emptyProfile, null);
+
+    expect(result).toEqual({ endpoint: null, mode: 'none' });
+  });
 });
 
 describe('buildSupplementalMcpServers', () => {
@@ -172,6 +220,26 @@ describe('buildSupplementalMcpServers', () => {
     ]);
     expect(expected.args).toContain('--cdp-endpoint');
     expect(expected.args).toContain(cdpEndpoint);
+  });
+
+  it('attaches to a remote CDP endpoint without ever passing --user-data-dir (no local launch)', async () => {
+    // End-to-end guarantee for issue #16: PIKICLAW_BROWSER_CDP_URL must produce
+    // an attach-only playwright/mcp argv, never the user-data-dir launch path
+    // that would spawn a local Chrome the container may not even have.
+    const remote = 'http://chromium:9223';
+    const { endpoint, mode } = await resolveBridgeBrowserEndpoint('/tmp/pikiclaw/profile', remote);
+    expect(mode).toBe('remote');
+
+    const servers = buildSupplementalMcpServers({
+      browserEnabled: true,
+      browserProfileDir: '/tmp/pikiclaw/profile',
+      browserHeadless: false,
+    }, { cdpEndpoint: endpoint });
+
+    const args = servers[0]?.args ?? [];
+    expect(args).toContain('--cdp-endpoint');
+    expect(args).toContain(remote);
+    expect(args).not.toContain('--user-data-dir');
   });
 });
 

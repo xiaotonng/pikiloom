@@ -320,7 +320,7 @@ describe('TelegramBot status and session previews', () => {
         agent: 'claude',
         models: [
           { id: 'claude-sonnet-4-6', alias: 'sonnet' },
-          { id: 'claude-opus-4-7', alias: 'opus' },
+          { id: 'claude-opus-4-8', alias: 'opus' },
         ],
         sources: ['app-server model/list'],
         note: 'debug note should stay hidden while models exist',
@@ -337,7 +337,7 @@ describe('TelegramBot status and session previews', () => {
       // With no BYOK Profiles configured the only bucket is `native`, so the
       // first row is the "— Native —" header, followed by the native models.
       expect(keyboard[0]).toEqual([{ text: '— Native —', callback_data: 'mc' }]);
-      expect(keyboard[1]).toEqual([{ text: '● opus', callback_data: 'md:n:claude-opus-4-7' }]);
+      expect(keyboard[1]).toEqual([{ text: '● opus', callback_data: 'md:n:claude-opus-4-8' }]);
       expect(keyboard[2]).toEqual([{ text: 'sonnet', callback_data: 'md:n:claude-sonnet-4-6' }]);
       const keyboardJson = JSON.stringify(keyboard);
       expect(keyboardJson).toContain('"callback_data":"ed:high"');

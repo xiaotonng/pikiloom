@@ -1102,36 +1102,45 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
   const browser = status?.browser;
   const savedEnabled = !!browser?.enabled;
   const modeChanged = !!browser && savedEnabled !== enabled;
+  const remoteCdpUrl = browser?.remoteCdpUrl || '';
+  // Remote mode is only meaningful while browser automation is on.
+  const isRemote = !!remoteCdpUrl && enabled;
   const profileDir = browser?.profileDir || '';
-  const selectedInfoLabel = t('ext.profileDir');
-  const selectedInfoValue = profileDir;
+  // In remote mode the relevant locator is the CDP endpoint, not a local profile dir.
+  const selectedInfoLabel = isRemote ? t('ext.browserRemote') : t('ext.profileDir');
+  const selectedInfoValue = isRemote ? remoteCdpUrl : profileDir;
   const profileReady = !!browser?.chromeInstalled && !!browser?.profileCreated;
   const browserStatusLabel = !status
     ? t('status.loading')
     : !browser?.enabled
       ? t('ext.disabled')
-      : profileReady
-        ? t('ext.browserReady')
-        : browser?.chromeInstalled
-          ? t('ext.chromeInstalled')
-          : t('ext.needsSetup');
+      : isRemote
+        ? t('ext.browserRemote')
+        : profileReady
+          ? t('ext.browserReady')
+          : browser?.chromeInstalled
+            ? t('ext.chromeInstalled')
+            : t('ext.needsSetup');
   const browserStatusVariant = !status
     ? 'muted' as const
     : !browser?.enabled
       ? 'muted' as const
-      : profileReady
+      : isRemote
         ? 'ok' as const
-        : browser?.chromeInstalled
-          ? 'warn' as const
-          : 'err' as const;
+        : profileReady
+          ? 'ok' as const
+          : browser?.chromeInstalled
+            ? 'warn' as const
+            : 'err' as const;
 
   const handleSubmit = async () => {
     setSubmitting(true);
     setResult(null);
+    let refreshed: BrowserStatusResponse | null = null;
     try {
       await api.saveConfig({ browserEnabled: enabled });
-      const next = await api.getBrowser();
-      setStatus(next);
+      refreshed = await api.getBrowser();
+      setStatus(refreshed);
       onSaved?.();
     } catch {
       setResult({ ok: false, text: '\u2717 ' + t('ext.browserModeSaveFailed') });
@@ -1143,6 +1152,16 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
     if (!enabled) {
       setResult({ ok: true, text: '\u2713 ' + t('ext.browserDisabledSaved') });
       toast(t('ext.browserDisabledSaved'));
+      setSubmitting(false);
+      return;
+    }
+
+    if (refreshed?.browser.remoteCdpUrl) {
+      // Remote CDP endpoint \u2014 pikiclaw owns no local browser, so there is nothing
+      // to launch. Saving enabled is enough; sign-in happens in the Chrome that
+      // owns the endpoint (e.g. the sidecar's web VNC).
+      setResult({ ok: true, text: '\u2713 ' + t('ext.browserRemoteStep') });
+      toast(t('ext.browserRemoteStep'));
       setSubmitting(false);
       return;
     }
@@ -1239,10 +1258,10 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
 
         <div className="rounded-lg border border-edge bg-panel-alt p-4">
           <div className="text-sm font-medium text-fg-2 mb-1">
-            {enabled ? t('ext.step2Title') : t('ext.browserDisabledStepTitle')}
+            {!enabled ? t('ext.browserDisabledStepTitle') : isRemote ? t('ext.browserRemoteStep') : t('ext.step2Title')}
           </div>
           <div className="text-xs text-fg-4">
-            {enabled ? t('ext.step2Desc') : t('ext.browserDisabledHint')}
+            {!enabled ? t('ext.browserDisabledHint') : isRemote ? t('ext.browserRemoteStepDesc') : t('ext.step2Desc')}
           </div>
         </div>
       </div>
@@ -1251,9 +1270,11 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
         <Button variant="primary" disabled={submitting} onClick={handleSubmit}>
           {submitting
             ? t('ext.launching')
-            : enabled
-              ? t('ext.enableAndLaunchBrowser')
-              : t('ext.saveBrowserDisabled')}
+            : !enabled
+              ? t('ext.saveBrowserDisabled')
+              : isRemote
+                ? t('ext.saveBrowserRemote')
+                : t('ext.enableAndLaunchBrowser')}
         </Button>
       </div>
     </Modal>

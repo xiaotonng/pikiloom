@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   MANAGED_BROWSER_PROFILE_SUBPATH,
+  PIKICLAW_BROWSER_CDP_URL_ENV,
   PLAYWRIGHT_MCP_PACKAGE_NAME,
   PLAYWRIGHT_MCP_PACKAGE_SPEC,
   PLAYWRIGHT_MCP_BROWSER_ARGS,
@@ -91,6 +92,22 @@ function normalizeBrowserCdpEndpoint(endpoint: string): string {
   const value = String(endpoint || '').trim();
   if (!value) return '';
   return value.replace(/\/+$/, '');
+}
+
+/**
+ * The external CDP endpoint configured via {@link PIKICLAW_BROWSER_CDP_URL_ENV},
+ * normalized (trailing slashes stripped, blank → null). Single source of truth
+ * for the remote-browser override: when this returns a value, every browser
+ * codepath attaches to it and pikiclaw never launches, probes, or kills a local
+ * Chrome. Read from `env` (defaults to `process.env`) so callers can inject it
+ * in tests.
+ */
+export function getConfiguredRemoteCdpUrl(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const raw = String(env[PIKICLAW_BROWSER_CDP_URL_ENV] || '').trim();
+  if (!raw) return null;
+  return normalizeBrowserCdpEndpoint(raw);
 }
 
 async function resolveBrowserCdpEndpoint(endpoint: string): Promise<string | null> {

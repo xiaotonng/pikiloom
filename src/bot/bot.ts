@@ -1257,27 +1257,16 @@ export class Bot {
     const session = this.getSessionRuntimeByKey(sessionKey, { allowAnyWorkdir: true });
     if (!session) return { interrupted: false, cancelledQueued: 0 };
     let interrupted = false;
-    let cancelledQueued = 0;
     for (const taskId of session.runningTaskIds) {
       const task = this.activeTasks.get(taskId);
       if (!task) continue;
-      if (task.status === 'queued') {
-        if (!task.cancelled) {
-          task.cancelled = true;
-          cancelledQueued++;
-          // Tell the dashboard right away so the queued chip disappears
-          // instead of waiting for the chain wrapper to reach this task.
-          this.emitStream(task.sessionKey, { type: 'cancelled', taskId });
-        }
-        continue;
-      }
       if (!interrupted && task.status === 'running') {
         interrupted = true;
         task.cancelled = true;
         try { task.abort?.(); } catch {}
       }
     }
-    return { interrupted, cancelledQueued };
+    return { interrupted, cancelledQueued: 0 };
   }
 
   protected stopTaskByActionId(actionId: string): { task: RunningTask | null; interrupted: boolean; cancelled: boolean } {
@@ -2063,11 +2052,11 @@ export class Bot {
   }
 
   /**
-   * Stop everything for a session: abort the running task AND cancel every
-   * queued one. The dashboard's "Stop" button maps here so a user who hits
-   * stop after queueing follow-ups doesn't watch the queue keep firing.
-   * Individual queued rows still have their own × buttons (→ cancelTask) for
-   * the "cancel just this one" case.
+   * Stop only the currently running task for a session. Queued tasks are
+   * intentionally left intact and run normally once the chain advances — the
+   * stop button means "abort what's running right now", not "throw away the
+   * queue". To drop a specific queued entry, use the per-row × button which
+   * routes through `cancelTask`.
    */
   stopAllSessionTasks(sessionKey: string | null | undefined): { interrupted: boolean; cancelledQueued: number } {
     return this.stopTasksForSession(sessionKey);

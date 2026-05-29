@@ -88,11 +88,22 @@ export interface McpCatalogItem {
   isBuiltin?: boolean;
 }
 
+/**
+ * Server descriptor consumed by agent-specific registration paths
+ * (Codex `mcp add`, Gemini settings.json, Claude `--mcp-config`).
+ *
+ * Stdio entries set `command` (and optionally `args`, `env`).
+ * HTTP entries set `type: 'http'` plus `url` and optional `headers`.
+ * `type` defaults to `'stdio'` when omitted, preserving the original shape.
+ */
 interface RegisteredMcpServer {
   name: string;
-  command: string;
-  args: string[];
+  type?: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -547,20 +558,47 @@ export function mergeExtensionsForSession(
 }
 
 /**
- * Convert global extensions to RegisteredMcpServer[] for Codex/Gemini agents
- * that use server arrays instead of merged configs.
+ * Convert global + workspace extensions to RegisteredMcpServer[] for Codex
+ * and Gemini agents that consume server arrays instead of merged configs.
+ *
+ * Supports both stdio and HTTP transports. For HTTP entries, OAuth Bearer
+ * headers are injected from the token store (same path as
+ * mergeExtensionsForSession), so a one-time global authorization carries
+ * across every workspace.
  */
 export function getGlobalExtensionsAsServers(workdir?: string): RegisteredMcpServer[] {
   const merged: Map<string, RegisteredMcpServer> = new Map();
+
+  const toEntry = (name: string, cfg: McpServerConfig): RegisteredMcpServer | null => {
+    if (cfg.type === 'http' && cfg.url) {
+      const oauthKey = cfg.catalogId || name;
+      const headers = injectOAuthHeaders(oauthKey, { headers: cfg.headers });
+      return {
+        name,
+        type: 'http',
+        url: cfg.url,
+        ...(Object.keys(headers).length ? { headers } : {}),
+      };
+    }
+    if (cfg.command) {
+      return {
+        name,
+        type: 'stdio',
+        command: cfg.command,
+        args: cfg.args || [],
+        ...(cfg.env ? { env: cfg.env } : {}),
+      };
+    }
+    return null;
+  };
 
   const userConfig = loadUserConfig();
   const globalMcp = userConfig.extensions?.mcp;
   if (globalMcp) {
     for (const [name, cfg] of Object.entries(globalMcp)) {
       if (cfg.enabled === false || cfg.disabled) continue;
-      if (cfg.command) {
-        merged.set(name, { name, command: cfg.command, args: cfg.args || [], env: cfg.env });
-      }
+      const entry = toEntry(name, cfg);
+      if (entry) merged.set(name, entry);
     }
   }
 
@@ -569,9 +607,10 @@ export function getGlobalExtensionsAsServers(workdir?: string): RegisteredMcpSer
     for (const [name, cfg] of Object.entries(wsServers)) {
       if (cfg.disabled) {
         merged.delete(name);
-      } else if (cfg.command) {
-        merged.set(name, { name, command: cfg.command, args: cfg.args || [], env: cfg.env });
+        continue;
       }
+      const entry = toEntry(name, cfg);
+      if (entry) merged.set(name, entry);
     }
   }
 

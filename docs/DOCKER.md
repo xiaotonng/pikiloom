@@ -119,7 +119,7 @@ ones inside Docker:
 | `PIKICLAW_FULL_ACCESS` | `true`     | Codex full-access + Claude bypassPermissions |
 | `PIKICLAW_DOCKER`    | `1`          | Suppresses host-side actions (xdg-open, launchd) |
 | `PIKICLAW_OPEN_BROWSER` | `0`       | Don't try to open a host browser at boot |
-| `PIKICLAW_BROWSER_CDP_URL` | —      | Attach to an external Chrome DevTools Protocol endpoint (e.g. `http://chromium:9222`) instead of launching local Chrome. See §7. |
+| `PIKICLAW_BROWSER_CDP_URL` | —      | Attach to an external Chrome DevTools Protocol endpoint (e.g. `http://chromium:9223`) instead of launching local Chrome. Also turns browser tooling on. See §6. |
 | `DEFAULT_AGENT`      | `claude`     | `claude` / `codex` / `gemini` |
 | `CLAUDE_MODEL` / `CODEX_MODEL` / `GEMINI_MODEL` | — | Override default model |
 | `TELEGRAM_BOT_TOKEN` | —            | Telegram channel |
@@ -157,18 +157,20 @@ auth login` once to attach a token, or pass `GH_TOKEN` as a container env var.
 
 The base image **does not bundle Chrome** — a headless Chromium + Xvfb + fonts
 would push the image past 1 GB and the browser still wouldn't be useful for
-sites that require an interactive sign-in. Instead, pikiclaw can attach to
-*any* external Chrome DevTools Protocol endpoint via
-`PIKICLAW_BROWSER_CDP_URL`. The recommended pattern is to run a sidecar
-container that ships a real Chromium plus a web-VNC interface for logging
-into sites:
+sites that require an interactive sign-in. Instead, pikiclaw attaches to *any*
+external Chrome DevTools Protocol endpoint via `PIKICLAW_BROWSER_CDP_URL`.
+Setting that variable alone turns on browser tooling — you do **not** also need
+`PIKICLAW_BROWSER_ENABLED`.
+
+The recommended pattern is a Chromium sidecar (real browser + web-VNC for
+signing in) plus a tiny **socat CDP bridge**:
 
 ```yaml
 services:
   pikiclaw:
     image: ghcr.io/xiaotonng/pikiclaw:latest
     environment:
-      PIKICLAW_BROWSER_CDP_URL: http://chromium:9222
+      PIKICLAW_BROWSER_CDP_URL: http://chromium:9223
     depends_on: [chromium]
     # …rest of the pikiclaw service as before
 
@@ -179,14 +181,23 @@ services:
       PUID: 1000
       PGID: 1000
       TZ: Etc/UTC
-      # Pass through the remote-debugging port so pikiclaw can attach.
-      CHROME_CLI: "--remote-debugging-address=0.0.0.0 --remote-debugging-port=9222"
+      # --remote-allow-origins=* is REQUIRED (see below).
+      CHROME_CLI: "--remote-debugging-port=9222 --remote-allow-origins=*"
     ports:
       - "3000:3000"   # web UI (KasmVNC) — open this in your browser to sign in
       - "3001:3001"   # https variant of the web UI
     volumes:
       - chromium-config:/config
     shm_size: 1gb
+    restart: unless-stopped
+
+  # Exposes Chrome's localhost-only CDP to pikiclaw. See "Why the bridge?" below.
+  chromium-cdp-bridge:
+    image: alpine/socat:latest
+    container_name: pikiclaw-chromium-cdp-bridge
+    network_mode: "service:chromium"
+    depends_on: [chromium]
+    command: TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222
     restart: unless-stopped
 
 volumes:
@@ -200,24 +211,45 @@ How to use it:
    inside the sidecar. Sign in to whichever sites the agent needs
    (Google / GitHub / your internal SSO). The profile is persisted in the
    `chromium-config` named volume, so logins survive restarts.
-3. Enable the browser tool in the pikiclaw dashboard (Extensions → Browser),
-   or set `PIKICLAW_BROWSER_ENABLED=true`.
+3. That's it — `PIKICLAW_BROWSER_CDP_URL` already enabled the tool. (You can
+   still toggle it from Extensions → Browser in the dashboard; it will show
+   "Remote CDP" and the endpoint instead of a local profile.)
 
 Pikiclaw will now drive the *same* Chromium session — every `browser_*` MCP
 tool call attaches to the running Chromium over CDP, so the agent inherits
 your logged-in state.
 
-Alternative endpoints that work the same way:
+### Why the bridge?
+
+`lscr.io/linuxserver/chromium` (and most desktop Chromium builds) launch Chrome
+with its debug port bound to `127.0.0.1` and **ignore
+`--remote-debugging-address=0.0.0.0`**, so another container cannot reach
+`chromium:9222` directly. The `socat` sidecar runs inside the Chromium
+container's network namespace (`network_mode: "service:chromium"`) and forwards
+`0.0.0.0:9223 → 127.0.0.1:9222`. Because socat connects to Chrome from
+`127.0.0.1`, it also satisfies Chrome's host-header check — so pikiclaw points
+at the bridge port (`http://chromium:9223`).
+
+`--remote-allow-origins=*` is **required**: since Chrome 111, the CDP WebSocket
+handshake is rejected with `403 Forbidden` unless the requesting origin is
+allowlisted. Without it the bridge connects but every `browser_*` call fails.
+
+Alternative endpoints that need **no** bridge (they already bind `0.0.0.0` and
+allow remote origins):
 
 - **`browserless/chrome`** — purpose-built CDP service, no VNC layer
-  (set `PIKICLAW_BROWSER_CDP_URL=http://browserless:3000`).
-- **An existing Chrome on the host** —
+  (set `PIKICLAW_BROWSER_CDP_URL=http://browserless:3000`, drop both the
+  `chromium` and `chromium-cdp-bridge` services).
+- **An existing Chrome on the host** started with
+  `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --remote-allow-origins=*` —
   `PIKICLAW_BROWSER_CDP_URL=http://host.docker.internal:9222`
   (Linux: add `extra_hosts: ["host.docker.internal:host-gateway"]`).
 
 When `PIKICLAW_BROWSER_CDP_URL` is set, pikiclaw never tries to launch or
-SIGKILL a local Chrome — the sidecar is treated as a managed external
-service.
+SIGKILL a local Chrome — the sidecar is treated as a managed external service.
+If the endpoint is momentarily unreachable, the `browser_*` call surfaces a
+connection error instead of silently falling back to a (non-existent) local
+Chrome.
 
 ## 7. Reverse proxy / TLS
 
@@ -321,36 +353,59 @@ volumes:
 ### 浏览器自动化（外接 Chrome）
 
 镜像本身不打包 Chrome（避免镜像膨胀到 1GB+，且容器里没显示器也用不起来）。
-推荐做法是再起一个 Chromium 边车容器，pikiclaw 通过 CDP 端口接进去：
+推荐做法是起一个 Chromium 边车容器（带网页 VNC 给你登录用），再加一个 socat
+**CDP 桥接**，pikiclaw 通过桥接端口接进去。只要设置了
+`PIKICLAW_BROWSER_CDP_URL`，浏览器工具就会自动打开，**无需**再设
+`PIKICLAW_BROWSER_ENABLED`：
 
 ```yaml
 services:
   pikiclaw:
     environment:
-      PIKICLAW_BROWSER_CDP_URL: http://chromium:9222
+      PIKICLAW_BROWSER_CDP_URL: http://chromium:9223
     depends_on: [chromium]
 
   chromium:
     image: lscr.io/linuxserver/chromium:latest
     environment:
-      CHROME_CLI: "--remote-debugging-address=0.0.0.0 --remote-debugging-port=9222"
+      # --remote-allow-origins=* 必须加，否则 Chrome 111+ 会用 403 拒绝跨主机握手。
+      CHROME_CLI: "--remote-debugging-port=9222 --remote-allow-origins=*"
     ports:
       - "3000:3000"   # 网页 VNC，给你自己登录用
     volumes:
       - chromium-config:/config
     shm_size: 1gb
+
+  # 把 Chrome 只绑在 127.0.0.1 的调试端口转发成 0.0.0.0:9223，让 pikiclaw 能连上。
+  chromium-cdp-bridge:
+    image: alpine/socat:latest
+    network_mode: "service:chromium"
+    depends_on: [chromium]
+    command: TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222
 ```
 
 部署后用浏览器打开 `http://<服务器IP>:3000`，在容器里那个 Chromium 上登录
 Google / GitHub / 公司 SSO 等。登录态会持久化到 `chromium-config` 卷里。
-pikiclaw 通过 9222 端口 attach 同一份 Chromium，agent 自动继承你的登录态。
+pikiclaw 通过桥接的 9223 端口 attach 同一份 Chromium，agent 自动继承你的登录态。
 
-也可以指向已有的 Chrome：
-`PIKICLAW_BROWSER_CDP_URL=http://host.docker.internal:9222`
-（Linux 宿主需要在 compose 里加 `extra_hosts: ["host.docker.internal:host-gateway"]`）。
+**为什么要桥接？** `lscr.io/linuxserver/chromium`（以及大多数桌面版 Chromium）
+会忽略 `--remote-debugging-address=0.0.0.0`，调试端口只绑在 `127.0.0.1`，别的
+容器直接连 `chromium:9222` 连不上。socat 边车跑在 chromium 的网络命名空间里
+（`network_mode: "service:chromium"`），把 `0.0.0.0:9223` 转发到
+`127.0.0.1:9222`；因为 socat 是从 `127.0.0.1` 发起连接，顺带绕过了 Chrome 的
+host 头校验。
+
+不需要桥接的替代方案（它们本身就绑 `0.0.0.0` 且放开了 origin）：
+- **`browserless/chrome`**：专门的 CDP 服务，无 VNC，直接
+  `PIKICLAW_BROWSER_CDP_URL=http://browserless:3000`，省掉上面两个服务。
+- **宿主机已有的 Chrome**（启动参数带
+  `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --remote-allow-origins=*`）：
+  `PIKICLAW_BROWSER_CDP_URL=http://host.docker.internal:9222`
+  （Linux 宿主需要在 compose 里加 `extra_hosts: ["host.docker.internal:host-gateway"]`）。
 
 设置了 `PIKICLAW_BROWSER_CDP_URL` 之后，pikiclaw 不再尝试启动或杀掉本地 Chrome —
-sidecar 完全由你管。
+sidecar 完全由你管；端点临时连不上时，`browser_*` 调用会直接报连接错误，而不会
+偷偷回退去拉本地 Chrome。
 
 ### 更新
 

@@ -2133,10 +2133,10 @@ exit 0`;
 
       const claudeModels = await listModels('claude', {
         workdir: tmpDir,
-        currentModel: 'claude-opus-4-7',
+        currentModel: 'claude-opus-4-8',
       });
       expect(claudeModels.models.map(m => m.id)).toEqual([
-        'claude-opus-4-7',
+        'claude-opus-4-8',
         'claude-sonnet-4-6',
         'claude-haiku-4-5-20251001',
       ]);

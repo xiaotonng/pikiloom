@@ -62,11 +62,11 @@ services:
       GEMINI_MODEL: ${GEMINI_MODEL:-}
 
       # ─── Browser automation (optional) ─────────────────────────────────────
-      # The base image does NOT bundle Chrome. To enable agent browser tooling
-      # in Docker, run a Chromium sidecar (see the `chromium` service below)
-      # and point pikiclaw at its CDP endpoint:
-      # PIKICLAW_BROWSER_CDP_URL: http://chromium:9222
-      # PIKICLAW_BROWSER_ENABLED: "true"
+      # The base image does NOT bundle Chrome. To give the agent a real browser
+      # in Docker, run the Chromium sidecar + CDP bridge below and point pikiclaw
+      # at the bridge endpoint. Setting PIKICLAW_BROWSER_CDP_URL alone turns on
+      # browser tooling — no separate PIKICLAW_BROWSER_ENABLED needed.
+      # PIKICLAW_BROWSER_CDP_URL: http://chromium:9223
 
     volumes:
       # setting.json, sessions, MCP/CLI state, etc.
@@ -89,11 +89,12 @@ services:
       start_period: 20s
       retries: 3
 
-  # ─── Optional: Chromium sidecar for browser automation ─────────────────────
-  # Uncomment this whole block (and the PIKICLAW_BROWSER_CDP_URL env above) if
-  # you want the agent to drive a real browser. Open http://<host>:3000 in your
-  # own browser to sign in to sites — the profile persists in `chromium-config`
-  # and pikiclaw attaches via CDP on :9222. See docs/DOCKER.md §6.
+  # ─── Optional: Chromium sidecar + CDP bridge for browser automation ─────────
+  # Uncomment both services below (and the PIKICLAW_BROWSER_CDP_URL env above) to
+  # let the agent drive a real browser. Open http://<host>:3000 in your own
+  # browser to sign in to sites — the profile persists in `chromium-config`, and
+  # pikiclaw attaches over CDP. See docs/DOCKER.md §6 for the full rationale.
+  #
   # chromium:
   #   image: lscr.io/linuxserver/chromium:latest
   #   container_name: pikiclaw-chromium
@@ -102,13 +103,29 @@ services:
   #     PUID: 1000
   #     PGID: 1000
   #     TZ: Etc/UTC
-  #     CHROME_CLI: "--remote-debugging-address=0.0.0.0 --remote-debugging-port=9222"
+  #     # --remote-allow-origins=* is REQUIRED — without it Chrome 111+ rejects
+  #     # the cross-host CDP handshake with "403 Forbidden". Note this image
+  #     # ignores --remote-debugging-address, so CDP only ever binds to
+  #     # 127.0.0.1; the socat bridge below is what exposes it to pikiclaw.
+  #     CHROME_CLI: "--remote-debugging-port=9222 --remote-allow-origins=*"
   #   ports:
   #     - "3000:3000"   # web UI (KasmVNC) — open this to sign in
   #     - "3001:3001"   # https variant
   #   volumes:
   #     - chromium-config:/config
   #   shm_size: 1gb
+  #
+  # # Bridges Chrome's localhost-only CDP (127.0.0.1:9222) to 0.0.0.0:9223 inside
+  # # the chromium container's network namespace, so pikiclaw reaches it at
+  # # http://chromium:9223. socat connects from 127.0.0.1, which also satisfies
+  # # Chrome's host-header check.
+  # chromium-cdp-bridge:
+  #   image: alpine/socat:latest
+  #   container_name: pikiclaw-chromium-cdp-bridge
+  #   restart: unless-stopped
+  #   network_mode: "service:chromium"
+  #   depends_on: [chromium]
+  #   command: TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222
 
 volumes:
   pikiclaw-config:

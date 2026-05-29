@@ -19,6 +19,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   ensurePlaywrightMcpConfigFile,
+  getConfiguredRemoteCdpUrl,
   getManagedBrowserProfileDir,
   resolveManagedBrowserCdpEndpoint,
   resolveManagedBrowserMcpCommand,
@@ -102,11 +103,20 @@ interface McpServerRuntimeInfo {
   moduleUrl: string;
 }
 
+/**
+ * Server descriptor passed to agent-specific registration paths. Mirrors the
+ * shape declared in `./extensions.ts` — stdio entries carry `command`/`args`,
+ * HTTP entries set `type: 'http'` plus `url`/`headers`. `type` defaults to
+ * `'stdio'` when omitted, so all existing stdio call-sites keep working.
+ */
 interface RegisteredMcpServer {
   name: string;
-  command: string;
-  args: string[];
+  type?: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 export interface GuiIntegrationConfig {
@@ -179,10 +189,15 @@ export function resolveGuiIntegrationConfig(
   config = loadUserConfig(),
   env: Record<string, string | undefined> = process.env,
 ): GuiIntegrationConfig {
+  // A configured remote CDP endpoint implies the user wants browser automation,
+  // so it flips the *default* on. An explicit PIKICLAW_BROWSER_ENABLED / config
+  // value still wins (so `=false` can disable even with a CDP URL set). This
+  // removes the footgun where setting only PIKICLAW_BROWSER_CDP_URL silently
+  // injected no browser server at all.
   const browserEnabled = boolFromConfigEnv(
     typeof config.browserEnabled === 'boolean' ? config.browserEnabled : (config as Record<string, unknown>).browserUseProfile,
     env.PIKICLAW_BROWSER_ENABLED ?? env.PIKICLAW_BROWSER_USE_PROFILE,
-    false,
+    !!getConfiguredRemoteCdpUrl(env),
   );
   const peekabooEnabled = boolFromConfigEnv(
     config.peekabooEnabled,
@@ -262,7 +277,57 @@ function buildClaudeMcpConfig(servers: RegisteredMcpServer[]) {
   };
 }
 
-function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
+/**
+ * Build the `codex mcp add` argv for a single registered server. Returns
+ * `null` when the descriptor lacks the fields needed for its transport
+ * (treated as a no-op rather than throwing — keeps a malformed entry from
+ * breaking the whole session).
+ *
+ * HTTP servers can't pass a literal bearer to codex; the CLI only accepts
+ * `--bearer-token-env-var <NAME>`. We synthesize a deterministic env-var
+ * name per server, stash the token in the supplied `tokenEnv` map, and the
+ * caller threads that map into the codex child process via extraEnv.
+ *
+ * Exported for unit tests; not re-exported from the package surface.
+ */
+export function buildCodexMcpAddArgs(
+  server: RegisteredMcpServer,
+  tokenEnv: Record<string, string>,
+): string[] | null {
+  if (server.type === 'http') {
+    if (!server.url) return null;
+    const args = ['mcp', 'add', server.name, '--url', server.url];
+    const bearer = extractBearerToken(server.headers);
+    if (bearer) {
+      const envName = codexBearerEnvName(server.name);
+      tokenEnv[envName] = bearer;
+      args.push('--bearer-token-env-var', envName);
+    }
+    return args;
+  }
+  if (!server.command) return null;
+  const args = ['mcp', 'add', server.name];
+  for (const [k, v] of Object.entries(server.env || {})) args.push('--env', `${k}=${v}`);
+  args.push('--', server.command, ...(server.args || []));
+  return args;
+}
+
+function extractBearerToken(headers?: Record<string, string>): string | null {
+  if (!headers) return null;
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== 'authorization') continue;
+    const m = /^\s*Bearer\s+(.+)$/i.exec(v);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
+function codexBearerEnvName(serverName: string): string {
+  const safe = serverName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return `PIKICLAW_MCP_BEARER_${safe || 'UNNAMED'}`;
+}
+
+export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
   return {
     // Session attachments live under .pikiclaw/... and should remain readable to
     // Gemini's built-in file tools even when the project ignores that directory.
@@ -270,10 +335,28 @@ function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
       respectGitIgnore: false,
       respectGeminiIgnore: false,
     },
-    mcpServers: Object.fromEntries(servers.map(server => [
-      server.name,
-      { command: server.command, args: server.args, ...(server.env ? { env: server.env } : {}), trust: true },
-    ])),
+    mcpServers: Object.fromEntries(servers.map(server => {
+      if (server.type === 'http' && server.url) {
+        return [
+          server.name,
+          {
+            type: 'http',
+            url: server.url,
+            ...(server.headers && Object.keys(server.headers).length ? { headers: server.headers } : {}),
+            trust: true,
+          },
+        ];
+      }
+      return [
+        server.name,
+        {
+          command: server.command,
+          args: server.args || [],
+          ...(server.env ? { env: server.env } : {}),
+          trust: true,
+        },
+      ];
+    })),
   };
 }
 
@@ -377,6 +460,39 @@ function reapStalePlaywrightMcpProcesses(
     }
   }
   return { reaped, spared };
+}
+
+export type BridgeBrowserEndpointMode = 'remote' | 'local-attach' | 'none';
+
+export interface BridgeBrowserEndpoint {
+  endpoint: string | null;
+  mode: BridgeBrowserEndpointMode;
+}
+
+/**
+ * Decide which CDP endpoint the per-session playwright/mcp should attach to.
+ *
+ * When `PIKICLAW_BROWSER_CDP_URL` is set we return it UNCONDITIONALLY (mode
+ * `remote`) — without probing it for reachability. This is deliberate: the
+ * documented contract is that pikiclaw never launches, probes, or kills a local
+ * Chrome in remote mode (e.g. inside a headless container that has no Chrome at
+ * all). Gating on a reachability ping would let a momentarily-unreachable
+ * sidecar fall through to the local-launch branch and silently spawn a browser
+ * — exactly the bug reported in #16. Handing `--cdp-endpoint <url>` to
+ * playwright/mcp instead surfaces an honest connection error on the first
+ * `browser_*` call if the sidecar is down.
+ *
+ * Without the override, fall back to probing the local managed Chrome via its
+ * DevToolsActivePort file (cross-process attach); `none` means leave Chrome
+ * unlaunched and let playwright/mcp cold-start one with `--user-data-dir`.
+ */
+export async function resolveBridgeBrowserEndpoint(
+  profileDir = getManagedBrowserProfileDir(),
+  remoteCdpUrl: string | null = getConfiguredRemoteCdpUrl(),
+): Promise<BridgeBrowserEndpoint> {
+  if (remoteCdpUrl) return { endpoint: remoteCdpUrl, mode: 'remote' };
+  const local = await resolveManagedBrowserCdpEndpoint(profileDir).catch(() => null);
+  return { endpoint: local, mode: local ? 'local-attach' : 'none' };
 }
 
 // ---------------------------------------------------------------------------
@@ -503,12 +619,19 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     // Write the playwright/mcp config file (referenced by --config in
     // getManagedBrowserMcpArgs) before the agent CLI spawns playwright/mcp.
     ensurePlaywrightMcpConfigFile();
-    browserCdpEndpoint = await resolveManagedBrowserCdpEndpoint(gui.browserProfileDir).catch(() => null);
-    if (browserCdpEndpoint) {
-      opts.onLog?.(`attaching to existing managed browser at ${browserCdpEndpoint}.`);
-      const { reaped, spared } = reapStalePlaywrightMcpProcesses(browserCdpEndpoint);
+    const { endpoint, mode } = await resolveBridgeBrowserEndpoint(gui.browserProfileDir);
+    browserCdpEndpoint = endpoint;
+    if (endpoint) {
+      opts.onLog?.(mode === 'remote'
+        ? `attaching to remote CDP endpoint ${endpoint} (PIKICLAW_BROWSER_CDP_URL); local Chrome launch disabled.`
+        : `attaching to existing managed browser at ${endpoint}.`);
+      // Clear stale playwright-mcp children still bound to this endpoint (one
+      // playwright-mcp per browser, per microsoft/playwright-mcp#1299). Safe for
+      // the remote sidecar too — it only ever SIGTERMs local playwright-mcp
+      // processes, never the Chrome itself.
+      const { reaped, spared } = reapStalePlaywrightMcpProcesses(endpoint);
       if (reaped.length) {
-        opts.onLog?.(`reaped ${reaped.length} stale playwright-mcp process(es) attached to ${browserCdpEndpoint}: pid=${reaped.join(',')}${spared.length ? ` (spared in-tree: ${spared.join(',')})` : ''}`);
+        opts.onLog?.(`reaped ${reaped.length} stale playwright-mcp process(es) attached to ${endpoint}: pid=${reaped.join(',')}${spared.length ? ` (spared in-tree: ${spared.join(',')})` : ''}`);
       }
     } else {
       opts.onLog?.('no managed browser running; playwright/mcp will launch one on first browser_* tool call.');
@@ -750,10 +873,13 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     // Include global + workspace extensions alongside built-in servers
     const extServers = getGlobalExtensionsAsServers(opts.workdir);
     const allServers = [...extServers, ...servers];
+    // Bearer tokens for HTTP MCP servers are injected into codex's process env
+    // via extraEnv — codex's `--bearer-token-env-var` only accepts an env name,
+    // never a literal token, so the value MUST land in the child env.
+    const codexBearerEnv: Record<string, string> = {};
     for (const server of allServers) {
-      const codexArgs = ['mcp', 'add', server.name];
-      for (const [k, v] of Object.entries(server.env || {})) codexArgs.push('--env', `${k}=${v}`);
-      codexArgs.push('--', server.command, ...server.args);
+      const codexArgs = buildCodexMcpAddArgs(server, codexBearerEnv);
+      if (!codexArgs) continue;
       try {
         execFileSync('codex', codexArgs, { stdio: 'pipe', timeout: MCP_TIMEOUTS.codexMcpAdd });
         codexRegisteredNames.push(server.name);
@@ -762,6 +888,9 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
         execFileSync('codex', codexArgs, { stdio: 'pipe', timeout: MCP_TIMEOUTS.codexMcpAdd });
         codexRegisteredNames.push(server.name);
       }
+    }
+    if (Object.keys(codexBearerEnv).length) {
+      extraEnv = { ...(extraEnv || {}), ...codexBearerEnv };
     }
   } else if (opts.agent === 'gemini') {
     // Gemini CLI 0.32+ loads MCP servers from settings.json rather than --mcp-config.

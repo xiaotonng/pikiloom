@@ -225,6 +225,61 @@ describe('Bot emitStream queue tracking', () => {
   });
 });
 
+describe('Bot stopAllSessionTasks', () => {
+  it('aborts the running task but leaves queued tasks in place to run next', () => {
+    const bot = new Bot() as any;
+    const runtime = bot.upsertSessionRuntime({
+      agent: 'claude',
+      sessionId: 'sess-stop',
+      workdir: process.env.PIKICLAW_WORKDIR!,
+      workspacePath: null,
+      modelId: null,
+    });
+
+    const runningAbort = vi.fn();
+    bot.beginTask({
+      taskId: 'run-1',
+      chatId: 1,
+      agent: 'claude',
+      sessionKey: runtime.key,
+      prompt: 'running task',
+      startedAt: Date.now() - 1000,
+      sourceMessageId: 200,
+    });
+    bot.markTaskRunning('run-1', runningAbort);
+
+    bot.beginTask({
+      taskId: 'queued-1',
+      chatId: 1,
+      agent: 'claude',
+      sessionKey: runtime.key,
+      prompt: 'queued task 1',
+      startedAt: Date.now(),
+      sourceMessageId: 201,
+    });
+    bot.beginTask({
+      taskId: 'queued-2',
+      chatId: 1,
+      agent: 'claude',
+      sessionKey: runtime.key,
+      prompt: 'queued task 2',
+      startedAt: Date.now(),
+      sourceMessageId: 202,
+    });
+
+    const result = bot.stopAllSessionTasks(runtime.key);
+
+    expect(result.interrupted).toBe(true);
+    expect(result.cancelledQueued).toBe(0);
+    expect(runningAbort).toHaveBeenCalledTimes(1);
+    expect(bot.activeTasks.get('run-1')?.cancelled).toBe(true);
+    expect(bot.activeTasks.get('queued-1')?.cancelled).toBeFalsy();
+    expect(bot.activeTasks.get('queued-1')?.status).toBe('queued');
+    expect(bot.activeTasks.get('queued-2')?.cancelled).toBeFalsy();
+    expect(bot.activeTasks.get('queued-2')?.status).toBe('queued');
+  });
+});
+
 describe('Bot resetConversationForChat', () => {
   it('clears the chat selection without interrupting running or queued tasks on the previous session', () => {
     const bot = new Bot() as any;

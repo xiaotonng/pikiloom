@@ -18,6 +18,7 @@
 
 import {
   forceCloseManagedBrowser,
+  getConfiguredRemoteCdpUrl,
   getManagedBrowserProfileDir,
   prepareManagedBrowserForAutomation,
 } from './browser-profile.js';
@@ -54,16 +55,12 @@ function log(message: string, level: 'debug' | 'info' | 'warn' | 'error' = 'debu
 }
 
 /**
- * Normalize an external CDP URL (trailing slashes stripped, blank → null).
- * Returns the user-configured remote endpoint when {@link PIKICLAW_BROWSER_CDP_URL_ENV}
- * is set; in that case every supervisor codepath bypasses local Chrome
- * launching.
+ * The user-configured remote endpoint from {@link PIKICLAW_BROWSER_CDP_URL_ENV}.
+ * When set, every supervisor codepath bypasses local Chrome launching. Aliased
+ * to the shared `getConfiguredRemoteCdpUrl` so the bridge and supervisor read
+ * the same normalized value.
  */
-function getRemoteCdpUrl(): string | null {
-  const raw = String(process.env[PIKICLAW_BROWSER_CDP_URL_ENV] || '').trim();
-  if (!raw) return null;
-  return raw.replace(/\/+$/, '');
-}
+const getRemoteCdpUrl = getConfiguredRemoteCdpUrl;
 
 /**
  * Snapshot for the remote-CDP path. The URL is taken on trust as configured —

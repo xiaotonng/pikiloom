@@ -490,6 +490,8 @@ export type BrowserProfileStatus = 'disabled' | 'ready' | 'needs_setup' | 'chrom
 export interface BrowserStatus {
   status: BrowserProfileStatus;
   enabled: boolean;
+  /** External CDP endpoint (PIKICLAW_BROWSER_CDP_URL) when attaching to a remote Chrome; null for local managed mode. */
+  remoteCdpUrl?: string | null;
   headlessMode: 'headless' | 'headed';
   chromeInstalled: boolean;
   profileCreated: boolean;

@@ -719,9 +719,10 @@ app.post('/api/session-hub/session/recall', async (c) => {
   }
 });
 
-// Stop the running stream AND cancel every queued task for a session.
-// Takes (agent, sessionId) rather than taskId so it works during the moment
-// after a fresh send where the client hasn't yet learned the streamTaskId.
+// Stop only the currently running stream for a session — queued follow-ups
+// are kept so they run next. Takes (agent, sessionId) rather than taskId so it
+// works during the moment after a fresh send where the client hasn't yet
+// learned the streamTaskId.
 app.post('/api/session-hub/session/stop', async (c) => {
   try {
     const body = await c.req.json();

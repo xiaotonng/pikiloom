@@ -521,9 +521,9 @@ export const SessionPanel = memo(function SessionPanel({
     try { await api.steerSession(taskId); } catch {}
   }, []);
 
-  // Stop EVERYTHING for this session (running + queued). Bound to the main
-  // stop button so the user's expectation that "stop = halt this conversation"
-  // holds even when they've already queued follow-ups behind the active turn.
+  // Stop only the currently running turn for this session. Queued follow-ups
+  // stay in the chain and start running once the abort lands — use the per-row
+  // × button to drop a specific queued entry.
   const handleStopAll = useCallback(async () => {
     try {
       await api.stopSession(session.agent || '', session.sessionId);

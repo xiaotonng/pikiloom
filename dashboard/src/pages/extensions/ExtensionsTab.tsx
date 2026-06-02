@@ -966,6 +966,67 @@ function SkillAvailableCard({
 }
 
 // ---------------------------------------------------------------------------
+// Local skill card — an installed skill that no catalog repo claims
+// (hand-authored under ~/.pikiclaw/skills or installed from an unlisted
+// source). Removal is destructive (`rm -rf` of the skill dir, no reinstall
+// path for hand-written ones), so the remove button is a two-step arm/confirm.
+// ---------------------------------------------------------------------------
+
+function LocalSkillCard({
+  skill, locale, animationDelay, busy, onRemove,
+}: {
+  skill: SkillInfo;
+  locale: string;
+  animationDelay?: string;
+  busy: boolean;
+  onRemove: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  return (
+    <div
+      className="animate-in-up group relative flex min-h-[112px] w-full flex-col overflow-hidden rounded-lg border border-[var(--edge-subtle)] bg-[var(--surface-2)] p-4 text-left transition-[background,border-color] duration-200 hover:border-[var(--edge-default)] hover:bg-[var(--surface-3)]"
+      style={{ animationDelay }}
+      onMouseLeave={() => setArmed(false)}
+    >
+      <div className="relative flex items-start gap-3">
+        <BrandAvatar name={skill.name} size={36} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-[13px] font-semibold text-fg">{skill.label || skill.name}</span>
+            <span
+              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-fg-4 shrink-0"
+              style={{ background: 'color-mix(in oklab, var(--fg-5) 14%, transparent)' }}
+            >
+              {L(locale, '本地', 'Local')}
+            </span>
+          </div>
+          <div className="mt-0.5 truncate font-mono text-[11.5px] text-fg-5">/{skill.name}</div>
+          {skill.description && (
+            <div className="mt-1 line-clamp-2 text-[11.5px] text-fg-4">{skill.description}</div>
+          )}
+        </div>
+      </div>
+      <div className="relative mt-auto pt-3 flex items-center justify-between text-[10.5px] text-fg-5">
+        <span>
+          {skill.scope === 'global'
+            ? L(locale, '全局 · ~/.pikiclaw/skills', 'Global · ~/.pikiclaw/skills')
+            : L(locale, '项目 · .pikiclaw/skills', 'Project · .pikiclaw/skills')}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy}
+          onClick={() => { if (armed) { setArmed(false); onRemove(); } else setArmed(true); }}
+          className={armed ? '!text-err' : 'hover:!text-err'}
+        >
+          {busy ? <Spinner /> : armed ? L(locale, '确认移除？', 'Confirm remove?') : L(locale, '移除', 'Remove')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Skill Detail Modal — the per-collection management surface
 //
 // Lazy-loads the repo's full skill list when the modal opens. Cross-references
@@ -1659,6 +1720,8 @@ function SkillsCatalogSection({
 
   const [customOpen, setCustomOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [removingLocal, setRemovingLocal] = useState<string | null>(null);
+  const toast = useStore(s => s.toast);
 
   const items = data?.items || [];
   const installedAll = data?.installed || [];
@@ -1671,6 +1734,27 @@ function SkillsCatalogSection({
   // top, mirroring the CLI tab's "signed in / available" layout.
   const connected = useMemo(() => items.filter(i => i.installedNames.length > 0), [items]);
   const available = useMemo(() => items.filter(i => i.installedNames.length === 0), [items]);
+
+  // Installed skills not claimed by any catalog repo — hand-authored or
+  // installed from unlisted sources. They drive the header count, so they
+  // must be visible and removable here too, not just counted.
+  const localSkills = useMemo(() => {
+    const claimed = new Set<string>();
+    for (const it of items) for (const n of it.installedNames) claimed.add(n.toLowerCase());
+    return installedSkills.filter(s => !claimed.has(s.name.toLowerCase()));
+  }, [items, installedSkills]);
+
+  const handleRemoveLocal = useCallback(async (name: string) => {
+    setRemovingLocal(name);
+    try {
+      const r = await api.removeExtensionSkill(name, scope === 'global', workdir);
+      if (r.ok) {
+        toast(L(locale, `${name} 已移除`, `${name} removed`), true);
+        void refresh();
+      } else toast(r.error || 'Failed', false);
+    } catch (e: any) { toast(e?.message || 'Failed', false); }
+    finally { setRemovingLocal(null); }
+  }, [scope, workdir, locale, toast, refresh]);
   const groupedAvailable = useMemo(() => {
     const map = new Map<string, SkillCatalogItem[]>();
     for (const it of available) {
@@ -1709,14 +1793,14 @@ function SkillsCatalogSection({
 
       {showSpinner ? (
         <div className="flex items-center justify-center py-10"><Spinner /></div>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && localSkills.length === 0 ? (
         <EmptyState
           title={L(locale, '暂无可用的技能包', 'No skill packs available')}
           subtitle={L(locale, '从 GitHub 导入一个开始使用', 'Import from GitHub to get started')}
         />
       ) : (
         <>
-          {connected.length > 0 && (
+          {(connected.length > 0 || localSkills.length > 0) && (
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-[11px] font-semibold text-fg-3">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--th-ok)]"></span>
@@ -1730,6 +1814,16 @@ function SkillsCatalogSection({
                     locale={locale}
                     animationDelay={`${Math.min(i, 12) * 30}ms`}
                     onClick={() => setSelectedId(c.id)}
+                  />
+                ))}
+                {localSkills.map((s, i) => (
+                  <LocalSkillCard
+                    key={`local-${s.name}`}
+                    skill={s}
+                    locale={locale}
+                    animationDelay={`${Math.min(connected.length + i, 12) * 30}ms`}
+                    busy={removingLocal === s.name}
+                    onRemove={() => void handleRemoveLocal(s.name)}
                   />
                 ))}
               </div>

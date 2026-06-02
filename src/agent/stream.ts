@@ -218,6 +218,9 @@ export async function run(
     model: opts.model, thinkingEffort: opts.thinkingEffort, errors: null as unknown[] | null,
     inputTokens: null as number | null, outputTokens: null as number | null, cachedInputTokens: null as number | null,
     cacheCreationInputTokens: null as number | null,
+    // Output tokens from this turn's finished LLM calls — folded in by parsers
+    // when a new call resets the per-call counter (claude message_start).
+    turnOutputTokensBase: 0 as number,
     contextWindow: byokWindow as number | null,
     byokContextWindow: byokWindow as number | null,
     byokProviderName: byokProvider as string | null,

@@ -169,4 +169,42 @@ describe('Claude context fallback', () => {
     // 26000 used / 967000 = 2.689... → 2.7
     expect(result.contextPercent).toBe(2.7);
   });
+
+  it('accumulates turnOutputTokens across per-call message_start resets', async () => {
+    const { doClaudeStream } = await import('../src/agent/index.ts');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-claude-turnout-'));
+    const fakeBin = path.join(tmpDir, 'bin');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    process.env.PATH = `${fakeBin}:${process.env.PATH}`;
+
+    const jsonLines = [
+      { type: 'system', session_id: 's-turnout', model: 'claude-opus-4-8' },
+      // Call 1: thinking burns 500 output tokens, ends in tool_use.
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 10_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } },
+      { type: 'stream_event', event: { type: 'message_delta', delta: {}, usage: { output_tokens: 500 } } },
+      // Call 2 (after the tool roundtrip): per-call counters reset, 300 more.
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 11_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } },
+      { type: 'stream_event', event: { type: 'message_delta', delta: {}, usage: { output_tokens: 300 } } },
+      { type: 'result', session_id: 's-turnout', usage: { input_tokens: 11_000, output_tokens: 300 } },
+    ];
+    const payload = jsonLines.map(j => JSON.stringify(j)).join('\n');
+    fs.writeFileSync(path.join(fakeBin, 'claude'), `#!/bin/sh\ncat <<'JSONL_EOF'\n${payload}\nJSONL_EOF\n`, { mode: 0o755 });
+
+    let lastMeta: any = null;
+    await doClaudeStream({
+      agent: 'claude' as const,
+      prompt: 'test prompt',
+      workdir: tmpDir,
+      timeout: 10,
+      sessionId: null,
+      model: null,
+      thinkingEffort: 'high' as const,
+      onText: (_text: string, _thinking: string, _activity?: string, meta?: any) => { if (meta) lastMeta = meta; },
+    });
+
+    // Per-call output reflects the latest call only; the turn-cumulative
+    // counter keeps climbing across the message_start reset (500 + 300).
+    expect(lastMeta?.outputTokens).toBe(300);
+    expect(lastMeta?.turnOutputTokens).toBe(800);
+  });
 });

@@ -531,13 +531,25 @@ app.get('/api/sessions/:agent/:id/attachment', async (c) => {
   }
 
   // Widen the allowlist with the session's recorded workdir when known —
-  // images generated under the project tree resolve cleanly.
+  // images generated under the project tree resolve cleanly. Session indexes
+  // are per-workdir and this URL carries no workdir, so a lookup against the
+  // runtime workdir alone misses sessions living in any OTHER registered
+  // workspace (the Session Hub renders all of them through this endpoint) —
+  // their user-attached images 403'd as "broken image" in the dashboard.
+  // Registered workspace roots come from server-side config, never request
+  // input, so widening to all of them keeps the same trust boundary and also
+  // covers the pending→native id promotion window where no index has the
+  // session yet.
   const config = loadUserConfig();
   const fallbackWorkdir = runtime.getRequestWorkdir(config);
   const managed = findPikiclawSession(fallbackWorkdir, agent, sessionId);
-  const workdir = managed?.workdir || fallbackWorkdir;
+  const workdirs = [
+    ...(managed?.workdir ? [managed.workdir] : []),
+    fallbackWorkdir,
+    ...loadWorkspaces().map(ws => ws.path),
+  ];
 
-  const resolved = resolveAllowedAttachmentPath(requestedPath, workdir);
+  const resolved = resolveAllowedAttachmentPath(requestedPath, workdirs);
   if (!resolved) return c.json({ ok: false, error: 'forbidden' }, 403);
 
   let stat: fs.Stats;

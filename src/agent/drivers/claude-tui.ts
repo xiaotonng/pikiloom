@@ -609,6 +609,15 @@ function applyModelContextWindow(s: any): void {
 function applyAssistantUsage(s: any, msg: any): void {
   const u = msg?.usage;
   if (!u || typeof u !== 'object') return;
+  // JSONL has no message_start marker — a fresh message.id is the per-call
+  // boundary. Fold the finished call's output into the turn-cumulative base
+  // before this call's counters take over (events of the same call share an
+  // id and carry running totals, so only the id transition folds).
+  const msgId = typeof msg?.id === 'string' && msg.id ? msg.id : null;
+  if (msgId && msgId !== s.turnUsageMsgId) {
+    if (s.turnUsageMsgId != null) s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
+    s.turnUsageMsgId = msgId;
+  }
   if (typeof u.input_tokens === 'number') s.inputTokens = u.input_tokens;
   if (typeof u.output_tokens === 'number') s.outputTokens = u.output_tokens;
   if (typeof u.cache_read_input_tokens === 'number') s.cachedInputTokens = u.cache_read_input_tokens;

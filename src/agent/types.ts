@@ -102,6 +102,13 @@ export interface StreamPreviewMeta {
   contextUsedTokens?: number | null;
   contextPercent: number | null;
   /**
+   * Output tokens generated across ALL LLM calls of the current turn. Unlike
+   * `outputTokens` (per-call, resets to 0 on every tool roundtrip's
+   * message_start), this only climbs — it's the number to show as the turn's
+   * live "token consumption" so the count doesn't vanish mid-turn.
+   */
+  turnOutputTokens?: number | null;
+  /**
    * Active sub-agent invocations (Claude `Task` tool). Drivers without sub-agent
    * support omit this field. Each sub-agent renders as its own UI block so its
    * tool stream and model/effort don't bleed into the parent agent's view.

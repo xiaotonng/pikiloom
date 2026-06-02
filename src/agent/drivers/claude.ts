@@ -134,7 +134,10 @@ function routeClaudeSubAgentEvent(ev: any, t: string, parentToolUseId: string, s
   }
 }
 
-function buildClaudeTurnUsage(u: { input: number | null; output: number | null; cacheRead: number | null; cacheCreation: number | null; model: string | null }): StreamPreviewMeta | null {
+function buildClaudeTurnUsage(
+  u: { input: number | null; output: number | null; cacheRead: number | null; cacheCreation: number | null; model: string | null },
+  turnOutput?: number,
+): StreamPreviewMeta | null {
   if (u.input == null && u.output == null && u.cacheRead == null && u.cacheCreation == null) return null;
   const ctxWindow = claudeEffectiveContextWindow(claudeContextWindowFromModel(u.model));
   const used = claudeContextUsedFromUsage({
@@ -143,13 +146,15 @@ function buildClaudeTurnUsage(u: { input: number | null; output: number | null; 
   const contextPercent = ctxWindow && used > 0
     ? Math.min(99.9, Math.round(used / ctxWindow * 1000) / 10)
     : null;
-  return {
+  const meta: StreamPreviewMeta = {
     inputTokens: u.input,
     outputTokens: u.output,
     cachedInputTokens: u.cacheRead,
     contextUsedTokens: used > 0 ? used : null,
     contextPercent,
   };
+  if (turnOutput && turnOutput > 0) meta.turnOutputTokens = turnOutput;
+  return meta;
 }
 
 /** Hard cap beyond which a native Claude session is treated as idle regardless
@@ -358,6 +363,9 @@ export function claudeParse(ev: any, s: any) {
       // so the displayed In/Cached/Out and contextPercent describe the same
       // call (matches cc's `LX(messages)` which returns the latest assistant
       // usage, not a cumulative across calls).
+      // The finished call's output is folded into the turn-cumulative base
+      // first so `turnOutputTokens` keeps climbing across tool roundtrips.
+      s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
       s.inputTokens = u?.input_tokens ?? 0;
       s.cachedInputTokens = u?.cache_read_input_tokens ?? 0;
       s.cacheCreationInputTokens = u?.cache_creation_input_tokens ?? 0;
@@ -601,6 +609,12 @@ export function createClaudeStreamState(opts: StreamOpts) {
     outputTokens: null as number | null,
     cachedInputTokens: null as number | null,
     cacheCreationInputTokens: null as number | null,
+    /** Output tokens from this turn's finished LLM calls — folded in when a
+     *  new call resets the per-call counter, so the turn total only climbs. */
+    turnOutputTokensBase: 0 as number,
+    /** message.id of the LLM call whose usage `outputTokens` currently
+     *  reflects (TUI/JSONL mode, where there is no message_start marker). */
+    turnUsageMsgId: null as string | null,
     contextWindow: byokWindow as number | null,
     /** When set, ignore cc-advertised contextWindow updates from the stream. */
     byokContextWindow: byokWindow as number | null,
@@ -648,6 +662,8 @@ function resetClaudeTurnState(s: ReturnType<typeof createClaudeStreamState>, not
   s.errors = null;
   s.inputTokens = null;
   s.outputTokens = null;
+  s.turnOutputTokensBase = 0;
+  s.turnUsageMsgId = null;
   s.cachedInputTokens = null;
   s.cacheCreationInputTokens = null;
   s.contextUsedTokens = null;
@@ -1397,6 +1413,10 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
      *  turn so the flushed RichMessage carries the final call's context state, matching
      *  the live `StreamPreviewMeta` semantics. */
     let pendingUsage: { input: number | null; output: number | null; cacheRead: number | null; cacheCreation: number | null; model: string | null } | null = null;
+    /** Per-call output tokens keyed by message.id — events of one call share an
+     *  id and carry running totals, so last-write-wins per id and the turn's
+     *  cumulative output is the sum across ids (→ `turnOutputTokens`). */
+    let pendingCallOutputs = new Map<string, number>();
     const todoWriteToolIds = new Set<string>();
     /**
      * Sub-agent blocks live in `pendingBlocks` like any other block but we keep
@@ -1419,8 +1439,10 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
       const text = pendingTextParts.join('\n\n');
       if (text || pendingBlocks.length) {
         allMsgs.push({ role: pendingRole, text });
+        let turnOutput = 0;
+        for (const v of pendingCallOutputs.values()) turnOutput += v;
         const usage = pendingRole === 'assistant' && pendingUsage
-          ? buildClaudeTurnUsage(pendingUsage)
+          ? buildClaudeTurnUsage(pendingUsage, turnOutput)
           : null;
         richMsgs.push({ role: pendingRole, text, blocks: [...pendingBlocks], usage });
       }
@@ -1428,6 +1450,7 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
       pendingTextParts = [];
       pendingBlocks = [];
       pendingUsage = null;
+      pendingCallOutputs = new Map();
       subAgentBlocksById.clear();
       subAgentToolIds.clear();
       toolNamesByUseId.clear();
@@ -1623,6 +1646,13 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
               cacheCreation: numOrNull(u.cache_creation_input_tokens),
               model: typeof ev.message?.model === 'string' ? ev.message.model : prevModel,
             };
+            // Per-call output for the turn-cumulative counter. Same-id events
+            // carry running totals → keep the last value per call.
+            const output = numOrNull(u.output_tokens);
+            if (output != null) {
+              const msgId = typeof ev.message?.id === 'string' && ev.message.id ? ev.message.id : '(no-id)';
+              pendingCallOutputs.set(msgId, output);
+            }
           }
           const text = extractClaudeText(ev.message?.content, true);
           if (text) pendingTextParts.push(text);

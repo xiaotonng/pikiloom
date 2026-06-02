@@ -452,6 +452,10 @@ export interface StreamPreviewMeta {
    *  double-count the same cached prefix on every tool roundtrip. */
   contextUsedTokens?: number | null;
   contextPercent: number | null;
+  /** Output tokens generated across ALL LLM calls of the turn. Unlike
+   *  `outputTokens` (per-call, resets on every tool roundtrip), this only
+   *  climbs — drives the lightweight "↑n" chip in the turn header. */
+  turnOutputTokens?: number | null;
   subAgents?: StreamSubAgent[];
   /** BYOK provider name (e.g. "OpenRouter") when the agent is bound to a
    *  Profile; absent for native-auth turns. Drives the "via <provider>" tag. */

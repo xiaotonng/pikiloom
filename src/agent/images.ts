@@ -95,10 +95,15 @@ export function sessionAttachmentsDir(agent: Agent, sessionId: string): string {
  *  - `~/.claude/projects`        — Claude attached images written to JSONL.
  *  - `~/.gemini`                 — Gemini CLI managed dirs.
  *  - `~/.pikiclaw/attachments`   — MCP-bridge-buffered tool result images.
- *  - workspace tree              — files generated under the project workdir.
+ *  - workspace tree(s)           — files generated under the project workdir.
  *  - OS tmpdir                   — short-lived staging by drivers / skills.
+ *
+ * `workdir` accepts a list because a multi-workspace setup serves sessions
+ * from several project trees through one endpoint — every entry must come
+ * from server-side config (registered workspaces / managed session records),
+ * never from request input.
  */
-export function allowedAttachmentRoots(workdir?: string | null): string[] {
+export function allowedAttachmentRoots(workdir?: string | readonly string[] | null): string[] {
   const home = getHome();
   const roots: string[] = [
     path.join(codexHome(), 'generated_images'),
@@ -108,7 +113,10 @@ export function allowedAttachmentRoots(workdir?: string | null): string[] {
     path.join(home, '.pikiclaw', 'attachments'),
     os.tmpdir(),
   ];
-  if (workdir && workdir.trim()) roots.push(path.resolve(workdir));
+  const workdirs = typeof workdir === 'string' ? [workdir] : (workdir ?? []);
+  for (const wd of workdirs) {
+    if (wd && wd.trim()) roots.push(path.resolve(wd));
+  }
   return roots;
 }
 
@@ -119,7 +127,7 @@ export function allowedAttachmentRoots(workdir?: string | null): string[] {
  */
 export function resolveAllowedAttachmentPath(
   requested: string,
-  workdir?: string | null,
+  workdir?: string | readonly string[] | null,
 ): string | null {
   if (!requested) return null;
   let real: string;

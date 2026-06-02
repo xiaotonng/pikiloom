@@ -5,7 +5,6 @@ import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
 import { mdComponents, mdPlugins } from './markdown';
 import { lastNLines } from './utils';
 import { shortenModel } from '../../utils';
-import { formatTokens } from './TurnView';
 import type { StreamPlan, StreamSubAgent, StreamPreviewMeta } from '../../types';
 
 export interface LiveStreamView {
@@ -19,9 +18,10 @@ export interface LiveStreamView {
   /** Number of image-generation calls in flight — drives the
    *  "Generating image…" chip while bytes have yet to land. */
   generatingImages?: number;
-  /** Live token/usage meta for the in-flight turn. `outputTokens` climbs during
-   *  the opening extended-thinking phase (before any text), letting us show a
-   *  "Thinking… · <n>" chip so the turn doesn't look frozen. */
+  /** Live token/usage meta for the in-flight turn. `turnOutputTokens` climbs
+   *  from the opening extended-thinking phase through every tool roundtrip —
+   *  the TurnDivider header renders it as the "↑n" chip, and it gates the
+   *  "Thinking…" label here so the turn doesn't look frozen. */
   previewMeta?: StreamPreviewMeta | null;
 }
 
@@ -61,11 +61,12 @@ export function LivePreview({
   // Stream finished with no body — surface the error inline so the user sees
   // *why* the assistant turn is empty instead of a silent phantom.
   const renderEmptyFailure = stream.phase === 'done' && !hasAnyBody;
-  // Live output-token count for the in-flight turn. The newest Claude opens a
-  // turn with an extended-thinking phase that burns output tokens before any
-  // text/thinking lands; surfacing the count keeps the card from looking idle.
-  // 0 unless actively streaming.
-  const thinkingTokens = stream.phase === 'streaming' ? (stream.previewMeta?.outputTokens ?? 0) : 0;
+  // The model is actively burning output tokens (extended thinking before any
+  // text/thinking lands, or mid-turn generation). The count itself lives in the
+  // TurnDivider header chip (↑n, turn-cumulative so it never resets mid-turn);
+  // here it only gates the "Thinking…" label so the card doesn't look idle.
+  const isGenerating = stream.phase === 'streaming'
+    && ((stream.previewMeta?.turnOutputTokens ?? stream.previewMeta?.outputTokens ?? 0) > 0);
 
   const activityLines = useMemo(() =>
     (stream.activity || '').split('\n').filter(Boolean),
@@ -127,7 +128,7 @@ export function LivePreview({
           open={thinkingOpen}
           onToggle={() => setThinkingOpen(v => !v)}
           dot={{ color: 'bg-violet-400/50', pulse: true }}
-          label={thinkingTokens > 0 ? `${t('hub.thinking')} · ${formatTokens(thinkingTokens)}` : t('hub.thinking')}
+          label={t('hub.thinking')}
           collapsedContent={
             <div className="px-3.5 pb-2.5 -mt-0.5 text-[12px] text-fg-4 leading-[1.65] whitespace-pre-wrap break-words line-clamp-3">
               {lastNLines(stream.thinking, 3)}
@@ -157,10 +158,8 @@ export function LivePreview({
       {!stream.text && stream.phase === 'streaming' && (
         <div className="py-1 flex items-center gap-2">
           <ThinkingDots className="text-fg-5" />
-          {thinkingTokens > 0 && (
-            <span className="text-[12px] text-fg-4 font-mono">
-              {t('hub.thinkingLive')} · {formatTokens(thinkingTokens)}
-            </span>
+          {isGenerating && (
+            <span className="text-[12px] text-fg-4">{t('hub.thinkingLive')}</span>
           )}
         </div>
       )}

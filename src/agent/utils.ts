@@ -243,6 +243,9 @@ export function buildStreamPreviewMeta(s: {
   inputTokens: number | null; outputTokens: number | null;
   cachedInputTokens: number | null; cacheCreationInputTokens: number | null;
   contextWindow: number | null; contextUsedTokens?: number | null;
+  /** Output tokens from this turn's already-finished LLM calls (folded in
+   *  when a new call resets the per-call counter). */
+  turnOutputTokensBase?: number | null;
   byokProviderName?: string | null;
   subAgents?: ReadonlyMap<string, StreamSubAgent> | null;
   generatingImages?: number;
@@ -253,6 +256,9 @@ export function buildStreamPreviewMeta(s: {
     cachedInputTokens: s.cachedInputTokens,
     contextUsedTokens: ctx.contextUsedTokens, contextPercent: ctx.contextPercent,
   };
+  // Turn-cumulative output: finished calls' total + the in-flight call.
+  const turnOutput = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
+  if (turnOutput > 0) meta.turnOutputTokens = turnOutput;
   if (s.byokProviderName) meta.providerName = s.byokProviderName;
   if (s.subAgents && s.subAgents.size > 0) meta.subAgents = Array.from(s.subAgents.values());
   if (s.generatingImages && s.generatingImages > 0) meta.generatingImages = s.generatingImages;

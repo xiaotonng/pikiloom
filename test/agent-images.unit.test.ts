@@ -195,4 +195,29 @@ describe('resolveAllowedAttachmentPath', () => {
     const real = resolveAllowedAttachmentPath('/etc/hosts');
     expect(real).toBeNull();
   });
+
+  it('accepts files under any of multiple workdirs (multi-workspace setup)', () => {
+    // The dashboard attachment endpoint passes every registered workspace
+    // root — a session living in a non-primary workspace must still resolve.
+    // Workspaces are staged under the repo's gitignored .scratch/ dir because
+    // os.tmpdir() is itself an allowed root and would make both assertions
+    // pass trivially.
+    const scratch = path.join(process.cwd(), '.scratch');
+    fs.mkdirSync(scratch, { recursive: true });
+    const wsA = fs.mkdtempSync(path.join(scratch, 'img-ws-a-'));
+    const wsB = fs.mkdtempSync(path.join(scratch, 'img-ws-b-'));
+    const file = path.join(wsB, '.pikiclaw', 'sessions', 'claude', 's1', 'workspace', 'image.png');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, PNG_BYTES);
+    try {
+      const real = resolveAllowedAttachmentPath(file, [wsA, wsB]);
+      expect(real).not.toBeNull();
+      expect(fs.realpathSync(real!)).toBe(fs.realpathSync(file));
+      // Still rejected when the hosting workspace is absent from the list.
+      expect(resolveAllowedAttachmentPath(file, [wsA])).toBeNull();
+    } finally {
+      fs.rmSync(wsA, { recursive: true, force: true });
+      fs.rmSync(wsB, { recursive: true, force: true });
+    }
+  });
 });

@@ -223,7 +223,11 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
   // for the latest LLM call) — NOT the cumulative inputTokens/cachedInputTokens,
   // which double-count the same cached prefix on every tool roundtrip.
   const ctxTokens = previewMeta?.contextUsedTokens ?? 0;
-  const showCtx = ctxPct != null || ctxTokens > 0;
+  // Turn-cumulative output — keeps climbing through thinking, text and tool
+  // roundtrips (per-call outputTokens resets to 0 on each new LLM call), so
+  // the header is the one stable home for "how much has this turn generated".
+  const turnOutTokens = previewMeta?.turnOutputTokens ?? 0;
+  const showCtx = ctxPct != null || ctxTokens > 0 || turnOutTokens > 0;
   // Prefer live preview's providerName (most accurate per-turn); fall back to
   // the session-level prop for saved turns whose `usage` lacks the field.
   const providerName = previewMeta?.providerName ?? providerNameProp ?? null;
@@ -249,6 +253,9 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
           {ctxPct != null && <ContextDot pct={ctxPct} />}
           <span>{ctxPct != null ? `${ctxPct.toFixed(1)}%` : ''}</span>
           {ctxTokens > 0 && <span className="text-fg-5/40">· {formatTokens(ctxTokens)}</span>}
+          {turnOutTokens > 0 && (
+            <span className="text-fg-5/40">· ↑{formatTokensShort(turnOutTokens)}</span>
+          )}
         </span>
       )}
     </div>
@@ -256,9 +263,14 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
 }
 
 export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k tok`;
-  return `${n} tok`;
+  return `${formatTokensShort(n)} tok`;
+}
+
+/** Compact count without the " tok" suffix — for tight chips like "↑2.3k". */
+export function formatTokensShort(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
 }
 
 function formatContextTitle(meta: StreamPreviewMeta | null | undefined): string {
@@ -266,7 +278,8 @@ function formatContextTitle(meta: StreamPreviewMeta | null | undefined): string 
   const parts: string[] = [];
   if (meta.contextPercent != null) parts.push(`Context: ${meta.contextPercent.toFixed(1)}%`);
   if (meta.inputTokens != null) parts.push(`Input: ${meta.inputTokens.toLocaleString()}`);
-  if (meta.outputTokens != null) parts.push(`Output: ${meta.outputTokens.toLocaleString()}`);
+  if (meta.turnOutputTokens != null) parts.push(`Output (turn): ${meta.turnOutputTokens.toLocaleString()}`);
+  else if (meta.outputTokens != null) parts.push(`Output: ${meta.outputTokens.toLocaleString()}`);
   if (meta.cachedInputTokens != null) parts.push(`Cached: ${meta.cachedInputTokens.toLocaleString()}`);
   return parts.join('  ·  ');
 }

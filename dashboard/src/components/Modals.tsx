@@ -1018,9 +1018,16 @@ export function SessionDetailModal({ open, onClose, agent, sessionId, session }:
           <div className="flex flex-wrap items-center gap-2">
             {session.isCurrent && <Badge variant="accent" className="!text-[10px]">{t('sessions.current')}</Badge>}
             {displayState === 'running' && <Badge variant="ok" className="!text-[10px]">{t('status.running')}</Badge>}
+            {displayState === 'waiting' && <Badge variant="accent" className="!text-[10px]" title={session?.awaiting?.reason || undefined}>{t('sessions.waiting')}</Badge>}
             {displayState === 'incomplete' && <Badge variant="warn" className="!text-[10px]">{t('sessions.incomplete')}</Badge>}
             {displayState === 'completed' && <Badge variant="muted" className="!text-[10px]">{t('sessions.completed')}</Badge>}
           </div>
+          {displayState === 'waiting' && session?.awaiting?.reason && (
+            <>
+              <div className="text-fg-4">{t('sessions.waiting')}</div>
+              <div className="text-fg-3">{session.awaiting.reason}</div>
+            </>
+          )}
           {displayState === 'incomplete' && displayDetail && (
             <>
               <div className="text-fg-4">{t('sessions.lastIssue')}</div>

@@ -21,6 +21,7 @@ import { createRetainedLogSink, writeScopedLog, type LogLevel } from '../../core
 import type { McpToolModule, ToolContext } from './tools/types.js';
 import { workspaceTools } from './tools/workspace.js';
 import { goalTools } from './tools/goal.js';
+import { awaitResumeTools } from './tools/await-resume.js';
 import { askUserTools } from './tools/ask-user.js';
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,10 @@ const IS_CODEX = process.env.MCP_AGENT === 'codex';
 const TOOL_MODULES: McpToolModule[] = [
   ...(AVAILABLE.has('workspace') ? [workspaceTools] : []),
   ...(IS_CODEX ? [] : [goalTools]),
+  // Codex parks/resumes via its own native goal machinery; the pikiclaw
+  // awaiting marker is for the `claude -p`-style drivers whose turn process
+  // exits at `result`.
+  ...(IS_CODEX ? [] : [awaitResumeTools]),
   ...(AVAILABLE.has('ask-user') ? [askUserTools] : []),
 ];
 

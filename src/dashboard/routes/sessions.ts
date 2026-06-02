@@ -14,6 +14,7 @@ import {
 } from '../../agent/index.js';
 import { getSessionStatusForBot } from '../../bot/session-status.js';
 import { findPikiclawSession } from '../../agent/session.js';
+import { readAwaitResume } from '../../agent/await-resume.js';
 import {
   cancelSessionTask,
   stopSessionTasks,
@@ -82,10 +83,17 @@ function enrichWithRuntimeStatus(sessions: SessionInfo[], bot: Bot | null): Dash
   return sessions.map(session => {
     const status = bot ? getSessionStatusForBot(bot, session) : null;
     const isRunning = status ? status.isRunning : !!session.running;
+    // "Waiting on background work" only applies to a session that isn't
+    // currently running — surface the marker the agent parked (if any) so the
+    // dashboard can show a distinct "waiting" state instead of "completed".
+    const awaiting = !isRunning && session.workdir && session.sessionId
+      ? readAwaitResume(session.workdir, session.agent, session.sessionId)
+      : null;
     return {
       ...session,
       running: isRunning,
       runState: isRunning ? 'running' as const : (session.runState === 'running' ? 'incomplete' : session.runState),
+      awaiting,
       isCurrent: status?.isCurrent ?? false,
     };
   });

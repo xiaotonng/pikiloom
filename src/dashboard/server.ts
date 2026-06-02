@@ -142,12 +142,24 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
   // Resolve path relative to this file's location (src/ or dist/)
   const dashboardRoot = path.resolve(import.meta.dirname, '..', '..', 'dashboard', 'dist');
 
-  // Serve /assets/* for Vite-hashed JS/CSS bundles
-  app.use('/assets/*', serveStatic({ root: dashboardRoot }));
+  // Serve /assets/* for Vite-hashed JS/CSS bundles. Filenames are
+  // content-hashed, so they can be cached indefinitely — a new build emits
+  // new filenames rather than mutating these.
+  app.use('/assets/*', serveStatic({
+    root: dashboardRoot,
+    onFound: (_path, c) => {
+      c.header('Cache-Control', 'public, max-age=31536000, immutable');
+    },
+  }));
 
-  // Serve other static files at root level (favicon, manifest, etc.)
+  // Serve other static files at root level (favicon, manifest, etc.).
+  // This mount also serves index.html for "/" (directory index), so the HTML
+  // shell is tagged no-cache here too — same reason as the SPA fallback below.
   app.use('/*', serveStatic({
     root: dashboardRoot,
+    onFound: (p, c) => {
+      if (p.endsWith('.html')) c.header('Cache-Control', 'no-cache');
+    },
     onNotFound: () => {
       // Fall through to the SPA catch-all below
     },
@@ -162,6 +174,10 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
     const indexPath = path.join(dashboardRoot, 'index.html');
     try {
       const html = fs.readFileSync(indexPath, 'utf-8');
+      // The HTML shell references content-hashed asset filenames, so it must
+      // never be cached: otherwise an open tab keeps loading stale JS after the
+      // server self-updates (npx pikiclaw@latest) until a manual hard refresh.
+      c.header('Cache-Control', 'no-cache');
       return c.html(html);
     } catch {
       return c.text('Dashboard build not found. Run: npm run build:dashboard', 500);

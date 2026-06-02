@@ -428,6 +428,21 @@ export interface SessionClassification {
 // Session listing types
 // ---------------------------------------------------------------------------
 
+/**
+ * Marker set by the agent (via the `await_background` MCP tool) when it ends a
+ * turn while detached/background work it launched keeps running, and it intends
+ * to report back later. A turn's `claude -p` process exits at its `result`, so a
+ * session that parks detached work would otherwise read as plainly "completed".
+ * This lets the dashboard surface a distinct "waiting" state instead. Cleared
+ * automatically the next time the session runs (see clearAwaitResume).
+ */
+export interface AwaitResumeState {
+  /** Short, human-readable note on what the session is waiting for. */
+  reason: string;
+  /** ISO timestamp the marker was written. */
+  since: string;
+}
+
 /** Public session info returned by listing and lookup APIs. */
 export interface SessionInfo {
   sessionId: string | null;
@@ -445,6 +460,9 @@ export interface SessionInfo {
   runDetail: string | null;
   runUpdatedAt: string | null;
   runPid?: number | null;
+  /** Set when the session ended a turn parked on detached background work it
+   *  intends to resume; drives the dashboard's "waiting" state. Null otherwise. */
+  awaiting?: AwaitResumeState | null;
   classification: SessionClassification | null;
   userStatus: 'inbox' | 'active' | 'review' | 'done' | 'parked' | null;
   userNote: string | null;

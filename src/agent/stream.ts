@@ -32,6 +32,7 @@ import {
   ensureSessionWorkspace, importFilesIntoWorkspace, syncManagedSessionIdentity,
   summarizePromptTitle, recordFork,
 } from './session.js';
+import { clearAwaitResume } from './await-resume.js';
 import { collapseSkillPrompt } from './skills.js';
 
 // ---------------------------------------------------------------------------
@@ -382,6 +383,9 @@ function prepareStreamOpts(opts: StreamOpts): { prepared: StreamOpts; session: S
   session.record.lastQuestion = shortValue(displayPrompt, 500);
   session.record.lastMessageText = shortValue(displayPrompt, 500);
   setSessionRunState(session.record, 'running', null);
+  // A turn starting clears any "waiting on background work" marker the previous
+  // turn parked — the session is plainly running again, not waiting.
+  if (session.sessionId) clearAwaitResume(opts.workdir, opts.agent, session.sessionId);
   saveSessionRecord(opts.workdir, session.record);
 
   const attachmentPaths = attachmentRelPaths.map(relPath => path.join(session.workspacePath, relPath));

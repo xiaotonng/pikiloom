@@ -977,7 +977,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                     {/* Left: status · workdir / title */}
                     {(() => {
                       const state = sessionDisplayState(info);
-                      return <Dot variant={state === 'running' ? 'ok' : state === 'incomplete' ? 'warn' : 'idle'} pulse={state === 'running'} />;
+                      return <Dot variant={state === 'running' ? 'ok' : state === 'waiting' ? 'info' : state === 'incomplete' ? 'warn' : 'idle'} pulse={state === 'running' || state === 'waiting'} />;
                     })()}
                     <div className="flex-1 min-w-0 flex items-center gap-0">
                       <span className="shrink-0 text-[10px] font-medium text-fg-5">{slot.workdir.split('/').pop() || slot.workdir}</span>
@@ -1583,8 +1583,8 @@ const SessionCard = memo(function SessionCard({
       {/* Row 2: status dot + title */}
       <div className="mt-1 flex items-center gap-1.5">
         <Dot
-          variant={displayState === 'running' ? 'ok' : displayState === 'incomplete' ? 'warn' : 'idle'}
-          pulse={displayState === 'running'}
+          variant={displayState === 'running' ? 'ok' : displayState === 'waiting' ? 'info' : displayState === 'incomplete' ? 'warn' : 'idle'}
+          pulse={displayState === 'running' || displayState === 'waiting'}
         />
         <span className="truncate text-[12px] leading-snug text-fg-2">{displayText}</span>
       </div>

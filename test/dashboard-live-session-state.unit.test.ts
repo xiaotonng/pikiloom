@@ -63,4 +63,29 @@ describe('dashboard live session state helpers', () => {
     expect(sessionDisplayState(next)).toBe('incomplete');
     expect(next.runDetail).toBe('Timed out before completion.');
   });
+
+  it('shows "waiting" when a non-running session parked background work', () => {
+    const parked = {
+      sessionId: 'sess-3',
+      agent: 'claude',
+      runState: 'completed' as const,
+      running: false,
+      runUpdatedAt: null,
+      runDetail: null,
+      awaiting: { reason: 'rebuilding pikiclaw, will confirm after restart', since: '2026-06-01T00:00:00.000Z' },
+    };
+    // A parked, not-running session reads as "waiting", not "completed".
+    expect(sessionDisplayState(parked)).toBe('waiting');
+
+    // Running always wins over the marker.
+    expect(sessionDisplayState({ ...parked, running: true })).toBe('running');
+
+    // No marker → ordinary completed.
+    expect(sessionDisplayState({ ...parked, awaiting: null })).toBe('completed');
+
+    // The marker survives the live "done" snapshot merge (applyLiveSessionState
+    // spreads the session), so a turn that just ended still reads as waiting.
+    const done = normalizeLiveSessionState('claude:sess-3', { phase: 'done', updatedAt: 400 });
+    expect(sessionDisplayState(applyLiveSessionState(parked, done))).toBe('waiting');
+  });
 });

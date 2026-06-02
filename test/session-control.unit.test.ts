@@ -42,6 +42,8 @@ describe('session-control', () => {
       sessionId: 'sess-1',
       prompt: 'check',
       attachments: ['/tmp/a.png'],
+      // Threaded on every send (even when false) — see session-control.ts.
+      workflowEnabled: false,
     });
     expect(result).toEqual({ ok: true, queued: true, taskId: 'task-1', sessionKey: 'codex:sess-1' });
   });

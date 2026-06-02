@@ -340,6 +340,9 @@ export interface SessionInfo {
   runState: 'running' | 'completed' | 'incomplete';
   runDetail?: string | null;
   runUpdatedAt?: string | null;
+  /** Set when the session parked on detached background work it intends to
+   *  resume — drives the "waiting" display state. Null/absent otherwise. */
+  awaiting?: { reason: string; since: string } | null;
   agent?: string;
   lastQuestion?: string | null;
   lastAnswer?: string | null;

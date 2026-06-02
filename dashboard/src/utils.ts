@@ -157,9 +157,13 @@ export function shortenModel(model: string): string {
   return s;
 }
 
-export type SessionDisplayState = 'running' | 'completed' | 'incomplete';
-export function sessionDisplayState(session: Pick<SessionInfo, 'running' | 'runState'>): SessionDisplayState {
+export type SessionDisplayState = 'running' | 'completed' | 'incomplete' | 'waiting';
+export function sessionDisplayState(session: Pick<SessionInfo, 'running' | 'runState' | 'awaiting'>): SessionDisplayState {
   if (session.running || session.runState === 'running') return 'running';
+  // A turn ended, but the agent parked detached background work it intends to
+  // resume — surface "waiting" rather than a terminal "completed". Outranks
+  // completed/incomplete; the marker is cleared the next time the session runs.
+  if (session.awaiting) return 'waiting';
   return session.runState === 'incomplete' ? 'incomplete' : 'completed';
 }
 

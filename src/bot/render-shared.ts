@@ -8,7 +8,7 @@
 import type { Agent, StreamPreviewMeta, StreamPreviewPlan, StreamResult } from './bot.js';
 import type { MessageBlock } from '../agent/index.js';
 import { materializeImage } from '../agent/index.js';
-import { fmtUptime, fmtTokens, formatThinkingForDisplay, thinkLabel } from './bot.js';
+import { fmtUptime, formatThinkingForDisplay, thinkLabel } from './bot.js';
 import { formatActivityCommandSummary, parseActivitySummary, renderPlanForPreview, summarizeActivityForPreview } from './streaming.js';
 import { supportsChannelCapability, type Channel } from '../channels/base.js';
 import { agentLog, agentWarn } from '../agent/index.js';
@@ -391,14 +391,16 @@ export interface StreamPreviewData {
   thinkSnippet: string;
   preview: string;
   /**
-   * Live output-token count for the in-flight turn, preformatted (e.g. "6.2k"),
-   * or null when nothing has been generated yet. The newest Claude opens a turn
-   * with an extended-thinking phase that burns output tokens before emitting any
-   * text/thinking content — surfacing this count as a "{thinkLabel} · <n>" chip
-   * keeps the preview from looking frozen during that window. Driver-agnostic:
-   * codex/gemini reasoning naturally benefits too.
+   * Live "still working" signal for the in-flight chip, preformatted as elapsed
+   * time (e.g. "18s", "3m20s"), or null in the first second. Thinking tokens are
+   * deliberately NOT used here: the Claude stream reports output-token usage only
+   * once per call (the terminal `message_delta`) and streams no thinking content,
+   * so a token count is a frozen per-call snapshot — it never advances during the
+   * (event-less) thinking phase. Elapsed time is the one signal that actually
+   * grows there; the channel heartbeat re-renders the card on a timer so it keeps
+   * ticking even when no stream events arrive. Driver-agnostic.
    */
-  thinkingTokensText: string | null;
+  thinkingProgressText: string | null;
 }
 
 /**
@@ -437,8 +439,11 @@ export function extractStreamPreviewData(input: StreamPreviewRenderInput): Strea
   const thinkSnippet = rawThinking ? formatThinkingForDisplay(input.thinking, 600) : '';
   const preview = display.length > maxBody ? '(...truncated)\n' + display.slice(-maxBody) : display;
 
-  const outputTokens = input.meta?.outputTokens ?? 0;
-  const thinkingTokensText = outputTokens > 0 ? fmtTokens(outputTokens) : null;
+  // Elapsed time is the only monotonic progress signal available during the
+  // thinking phase (see thinkingProgressText). Hidden in the first second so a
+  // freshly-opened card doesn't flash "0s".
+  const elapsedMs = Math.max(0, input.elapsedMs);
+  const thinkingProgressText = elapsedMs >= 1000 ? fmtCompactUptime(elapsedMs) : null;
 
   return {
     display,
@@ -451,6 +456,6 @@ export function extractStreamPreviewData(input: StreamPreviewRenderInput): Strea
     label,
     thinkSnippet,
     preview,
-    thinkingTokensText,
+    thinkingProgressText,
   };
 }

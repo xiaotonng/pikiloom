@@ -517,6 +517,53 @@ describe('Claude TUI driver — decideClaudeTuiStop gating', () => {
   });
 });
 
+describe('Claude TUI driver — decideClaudeTuiStall watchdog (mid-turn freeze)', () => {
+  const MIN = 60_000;
+
+  it('waits while any liveness signal is fresh', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 99 * MIN, pendingToolCount: 0,
+    })).toBe('wait');
+  });
+
+  it('waits through a long max-effort inference gap (under the quiet threshold)', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 100 * MIN - 9 * MIN, pendingToolCount: 0,
+    })).toBe('wait');
+  });
+
+  it('stalls once everything has been quiet past the threshold with no pending tool', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 100 * MIN - 11 * MIN, pendingToolCount: 0,
+    })).toBe('stall');
+  });
+
+  it('extends the threshold while a hook-reported tool is mid-execution', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    // 11m silent but a tool is still running (e.g. blocking TaskOutput) — hold.
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 100 * MIN - 11 * MIN, pendingToolCount: 1,
+    })).toBe('wait');
+    // Past the pending-tool ceiling the freeze hit mid-execution — stall.
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 100 * MIN - 31 * MIN, pendingToolCount: 1,
+    })).toBe('stall');
+  });
+
+  it('honours custom thresholds', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStall({
+      now: 10_000, lastProgressAt: 0, pendingToolCount: 0, quietMs: 5_000,
+    })).toBe('stall');
+    expect(decideClaudeTuiStall({
+      now: 10_000, lastProgressAt: 0, pendingToolCount: 2, pendingToolMs: 20_000,
+    })).toBe('wait');
+  });
+});
+
 describe('Live preview toolCalls — expandable tool rows during a running turn', () => {
   it('claudeParse registers input detail on tool_use and result detail on tool_result, surfaced via buildStreamPreviewMeta', async () => {
     const { claudeParse, createClaudeStreamState } = await import('../src/agent/drivers/claude.ts');

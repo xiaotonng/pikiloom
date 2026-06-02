@@ -2236,8 +2236,57 @@ function makeOverloadFriendlyResult(result: StreamResult, reason: string, attemp
  * friendly human-readable explanation in `message` so the IM card doesn't
  * dump raw "API Error: Overloaded" text on the user.
  */
+/**
+ * Continuation prompt for stall recovery. The frozen process already accepted
+ * and partially executed the user's prompt (it sits in the transcript), so the
+ * resumed process must NOT receive the original prompt again — it gets an
+ * explicit "pick up where you left off" instead.
+ */
+const CLAUDE_STALL_RESUME_PROMPT =
+  '[pikiclaw] The previous agent process stalled mid-turn and was restarted. '
+  + 'Continue the task from where it left off — do not start over or repeat work that already completed.';
+
+/** At most one automatic resume per turn; a second stall surfaces to the user. */
+const CLAUDE_STALL_RESUME_LIMIT = 1;
+
 async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
   let lastResult = await doClaudeStreamOnce(opts);
+  // Mid-turn stall recovery. The TUI driver SIGTERMs a frozen claude process
+  // (stopReason 'stalled' — see decideClaudeTuiStall in claude-tui.ts) instead
+  // of letting the IM card spin forever. Resume the same session once with a
+  // continuation prompt so the turn picks up where the frozen process died.
+  let stallResumes = 0;
+  while (
+    lastResult.stopReason === 'stalled'
+    && stallResumes < CLAUDE_STALL_RESUME_LIMIT
+    && !opts.abortSignal?.aborted
+  ) {
+    const stalledSessionId = lastResult.sessionId || opts.sessionId;
+    if (!stalledSessionId) break;
+    stallResumes++;
+    agentWarn(`[claude] turn stalled mid-flight; auto-resuming session ${stalledSessionId.slice(0, 8)} (${stallResumes}/${CLAUDE_STALL_RESUME_LIMIT})`);
+    lastResult = await doClaudeStreamOnce({
+      ...opts,
+      sessionId: stalledSessionId,
+      forkOf: undefined,
+      prompt: CLAUDE_STALL_RESUME_PROMPT,
+      attachments: undefined,
+    });
+  }
+  if (lastResult.stopReason === 'stalled') {
+    // Still stalled after the resume budget (or no session id to resume).
+    // Surface a self-explanatory failure instead of the raw error text.
+    return {
+      ...lastResult,
+      ok: false,
+      incomplete: true,
+      message: [
+        'The agent process stalled mid-turn and could not be auto-recovered (known claude CLI freeze, seen on 2.1.160).',
+        'Your session is intact — re-send your message (or say "continue") to pick up where it stopped.',
+        'If this keeps happening, pin the claude CLI to a known-good version: npm install -g @anthropic-ai/claude-code@2.1.159',
+      ].join(' '),
+    };
+  }
   let attempts = 0;
   // Use the error text recorded by detectClaudeApiError-driven branches to
   // decide retry: lastResult.error is "Anthropic API error: <reason>" on

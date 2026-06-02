@@ -52,7 +52,10 @@ import {
 } from '../utils.js';
 import { encodePathAsDirName, getHome, whichSync } from '../../core/platform.js';
 import { stripAnsiEscapes } from '../../core/utils.js';
-import { AGENT_STREAM_HARD_KILL_GRACE_MS } from '../../core/constants.js';
+import {
+  AGENT_STREAM_HARD_KILL_GRACE_MS,
+  CLAUDE_TUI_STALL_QUIET_MS, CLAUDE_TUI_STALL_PENDING_TOOL_MS,
+} from '../../core/constants.js';
 import {
   claudeParse, createClaudeStreamState,
   claudeContextWindowFromModel, claudeEffectiveContextWindow,
@@ -709,6 +712,39 @@ export function decideClaudeTuiStop(input: {
 }
 
 // ---------------------------------------------------------------------------
+// Stall watchdog
+// ---------------------------------------------------------------------------
+
+export type ClaudeTuiStallDecision = 'wait' | 'stall';
+
+/**
+ * Decide whether the turn has gone dead. claude CLI is known to freeze
+ * mid-turn (observed 2026-06-02 on 2.1.160): after a tool_result lands the
+ * next assistant segment never starts — the process stays alive, the JSONL
+ * goes permanently quiet, no Stop hook ever fires, no error surfaces. Without
+ * a watchdog the IM card spins forever.
+ *
+ * `lastProgressAt` is the freshest of every live signal the driver tracks
+ * (main JSONL, hook tool events, sub-agent sidecars, hook lifecycle state).
+ * A pending tool (PreToolUse seen, no PostToolUse) extends the threshold:
+ * the freeze can also hit mid-execution, but a legitimately long foreground
+ * command must not get shot — claude's own Bash timeout fires PostToolUse
+ * well inside CLAUDE_TUI_STALL_PENDING_TOOL_MS.
+ */
+export function decideClaudeTuiStall(input: {
+  now: number;
+  lastProgressAt: number;
+  pendingToolCount: number;
+  quietMs?: number;
+  pendingToolMs?: number;
+}): ClaudeTuiStallDecision {
+  const threshold = input.pendingToolCount > 0
+    ? (input.pendingToolMs ?? CLAUDE_TUI_STALL_PENDING_TOOL_MS)
+    : (input.quietMs ?? CLAUDE_TUI_STALL_QUIET_MS);
+  return input.now - input.lastProgressAt > threshold ? 'stall' : 'wait';
+}
+
+// ---------------------------------------------------------------------------
 // Main entry
 // ---------------------------------------------------------------------------
 
@@ -1015,6 +1051,14 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // Last pending-background count we logged, so the waiting state logs on
   // transitions instead of every 200ms poll tick.
   let lastLoggedPendingBg = -1;
+  // Stall-watchdog liveness signals. Together with lastMainJsonlEventAt they
+  // answer "is the claude process still doing anything at all?" — see
+  // decideClaudeTuiStall for why this exists (claude CLI mid-turn freeze).
+  let lastToolEventAt = start;
+  let lastSidecarEventAt = 0;
+  let stallKilled = false;
+  /** Hook-reported tools still executing: PreToolUse seen, no PostToolUse. */
+  const pendingHookToolIds = new Set<string>();
   // Append-only tool-events log fed by PreToolUse / PostToolUse hooks. We
   // tail it with the same incremental reader the JSONL transcript uses, so
   // tool calls + plan changes surface live during the turn even while the
@@ -1031,6 +1075,16 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       if (!trimmed || trimmed[0] !== '{') continue;
       let ev: any;
       try { ev = JSON.parse(trimmed); } catch { continue; }
+      // Stall-watchdog bookkeeping: any hook event is proof of life, and the
+      // Pre/Post pairing tells the watchdog whether a tool is mid-execution
+      // (which extends the stall threshold — long foreground commands are
+      // legitimately silent).
+      lastToolEventAt = Date.now();
+      const hookToolId = typeof ev?.tool_use_id === 'string' ? ev.tool_use_id : '';
+      if (hookToolId) {
+        if (ev?.event === 'PreToolUse') pendingHookToolIds.add(hookToolId);
+        else if (ev?.event === 'PostToolUse') pendingHookToolIds.delete(hookToolId);
+      }
       // A Task PreToolUse and the first sub-agent tool PreToolUse can land in
       // the same tick batch. If the sub-agent's hook arrives before we've
       // discovered its sidecar (and thus before s.subAgentIdToParent knows
@@ -1111,6 +1165,9 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         any = true;
       }
     }
+    // Stall-watchdog: live sub-agents count as turn progress even while the
+    // parent thread is quietly waiting on them.
+    if (any) lastSidecarEventAt = Date.now();
     return any;
   };
 
@@ -1243,6 +1300,39 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       killProc('SIGTERM');
       // Continue polling so any post-Stop JSONL writes still get parsed; the
       // process will exit shortly and onExit will resolve the wait.
+    }
+
+    // Stall watchdog. claude CLI can freeze mid-turn (observed on 2.1.160):
+    // a tool_result lands, then the next assistant segment never starts — the
+    // process stays alive, every signal goes quiet, no Stop hook ever fires.
+    // When ALL liveness signals have been silent past the threshold, declare
+    // the turn stalled and SIGTERM; doClaudeWithRetry auto-resumes the session
+    // once so the turn continues instead of spinning forever in the IM card.
+    if (!stopHookFired && !timedOut && !interrupted && !stallKilled) {
+      const lastProgressAt = Math.max(
+        start, lastMainJsonlEventAt, lastToolEventAt, lastSidecarEventAt,
+        state.stoppedAt || 0, state.promptSubmittedAt || 0,
+      );
+      const stallDecision = decideClaudeTuiStall({
+        now: Date.now(),
+        lastProgressAt,
+        pendingToolCount: pendingHookToolIds.size,
+      });
+      if (stallDecision === 'stall') {
+        stallKilled = true;
+        const quietMin = Math.round((Date.now() - lastProgressAt) / 60_000);
+        s.stopReason = 'stalled';
+        if (!s.errors) {
+          s.errors = [`Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events) — known claude CLI freeze. Terminated for auto-resume.`];
+        }
+        agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}) — terminating TUI pid=${proc.pid} for auto-resume`);
+        pushRecentActivity(s.recentActivity, `Agent stalled (${quietMin}m silent) — restarting turn`);
+        s.activity = s.recentActivity.join('\n');
+        emit();
+        killProc('SIGTERM');
+        // Keep polling: onExit resolves the wait and the final drains pick up
+        // whatever the dying process flushes.
+      }
     }
 
     pollHandle = setTimeout(tick, POLL_INTERVAL_MS);

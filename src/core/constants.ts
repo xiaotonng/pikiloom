@@ -331,6 +331,26 @@ export const AGENT_STREAM_HARD_KILL_GRACE_MS = 10_000;
  */
 export const AGENT_GRACEFUL_ABORT_GRACE_MS = 2_000;
 
+/**
+ * claude-tui stall watchdog — claude CLI is known to freeze mid-turn (observed
+ * 2026-06-02 on 2.1.160: after a tool_result lands, the next assistant segment
+ * never starts; the process stays alive, the JSONL goes permanently quiet, no
+ * Stop hook ever fires). When every live signal (main JSONL, hook tool events,
+ * sub-agent sidecars, hook lifecycle state) is silent past the threshold the
+ * driver SIGTERMs the PTY and the dispatch wrapper auto-resumes the session
+ * once. Quiet threshold must sit safely above the longest healthy gap between
+ * JSONL events — a single max-effort inference can take a few minutes before
+ * its first content block lands.
+ */
+export const CLAUDE_TUI_STALL_QUIET_MS = 10 * 60_000;
+/**
+ * Stall threshold while a hook-reported tool is still executing (PreToolUse
+ * seen, no matching PostToolUse). Claude's own Bash timeout caps foreground
+ * commands at ~10 minutes and fires PostToolUse either way, so a pending tool
+ * silent for this long means the freeze hit mid-execution.
+ */
+export const CLAUDE_TUI_STALL_PENDING_TOOL_MS = 30 * 60_000;
+
 /** Codex-specific grace period added to the user-configured timeout. */
 export const CODEX_STREAM_HARD_KILL_GRACE_MS = 5_000;
 

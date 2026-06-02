@@ -66,6 +66,7 @@ export {
   firstNonEmptyLine, shortValue, normalizeErrorMessage, joinErrorMessages,
   appendSystemPrompt, mimeForExt, computeContext, buildStreamPreviewMeta,
   summarizeClaudeToolUse, summarizeClaudeToolResult,
+  previewToolCallInput, previewToolCallResult,
   roundPercent, toIsoFromEpochSeconds, normalizeUsageStatus,
   labelFromWindowMinutes, usageWindowFromRateLimit,
   parseJsonTail, modelFamily, normalizeClaudeModelId, emptyUsage,

@@ -240,6 +240,10 @@ export interface StreamSnapshot {
   error?: string;
   /** Active human-in-the-loop interaction prompts. */
   interactions?: InteractionSnapshot[];
+  /** Wall-clock ms when the active turn started streaming. Lets clients render
+   *  a ticking elapsed timer — the one liveness signal that works even when a
+   *  long tool call produces no text/activity updates for minutes. */
+  startedAt?: number;
   updatedAt: number;
 }
 
@@ -610,6 +614,7 @@ export class Bot {
           phase: 'streaming', taskId: event.taskId,
           text: '', thinking: '', activity: '', plan: null, sessionId: event.sessionId, updatedAt: now,
           model: event.model, effort: event.effort, previewMeta: null,
+          startedAt: now,
           queuedTaskIds: remainingQueued && remainingQueued.length ? remainingQueued : undefined,
         });
         break;
@@ -641,6 +646,7 @@ export class Bot {
           model: prev?.model ?? null,
           effort: prev?.effort ?? null,
           previewMeta: prev?.previewMeta ?? null,
+          startedAt: prev?.startedAt,
           queuedTaskIds: prev?.queuedTaskIds,
           updatedAt: now,
         });

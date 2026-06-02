@@ -9,6 +9,7 @@ import type {
   StreamPreviewPlan,
   StreamPreviewPlanStep,
   StreamSubAgent,
+  StreamToolCall,
   UsageResult,
   UsageWindowInfo,
   Agent,
@@ -239,6 +240,9 @@ export function computeContext(s: {
   return { contextUsedTokens: used, contextPercent: pct };
 }
 
+/** Max structured tool calls carried per preview emit (most recent win). */
+const PREVIEW_TOOL_CALLS_MAX = 40;
+
 export function buildStreamPreviewMeta(s: {
   inputTokens: number | null; outputTokens: number | null;
   cachedInputTokens: number | null; cacheCreationInputTokens: number | null;
@@ -249,6 +253,9 @@ export function buildStreamPreviewMeta(s: {
   byokProviderName?: string | null;
   subAgents?: ReadonlyMap<string, StreamSubAgent> | null;
   generatingImages?: number;
+  /** Claude drivers: tool registry + insertion order for expandable rows. */
+  claudeToolsById?: ReadonlyMap<string, { name: string; summary: string; input?: string | null; result?: string | null; status?: 'running' | 'done' | 'failed' }> | null;
+  claudeToolCallOrder?: readonly string[] | null;
 }): StreamPreviewMeta {
   const ctx = computeContext(s);
   const meta: StreamPreviewMeta = {
@@ -262,7 +269,79 @@ export function buildStreamPreviewMeta(s: {
   if (s.byokProviderName) meta.providerName = s.byokProviderName;
   if (s.subAgents && s.subAgents.size > 0) meta.subAgents = Array.from(s.subAgents.values());
   if (s.generatingImages && s.generatingImages > 0) meta.generatingImages = s.generatingImages;
+  if (s.claudeToolCallOrder?.length && s.claudeToolsById) {
+    const calls: StreamToolCall[] = [];
+    for (const id of s.claudeToolCallOrder.slice(-PREVIEW_TOOL_CALLS_MAX)) {
+      const tool = s.claudeToolsById.get(id);
+      if (!tool) continue;
+      calls.push({
+        id,
+        name: tool.name,
+        summary: tool.summary,
+        input: tool.input ?? null,
+        result: tool.result ?? null,
+        status: tool.status ?? 'running',
+      });
+    }
+    if (calls.length) meta.toolCalls = calls;
+  }
   return meta;
+}
+
+/**
+ * Bounded, human-readable input detail for a live tool-call row. Bash shows
+ * the raw command (the summary already carries the description); everything
+ * else gets compact JSON. Returns null when there's nothing beyond the
+ * summary worth expanding.
+ */
+export function previewToolCallInput(name: string, input: any, max = 500): string | null {
+  if (input == null) return null;
+  if (String(name) === 'Bash') {
+    const cmd = typeof input.command === 'string' ? input.command.trim() : '';
+    return cmd ? clipText(cmd, max) : null;
+  }
+  try {
+    const json = JSON.stringify(input, null, 1);
+    if (!json || json === '{}' || json === 'null') return null;
+    return clipText(json, max);
+  } catch { return null; }
+}
+
+/**
+ * Bounded text preview of a tool result. Accepts the JSONL tool_result
+ * `content` (string | block array) or a hook `tool_response` (string |
+ * object). Extracts text blocks where present, falls back to compact JSON.
+ */
+export function previewToolCallResult(content: any, max = 500): string | null {
+  if (content == null) return null;
+  if (typeof content === 'string') return clipText(content.trim(), max) || null;
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+      .map((b: any) => b.text)
+      .join('\n')
+      .trim();
+    return text ? clipText(text, max) : null;
+  }
+  if (typeof content === 'object') {
+    // Hook tool_response commonly nests the payload under `content` / `result`.
+    if (content.content != null && content.content !== content) {
+      const nested = previewToolCallResult(content.content, max);
+      if (nested) return nested;
+    }
+    if (typeof content.result === 'string') return clipText(content.result.trim(), max) || null;
+    try {
+      const json = JSON.stringify(content, null, 1);
+      if (!json || json === '{}') return null;
+      return clipText(json, max);
+    } catch { return null; }
+  }
+  return null;
+}
+
+function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
 // Claude tool use helpers (used by driver-claude.ts)

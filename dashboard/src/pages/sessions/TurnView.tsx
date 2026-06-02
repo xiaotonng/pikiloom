@@ -207,7 +207,7 @@ export function BubbleAction({ label, onClick, children }: { label: string; onCl
   );
 }
 
-export function TurnDivider({ agent, meta, model, effort, providerName: providerNameProp, previewMeta }: {
+export function TurnDivider({ agent, meta, model, effort, providerName: providerNameProp, previewMeta, liveStartedAt }: {
   agent: string;
   meta: ReturnType<typeof getAgentMeta>;
   model?: string | null;
@@ -217,6 +217,10 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
   providerName?: string | null;
   /** Live token / context-window stats — when present, rendered as a trailing chip. */
   previewMeta?: StreamPreviewMeta | null;
+  /** Wall-clock ms when the in-flight turn started. When set, a ticking
+   *  elapsed chip renders next to the token stats — the liveness signal that
+   *  survives long silent tool calls (no text, no activity for minutes). */
+  liveStartedAt?: number | null;
 }) {
   const ctxPct = previewMeta?.contextPercent ?? null;
   // Use the per-call context occupancy (input + cache_read + cache_creation
@@ -228,6 +232,7 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
   // the header is the one stable home for "how much has this turn generated".
   const turnOutTokens = previewMeta?.turnOutputTokens ?? 0;
   const showCtx = ctxPct != null || ctxTokens > 0 || turnOutTokens > 0;
+  const showLiveElapsed = liveStartedAt != null && liveStartedAt > 0;
   // Prefer live preview's providerName (most accurate per-turn); fall back to
   // the session-level prop for saved turns whose `usage` lacks the field.
   const providerName = previewMeta?.providerName ?? providerNameProp ?? null;
@@ -248,7 +253,7 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
           via {providerName}
         </span>
       )}
-      {showCtx && (
+      {(showCtx || showLiveElapsed) && (
         <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-fg-5/55" title={formatContextTitle(previewMeta)}>
           {ctxPct != null && <ContextDot pct={ctxPct} />}
           <span>{ctxPct != null ? `${ctxPct.toFixed(1)}%` : ''}</span>
@@ -256,10 +261,41 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
           {turnOutTokens > 0 && (
             <span className="text-fg-5/40">· ↑{formatTokensShort(turnOutTokens)}</span>
           )}
+          {showLiveElapsed && <LiveElapsedChip startedAt={liveStartedAt!} leadingDot={showCtx} />}
         </span>
       )}
     </div>
   );
+}
+
+/**
+ * Ticking elapsed-time chip for the in-flight turn. Re-renders once a second
+ * — the reliable "still running" signal when a long tool call (live e2e, big
+ * build) produces neither text nor activity updates for minutes.
+ */
+function LiveElapsedChip({ startedAt, leadingDot }: { startedAt: number; leadingDot: boolean }) {
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => forceTick(n => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const elapsed = Math.max(0, Date.now() - startedAt);
+  return (
+    <span className="text-fg-5/55 tabular-nums" title="Elapsed time of the running turn">
+      {leadingDot ? '· ' : ''}{formatElapsedCompact(elapsed)}
+    </span>
+  );
+}
+
+/** 42s → "42s"; 754s → "12m34s"; 4321s → "1h12m". */
+export function formatElapsedCompact(ms: number): string {
+  const totalS = Math.floor(ms / 1000);
+  if (totalS < 60) return `${totalS}s`;
+  const m = Math.floor(totalS / 60);
+  const s = totalS % 60;
+  if (m < 60) return `${m}m${s.toString().padStart(2, '0')}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${(m % 60).toString().padStart(2, '0')}m`;
 }
 
 export function formatTokens(n: number): string {

@@ -463,6 +463,21 @@ export interface StreamPreviewMeta {
   /** Number of image-generation calls currently in flight for this turn.
    *  Renderers show a "Generating image…" indicator while > 0. */
   generatingImages?: number;
+  /** Structured tool invocations of the current turn (most recent last,
+   *  bounded). When present, the live activity card renders these as
+   *  click-to-expand rows with input/result detail; otherwise it falls back
+   *  to the flat activity summary lines. */
+  toolCalls?: StreamToolCall[];
+}
+
+/** A live tool invocation with bounded expandable detail. */
+export interface StreamToolCall {
+  id: string;
+  name: string;
+  summary: string;
+  input?: string | null;
+  result?: string | null;
+  status: 'running' | 'done' | 'failed';
 }
 
 export interface StreamSubAgent {

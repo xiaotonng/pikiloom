@@ -5,7 +5,7 @@ import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
 import { mdComponents, mdPlugins } from './markdown';
 import { lastNLines } from './utils';
 import { shortenModel } from '../../utils';
-import type { StreamPlan, StreamSubAgent, StreamPreviewMeta } from '../../types';
+import type { StreamPlan, StreamSubAgent, StreamPreviewMeta, StreamToolCall } from '../../types';
 
 export interface LiveStreamView {
   phase: 'streaming' | 'done';
@@ -28,6 +28,7 @@ export function liveStreamHasBody(stream: LiveStreamView): boolean {
   return !!stream.text
     || !!stream.thinking
     || !!(stream.activity && stream.activity.split('\n').filter(Boolean).length)
+    || !!(stream.previewMeta?.toolCalls?.length)
     || hasPlan(stream.plan)
     || !!(stream.subAgents && stream.subAgents.length);
 }
@@ -68,13 +69,16 @@ export function LivePreview({
     (stream.activity || '').split('\n').filter(Boolean),
     [stream.activity],
   );
-  const lastActivity = activityLines[activityLines.length - 1] || '';
+  const toolCalls = stream.previewMeta?.toolCalls ?? [];
+  const lastActivity = activityLines[activityLines.length - 1]
+    || toolCalls[toolCalls.length - 1]?.summary
+    || '';
 
   // Auto-scroll activity detail to bottom when content updates
   useLayoutEffect(() => {
     const el = activityScrollRef.current;
     if (el && activityOpen) el.scrollTop = el.scrollHeight;
-  }, [activityOpen, stream.activity]);
+  }, [activityOpen, stream.activity, toolCalls.length]);
 
   // Auto-scroll thinking detail to bottom when content updates
   useLayoutEffect(() => {
@@ -97,23 +101,30 @@ export function LivePreview({
         <SubAgentCard key={sub.id} sub={sub} t={t} />
       ))}
 
-      {/* Activity — expandable, shows latest line as preview */}
-      {activityLines.length > 0 && (
+      {/* Activity — expandable, shows latest line as preview. When the driver
+          supplies structured tool calls (previewMeta.toolCalls), each row is
+          itself click-to-expand with bounded input/result detail; otherwise we
+          fall back to the flat summary strings. */}
+      {(toolCalls.length > 0 || activityLines.length > 0) && (
         <CollapsibleCard
           open={activityOpen}
           onToggle={() => setActivityOpen(v => !v)}
           dot={{ color: 'bg-cyan-400/60', pulse: true }}
           label={t('hub.activity')}
           preview={<span className="text-[12px] text-fg-4 truncate">{lastActivity}</span>}
-          badge={activityLines.length > 1 ? <CountBadge>{activityLines.length}</CountBadge> : undefined}
+          badge={(toolCalls.length || activityLines.length) > 1
+            ? <CountBadge>{toolCalls.length || activityLines.length}</CountBadge>
+            : undefined}
         >
-          <div ref={activityScrollRef} className="px-3.5 py-2.5 space-y-0.5 max-h-[240px] overflow-y-auto">
-            {activityLines.map((line, i) => (
-              <div key={i} className="flex items-center gap-1.5 py-[2px]">
-                <span className="w-1 h-1 rounded-full shrink-0 bg-fg-5/30" />
-                <span className="text-[11px] font-mono text-fg-5/60 truncate">{line}</span>
-              </div>
-            ))}
+          <div ref={activityScrollRef} className="px-3.5 py-2.5 space-y-0.5 max-h-[280px] overflow-y-auto">
+            {toolCalls.length > 0
+              ? toolCalls.map(call => <ToolCallRow key={call.id} call={call} />)
+              : activityLines.map((line, i) => (
+                <div key={i} className="flex items-center gap-1.5 py-[2px]">
+                  <span className="w-1 h-1 rounded-full shrink-0 bg-fg-5/30" />
+                  <span className="text-[11px] font-mono text-fg-5/60 truncate">{line}</span>
+                </div>
+              ))}
           </div>
         </CollapsibleCard>
       )}
@@ -185,6 +196,45 @@ export function LivePreview({
             <div className="text-[11px] font-mono uppercase tracking-wide text-rose-300/80">{t(failureLabelKey)}</div>
             <div className="mt-0.5 break-words">{stream.error}</div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One live tool invocation. Rows with input/result detail expand on click —
+ * this is what makes the 执行 list inspectable *during* a run instead of only
+ * after the turn lands in history.
+ */
+function ToolCallRow({ call }: { call: StreamToolCall }) {
+  const [open, setOpen] = useState(false);
+  const expandable = !!(call.input || call.result);
+  const dotColor = call.status === 'failed' ? 'bg-rose-400/70'
+    : call.status === 'running' ? 'bg-cyan-400/70'
+      : 'bg-fg-5/30';
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => expandable && setOpen(v => !v)}
+        className={`flex w-full items-center gap-1.5 py-[2px] text-left min-w-0 ${expandable ? 'cursor-pointer hover:bg-white/[0.03] rounded' : 'cursor-default'}`}
+        title={expandable ? undefined : call.summary}
+      >
+        <span className={`w-1 h-1 rounded-full shrink-0 ${dotColor} ${call.status === 'running' ? 'animate-pulse' : ''}`} />
+        <span className="text-[11px] font-mono text-fg-5/60 truncate flex-1">{call.summary}</span>
+        {expandable && (
+          <span className={`shrink-0 text-[9px] text-fg-5/40 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+        )}
+      </button>
+      {open && (
+        <div className="ml-2.5 mt-0.5 mb-1 space-y-1 border-l border-white/[0.06] pl-2.5">
+          {call.input && (
+            <pre className="whitespace-pre-wrap break-words text-[10.5px] font-mono leading-[1.55] text-fg-4/80 max-h-[140px] overflow-y-auto">{call.input}</pre>
+          )}
+          {call.result && (
+            <pre className="whitespace-pre-wrap break-words text-[10.5px] font-mono leading-[1.55] text-fg-5/70 max-h-[140px] overflow-y-auto border-t border-white/[0.04] pt-1">{call.result}</pre>
+          )}
         </div>
       )}
     </div>

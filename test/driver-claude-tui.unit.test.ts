@@ -364,3 +364,224 @@ describe('Claude TUI driver — readJsonlIncrement', () => {
     expect(third.lines).toEqual(['{"type":"assistant","seq":3}', '{"type":"user","seq":4}']);
   });
 });
+
+describe('Claude TUI driver — background sub-agent lifecycle (run_in_background)', () => {
+  async function makeState() {
+    const { createClaudeStreamState } = await import('../src/agent/drivers/claude.ts');
+    return createClaudeStreamState({ sessionId: null, model: 'claude-opus-4-8' } as any);
+  }
+
+  it('keeps a backgrounded agent "running" through its launch-ack tool_result, completes it on <task-notification>', async () => {
+    const { claudeParse, pendingClaudeBackgroundAgentCount } = await import('../src/agent/drivers/claude.ts');
+    const s = await makeState();
+
+    claudeParse({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use', id: 'toolu_bg1', name: 'Agent',
+          input: { description: 'Build module A', subagent_type: 'general-purpose', run_in_background: true },
+        }],
+      },
+    }, s);
+    expect(s.subAgents.get('toolu_bg1')?.status).toBe('running');
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
+
+    // Immediate tool_result = launch ack — must NOT flip the card to done.
+    claudeParse({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_bg1', content: 'Agent launched in background.' }] },
+    }, s);
+    expect(s.subAgents.get('toolu_bg1')?.status).toBe('running');
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
+
+    // Real completion arrives later as a task-notification user event.
+    claudeParse({
+      type: 'user',
+      timestamp: '2026-06-02T10:05:07.605Z',
+      message: {
+        content: '<task-notification>\n<task-id>a83657bb8bfba7de0</task-id>\n'
+          + '<tool-use-id>toolu_bg1</tool-use-id>\n<status>completed</status>\n'
+          + '<summary>done</summary>\n</task-notification>',
+      },
+    }, s);
+    expect(s.subAgents.get('toolu_bg1')?.status).toBe('done');
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(0);
+    expect(s.lastTaskNotificationAt).toBe(Date.parse('2026-06-02T10:05:07.605Z'));
+  });
+
+  it('resolves notifications without <tool-use-id> via the sidecar task-id mapping, and maps killed → failed', async () => {
+    const { claudeParse, pendingClaudeBackgroundAgentCount } = await import('../src/agent/drivers/claude.ts');
+    const s = await makeState();
+    claudeParse({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'toolu_bg2', name: 'Task', input: { description: 'B', run_in_background: true } }] },
+    }, s);
+    s.bgTaskIdToToolUse.set('abab6f3fdb6d53772', 'toolu_bg2'); // sidecar meta discovery
+
+    claudeParse({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'text',
+          text: '<task-notification>\n<task-id>abab6f3fdb6d53772</task-id>\n<status>killed</status>\n</task-notification>',
+        }],
+      },
+    }, s);
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(0);
+    expect(s.subAgents.get('toolu_bg2')?.status).toBe('failed');
+  });
+
+  it('foreground agents still flip to done on their tool_result', async () => {
+    const { claudeParse, pendingClaudeBackgroundAgentCount } = await import('../src/agent/drivers/claude.ts');
+    const s = await makeState();
+    claudeParse({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'toolu_fg', name: 'Agent', input: { description: 'fg' } }] },
+    }, s);
+    claudeParse({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_fg', content: 'full result' }] },
+    }, s);
+    expect(s.subAgents.get('toolu_fg')?.status).toBe('done');
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(0);
+  });
+
+  it('hook path: PreToolUse registers the background launch, PostToolUse ack keeps it running', async () => {
+    const { applyHookToolEvent } = await import('../src/agent/drivers/claude-tui.ts');
+    const { pendingClaudeBackgroundAgentCount } = await import('../src/agent/drivers/claude.ts');
+    const s = await makeState();
+    applyHookToolEvent({
+      event: 'PreToolUse', tool_use_id: 'toolu_hk', tool_name: 'Agent',
+      tool_input: { description: 'C', run_in_background: true },
+    }, s);
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
+    expect(s.subAgents.get('toolu_hk')?.status).toBe('running');
+
+    applyHookToolEvent({
+      event: 'PostToolUse', tool_use_id: 'toolu_hk', tool_name: 'Agent',
+      tool_input: { description: 'C', run_in_background: true },
+      tool_response: 'Agent launched in background',
+    }, s);
+    expect(s.subAgents.get('toolu_hk')?.status).toBe('running');
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
+  });
+
+  it('extractClaudeTaskNotification ignores non-notification user content', async () => {
+    const { extractClaudeTaskNotification } = await import('../src/agent/drivers/claude.ts');
+    expect(extractClaudeTaskNotification('plain user text')).toBeNull();
+    expect(extractClaudeTaskNotification([{ type: 'text', text: '<system-reminder>x</system-reminder>' }])).toBeNull();
+    expect(extractClaudeTaskNotification(undefined)).toBeNull();
+  });
+});
+
+describe('Claude TUI driver — decideClaudeTuiStop gating', () => {
+  it('holds while background agents are pending, regardless of Stop freshness', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStop({
+      stoppedAt: 1_000, pendingBackgroundAgents: 3,
+      lastTaskNotificationAt: 0, lastJsonlEventAt: 900, now: 2_000,
+    })).toBe('hold-background');
+  });
+
+  it('terminates immediately on a normal turn (no background work ever)', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStop({
+      stoppedAt: 1_000, pendingBackgroundAgents: 0,
+      lastTaskNotificationAt: 0, lastJsonlEventAt: 900, now: 1_200,
+    })).toBe('terminate');
+  });
+
+  it('holds for the wrap-up segment when the Stop predates the last notification', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStop({
+      stoppedAt: 1_000, pendingBackgroundAgents: 0,
+      lastTaskNotificationAt: 5_000, lastJsonlEventAt: 5_100, now: 6_000,
+    })).toBe('hold-resettle');
+  });
+
+  it('accepts a stale Stop after the resettle quiet window expires', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStop({
+      stoppedAt: 1_000, pendingBackgroundAgents: 0,
+      lastTaskNotificationAt: 5_000, lastJsonlEventAt: 5_100, now: 5_100 + 30_000,
+    })).toBe('terminate');
+  });
+
+  it('terminates on a fresh Stop fired after the last notification', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStop({
+      stoppedAt: 9_000, pendingBackgroundAgents: 0,
+      lastTaskNotificationAt: 5_000, lastJsonlEventAt: 8_900, now: 9_100,
+    })).toBe('terminate');
+  });
+});
+
+describe('Live preview toolCalls — expandable tool rows during a running turn', () => {
+  it('claudeParse registers input detail on tool_use and result detail on tool_result, surfaced via buildStreamPreviewMeta', async () => {
+    const { claudeParse, createClaudeStreamState } = await import('../src/agent/drivers/claude.ts');
+    const { buildStreamPreviewMeta } = await import('../src/agent/utils.ts');
+    const s = createClaudeStreamState({ sessionId: null, model: 'claude-opus-4-8' } as any);
+
+    claudeParse({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use', id: 'toolu_x1', name: 'Bash',
+          input: { command: 'grep -rn "needle" src/ | head -5', description: 'Search for needle' },
+        }],
+      },
+    }, s);
+
+    let meta = buildStreamPreviewMeta(s);
+    expect(meta.toolCalls).toHaveLength(1);
+    expect(meta.toolCalls![0]).toMatchObject({
+      id: 'toolu_x1',
+      name: 'Bash',
+      status: 'running',
+      input: 'grep -rn "needle" src/ | head -5',
+    });
+    expect(meta.toolCalls![0].result).toBeNull();
+
+    claudeParse({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_x1', content: 'src/a.ts:3: needle' }] },
+    }, s);
+
+    meta = buildStreamPreviewMeta(s);
+    expect(meta.toolCalls![0]).toMatchObject({ status: 'done', result: 'src/a.ts:3: needle' });
+  });
+
+  it('hook path mirrors the same lifecycle and plan/sub-agent tools stay out of toolCalls', async () => {
+    const { applyHookToolEvent } = await import('../src/agent/drivers/claude-tui.ts');
+    const { createClaudeStreamState } = await import('../src/agent/drivers/claude.ts');
+    const { buildStreamPreviewMeta } = await import('../src/agent/utils.ts');
+    const s = createClaudeStreamState({ sessionId: null, model: 'claude-opus-4-8' } as any);
+
+    applyHookToolEvent({
+      event: 'PreToolUse', tool_use_id: 'toolu_h1', tool_name: 'Read',
+      tool_input: { file_path: '/tmp/x.ts' },
+    }, s);
+    applyHookToolEvent({
+      event: 'PreToolUse', tool_use_id: 'toolu_plan', tool_name: 'TodoWrite',
+      tool_input: { todos: [{ content: 'step', status: 'pending' }] },
+    }, s);
+    applyHookToolEvent({
+      event: 'PreToolUse', tool_use_id: 'toolu_sub', tool_name: 'Agent',
+      tool_input: { description: 'child' },
+    }, s);
+    applyHookToolEvent({
+      event: 'PostToolUse', tool_use_id: 'toolu_h1', tool_name: 'Read',
+      tool_input: { file_path: '/tmp/x.ts' },
+      tool_response: 'file contents here',
+    }, s);
+
+    const meta = buildStreamPreviewMeta(s);
+    // Only the Read row — TodoWrite feeds the plan card, Agent has its own card.
+    expect(meta.toolCalls).toHaveLength(1);
+    expect(meta.toolCalls![0]).toMatchObject({
+      id: 'toolu_h1', name: 'Read', status: 'done', result: 'file contents here',
+    });
+    expect(meta.toolCalls![0].input).toContain('/tmp/x.ts');
+  });
+});

@@ -27,6 +27,14 @@
  *      `assistant.message.usage` extraction in the loop.
  *   5. When the `Stop` hook fires (Claude has finished the assistant turn),
  *      SIGTERM the PTY process. The JSONL is fully flushed by then.
+ *      Exception — background sub-agents: Claude fires `Stop` whenever the
+ *      main loop finishes a response segment, *including* the segment that
+ *      launched `run_in_background` agents. Those agents live inside the
+ *      claude process, so killing on that first Stop would destroy them
+ *      mid-flight. The driver therefore refuses to terminate while launched
+ *      background agents haven't reported their `<task-notification>`, and
+ *      only accepts a Stop that is "fresh" (fired after the last
+ *      notification) — see `decideClaudeTuiStop`.
  */
 
 import fs from 'node:fs';
@@ -39,6 +47,7 @@ import {
   buildStreamPreviewMeta, computeContext, joinErrorMessages,
   emitSessionIdUpdate, normalizeClaudeModelId,
   pushRecentActivity, summarizeClaudeToolUse, summarizeClaudeToolResult,
+  previewToolCallInput, previewToolCallResult,
   detectClaudeApiError,
 } from '../utils.js';
 import { encodePathAsDirName, getHome, whichSync } from '../../core/platform.js';
@@ -47,6 +56,7 @@ import { AGENT_STREAM_HARD_KILL_GRACE_MS } from '../../core/constants.js';
 import {
   claudeParse, createClaudeStreamState,
   claudeContextWindowFromModel, claudeEffectiveContextWindow,
+  registerClaudeBackgroundAgentLaunch, pendingClaudeBackgroundAgentCount,
 } from './claude.js';
 
 // ---------------------------------------------------------------------------
@@ -362,7 +372,7 @@ function readAssignedTaskIdFromHookResponse(toolResponse: any): string | null {
  * claudeParse skips tools already in `s.seenClaudeToolIds`, and the new
  * `s.seenClaudeToolResultIds` guards tool_result re-pushes.
  */
-function applyHookToolEvent(ev: any, s: any): boolean {
+export function applyHookToolEvent(ev: any, s: any): boolean {
   const toolUseId = String(ev?.tool_use_id || '').trim();
   const toolName = String(ev?.tool_name || '').trim();
   if (!toolName || !toolUseId) return false;
@@ -441,6 +451,11 @@ function applyHookToolEvent(ev: any, s: any): boolean {
           status: 'running',
         });
       }
+      // Backgrounded launch — track it so the turn doesn't end (and the PTY
+      // doesn't get SIGTERMed) until its <task-notification> arrives. The hook
+      // fires live; the JSONL replay of the same tool_use dedupes via
+      // seenClaudeToolIds, so this is the only registration point in TUI mode.
+      if (input.run_in_background === true) registerClaudeBackgroundAgentLaunch(s, toolUseId);
       s.seenClaudeToolIds.add(toolUseId);
       s.claudeToolsById.set(toolUseId, { name: toolName, summary: desc || kind || 'Sub-agent' });
       return true;
@@ -448,7 +463,14 @@ function applyHookToolEvent(ev: any, s: any): boolean {
     const summary = summarizeClaudeToolUse(toolName, ev.tool_input || {});
     pushRecentActivity(s.recentActivity, summary);
     s.seenClaudeToolIds.add(toolUseId);
-    s.claudeToolsById.set(toolUseId, { name: toolName, summary });
+    s.claudeToolsById.set(toolUseId, {
+      name: toolName,
+      summary,
+      input: previewToolCallInput(toolName, ev.tool_input),
+      status: 'running',
+    });
+    if (!s.claudeToolCallOrder) s.claudeToolCallOrder = [];
+    s.claudeToolCallOrder.push(toolUseId);
     s.activity = s.recentActivity.join('\n');
     return true;
   }
@@ -476,13 +498,24 @@ function applyHookToolEvent(ev: any, s: any): boolean {
       // Sub-agent finished — flip its status so it drops out of the live
       // Sub-agent preview block. The completion fact itself is implicit: the
       // block stops listing this entry.
+      // Backgrounded launches are the exception: their PostToolUse fires
+      // immediately with a launch ack while the agent keeps running. Leave the
+      // status alone — applyClaudeTaskNotification flips it when the real
+      // completion lands.
       const sub = s.subAgents.get(toolUseId);
-      if (sub) sub.status = ev.tool_response?.is_error ? 'failed' : 'done';
+      if (sub) {
+        const isBgLaunchAck = !ev.tool_response?.is_error
+          && (ev.tool_input?.run_in_background === true
+            || (s.bgAgentLaunchedToolUseIds?.has(toolUseId) && !s.bgAgentCompletedToolUseIds?.has(toolUseId)));
+        if (!isBgLaunchAck) sub.status = ev.tool_response?.is_error ? 'failed' : 'done';
+      }
       s.seenClaudeToolResultIds.add(toolUseId);
       return true;
     }
     const tool = s.claudeToolsById.get(toolUseId);
     if (tool) {
+      tool.result = previewToolCallResult(ev.tool_response);
+      tool.status = ev.tool_response?.is_error ? 'failed' : 'done';
       const summary = summarizeClaudeToolResult(tool, { content: ev.tool_response }, ev.tool_response);
       if (summary) {
         pushRecentActivity(s.recentActivity, summary);
@@ -624,6 +657,55 @@ function applyAssistantUsage(s: any, msg: any): void {
   if (typeof u.cache_creation_input_tokens === 'number') s.cacheCreationInputTokens = u.cache_creation_input_tokens;
   const total = (s.inputTokens ?? 0) + (s.cachedInputTokens ?? 0) + (s.cacheCreationInputTokens ?? 0) + (s.outputTokens ?? 0);
   s.contextUsedTokens = total > 0 ? total : null;
+}
+
+// ---------------------------------------------------------------------------
+// Stop-hook gating
+// ---------------------------------------------------------------------------
+
+/**
+ * After the last pending background agent reports its <task-notification>,
+ * the harness re-invokes the model (wrap-up segment) and a fresh Stop hook
+ * follows. A Stop timestamp that *predates* the latest notification belongs to
+ * an earlier segment and must not terminate the turn. If no re-invocation
+ * materialises, we accept the stale Stop once the main JSONL has been quiet
+ * for this long — the safety valve against waiting forever on a harness that
+ * chose not to resume.
+ */
+const BG_RESETTLE_QUIET_MS = 30_000;
+
+export type ClaudeTuiStopDecision = 'terminate' | 'hold-background' | 'hold-resettle';
+
+/**
+ * Decide what a fired Stop hook means for the PTY lifecycle.
+ *
+ *  - `hold-background`: launched `run_in_background` agents haven't reported
+ *    completion. They live inside the claude process — SIGTERM now would
+ *    destroy them mid-flight (the "进程退出把子代理打断" failure). Keep the
+ *    PTY alive; the harness will deliver <task-notification> events and
+ *    re-invoke the model, producing further segments and a later Stop.
+ *  - `hold-resettle`: nothing pending, but the Stop predates the latest
+ *    notification — the model's post-notification segment (and its own Stop)
+ *    is still expected. Hold until a fresh Stop or BG_RESETTLE_QUIET_MS of
+ *    JSONL silence.
+ *  - `terminate`: the Stop is the genuine end of the turn.
+ */
+export function decideClaudeTuiStop(input: {
+  stoppedAt: number;
+  pendingBackgroundAgents: number;
+  lastTaskNotificationAt: number;
+  lastJsonlEventAt: number;
+  now: number;
+  resettleQuietMs?: number;
+}): ClaudeTuiStopDecision {
+  if (input.pendingBackgroundAgents > 0) return 'hold-background';
+  const stopIsStale = input.lastTaskNotificationAt > 0 && input.lastTaskNotificationAt >= input.stoppedAt;
+  if (stopIsStale) {
+    const quietMs = input.resettleQuietMs ?? BG_RESETTLE_QUIET_MS;
+    const lastActivityAt = Math.max(input.lastJsonlEventAt, input.lastTaskNotificationAt);
+    if (input.now - lastActivityAt < quietMs) return 'hold-resettle';
+  }
+  return 'terminate';
 }
 
 // ---------------------------------------------------------------------------
@@ -926,6 +1008,13 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let promptNudged = false;
   let pollHandle: NodeJS.Timeout | null = null;
   let drainScheduled = false;
+  // Wall-clock of the last parsed main-JSONL line. Feeds the stale-Stop
+  // quiet-window check in decideClaudeTuiStop — sidecar / hook traffic is
+  // deliberately excluded (only main-JSONL activity signals a model segment).
+  let lastMainJsonlEventAt = start;
+  // Last pending-background count we logged, so the waiting state logs on
+  // transitions instead of every 200ms poll tick.
+  let lastLoggedPendingBg = -1;
   // Append-only tool-events log fed by PreToolUse / PostToolUse hooks. We
   // tail it with the same incremental reader the JSONL transcript uses, so
   // tool calls + plan changes surface live during the turn even while the
@@ -995,6 +1084,11 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       if (!s.subAgentIdToParent) s.subAgentIdToParent = new Map<string, string>();
       s.subAgentIdToParent.set(rawAgentId, parentToolUseId);
       s.subAgentIdToParent.set(stem, parentToolUseId);
+      // <task-notification> events identify background tasks by this raw id
+      // (and only sometimes carry <tool-use-id>) — keep the mapping so
+      // applyClaudeTaskNotification can resolve them either way.
+      if (!s.bgTaskIdToToolUse) s.bgTaskIdToToolUse = new Map<string, string>();
+      s.bgTaskIdToToolUse.set(rawAgentId, parentToolUseId);
       agentLog(`[claude-tui] subagent sidecar discovered ${stem} parent=${parentToolUseId.slice(0, 14)}`);
     }
   };
@@ -1089,6 +1183,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           agentWarn(`[claude-tui] claudeParse threw on line: ${e?.message || e}`);
         }
         touched = true;
+        lastMainJsonlEventAt = Date.now();
       }
       if (touched) {
         // Emit immediately so non-text changes (tool_use, plan, activity,
@@ -1114,11 +1209,33 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     tryDiscoverSubAgents();
     if (pumpSubAgentSidecars()) emit();
 
-    // Stop hook handling.
+    // Stop hook handling. A Stop is NOT automatically the end of the turn:
+    // Claude fires it per response segment, including the segment that merely
+    // *launched* run_in_background agents. Those agents run inside the claude
+    // process — terminating here would destroy them (the "进程退出把子代理
+    // 打断" incident). Hold the PTY open until every launched background agent
+    // has reported its <task-notification> AND the latest Stop is fresher than
+    // the latest notification (i.e. the model's wrap-up segment finished).
     if (state.stoppedAt && !stopHookFired) {
-      stopHookFired = true;
-      stopHookSeenAt = Date.now();
-      agentLog(`[claude-tui] Stop hook fired — draining JSONL for ${POST_STOP_DRAIN_MS}ms before SIGTERM`);
+      const pendingBg = pendingClaudeBackgroundAgentCount(s);
+      const decision = decideClaudeTuiStop({
+        stoppedAt: state.stoppedAt,
+        pendingBackgroundAgents: pendingBg,
+        lastTaskNotificationAt: s.lastTaskNotificationAt || 0,
+        lastJsonlEventAt: lastMainJsonlEventAt,
+        now: Date.now(),
+      });
+      if (decision === 'terminate') {
+        stopHookFired = true;
+        stopHookSeenAt = Date.now();
+        agentLog(`[claude-tui] Stop hook fired — draining JSONL for ${POST_STOP_DRAIN_MS}ms before SIGTERM`);
+      } else if (decision === 'hold-background' && pendingBg !== lastLoggedPendingBg) {
+        lastLoggedPendingBg = pendingBg;
+        agentLog(`[claude-tui] Stop hook fired with ${pendingBg} background agent(s) still running — holding TUI alive until they finish`);
+        pushRecentActivity(s.recentActivity, `Waiting for ${pendingBg} background agent(s) to finish`);
+        s.activity = s.recentActivity.join('\n');
+        emit();
+      }
     }
     if (stopHookFired && !drainScheduled && Date.now() - stopHookSeenAt >= POST_STOP_DRAIN_MS) {
       drainScheduled = true;

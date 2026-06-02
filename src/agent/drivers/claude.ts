@@ -19,6 +19,7 @@ import {
   Q, run, agentError, agentLog, agentWarn,
   appendSystemPrompt, buildStreamPreviewMeta, computeContext, pushRecentActivity,
   summarizeClaudeToolUse, summarizeClaudeToolResult, joinErrorMessages, parseTodoWriteAsPlan,
+  previewToolCallInput, previewToolCallResult,
   detectClaudeApiError, isRetryableClaudeApiError,
   emitSessionIdUpdate,
   IMAGE_EXTS, mimeForExt,
@@ -332,6 +333,111 @@ function rebuildClaudePlanFromTasks(s: any): void {
   s.plan = { explanation: null, steps };
 }
 
+// ---------------------------------------------------------------------------
+// Background sub-agent lifecycle (`run_in_background` Task/Agent launches)
+//
+// A backgrounded agent's tool_result returns immediately as a launch ack; the
+// agent itself keeps running *inside the claude process* and its completion is
+// announced later via a `<task-notification>` user event. The parser tracks
+// launched/completed tool_use ids on the stream state so:
+//   1. the sub-agent preview card stays "running" until the agent truly ends;
+//   2. the TUI driver can refuse to SIGTERM the PTY while agents are pending
+//      (killing the process would destroy them mid-flight — the exact failure
+//      the awaiting logic in claude-tui.ts exists to prevent).
+// ---------------------------------------------------------------------------
+
+export interface ClaudeTaskNotification {
+  taskId: string | null;
+  toolUseId: string | null;
+  status: string | null;
+}
+
+function ensureClaudeBgAgentState(s: any): void {
+  if (!s.bgAgentLaunchedToolUseIds) s.bgAgentLaunchedToolUseIds = new Set<string>();
+  if (!s.bgAgentCompletedToolUseIds) s.bgAgentCompletedToolUseIds = new Set<string>();
+  if (!s.bgTaskIdToToolUse) s.bgTaskIdToToolUse = new Map<string, string>();
+  if (typeof s.lastTaskNotificationAt !== 'number') s.lastTaskNotificationAt = 0;
+}
+
+/** Record a Task/Agent tool_use launched with `run_in_background: true`. */
+export function registerClaudeBackgroundAgentLaunch(s: any, toolUseId: string): void {
+  const id = String(toolUseId || '').trim();
+  if (!id) return;
+  ensureClaudeBgAgentState(s);
+  s.bgAgentLaunchedToolUseIds.add(id);
+}
+
+/** Launched background agents whose <task-notification> hasn't arrived yet. */
+export function pendingClaudeBackgroundAgentCount(s: any): number {
+  const launched: Set<string> | undefined = s?.bgAgentLaunchedToolUseIds;
+  if (!launched?.size) return 0;
+  const completed: Set<string> | undefined = s?.bgAgentCompletedToolUseIds;
+  let pending = 0;
+  for (const id of launched) {
+    if (!completed?.has(id)) pending++;
+  }
+  return pending;
+}
+
+/**
+ * Parse a `<task-notification>` wrapper out of a user event's content.
+ * Shape (observed, Claude Code 2.x):
+ *   <task-notification>
+ *     <task-id>a7a61bd5e0e76e0f3</task-id>
+ *     <tool-use-id>toolu_01MsPk…</tool-use-id>   ← omitted for orphaned tasks
+ *     <output-file>…</output-file>
+ *     <status>completed | failed | killed</status>
+ *     <summary>…</summary>
+ *   </task-notification>
+ */
+export function extractClaudeTaskNotification(content: any): ClaudeTaskNotification | null {
+  let text = '';
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    text = content
+      .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+      .map((b: any) => b.text)
+      .join('\n');
+  }
+  if (!text || !text.includes('<task-notification>')) return null;
+  const tag = (name: string): string | null => {
+    const m = text.match(new RegExp(`<${name}>\\s*([^<]*?)\\s*</${name}>`));
+    return m ? (m[1].trim() || null) : null;
+  };
+  return { taskId: tag('task-id'), toolUseId: tag('tool-use-id'), status: tag('status') };
+}
+
+/**
+ * Fold a task-notification into the stream state: mark the matching background
+ * agent completed and flip its preview card status. Notifications for unknown
+ * tasks (orphans from a previous process, background Bash, …) still bump
+ * `lastTaskNotificationAt` — the TUI driver uses that timestamp to tell a
+ * pre-notification Stop hook apart from the model's post-resume Stop.
+ */
+export function applyClaudeTaskNotification(s: any, notification: ClaudeTaskNotification, eventAtMs?: number | null): void {
+  ensureClaudeBgAgentState(s);
+  // Prefer the event's own timestamp: when a JSONL flush delivers the
+  // notification and the wrap-up segment's Stop in one burst, parse-time would
+  // postdate the Stop and make a genuinely-fresh Stop look stale.
+  s.lastTaskNotificationAt = eventAtMs && Number.isFinite(eventAtMs) ? eventAtMs : Date.now();
+  const toolUseId = notification.toolUseId
+    || (notification.taskId ? s.bgTaskIdToToolUse.get(notification.taskId) : undefined)
+    || null;
+  if (!toolUseId) return;
+  if (!s.bgAgentLaunchedToolUseIds.has(toolUseId) || s.bgAgentCompletedToolUseIds.has(toolUseId)) return;
+  s.bgAgentCompletedToolUseIds.add(toolUseId);
+  const sub = s.subAgents?.get(toolUseId);
+  if (sub && sub.status === 'running') {
+    const failed = /^(fail|kill|cancel|stop|abort|error)/i.test(notification.status || '');
+    sub.status = failed ? 'failed' : 'done';
+  }
+  const left = pendingClaudeBackgroundAgentCount(s);
+  pushRecentActivity(s.recentActivity, left > 0
+    ? `Background agent finished (${left} still running)`
+    : 'All background agents finished');
+  s.activity = s.recentActivity.join('\n');
+}
+
 export function claudeParse(ev: any, s: any) {
   const t = ev.type || '';
   // Sub-agent events (Task tool spawns a child agent) carry parent_tool_use_id
@@ -481,6 +587,7 @@ export function claudeParse(ev: any, s: any) {
           status: 'running',
         };
         s.subAgents.set(toolId, subAgent);
+        if (input.run_in_background === true) registerClaudeBackgroundAgentLaunch(s, toolId);
         s.seenClaudeToolIds.add(toolId);
         s.claudeToolsById.set(toolId, { name: toolName, summary: subAgent.description || 'Run task' });
         continue;
@@ -488,9 +595,13 @@ export function claudeParse(ev: any, s: any) {
       const tool = {
         name: toolName,
         summary: summarizeClaudeToolUse(block?.name, block?.input || {}),
+        input: previewToolCallInput(toolName, block?.input),
+        status: 'running' as const,
       };
       s.seenClaudeToolIds.add(toolId);
       s.claudeToolsById.set(toolId, tool);
+      if (!s.claudeToolCallOrder) s.claudeToolCallOrder = [];
+      s.claudeToolCallOrder.push(toolId);
       pushRecentActivity(s.recentActivity, tool.summary);
     }
     s.activity = s.recentActivity.join('\n');
@@ -500,6 +611,15 @@ export function claudeParse(ev: any, s: any) {
   if (t === 'user') {
     const msg = ev.message || {};
     const contents = Array.isArray(msg.content) ? msg.content : [];
+    // Background-task completion notice. Claude Code injects these as user
+    // events when a `run_in_background` task finishes (or dies); they are the
+    // only completion signal backgrounded agents ever get — the Task tool's
+    // own tool_result fired back at launch time as an ack.
+    const notification = extractClaudeTaskNotification(msg.content);
+    if (notification) {
+      const eventAtMs = typeof ev.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
+      applyClaudeTaskNotification(s, notification, Number.isFinite(eventAtMs) ? eventAtMs : null);
+    }
     const toolResults = contents.filter((b: any) => b?.type === 'tool_result');
     for (const block of toolResults) {
       const toolId = String(block?.tool_use_id || '').trim();
@@ -533,10 +653,22 @@ export function claudeParse(ev: any, s: any) {
       // status and skip the regular activity append (the sub-agent card carries
       // it). The result content text is the sub-agent's full response which
       // would otherwise leak into the parent activity feed.
+      // Exception: a `run_in_background` launch returns its tool_result
+      // immediately as a mere ack — the agent is still running. Its real
+      // completion is the later <task-notification> (see the user branch).
       if (tool?.name === 'Task' || tool?.name === 'Agent') {
         const sub = s.subAgents.get(toolId);
-        if (sub) sub.status = block?.is_error ? 'failed' : 'done';
+        if (sub) {
+          const isBgLaunchAck = !block?.is_error
+            && s.bgAgentLaunchedToolUseIds?.has(toolId)
+            && !s.bgAgentCompletedToolUseIds?.has(toolId);
+          if (!isBgLaunchAck) sub.status = block?.is_error ? 'failed' : 'done';
+        }
         continue;
+      }
+      if (tool) {
+        tool.result = previewToolCallResult(block?.content);
+        tool.status = block?.is_error ? 'failed' : 'done';
       }
       pushRecentActivity(s.recentActivity, summarizeClaudeToolResult(tool, block, ev.tool_use_result));
       // MCP / Skill tool_result with multimodal content — recurse for image
@@ -637,9 +769,28 @@ export function createClaudeStreamState(opts: StreamOpts) {
      *  carries the subject but Claude assigns the numeric task id only in
      *  the matching tool_result, so we have to bridge the two halves. */
     pendingClaudeTaskCreates: new Map<string, { subject: string }>(),
-    claudeToolsById: new Map<string, { name: string; summary: string }>(),
+    claudeToolsById: new Map<string, { name: string; summary: string; input?: string | null; result?: string | null; status?: 'running' | 'done' | 'failed' }>(),
+    /** Insertion order of expandable tool-call rows (parent activity tools
+     *  only — plan tools and sub-agent launches have their own cards). Feeds
+     *  `StreamPreviewMeta.toolCalls` via buildStreamPreviewMeta. */
+    claudeToolCallOrder: [] as string[],
     seenClaudeToolIds: new Set<string>(),
     subAgents: new Map<string, StreamSubAgent>(),
+    /** Tool_use ids of Task/Agent launches with `run_in_background: true`.
+     *  Their immediate tool_result is only a launch ack — real completion
+     *  arrives later as a `<task-notification>` user event. The TUI driver
+     *  reads the launched/completed delta to keep the PTY alive until every
+     *  background agent has actually finished (they live inside the claude
+     *  process; killing it would destroy them mid-flight). */
+    bgAgentLaunchedToolUseIds: new Set<string>(),
+    /** Subset of bgAgentLaunchedToolUseIds whose <task-notification> arrived. */
+    bgAgentCompletedToolUseIds: new Set<string>(),
+    /** Background task id (the `agent-<id>` sidecar stem / `<task-id>` tag) →
+     *  parent tool_use id. Fallback matcher for notifications that omit the
+     *  `<tool-use-id>` tag. */
+    bgTaskIdToToolUse: new Map<string, string>(),
+    /** Wall-clock ms of the most recent <task-notification> parsed this turn. */
+    lastTaskNotificationAt: 0 as number,
     // Image blocks accumulated during the turn (user-attached on the request
     // side, MCP / Skill tool_result on the response side). Surfaced in the
     // final StreamResult so IM channels can dispatch images at end-of-turn.
@@ -671,8 +822,13 @@ function resetClaudeTurnState(s: ReturnType<typeof createClaudeStreamState>, not
   s.activity = '';
   s.recentActivity = [];
   s.claudeToolsById = new Map();
+  s.claudeToolCallOrder = [];
   s.subAgents = new Map();
   s.seenClaudeToolIds = new Set();
+  s.bgAgentLaunchedToolUseIds = new Set();
+  s.bgAgentCompletedToolUseIds = new Set();
+  s.bgTaskIdToToolUse = new Map();
+  s.lastTaskNotificationAt = 0;
   s.imageBlocks = [];
   s.seenImageKeys = new Set();
   if (note) {

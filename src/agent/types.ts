@@ -90,6 +90,24 @@ export interface AgentInteraction {
 // Stream preview types
 // ---------------------------------------------------------------------------
 
+/**
+ * A tool invocation surfaced in the live preview. Unlike the flat
+ * `recentActivity` strings, this carries bounded input/result detail so the
+ * dashboard can render each row as click-to-expand while the turn is still
+ * running (full detail is available from the session messages API only after
+ * the turn lands).
+ */
+export interface StreamToolCall {
+  id: string;
+  name: string;
+  summary: string;
+  /** Bounded human-readable input detail (full command, edit payload, …). */
+  input?: string | null;
+  /** Bounded text preview of the tool result. */
+  result?: string | null;
+  status: 'running' | 'done' | 'failed';
+}
+
 /** Token-level metadata emitted during a streaming preview callback. */
 export interface StreamPreviewMeta {
   inputTokens: number | null;
@@ -114,6 +132,13 @@ export interface StreamPreviewMeta {
    * tool stream and model/effort don't bleed into the parent agent's view.
    */
   subAgents?: StreamSubAgent[];
+  /**
+   * Structured tool invocations of the current turn (most recent last,
+   * bounded). Lets the live 执行 card render expandable rows with input /
+   * result detail instead of flat summary strings. Currently populated by the
+   * Claude drivers; others fall back to the activity lines.
+   */
+  toolCalls?: StreamToolCall[];
   /**
    * BYOK provider display name (e.g. "OpenRouter") — set only when the agent
    * is bound to a Profile. Renders use it to surface "via <provider>" so the

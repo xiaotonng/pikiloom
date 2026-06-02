@@ -555,5 +555,8 @@ export interface StreamSnapshot {
   error?: string;
   /** Active human-in-the-loop interaction prompts (im_ask_user / Codex user-input). */
   interactions?: InteractionSnapshot[];
+  /** Wall-clock ms when the active turn started streaming — drives the live
+   *  elapsed-time chip in the turn header. */
+  startedAt?: number;
   updatedAt: number;
 }

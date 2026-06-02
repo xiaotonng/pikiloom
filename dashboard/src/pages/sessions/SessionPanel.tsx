@@ -96,6 +96,8 @@ export const SessionPanel = memo(function SessionPanel({
     previewMeta?: StreamPreviewMeta | null;
     subAgents?: StreamSubAgent[] | null;
     generatingImages?: number;
+    /** Wall-clock ms when the turn started — drives the ticking elapsed chip. */
+    startedAt?: number | null;
     error?: string | null;
   } | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -437,6 +439,7 @@ export const SessionPanel = memo(function SessionPanel({
           previewMeta: state.previewMeta ?? null,
           subAgents: state.previewMeta?.subAgents ?? null,
           generatingImages: state.previewMeta?.generatingImages ?? 0,
+          startedAt: typeof state.startedAt === 'number' ? state.startedAt : null,
           error: null,
         });
       }
@@ -870,7 +873,7 @@ export const SessionPanel = memo(function SessionPanel({
                 (no body, no error). Prevents a phantom header above an empty body. */}
             {liveStream && liveStreamShouldRender(liveStream) && (
               <div className="mb-6">
-                <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} />
+                <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} liveStartedAt={liveStream.phase === 'streaming' ? liveStream.startedAt ?? null : null} />
                 <LivePreview stream={liveStream} t={t} />
               </div>
             )}

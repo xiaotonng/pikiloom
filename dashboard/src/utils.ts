@@ -239,6 +239,17 @@ export function sessionDisplayDetail(session: Pick<SessionInfo, 'runDetail'>): s
   return detail || null;
 }
 
+export function getSessionRunFailureDetail(
+  session: Pick<SessionInfo, 'running' | 'runState' | 'runDetail' | 'awaiting'>,
+  opts: { streaming: boolean; hasLiveStream: boolean; streamPhase: string | null; queuedTaskCount: number },
+): string | null {
+  const detail = sessionDisplayDetail(session);
+  if (!detail) return null;
+  if (sessionDisplayState(session) !== 'incomplete') return null;
+  if (opts.streaming || opts.hasLiveStream || opts.streamPhase || opts.queuedTaskCount > 0) return null;
+  return detail;
+}
+
 const SESSION_PREVIEW_IGNORED_USER_PATTERNS = [
   /^\[Request interrupted by user(?: for tool use)?\]$/i,
 ];

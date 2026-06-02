@@ -1203,7 +1203,6 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // 13. Build the StreamResult — mirror the shape and semantics of
   // doClaudeInteractiveStream so downstream consumers (finalizeStreamResult,
   // dashboard rendering) cannot tell the two paths apart.
-  const errorText = joinErrorMessages(s.errors);
   const cleanStderr = stderrCapture.trim();
   // Detect Claude Code's synthetic "API Error: …" assistant reply (e.g.
   // 529 Overloaded). The text gets rewritten so the IM card doesn't surface
@@ -1217,6 +1216,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     s.text = '';
     if (!s.errors) s.errors = [`Anthropic API error: ${apiErrorReason}`];
   }
+  const errorText = joinErrorMessages(s.errors);
   // "ok" requires: process exited cleanly (or via our own SIGTERM after Stop
   // hook fired, which yields a non-zero exit), no errors from the parser, no
   // user abort, no timeout. SIGTERM-after-Stop is the normal happy path.

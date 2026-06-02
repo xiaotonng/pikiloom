@@ -19,9 +19,8 @@ export interface LiveStreamView {
    *  "Generating image…" chip while bytes have yet to land. */
   generatingImages?: number;
   /** Live token/usage meta for the in-flight turn. `turnOutputTokens` climbs
-   *  from the opening extended-thinking phase through every tool roundtrip —
-   *  the TurnDivider header renders it as the "↑n" chip, and it gates the
-   *  "Thinking…" label here so the turn doesn't look frozen. */
+   *  from the opening extended-thinking phase through every tool roundtrip;
+   *  the TurnDivider header renders it as the "↑n" chip. */
   previewMeta?: StreamPreviewMeta | null;
 }
 
@@ -44,6 +43,11 @@ export function liveStreamShouldRender(stream: LiveStreamView): boolean {
   return stream.phase === 'done' && !!stream.error;
 }
 
+export function liveStreamFailureLabelKey(stream: LiveStreamView): string | null {
+  if (stream.phase !== 'done' || !stream.error) return null;
+  return liveStreamHasBody(stream) ? 'hub.streamErrored' : 'hub.streamFailed';
+}
+
 /* ── Live streaming preview ── */
 export function LivePreview({
   stream,
@@ -53,21 +57,13 @@ export function LivePreview({
   t: (k: string) => string;
 }) {
   const showPlan = hasPlan(stream.plan);
-  const hasAnyBody = liveStreamHasBody(stream);
   const [activityOpen, setActivityOpen] = useState(false);
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const activityScrollRef = useRef<HTMLDivElement>(null);
   const thinkingScrollRef = useRef<HTMLDivElement>(null);
-  // Stream finished with no body — surface the error inline so the user sees
-  // *why* the assistant turn is empty instead of a silent phantom.
-  const renderEmptyFailure = stream.phase === 'done' && !hasAnyBody;
-  // The model is actively burning output tokens (extended thinking before any
-  // text/thinking lands, or mid-turn generation). The count itself lives in the
-  // TurnDivider header chip (↑n, turn-cumulative so it never resets mid-turn);
-  // here it only gates the "Thinking…" label so the card doesn't look idle.
-  const isGenerating = stream.phase === 'streaming'
-    && ((stream.previewMeta?.turnOutputTokens ?? stream.previewMeta?.outputTokens ?? 0) > 0);
-
+  // Stream finished with an error — surface it even when partial text/activity
+  // exists, otherwise failed Claude turns can look like normal replies.
+  const failureLabelKey = liveStreamFailureLabelKey(stream);
   const activityLines = useMemo(() =>
     (stream.activity || '').split('\n').filter(Boolean),
     [stream.activity],
@@ -154,13 +150,12 @@ export function LivePreview({
       {/* Loading dots — shown whenever the stream is live but no text body is
           rendered yet. Inline dots (above) only appear once stream.text exists,
           so this fills the gap when activity / thinking / plan are shown alone
-          or when no content has arrived at all. */}
+          or when no content has arrived at all. The divider already carries
+          model/effort/token state, so avoid repeating a textual "thinking"
+          label in the body. */}
       {!stream.text && stream.phase === 'streaming' && (
-        <div className="py-1 flex items-center gap-2">
+        <div className="py-1">
           <ThinkingDots className="text-fg-5" />
-          {isGenerating && (
-            <span className="text-[12px] text-fg-4">{t('hub.thinkingLive')}</span>
-          )}
         </div>
       )}
 
@@ -182,13 +177,12 @@ export function LivePreview({
         </div>
       )}
 
-      {/* Stream finished with no body — surface the error inline so the user
-          sees *why* the assistant turn is empty instead of a silent phantom. */}
-      {renderEmptyFailure && stream.error && (
+      {/* Stream finished with an error — surface the reason inline. */}
+      {failureLabelKey && stream.error && (
         <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 text-[12.5px] leading-[1.7] text-fg-3">
           <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-rose-400/70 shrink-0" />
           <div className="min-w-0">
-            <div className="text-[11px] font-mono uppercase tracking-wide text-rose-300/80">{t('hub.streamFailed') || 'Stream ended without a reply'}</div>
+            <div className="text-[11px] font-mono uppercase tracking-wide text-rose-300/80">{t(failureLabelKey)}</div>
             <div className="mt-0.5 break-words">{stream.error}</div>
           </div>
         </div>

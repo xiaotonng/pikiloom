@@ -4,7 +4,7 @@ import { createT } from '../../i18n';
 import { api } from '../../api';
 import { loadSessionMessages, peekSessionMessages } from '../../session-preload';
 import { useDashboardEvent, useDashboardReconnect, type DashboardEvent } from '../../ws';
-import { cn, getAgentMeta, shortenModel, sessionDisplayState } from '../../utils';
+import { cn, getAgentMeta, getSessionRunFailureDetail, shortenModel, sessionDisplayState } from '../../utils';
 import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
 import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent } from '../../types';
@@ -28,6 +28,21 @@ const BOTTOM_STICK_THRESHOLD_PX = 96;
 const MAX_HISTORY_SNAPSHOTS = 20;
 const historySnapshots = new Map<string, TurnHistoryWindow>();
 function snapshotKey(agent: string, sessionId: string) { return `${agent}:${sessionId}`; }
+
+function RunFailureNotice({ detail, t }: { detail: string; t: (k: string) => string }) {
+  return (
+    <div className="mb-6 animate-in">
+      <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 text-[12.5px] leading-[1.7] text-fg-3">
+        <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-rose-400/70 shrink-0" />
+        <div className="min-w-0">
+          <div className="text-[11px] font-mono uppercase tracking-wide text-rose-300/80">{t('hub.turnFailed')}</div>
+          <div className="mt-0.5 break-words">{detail}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function saveHistorySnapshot(key: string, h: TurnHistoryWindow) {
   historySnapshots.delete(key); // refresh LRU position
   historySnapshots.set(key, h);
@@ -456,7 +471,24 @@ export const SessionPanel = memo(function SessionPanel({
       setStreaming(false);
       // Mark the live preview as finished and forward any error from the
       // snapshot so a content-less failure surfaces a reason instead of a phantom.
-      setLiveStream(prev => prev ? { ...prev, phase: 'done', error: state.error ?? null } : prev);
+      setLiveStream(prev => prev
+        ? { ...prev, phase: 'done', error: state.error ?? null }
+        : state.error
+          ? {
+              taskId: state.taskId || null,
+              phase: 'done',
+              text: '',
+              thinking: '',
+              activity: '',
+              plan: null,
+              model: state.model ?? null,
+              effort: state.effort ?? null,
+              previewMeta: state.previewMeta ?? null,
+              subAgents: state.previewMeta?.subAgents ?? null,
+              generatingImages: state.previewMeta?.generatingImages ?? 0,
+              error: state.error,
+            }
+          : prev);
       const hasMoreQueued = !!state.queuedTaskIds?.length;
       if (prevPhaseRef.current !== 'done') {
         if (!hasMoreQueued) clearPendingOnLoadRef.current = true;
@@ -698,6 +730,12 @@ export const SessionPanel = memo(function SessionPanel({
   const displayModel = (liveStream?.model || session.model || globalModel) || null;
   const displayEffort = (liveStream?.effort || session.thinkingEffort || globalEffort) || null;
   const displayModelShort = displayModel ? shortenModel(displayModel) : null;
+  const runFailureDetail = getSessionRunFailureDetail(session, {
+    streaming,
+    hasLiveStream: !!liveStream,
+    streamPhase,
+    queuedTaskCount: queuedTaskIds.length,
+  });
 
   const rawTurns = history?.turns || [];
   // When a live stream is active, the last turn's assistant response may already be
@@ -742,7 +780,7 @@ export const SessionPanel = memo(function SessionPanel({
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overscroll-contain">
         {loading ? (
           <div className="flex items-center justify-center py-20"><Spinner className="h-5 w-5 text-fg-4" /></div>
-        ) : turns.length === 0 && !pendingPrompt && !pendingImageUrls.length && !liveStream ? (
+        ) : turns.length === 0 && !pendingPrompt && !pendingImageUrls.length && !liveStream && !runFailureDetail ? (
           <div className="py-20 text-center text-[13px] text-fg-5">{t('hub.noMessages')}</div>
         ) : (
           <div className="max-w-[900px] mx-auto px-6 py-6 space-y-0">
@@ -800,6 +838,7 @@ export const SessionPanel = memo(function SessionPanel({
                 />
               );
             })}
+            {runFailureDetail && <RunFailureNotice detail={runFailureDetail} t={t} />}
             {/* Optimistic pending message — represents the RUNNING task's user
                 turn until rawTurns picks it up. Deduped against the last loaded
                 user turn to avoid double-rendering after history refresh. When

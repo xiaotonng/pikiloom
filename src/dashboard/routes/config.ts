@@ -32,6 +32,7 @@ import {
 } from '../../browser-profile.js';
 import {
   requestProcessRestart,
+  getActiveTaskCount,
 } from '../../core/process-control.js';
 import {
   checkPermissions,
@@ -356,6 +357,21 @@ app.post('/api/open-preferences', async (c) => {
 
 // Restart process
 app.post('/api/restart', (c) => {
+  // A successful restart exits this process, so its result can never reach the
+  // client — the route fires it async and returns ok:true. But the restart is
+  // REFUSED while any turn is still running (requestProcessRestart guards on
+  // active tasks so it won't kill in-flight work). Surface that refusal
+  // synchronously: otherwise the dashboard sends ok:true into a "reconnecting"
+  // wait for a restart that never happens and shows a generic failure, with no
+  // hint that a running task is the reason.
+  const activeTasks = getActiveTaskCount();
+  if (activeTasks > 0) {
+    return c.json({
+      ok: false,
+      activeTasks,
+      error: `${activeTasks} task(s) still running — can't restart. Wait for them to finish or stop them, then retry.`,
+    }, 409);
+  }
   setTimeout(() => {
     void requestProcessRestart({ log: message => runtime.log(message) });
   }, 50);

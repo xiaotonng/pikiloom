@@ -128,7 +128,12 @@ export function App() {
         try {
           const result = await api.restart();
           if (!result.ok) {
-            toast(result.error || t('modal.restartFailed'), false);
+            // A running turn blocks the restart — show how many, not a generic
+            // failure, so the user knows to wait or stop it.
+            const msg = result.activeTasks
+              ? t('modal.restartBlockedTasks').replace('{n}', String(result.activeTasks))
+              : (result.error || t('modal.restartFailed'));
+            toast(msg, false);
             setRestartPhase(null);
             return;
           }

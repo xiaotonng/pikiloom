@@ -180,7 +180,7 @@ export const api = {
       opts,
     ),
   requestPermission: (permission: string) => post<PermissionRequestResult>('/api/open-preferences', { permission }),
-  restart: () => post<{ ok: boolean; error?: string | null }>('/api/restart', {}),
+  restart: () => post<{ ok: boolean; error?: string | null; activeTasks?: number }>('/api/restart', {}),
   switchWorkdir: (path: string) => post<{ ok: boolean; workdir?: string; error?: string }>('/api/switch-workdir', { path }),
   lsDir: (dir?: string, includeFiles?: boolean, includeHidden?: boolean) => {
     const params = new URLSearchParams();

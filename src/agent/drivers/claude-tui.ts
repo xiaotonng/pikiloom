@@ -922,7 +922,11 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
 
   // 5. Set up parser state and ensure the bot side has the upfront session id.
   const s: any = createClaudeStreamState(opts);
-  s.sessionId = activeSessionId;
+  // Resume: lock in the native id we are resuming. Fork: keep a placeholder until
+  // Claude reports its rotated id via the SessionStart hook. New session: leave
+  // s.sessionId at its initial value (null for a pending session) so the emit
+  // below detects a change and fires the pending→native promotion callback.
+  if (isResume || isFork) s.sessionId = activeSessionId;
   // Seed the context window from whatever model is configured up front (e.g.
   // "haiku" / "opus" / "sonnet" via opts.claudeModel) so the dashboard's
   // context-percent chip + green-dot indicator can render starting from the
@@ -933,7 +937,16 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     s.model = opts.claudeModel || opts.model;
   }
   applyModelContextWindow(s);
-  if (!isResume) emitSessionIdUpdate(s, activeSessionId);
+  // A brand-new session uses the id we generated and passed via --session-id, so
+  // it is final the instant we spawn. Emit it now: s.sessionId is still unset
+  // here, so emitSessionIdUpdate fires the onSessionId callback that promotes the
+  // pending pikiclaw record (and its in-memory runtime) to the native id. The
+  // prior `s.sessionId = activeSessionId` made this a silent no-op (emit dedups on
+  // `id === s.sessionId`), so the record stayed `pending_*` for the whole run —
+  // and since mergeManagedAndNativeSessions drops pending records, the dashboard
+  // never saw the in-flight session as running on (re)load. Fork waits for the
+  // SessionStart hook to report Claude's rotated id; resume is already native.
+  if (!isResume && !isFork) emitSessionIdUpdate(s, activeSessionId);
 
   let stderrCapture = '';
   let lineCount = 0;

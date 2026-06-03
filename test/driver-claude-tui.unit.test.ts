@@ -114,6 +114,71 @@ describe('Claude TUI driver — startup-failure fallback contract', () => {
   }, 15_000);
 });
 
+describe('Claude TUI driver — upfront session-id promotion', () => {
+  // Regression: a brand-new TUI session must fire opts.onSessionId with the
+  // generated --session-id BEFORE the turn runs, so the pending pikiclaw record
+  // is promoted to its native id immediately. Previously the driver pre-assigned
+  // s.sessionId, which made emitSessionIdUpdate dedup and silently swallow the
+  // callback — leaving the record `pending_*` for the whole run. Since
+  // mergeManagedAndNativeSessions drops pending records, the dashboard never saw
+  // the in-flight session as running on (re)load. The emit happens before
+  // pty.spawn, so we force the spawn to fail (empty PATH) and assert the callback
+  // already fired synchronously beforehand.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  let tmpDir: string;
+  const onText = vi.fn();
+
+  beforeEach(() => {
+    onText.mockReset();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-tui-promote-'));
+  });
+  afterEach(() => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  });
+
+  async function runWithBrokenSpawn(sessionId: string | null, onSessionId: (id: string) => void) {
+    const isolatedPath = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-no-claude-'));
+    const { doClaudeTuiStream } = await import('../src/agent/drivers/claude-tui.ts');
+    try {
+      await Promise.race([
+        new Promise(resolve => setTimeout(() => resolve(null), 8_000)),
+        withEnv({ PATH: isolatedPath }, () =>
+          doClaudeTuiStream({
+            agent: 'claude',
+            prompt: 'hello',
+            workdir: tmpDir,
+            timeout: 3,
+            sessionId,
+            model: null,
+            thinkingEffort: 'medium',
+            onText,
+            onSessionId,
+            extraEnv: { PATH: isolatedPath },
+          }),
+        ),
+      ]).catch(() => { /* spawn failure is expected; the emit already ran */ });
+    } finally {
+      try { fs.rmSync(isolatedPath, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  it('fires onSessionId with the generated id for a new (pending) session', async () => {
+    const seen: string[] = [];
+    await runWithBrokenSpawn(null, id => seen.push(id));
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]).toMatch(UUID_RE);
+  }, 15_000);
+
+  it('does NOT fire onSessionId upfront when resuming an existing native session', async () => {
+    const seen: string[] = [];
+    // Resume: the id is already native, so there is nothing to promote. (A
+    // mid-turn rotation would arrive via the SessionStart hook, but the spawn
+    // fails before any hook runs.)
+    await runWithBrokenSpawn('f7e0b5a8-ff07-45a4-8282-1a1bb99340ac', id => seen.push(id));
+    expect(seen).toEqual([]);
+  }, 15_000);
+});
+
 describe('Claude TUI driver — terminal limit notices', () => {
   it('detects Claude synthetic subscription/session limit notices', async () => {
     const { detectClaudeTuiTerminalLimitNotice } = await import('../src/agent/drivers/claude-tui.ts');

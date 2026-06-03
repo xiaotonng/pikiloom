@@ -9,7 +9,7 @@ import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
 import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent } from '../../types';
 import { TurnView, UserBubble, TurnDivider } from './TurnView';
-import { LivePreview, ThinkingDots, liveStreamShouldRender } from './LivePreview';
+import { LivePreview, ThinkingDots, liveStreamShouldRender, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
 import {
@@ -28,20 +28,6 @@ const BOTTOM_STICK_THRESHOLD_PX = 96;
 const MAX_HISTORY_SNAPSHOTS = 20;
 const historySnapshots = new Map<string, TurnHistoryWindow>();
 function snapshotKey(agent: string, sessionId: string) { return `${agent}:${sessionId}`; }
-
-function RunFailureNotice({ detail, t }: { detail: string; t: (k: string) => string }) {
-  return (
-    <div className="mb-6 animate-in">
-      <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 text-[12.5px] leading-[1.7] text-fg-3">
-        <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-rose-400/70 shrink-0" />
-        <div className="min-w-0">
-          <div className="text-[11px] font-mono uppercase tracking-wide text-rose-300/80">{t('hub.turnFailed')}</div>
-          <div className="mt-0.5 break-words">{detail}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function saveHistorySnapshot(key: string, h: TurnHistoryWindow) {
   historySnapshots.delete(key); // refresh LRU position
@@ -177,14 +163,27 @@ export const SessionPanel = memo(function SessionPanel({
   }, []);
 
   // Consume initialPendingPrompt/initialPendingImageUrls from new-session flow.
-  // State (pendingPrompt, pendingImageUrls, loading, localStreamPendingRef) is already initialized
-  // from the props so the very first render shows the user message — no spinner flash.
-  // This effect only triggers the remaining side effects (polling + parent notify).
+  // Usually the props are present on the very first render, so useState above
+  // already seeded pendingPrompt and the user message shows with no spinner.
+  // BUT the new-session handoff commits the slot inside a startTransition, and
+  // React can paint the panel one render BEFORE newSessionPendingPrompt lands —
+  // in that case useState captured null and the optimistic bubble never appears
+  // (the user only sees their message after promotion + history load, the
+  // "敲了回车却不展示" window). So when the prompt prop arrives after mount, sync
+  // it into state here and drop the spinner, so the bubble shows the instant the
+  // message is sent regardless of the commit ordering.
   useEffect(() => {
     if (initialPendingConsumedRef.current || !hasInitialPending) return;
     initialPendingConsumedRef.current = true;
+    if (initialPendingPrompt && !pendingPrompt) setPendingPrompt(initialPendingPrompt);
+    if (initialPendingImageUrls && initialPendingImageUrls.length && !pendingImageUrls.length) {
+      setPendingImageUrls(initialPendingImageUrls);
+      pendingImageUrlsRef.current = initialPendingImageUrls;
+    }
+    setLoading(false);
     setStreamPollNonce(n => n + 1);
     onPendingPromptConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasInitialPending, onPendingPromptConsumed]);
 
   const clearPending = useCallback(() => {
@@ -318,6 +317,14 @@ export const SessionPanel = memo(function SessionPanel({
         if (!current || !keepOlder) return next;
         return mergeLatestHistory(current, next);
       });
+      // Any successful history load means we have something to render — drop the
+      // initial loading spinner here, in the same batch as setHistory. This is the
+      // single invariant that keeps the panel from hanging on the spinner: the
+      // mount effect's own setLoading(false) can be skipped when its fetch is
+      // cancelled by a pending→native promotion re-run (the c-flag), so relying on
+      // that alone left a brand-new session stuck spinning even though its turns
+      // had already arrived.
+      setLoading(false);
       // Clear pending + liveStream in the same synchronous block as setHistory so
       // React batches all updates into a single render (avoids flash/scroll jump)
       if (clearPendingOnLoadRef.current) {
@@ -394,13 +401,19 @@ export const SessionPanel = memo(function SessionPanel({
         clearPending();
         clearPendingQueuedSends();
       } else if (prev === null && localStreamPendingRef.current) {
-        // Do NOT clear pending here — for slow uploads (e.g. images via FormData),
-        // the poll may return null before the stream actually starts. The pending
-        // bubble should stay visible until the stream begins or the safety cleanup
-        // effect fires (displayState !== 'running' && !streaming && !liveStream).
+        // Premature null: a brand-new session's first poll can return null before
+        // its stream snapshot exists. Keep the optimistic bubble — and crucially
+        // keep localStreamPendingRef TRUE (see below) so the safety cleanup can't
+        // wipe it in this gap (the session may briefly read non-running while the
+        // stub is refreshed). The guard is released once the real stream begins
+        // and later ends.
         void loadLatestTurns({ keepOlder: true, force: true });
       }
-      localStreamPendingRef.current = false;
+      // Release the pending-stream guard only when an actual stream lifecycle
+      // ended — NEVER on the premature-null gap above (prev === null), where we are
+      // still waiting for the just-sent turn to start streaming. Clearing it there
+      // is what let the safety cleanup wipe the optimistic bubble right after enter.
+      if (prev !== null) localStreamPendingRef.current = false;
       setStreamTaskId(null);
       setStreamPhase(null);
       setQueuedTaskIds([]);
@@ -579,8 +592,14 @@ export const SessionPanel = memo(function SessionPanel({
     // stream state — only refresh history with the new session ID.
     if (promotingRef.current) {
       promotingRef.current = false;
-      void loadLatestTurns({ keepOlder: true, force: true });
-      return;
+      // Belt-and-suspenders for the spinner: if the native fetch comes back with
+      // no turns yet (JSONL not flushed in the split second after spawn), the
+      // setLoading(false) inside loadLatestTurns won't fire — clear it here too so
+      // the panel shows an empty state (then a later poll fills it) instead of
+      // hanging. Guarded so a session switch mid-fetch can't wrongly unspin it.
+      let cancelled = false;
+      void loadLatestTurns({ keepOlder: true, force: true }).finally(() => { if (!cancelled) setLoading(false); });
+      return () => { cancelled = true; };
     }
     let c = false;
     const cachedLatest = peekSessionMessages({
@@ -673,12 +692,20 @@ export const SessionPanel = memo(function SessionPanel({
   // briefly flip to false between task A finishing and queued task B starting —
   // would clear pendingPrompt and "lose" the optimistic bubble for the queued
   // message until loadLatestTurns later picks it up as a persisted turn.
+  //
+  // localStreamPendingRef gates the brand-new-session case: right after enter,
+  // the session can read non-running (stub/refresh timing) AND no stream snapshot
+  // has arrived yet, so this cleanup would fire and wipe the just-sent optimistic
+  // bubble — which (with loading still true) flickers to a spinner until promotion
+  // + history land. The ref stays true until applyStreamSnapshot sees the turn's
+  // first/last snapshot, at which point one of the deps below changes and this
+  // re-runs to do the real cleanup.
   useEffect(() => {
-    if (displayState !== 'running' && !streaming && !liveStream
+    if (!localStreamPendingRef.current
+        && displayState !== 'running' && !streaming && !liveStream
         && !streamPhase && queuedTaskIds.length === 0) {
       clearPending();
       clearPendingQueuedSends();
-      localStreamPendingRef.current = false;
     }
   }, [displayState, streaming, liveStream, streamPhase, queuedTaskIds.length, clearPending, clearPendingQueuedSends]);
 
@@ -781,7 +808,7 @@ export const SessionPanel = memo(function SessionPanel({
     <div className="flex flex-col h-full overflow-hidden">
       {/* ── Messages ── */}
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overscroll-contain">
-        {loading ? (
+        {loading && !pendingPrompt && !pendingImageUrls.length && !liveStream ? (
           <div className="flex items-center justify-center py-20"><Spinner className="h-5 w-5 text-fg-4" /></div>
         ) : turns.length === 0 && !pendingPrompt && !pendingImageUrls.length && !liveStream && !runFailureDetail ? (
           <div className="py-20 text-center text-[13px] text-fg-5">{t('hub.noMessages')}</div>
@@ -841,7 +868,7 @@ export const SessionPanel = memo(function SessionPanel({
                 />
               );
             })}
-            {runFailureDetail && <RunFailureNotice detail={runFailureDetail} t={t} />}
+            {runFailureDetail && <div className="mb-5 animate-in"><RunEndNotice detail={runFailureDetail} t={t} /></div>}
             {/* Optimistic pending message — represents the RUNNING task's user
                 turn until rawTurns picks it up. Deduped against the last loaded
                 user turn to avoid double-rendering after history refresh. When

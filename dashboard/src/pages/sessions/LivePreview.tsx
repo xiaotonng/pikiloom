@@ -3,8 +3,8 @@ import ReactMarkdown from 'react-markdown';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
 import { mdComponents, mdPlugins } from './markdown';
-import { lastNLines } from './utils';
-import { shortenModel } from '../../utils';
+import { lastNLines, classifyRunEnd } from './utils';
+import { cn, shortenModel } from '../../utils';
 import type { StreamPlan, StreamSubAgent, StreamPreviewMeta, StreamToolCall } from '../../types';
 
 export interface LiveStreamView {
@@ -47,6 +47,41 @@ export function liveStreamShouldRender(stream: LiveStreamView): boolean {
 export function liveStreamFailureLabelKey(stream: LiveStreamView): string | null {
   if (stream.phase !== 'done' || !stream.error) return null;
   return liveStreamHasBody(stream) ? 'hub.streamErrored' : 'hub.streamFailed';
+}
+
+/**
+ * Compact, low-profile end-of-turn marker. Replaces the old full-width rose
+ * box that occupied three padded lines for every stopped/errored turn.
+ *  - A user stop ("Interrupted by user.") renders as a muted neutral chip —
+ *    it was intentional, so it must not read as a failure or grab attention.
+ *  - Timeouts / max-token stops render neutral with their (short) reason.
+ *  - Only genuine errors get a rose tint, and even then as a single tiny line.
+ * Used both for the persisted `runDetail` (SessionPanel) and the transient
+ * live `stream.error` (LivePreview) so the two stay visually consistent.
+ */
+export function RunEndNotice({ detail, t, className }: {
+  detail: string;
+  t: (k: string) => string;
+  className?: string;
+}) {
+  const kind = classifyRunEnd(detail);
+  if (kind === 'interrupted') {
+    return (
+      <div className={cn('flex items-center gap-1.5 text-[11px] text-fg-5/55', className)}>
+        <span className="inline-block h-2 w-2 rounded-[2px] bg-fg-5/45 shrink-0" />
+        <span>{t('hub.turnStopped')}</span>
+      </div>
+    );
+  }
+  const tone = kind === 'error'
+    ? { dot: 'bg-rose-400/55', text: 'text-rose-300/65' }
+    : { dot: 'bg-fg-5/40', text: 'text-fg-5/55' };
+  return (
+    <div className={cn('flex items-start gap-1.5 text-[11px] leading-[1.6]', tone.text, className)}>
+      <span className={cn('mt-[5px] h-1 w-1 rounded-full shrink-0', tone.dot)} />
+      <span className="min-w-0 break-words">{detail}</span>
+    </div>
+  );
 }
 
 /* ── Live streaming preview ── */
@@ -188,15 +223,12 @@ export function LivePreview({
         </div>
       )}
 
-      {/* Stream finished with an error — surface the reason inline. */}
+      {/* Stream finished — surface a compact, low-profile end marker. A user
+          stop is intentional (neutral chip), not an error; only genuine
+          failures get rose tint. Replaces the old full-width rose box so a
+          stopped/errored turn no longer dominates the conversation. */}
       {failureLabelKey && stream.error && (
-        <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 text-[12.5px] leading-[1.7] text-fg-3">
-          <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-rose-400/70 shrink-0" />
-          <div className="min-w-0">
-            <div className="text-[11px] font-mono uppercase tracking-wide text-rose-300/80">{t(failureLabelKey)}</div>
-            <div className="mt-0.5 break-words">{stream.error}</div>
-          </div>
-        </div>
+        <RunEndNotice detail={stream.error} t={t} className="pt-0.5" />
       )}
     </div>
   );

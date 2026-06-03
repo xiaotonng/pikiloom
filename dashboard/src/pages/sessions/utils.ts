@@ -120,6 +120,31 @@ export function lastNLines(text: string, n: number): string {
   return lines.slice(-n).join('\n');
 }
 
+/** How a turn ended, derived from its detail string.
+ *  - 'interrupted': the user pressed stop — intentional, not a failure.
+ *  - 'incomplete':  timed out / hit max tokens — ran out of room, not a crash.
+ *  - 'error':       a genuine failure worth flagging.
+ *  Drives whether the end-of-turn marker renders neutral (interrupted/incomplete)
+ *  or rose-tinted (error), and how much space it takes.
+ *
+ *  The detail strings come from the backend and are NOT localized:
+ *    - `incompleteRunDetail()` in src/agent/session.ts → `session.runDetail`
+ *      ("Interrupted by user." / "Timed out before completion." / "Stopped
+ *       before completion: max tokens reached.")
+ *    - the driver `result.error` in src/agent/drivers/*.ts → live `stream.error`
+ *      (claude-tui emits the same "Interrupted by user." / "Timed out after Ns…").
+ *  Keep these matchers in lock-step with those producers. */
+export type RunEndKind = 'interrupted' | 'incomplete' | 'error';
+export function classifyRunEnd(detail: string | null | undefined): RunEndKind {
+  const d = String(detail || '').trim().toLowerCase();
+  if (!d) return 'error';
+  if (d.startsWith('interrupted by user')) return 'interrupted';
+  if (d.startsWith('timed out') || d.startsWith('stopped before completion') || d.includes('max tokens')) {
+    return 'incomplete';
+  }
+  return 'error';
+}
+
 export type ComposerImageAttachment = { id: string; file: File; previewUrl: string };
 
 export function makeComposerImageAttachment(file: File): ComposerImageAttachment {

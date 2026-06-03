@@ -151,7 +151,13 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   // Multi-session window state: fixed-size slots determined by layoutMode
   // mountKey stays stable across session promotion (pending→native) so the
   // React tree keeps the panel mounted instead of remounting and losing state.
-  type SessionSlot = { agent: string; sessionId: string; workdir: string; mountKey: string };
+  // pendingPrompt/pendingImageUrls are TRANSIENT (stripped before persistence):
+  // they carry the just-sent message of a brand-new session ON the slot itself, so
+  // the SessionPanel mounts with the optimistic bubble already in hand. Routing it
+  // through separate state + an isActive gate raced the slot's mount (the bubble
+  // flickered to a spinner right after pressing enter); the slot is one object that
+  // commits atomically with the panel, so there is no race.
+  type SessionSlot = { agent: string; sessionId: string; workdir: string; mountKey: string; pendingPrompt?: string | null; pendingImageUrls?: string[] };
   // Layout: 1/2/3/6 visible session slots
   type LayoutMode = 1 | 2 | 3 | 6;
 
@@ -190,7 +196,13 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   const setOpenSessions = useCallback((updater: SessionSlot[] | ((prev: SessionSlot[]) => SessionSlot[])) => {
     setOpenSessionsRaw(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      try { sessionStorage.setItem('pikiclaw-open-sessions', JSON.stringify(next)); } catch {}
+      try {
+        // Strip the transient optimistic prompt fields — they only matter for the
+        // live mount of a fresh session, never across a reload (blob image URLs
+        // would be dead anyway).
+        const persistable = next.map(({ pendingPrompt: _p, pendingImageUrls: _i, ...rest }) => rest);
+        sessionStorage.setItem('pikiclaw-open-sessions', JSON.stringify(persistable));
+      } catch {}
       return next;
     });
   }, []);
@@ -637,8 +649,21 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   }, [confirmDeleteSession, deleteSessionPurgeNative, t, toastSession]);
 
   /* ── New session — transition after InputComposer creates it ── */
-  const [newSessionPendingPrompt, setNewSessionPendingPrompt] = useState<string | null>(null);
-  const [newSessionPendingImageUrls, setNewSessionPendingImageUrls] = useState<string[]>([]);
+  // Clear a slot's optimistic prompt once the panel has consumed it into its own
+  // state (so a later re-render doesn't keep re-feeding it).
+  const clearSlotPending = useCallback((mountKey: string) => {
+    setOpenSessions(prev => {
+      let changed = false;
+      const next = prev.map(s => {
+        if (s.mountKey === mountKey && (s.pendingPrompt != null || s.pendingImageUrls)) {
+          changed = true;
+          return { ...s, pendingPrompt: null, pendingImageUrls: undefined };
+        }
+        return s;
+      });
+      return changed ? next : prev;
+    });
+  }, [setOpenSessions]);
 
   const handleNewSessionCreated = useCallback((next: { agent: string; sessionId: string; workdir: string }, pendingPrompt?: string, pendingImageUrls?: string[]) => {
     warmSession({ agent: next.agent, sessionId: next.sessionId, runState: 'running' }, next.workdir);
@@ -657,13 +682,16 @@ export const SessionWorkspace = memo(function SessionWorkspace({
       return { ...prev, [next.workdir]: [stub, ...existing] };
     });
     const targetSlot = newSessionSlotRef.current;
-    const slot: SessionSlot = { ...next, mountKey: nextMountKey() };
-    // CRITICAL: setNewSessionPending* MUST be inside startTransition so they commit
-    // atomically with the slot/active changes. If set outside, the "pending" render still
-    // shows the OLD active panel which would consume the prompt before the new panel mounts.
+    // The optimistic prompt rides ON the slot — one object that commits with the
+    // panel mount, so the SessionPanel always has the just-sent message on its very
+    // first render (no spinner flash, shows the instant enter is pressed).
+    const slot: SessionSlot = {
+      ...next,
+      mountKey: nextMountKey(),
+      pendingPrompt: pendingPrompt || null,
+      pendingImageUrls: pendingImageUrls && pendingImageUrls.length ? pendingImageUrls : undefined,
+    };
     startTransition(() => {
-      setNewSessionPendingPrompt(pendingPrompt || null);
-      setNewSessionPendingImageUrls(pendingImageUrls && pendingImageUrls.length ? pendingImageUrls : []);
       setShowNewSession(null);
       setOpenSessions(prev => {
         if (targetSlot >= prev.length) return [...prev, slot];
@@ -674,7 +702,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
       setActiveSlotIndex(targetSlot >= 0 ? targetSlot : 0);
     });
     void loadSessionsForWorkspace(next.workdir, { background: true, force: true });
-  }, [loadSessionsForWorkspace, warmSession]);
+  }, [loadSessionsForWorkspace, warmSession, setOpenSessions, setActiveSlotIndex]);
 
   /* ── Select session — stable callback that takes wsPath ── */
   const handleSelectSession = useCallback((session: SessionInfo, workdir: string) => {
@@ -1028,9 +1056,9 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                         workdir={slot.workdir}
                         active={active && isActive}
                         onSessionChange={(next) => handlePanelSessionChange(next, slotIdx)}
-                        initialPendingPrompt={isActive ? newSessionPendingPrompt : null}
-                        initialPendingImageUrls={isActive ? newSessionPendingImageUrls : undefined}
-                        onPendingPromptConsumed={isActive ? () => { setNewSessionPendingPrompt(null); setNewSessionPendingImageUrls([]); } : undefined}
+                        initialPendingPrompt={slot.pendingPrompt ?? null}
+                        initialPendingImageUrls={slot.pendingImageUrls}
+                        onPendingPromptConsumed={() => clearSlotPending(slot.mountKey)}
                       />
                     </Suspense>
                   </div>

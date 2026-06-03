@@ -562,6 +562,119 @@ describe('Claude TUI driver — decideClaudeTuiStall watchdog (mid-turn freeze)'
       now: 10_000, lastProgressAt: 0, pendingToolCount: 2, pendingToolMs: 20_000,
     })).toBe('wait');
   });
+
+  // PTY fast path — the 2.1.160 hard freeze (event loop dead, zero repaint).
+  it('stalls fast when the PTY itself has been byte-silent past ptyDeadMs', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    // 4m of total silence (PTY + signals): hard freeze → stall well before the
+    // 10m quiet threshold, even with a pending tool (which alone would allow 30m).
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 96 * MIN, pendingToolCount: 1,
+      lastPtyDataAt: 96 * MIN,
+    })).toBe('stall');
+  });
+
+  it('does NOT fast-stall while the TUI is still painting (long thinking / long Bash)', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    // Signals quiet 9m (long inference) but the spinner repainted 1s ago — wait.
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 91 * MIN, pendingToolCount: 0,
+      lastPtyDataAt: 100 * MIN - 1_000,
+    })).toBe('wait');
+    // Same but mid-tool: a healthy long foreground command keeps painting — wait.
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 80 * MIN, pendingToolCount: 1,
+      lastPtyDataAt: 100 * MIN - 1_000,
+    })).toBe('wait');
+  });
+
+  it('falls back to the slow thresholds when the PTY signal is unavailable', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 96 * MIN, pendingToolCount: 0,
+      lastPtyDataAt: 0,
+    })).toBe('wait');
+  });
+
+  it('honours a custom ptyDeadMs', async () => {
+    const { decideClaudeTuiStall } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStall({
+      now: 100_000, lastProgressAt: 0, pendingToolCount: 0,
+      lastPtyDataAt: 10_000, ptyDeadMs: 60_000,
+    })).toBe('stall');
+  });
+});
+
+describe('Claude TUI driver — decideClaudeTuiStop phantom-hold TTL', () => {
+  const MIN = 60_000;
+
+  it('keeps holding while background agents emit hook/sidecar traffic', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStop({
+      stoppedAt: 100 * MIN, pendingBackgroundAgents: 2,
+      lastTaskNotificationAt: 0, lastJsonlEventAt: 100 * MIN,
+      lastHookOrSidecarEventAt: 119 * MIN,           // 1m ago — agents alive
+      now: 120 * MIN,
+    })).toBe('hold-background');
+  });
+
+  it('releases a phantom hold once every channel is quiet past the TTL', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    // Counted pending, but nothing (JSONL / notification / hooks / sidecars)
+    // has moved for 11m — the completion was lost; treat the Stop as final.
+    expect(decideClaudeTuiStop({
+      stoppedAt: 100 * MIN, pendingBackgroundAgents: 1,
+      lastTaskNotificationAt: 0, lastJsonlEventAt: 100 * MIN,
+      lastHookOrSidecarEventAt: 100 * MIN,
+      now: 111 * MIN,
+    })).toBe('terminate');
+  });
+
+  it('honours a custom holdQuietTtlMs', async () => {
+    const { decideClaudeTuiStop } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(decideClaudeTuiStop({
+      stoppedAt: 1_000, pendingBackgroundAgents: 1,
+      lastTaskNotificationAt: 0, lastJsonlEventAt: 1_000,
+      lastHookOrSidecarEventAt: 1_000, holdQuietTtlMs: 5_000,
+      now: 7_000,
+    })).toBe('terminate');
+  });
+});
+
+describe('Claude background Bash — pending registration + notification resolution', () => {
+  it('counts a backgrounded Bash launch as pending background work', async () => {
+    const {
+      registerClaudeBackgroundBashLaunch, pendingClaudeBackgroundAgentCount,
+      pendingClaudeBackgroundBashCount,
+    } = await import('../src/agent/drivers/claude.ts');
+    const s: any = {};
+    registerClaudeBackgroundBashLaunch(s, 'toolu_bash1');
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);   // 总 pending(hold 判定用)
+    expect(pendingClaudeBackgroundBashCount(s)).toBe(1);    // bash 专项(TTL 选择用)
+  });
+
+  it('resolves a bash <task-notification> via the launch-ack task-id mapping', async () => {
+    const {
+      registerClaudeBackgroundBashLaunch, applyClaudeTaskNotification,
+      extractClaudeBackgroundTaskId, pendingClaudeBackgroundAgentCount,
+    } = await import('../src/agent/drivers/claude.ts');
+    const s: any = { recentActivity: [] };
+    registerClaudeBackgroundBashLaunch(s, 'toolu_bash2');
+    // launch ack(tool_result)→ 提取 task id 并建映射(call-site 行为的最小重演)
+    const taskId = extractClaudeBackgroundTaskId(
+      'Command running in background with ID: bash_7\nOutput will stream to the transcript.');
+    expect(taskId).toBe('bash_7');
+    s.bgTaskIdToToolUse.set(taskId!, 'toolu_bash2');
+    // 完成通知只带 task-id,不带 tool-use-id(bash 常态)→ 仍应清零 pending
+    applyClaudeTaskNotification(s, { taskId: 'bash_7', toolUseId: null, status: 'completed' }, Date.now());
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(0);
+  });
+
+  it('extractClaudeBackgroundTaskId ignores non-background results', async () => {
+    const { extractClaudeBackgroundTaskId } = await import('../src/agent/drivers/claude.ts');
+    expect(extractClaudeBackgroundTaskId('regular output, ID: 42 mentioned casually')).toBeNull();
+    expect(extractClaudeBackgroundTaskId([{ type: 'text', text: 'no ids here' }])).toBeNull();
+  });
 });
 
 describe('Live preview toolCalls — expandable tool rows during a running turn', () => {

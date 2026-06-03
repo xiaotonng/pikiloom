@@ -350,6 +350,29 @@ export const CLAUDE_TUI_STALL_QUIET_MS = 10 * 60_000;
  * silent for this long means the freeze hit mid-execution.
  */
 export const CLAUDE_TUI_STALL_PENDING_TOOL_MS = 30 * 60_000;
+/**
+ * Fast-path stall: a healthy claude TUI repaints continuously while a turn is
+ * in flight (spinner frames, stream ticks, status line) — the PTY never goes
+ * byte-silent for minutes. If NO PTY output arrives for this long AND every
+ * structured signal is equally quiet, the process event loop itself is gone
+ * (the 2.1.160 mid-turn freeze: attachment lands → next API call never
+ * assembles). Declare the stall now instead of waiting out the 10/30-minute
+ * quiet thresholds — turns a 10-30 分钟「卡死」into a ~3 分钟自愈。
+ * False-positive safe: long thinking / long Bash keep painting frames, which
+ * refreshes the PTY signal and defers this path to the slow thresholds.
+ */
+export const CLAUDE_TUI_STALL_PTY_DEAD_MS = 3 * 60_000;
+/**
+ * TTL for the post-Stop `hold-background` path. The hold protects
+ * run_in_background agents living inside the claude process — but a live
+ * agent keeps emitting hook/sidecar/JSONL traffic. If the hold sees no
+ * activity on ANY channel for this long, the pending count is phantom (lost
+ * <task-notification>, agents already finished): release as a NORMAL Stop.
+ * Without this TTL the stall watchdog eventually fires instead, mislabels the
+ * cleanly-finished turn 'stalled', and injects a confusing auto-resume prompt
+ * (the「回合明明答完了还被注入 Continue」symptom).
+ */
+export const CLAUDE_TUI_STOP_HOLD_QUIET_TTL_MS = 10 * 60_000;
 
 /** Codex-specific grace period added to the user-configured timeout. */
 export const CODEX_STREAM_HARD_KILL_GRACE_MS = 5_000;

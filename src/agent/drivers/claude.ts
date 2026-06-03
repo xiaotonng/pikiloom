@@ -355,6 +355,7 @@ export interface ClaudeTaskNotification {
 function ensureClaudeBgAgentState(s: any): void {
   if (!s.bgAgentLaunchedToolUseIds) s.bgAgentLaunchedToolUseIds = new Set<string>();
   if (!s.bgAgentCompletedToolUseIds) s.bgAgentCompletedToolUseIds = new Set<string>();
+  if (!s.bgBashToolUseIds) s.bgBashToolUseIds = new Set<string>();
   if (!s.bgTaskIdToToolUse) s.bgTaskIdToToolUse = new Map<string, string>();
   if (typeof s.lastTaskNotificationAt !== 'number') s.lastTaskNotificationAt = 0;
 }
@@ -367,7 +368,27 @@ export function registerClaudeBackgroundAgentLaunch(s: any, toolUseId: string): 
   s.bgAgentLaunchedToolUseIds.add(id);
 }
 
-/** Launched background agents whose <task-notification> hasn't arrived yet. */
+/**
+ * Record a `Bash` tool_use launched with `run_in_background: true`.
+ *
+ * Background Bash lives *inside the claude process* exactly like a
+ * backgrounded sub-agent: its tool_result is a launch ack, the real
+ * completion arrives later as a `<task-notification>` which re-invokes the
+ * model in the same process. Before this registration existed only Task/Agent
+ * launches counted as "pending background work" — a turn that backgrounded a
+ * Bash command would hit Stop, decideClaudeTuiStop saw pending=0 and
+ * terminated the PTY, killing the command and its future report-back turn
+ * (the「claude 后台任务一停止就被掐死」failure).
+ */
+export function registerClaudeBackgroundBashLaunch(s: any, toolUseId: string): void {
+  const id = String(toolUseId || '').trim();
+  if (!id) return;
+  ensureClaudeBgAgentState(s);
+  s.bgAgentLaunchedToolUseIds.add(id);
+  s.bgBashToolUseIds.add(id);
+}
+
+/** Launched background tasks (agents + bash) whose <task-notification> hasn't arrived yet. */
 export function pendingClaudeBackgroundAgentCount(s: any): number {
   const launched: Set<string> | undefined = s?.bgAgentLaunchedToolUseIds;
   if (!launched?.size) return 0;
@@ -377,6 +398,43 @@ export function pendingClaudeBackgroundAgentCount(s: any): number {
     if (!completed?.has(id)) pending++;
   }
   return pending;
+}
+
+/** Pending background *Bash* tasks specifically. Unlike agents (whose sidecar
+ *  JSONL keeps emitting events while alive), a background command is silent by
+ *  nature — callers use this to pick a longer hold/stall budget. */
+export function pendingClaudeBackgroundBashCount(s: any): number {
+  const bash: Set<string> | undefined = s?.bgBashToolUseIds;
+  if (!bash?.size) return 0;
+  const completed: Set<string> | undefined = s?.bgAgentCompletedToolUseIds;
+  let pending = 0;
+  for (const id of bash) {
+    if (!completed?.has(id)) pending++;
+  }
+  return pending;
+}
+
+/**
+ * Pull the background task id out of a launch ack. Claude Code's backgrounded
+ * Bash tool_result reads like "Command running in background with ID: bash_3
+ * (output: …)" — the id is what the later <task-notification> carries (its
+ * <tool-use-id> is often omitted for bash), so mapping id → tool_use here is
+ * what lets applyClaudeTaskNotification resolve the completion.
+ */
+export function extractClaudeBackgroundTaskId(content: any): string | null {
+  let text = '';
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    text = content
+      .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+      .map((b: any) => b.text)
+      .join('\n');
+  } else if (content && typeof content === 'object') {
+    try { text = JSON.stringify(content); } catch { return null; }
+  }
+  if (!text || !/background/i.test(text)) return null;
+  const m = text.match(/\b(?:ID|id)\s*[:：]?\s*[`"']?([A-Za-z0-9][A-Za-z0-9_-]{1,63})/);
+  return m ? m[1] : null;
 }
 
 /**
@@ -592,6 +650,12 @@ export function claudeParse(ev: any, s: any) {
         s.claudeToolsById.set(toolId, { name: toolName, summary: subAgent.description || 'Run task' });
         continue;
       }
+      // Background Bash — same in-process lifecycle as a backgrounded agent:
+      // launch ack now, <task-notification> later. Register so the TUI driver
+      // holds the PTY open instead of SIGTERMing the command mid-flight.
+      if (toolName === 'Bash' && block?.input?.run_in_background === true) {
+        registerClaudeBackgroundBashLaunch(s, toolId);
+      }
       const tool = {
         name: toolName,
         summary: summarizeClaudeToolUse(block?.name, block?.input || {}),
@@ -669,6 +733,14 @@ export function claudeParse(ev: any, s: any) {
       if (tool) {
         tool.result = previewToolCallResult(block?.content);
         tool.status = block?.is_error ? 'failed' : 'done';
+      }
+      // Background Bash launch ack → map its task id to the tool_use so the
+      // later <task-notification> (which usually omits <tool-use-id> for bash)
+      // can resolve and decrement the pending count.
+      if (tool?.name === 'Bash' && s.bgBashToolUseIds?.has(toolId)
+          && !s.bgAgentCompletedToolUseIds?.has(toolId)) {
+        const taskId = extractClaudeBackgroundTaskId(block?.content);
+        if (taskId && !s.bgTaskIdToToolUse.has(taskId)) s.bgTaskIdToToolUse.set(taskId, toolId);
       }
       pushRecentActivity(s.recentActivity, summarizeClaudeToolResult(tool, block, ev.tool_use_result));
       // MCP / Skill tool_result with multimodal content — recurse for image

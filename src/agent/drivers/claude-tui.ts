@@ -55,11 +55,14 @@ import { stripAnsiEscapes } from '../../core/utils.js';
 import {
   AGENT_STREAM_HARD_KILL_GRACE_MS,
   CLAUDE_TUI_STALL_QUIET_MS, CLAUDE_TUI_STALL_PENDING_TOOL_MS,
+  CLAUDE_TUI_STALL_PTY_DEAD_MS, CLAUDE_TUI_STOP_HOLD_QUIET_TTL_MS,
 } from '../../core/constants.js';
 import {
   claudeParse, createClaudeStreamState,
   claudeContextWindowFromModel, claudeEffectiveContextWindow,
   registerClaudeBackgroundAgentLaunch, pendingClaudeBackgroundAgentCount,
+  registerClaudeBackgroundBashLaunch, pendingClaudeBackgroundBashCount,
+  extractClaudeBackgroundTaskId,
 } from './claude.js';
 
 // ---------------------------------------------------------------------------
@@ -463,6 +466,12 @@ export function applyHookToolEvent(ev: any, s: any): boolean {
       s.claudeToolsById.set(toolUseId, { name: toolName, summary: desc || kind || 'Sub-agent' });
       return true;
     }
+    // Background Bash — register like a backgrounded agent so the turn's Stop
+    // holds the PTY open until its <task-notification> lands, instead of
+    // SIGTERMing the still-running command (and its future report-back turn).
+    if (toolName === 'Bash' && ev.tool_input?.run_in_background === true) {
+      registerClaudeBackgroundBashLaunch(s, toolUseId);
+    }
     const summary = summarizeClaudeToolUse(toolName, ev.tool_input || {});
     pushRecentActivity(s.recentActivity, summary);
     s.seenClaudeToolIds.add(toolUseId);
@@ -524,6 +533,13 @@ export function applyHookToolEvent(ev: any, s: any): boolean {
         pushRecentActivity(s.recentActivity, summary);
         s.activity = s.recentActivity.join('\n');
       }
+    }
+    // Background Bash launch ack → map task id → tool_use for notification
+    // resolution (bash notifications usually omit <tool-use-id>).
+    if (toolName === 'Bash' && s.bgBashToolUseIds?.has(toolUseId)
+        && !s.bgAgentCompletedToolUseIds?.has(toolUseId)) {
+      const taskId = extractClaudeBackgroundTaskId(ev.tool_response);
+      if (taskId && !s.bgTaskIdToToolUse.has(taskId)) s.bgTaskIdToToolUse.set(taskId, toolUseId);
     }
     s.seenClaudeToolResultIds.add(toolUseId);
     return true;
@@ -692,6 +708,14 @@ export type ClaudeTuiStopDecision = 'terminate' | 'hold-background' | 'hold-rese
  *    is still expected. Hold until a fresh Stop or BG_RESETTLE_QUIET_MS of
  *    JSONL silence.
  *  - `terminate`: the Stop is the genuine end of the turn.
+ *
+ * The `hold-background` path carries a quiet-TTL: a genuinely-running
+ * background agent keeps emitting hook/sidecar/JSONL traffic, so a hold whose
+ * every channel has been silent past CLAUDE_TUI_STOP_HOLD_QUIET_TTL_MS is a
+ * phantom (lost <task-notification> / completion never observed). Releasing
+ * it as a normal Stop keeps the turn's clean semantics — letting the stall
+ * watchdog reap it instead would mislabel a finished turn 'stalled' and
+ * inject a confusing auto-resume prompt into the next turn.
  */
 export function decideClaudeTuiStop(input: {
   stoppedAt: number;
@@ -700,8 +724,21 @@ export function decideClaudeTuiStop(input: {
   lastJsonlEventAt: number;
   now: number;
   resettleQuietMs?: number;
+  /** Freshest hook / sub-agent sidecar activity — live agents keep this hot. */
+  lastHookOrSidecarEventAt?: number;
+  holdQuietTtlMs?: number;
 }): ClaudeTuiStopDecision {
-  if (input.pendingBackgroundAgents > 0) return 'hold-background';
+  if (input.pendingBackgroundAgents > 0) {
+    const ttl = input.holdQuietTtlMs ?? CLAUDE_TUI_STOP_HOLD_QUIET_TTL_MS;
+    const lastActivityAt = Math.max(
+      input.stoppedAt,
+      input.lastJsonlEventAt,
+      input.lastTaskNotificationAt,
+      input.lastHookOrSidecarEventAt ?? 0,
+    );
+    if (input.now - lastActivityAt > ttl) return 'terminate';   // 幽灵 hold:全通道静默超 TTL
+    return 'hold-background';
+  }
   const stopIsStale = input.lastTaskNotificationAt > 0 && input.lastTaskNotificationAt >= input.stoppedAt;
   if (stopIsStale) {
     const quietMs = input.resettleQuietMs ?? BG_RESETTLE_QUIET_MS;
@@ -730,6 +767,14 @@ export type ClaudeTuiStallDecision = 'wait' | 'stall';
  * the freeze can also hit mid-execution, but a legitimately long foreground
  * command must not get shot — claude's own Bash timeout fires PostToolUse
  * well inside CLAUDE_TUI_STALL_PENDING_TOOL_MS.
+ *
+ * Fast path: `lastPtyDataAt` is raw PTY output (any repaint frame counts). A
+ * healthy TUI animates continuously mid-turn — spinner, stream ticks, status
+ * line — so PTY byte-silence is the cheapest possible "event loop is dead"
+ * detector. When BOTH the PTY and all structured signals have been silent
+ * past `ptyDeadMs`, declare the stall immediately instead of waiting out the
+ * 10/30-minute quiet thresholds. Long thinking and long foreground commands
+ * keep painting frames, which routes them to the slow thresholds as before.
  */
 export function decideClaudeTuiStall(input: {
   now: number;
@@ -737,7 +782,15 @@ export function decideClaudeTuiStall(input: {
   pendingToolCount: number;
   quietMs?: number;
   pendingToolMs?: number;
+  /** Wall-clock of the last raw PTY byte; 0/undefined = signal unavailable. */
+  lastPtyDataAt?: number;
+  ptyDeadMs?: number;
 }): ClaudeTuiStallDecision {
+  const ptyAt = input.lastPtyDataAt ?? 0;
+  if (ptyAt > 0) {
+    const ptyDeadMs = input.ptyDeadMs ?? CLAUDE_TUI_STALL_PTY_DEAD_MS;
+    if (input.now - Math.max(ptyAt, input.lastProgressAt) > ptyDeadMs) return 'stall';
+  }
   const threshold = input.pendingToolCount > 0
     ? (input.pendingToolMs ?? CLAUDE_TUI_STALL_PENDING_TOOL_MS)
     : (input.quietMs ?? CLAUDE_TUI_STALL_QUIET_MS);
@@ -989,9 +1042,15 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   agentLog(`[claude-tui] pid=${proc.pid}`);
 
   const dbg = process.env.PIKICLAW_CLAUDE_TUI_DEBUG === '1';
+  /** Wall-clock of the last raw PTY byte — stall watchdog fast-path signal. */
+  let lastPtyDataAt = Date.now();
   proc.onData((data: string) => {
     // We deliberately do not parse the TUI screen output. The JSONL is the
     // canonical source of structured events. Stash bytes only when debugging.
+    // Raw byte arrival doubles as the cheapest liveness signal: a healthy TUI
+    // repaints continuously mid-turn, so PTY silence = event loop dead — feeds
+    // the stall watchdog's fast path (decideClaudeTuiStall.lastPtyDataAt).
+    lastPtyDataAt = Date.now();
     if (dbg) {
       try { fs.appendFileSync(ptyLogPath, data); } catch {}
     }
@@ -1057,6 +1116,8 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let lastToolEventAt = start;
   let lastSidecarEventAt = 0;
   let stallKilled = false;
+  /** Last state.stoppedAt for which pendingHookToolIds was reconciled. */
+  let lastClearedStopAt = 0;
   /** Hook-reported tools still executing: PreToolUse seen, no PostToolUse. */
   const pendingHookToolIds = new Set<string>();
   // Append-only tool-events log fed by PreToolUse / PostToolUse hooks. We
@@ -1274,17 +1335,40 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     // has reported its <task-notification> AND the latest Stop is fresher than
     // the latest notification (i.e. the model's wrap-up segment finished).
     if (state.stoppedAt && !stopHookFired) {
+      // A fired Stop means no foreground tool is genuinely mid-flight any
+      // more. Surviving entries in pendingHookToolIds are lost PostToolUse
+      // hook events (MCP flap / hook timeout ate them) — clearing here stops
+      // them from silently pushing the stall watchdog onto the 30-minute
+      // pending-tool threshold for the rest of the turn.
+      if (state.stoppedAt !== lastClearedStopAt) {
+        lastClearedStopAt = state.stoppedAt;
+        if (pendingHookToolIds.size) {
+          agentWarn(`[claude-tui] Stop fired with ${pendingHookToolIds.size} unmatched PreToolUse event(s) — clearing (lost PostToolUse hooks)`);
+          pendingHookToolIds.clear();
+        }
+      }
       const pendingBg = pendingClaudeBackgroundAgentCount(s);
       const decision = decideClaudeTuiStop({
         stoppedAt: state.stoppedAt,
         pendingBackgroundAgents: pendingBg,
         lastTaskNotificationAt: s.lastTaskNotificationAt || 0,
         lastJsonlEventAt: lastMainJsonlEventAt,
+        lastHookOrSidecarEventAt: Math.max(lastToolEventAt, lastSidecarEventAt),
+        // Background *Bash* is silent by nature (no sidecar/hook traffic while
+        // it runs) — give it the long pending-tool budget; agent-only holds
+        // keep the default TTL (live agents emit sidecar events constantly).
+        holdQuietTtlMs: pendingClaudeBackgroundBashCount(s) > 0
+          ? CLAUDE_TUI_STALL_PENDING_TOOL_MS
+          : undefined,
         now: Date.now(),
       });
       if (decision === 'terminate') {
         stopHookFired = true;
         stopHookSeenAt = Date.now();
+        if (pendingBg > 0) {
+          // 幽灵 hold 释放:计数说还有后台 agent,但所有通道静默已超 TTL。
+          agentWarn(`[claude-tui] releasing phantom hold — ${pendingBg} background agent(s) still counted pending but every channel quiet past TTL; treating Stop as final`);
+        }
         agentLog(`[claude-tui] Stop hook fired — draining JSONL for ${POST_STOP_DRAIN_MS}ms before SIGTERM`);
       } else if (decision === 'hold-background' && pendingBg !== lastLoggedPendingBg) {
         lastLoggedPendingBg = pendingBg;
@@ -1313,19 +1397,35 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         start, lastMainJsonlEventAt, lastToolEventAt, lastSidecarEventAt,
         state.stoppedAt || 0, state.promptSubmittedAt || 0,
       );
+      // Pending background work (agents + bash) extends the stall budget the
+      // same way a pending foreground tool does: a silent 15-minute background
+      // build must not get shot by the 10-minute quiet threshold. The PTY
+      // fast path still catches true process freezes within minutes.
+      const pendingBgForStall = pendingClaudeBackgroundAgentCount(s);
+      // PTY fast path is for *mid-turn* freezes only. While the TUI idles in a
+      // post-Stop background hold it legitimately paints nothing — a static
+      // screen there is healthy, not frozen. Stop being the freshest signal is
+      // exactly that hold state → disarm the fast path (0 = unavailable).
+      const nonStopProgressAt = Math.max(
+        start, lastMainJsonlEventAt, lastToolEventAt, lastSidecarEventAt,
+        state.promptSubmittedAt || 0,
+      );
+      const inPostStopHold = !!state.stoppedAt && state.stoppedAt >= nonStopProgressAt;
       const stallDecision = decideClaudeTuiStall({
         now: Date.now(),
         lastProgressAt,
-        pendingToolCount: pendingHookToolIds.size,
+        pendingToolCount: pendingHookToolIds.size + pendingBgForStall,
+        lastPtyDataAt: inPostStopHold ? 0 : lastPtyDataAt,
       });
       if (stallDecision === 'stall') {
         stallKilled = true;
         const quietMin = Math.round((Date.now() - lastProgressAt) / 60_000);
+        const ptyQuietS = Math.round((Date.now() - lastPtyDataAt) / 1000);
         s.stopReason = 'stalled';
         if (!s.errors) {
-          s.errors = [`Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events) — known claude CLI freeze. Terminated for auto-resume.`];
+          s.errors = [`Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
         }
-        agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}) — terminating TUI pid=${proc.pid} for auto-resume`);
+        agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}, ptyQuiet=${ptyQuietS}s) — terminating TUI pid=${proc.pid} for auto-resume`);
         pushRecentActivity(s.recentActivity, `Agent stalled (${quietMin}m silent) — restarting turn`);
         s.activity = s.recentActivity.join('\n');
         emit();

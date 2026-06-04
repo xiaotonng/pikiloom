@@ -64,6 +64,56 @@ describe('dashboard live session state helpers', () => {
     expect(next.runDetail).toBe('Timed out before completion.');
   });
 
+  it('lets a fresh server "running" state supersede a stale "done" snapshot', () => {
+    // A previous turn ended → a 'done' snapshot lingers in the live-state map
+    // (15-min TTL). Then a new turn starts; the sessions API reports the
+    // session running again with a newer runUpdatedAt (server truth), but the
+    // client never saw a fresh 'start' (e.g. claude-tui resumed outside the
+    // dashboard, or a WS reconnect replayed no event). The stale 'done' must
+    // not paint a running session gray.
+    const base = {
+      sessionId: 'sess-resume',
+      agent: 'claude',
+      runState: 'running' as const,
+      running: true,
+      runUpdatedAt: '2026-06-03T11:59:50.000Z',
+      runDetail: null,
+    };
+    const staleDone = normalizeLiveSessionState('claude:sess-resume', {
+      phase: 'done',
+      // Observed ~57 min before the server's latest run update.
+      updatedAt: Date.parse('2026-06-03T11:03:10.000Z'),
+    });
+
+    const merged = applyLiveSessionState(base, staleDone);
+    expect(sessionDisplayState(merged)).toBe('running');
+    expect(merged.running).toBe(true);
+
+    // The real production shape: turn A finished and turn B started back-to-back,
+    // so the lingering 'done' is timestamped at ~the same instant as the
+    // server's new run (not minutes earlier). The server must still win.
+    const backToBackBase = { ...base, runUpdatedAt: '2026-06-03T11:59:50.000Z' };
+    const coincidentDone = normalizeLiveSessionState('claude:sess-resume', {
+      phase: 'done',
+      updatedAt: Date.parse('2026-06-03T11:59:50.000Z'),
+    });
+    const mergedBackToBack = applyLiveSessionState(backToBackBase, coincidentDone);
+    expect(sessionDisplayState(mergedBackToBack)).toBe('running');
+    // The card keeps the server's run timestamp (renders "Nm ago"), not the
+    // stale done's — matching the reported "2m + gray" symptom, now green.
+    expect(mergedBackToBack.runUpdatedAt).toBe('2026-06-03T11:59:50.000Z');
+
+    // The post-stream flash case is unchanged: when the server's runUpdatedAt
+    // is *behind* the 'done' (stale sessionsMap still says running), the 'done'
+    // still wins so the card doesn't flash "running" after the stream ended.
+    const flashBase = { ...base, runUpdatedAt: '2026-06-03T11:00:00.000Z' };
+    const freshDone = normalizeLiveSessionState('claude:sess-resume', {
+      phase: 'done',
+      updatedAt: Date.parse('2026-06-03T11:00:05.000Z'),
+    });
+    expect(sessionDisplayState(applyLiveSessionState(flashBase, freshDone))).toBe('completed');
+  });
+
   it('shows "waiting" when a non-running session parked background work', () => {
     const parked = {
       sessionId: 'sess-3',

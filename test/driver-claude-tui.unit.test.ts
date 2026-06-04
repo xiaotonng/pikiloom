@@ -196,6 +196,29 @@ describe('Claude TUI driver — terminal limit notices', () => {
   });
 });
 
+describe('Claude TUI driver — stall diagnostics classifier', () => {
+  // classifyClaudeJsonlEvent labels the last transcript event before a quiet
+  // stretch. The labels are load-bearing for the freeze diagnostics: the known
+  // freeze signature is a `user:tool_result` with no following assistant, so
+  // these must be precise.
+  it('labels assistant tool_use / text / thinking and user tool_result', async () => {
+    const { classifyClaudeJsonlEvent } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(classifyClaudeJsonlEvent({ type: 'assistant', message: { content: [{ type: 'tool_use' }] } })).toBe('assistant:tool_use');
+    expect(classifyClaudeJsonlEvent({ type: 'assistant', message: { content: [{ type: 'thinking' }, { type: 'text' }] } })).toBe('assistant:thinking');
+    expect(classifyClaudeJsonlEvent({ type: 'assistant', message: { content: [{ type: 'text' }] } })).toBe('assistant:text');
+    // The freeze signature: a tool_result lands, then the model never resumes.
+    expect(classifyClaudeJsonlEvent({ type: 'user', message: { content: [{ type: 'tool_result' }] } })).toBe('user:tool_result');
+  });
+
+  it('degrades gracefully on missing/odd shapes', async () => {
+    const { classifyClaudeJsonlEvent } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(classifyClaudeJsonlEvent({ type: 'system' })).toBe('system');
+    expect(classifyClaudeJsonlEvent({ type: 'user', message: { content: 'plain string' } })).toBe('user');
+    expect(classifyClaudeJsonlEvent({})).toBe('unknown');
+    expect(classifyClaudeJsonlEvent(null)).toBe('unknown');
+  });
+});
+
 describe('Claude TUI driver — chunked text streaming', () => {
   // The TUI driver replaces print-mode's per-token deltas with a simulated
   // stream: JSONL writes complete content blocks, the driver chunks them out

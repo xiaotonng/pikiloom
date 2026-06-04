@@ -401,20 +401,22 @@ export function buildStreamPreviewHtml(input: StreamPreviewRenderInput): string 
   }
 
   if (data.thinkDisplay && !data.display) {
-    const header = data.thinkingProgressText ? `${data.label} · ${data.thinkingProgressText}` : data.label;
-    parts.push(`<blockquote><b>${escapeHtml(header)}</b>\n${escapeHtml(data.thinkDisplay)}</blockquote>`);
+    // Elapsed lives in the footer only (single timer). Header is the bare label.
+    parts.push(`<blockquote><b>${escapeHtml(data.label)}</b>\n${escapeHtml(data.thinkDisplay)}</blockquote>`);
   } else if (data.display) {
     if (data.rawThinking) {
       parts.push(`<blockquote><b>${escapeHtml(data.label)}</b>\n${escapeHtml(data.thinkSnippet)}</blockquote>`);
     }
     parts.push(mdToTgHtml(data.preview));
   } else if (data.thinkingProgressText) {
-    // Thinking phase with no streamed thinking/body text yet — show
-    // "{thinkLabel} · <elapsed>" so the card visibly ticks instead of sitting
-    // blank or frozen on a stale token snapshot.
-    parts.push(`<blockquote><b>${escapeHtml(`${data.label} · ${data.thinkingProgressText}`)}</b></blockquote>`);
+    // Thinking phase with no streamed thinking/body text yet — show the bare
+    // "{thinkLabel}" so the card isn't blank. The elapsed tick lives in the
+    // footer only (one timer, not two); the footer re-renders on the channel
+    // heartbeat, so the card still visibly advances.
+    parts.push(`<blockquote><b>${escapeHtml(data.label)}</b></blockquote>`);
   }
 
+  if (data.longRunHint) parts.push(`<i>${escapeHtml(data.longRunHint)}</i>`);
   parts.push(formatPreviewFooterHtml(input.agent, input.elapsedMs, input.meta ?? null, {
     model: input.model,
     effort: input.effort,

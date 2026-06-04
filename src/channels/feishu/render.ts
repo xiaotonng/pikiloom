@@ -284,20 +284,22 @@ function buildPreviewMarkdown(input: StreamPreviewRenderInput, options?: { inclu
   }
 
   if (data.thinkDisplay && !data.display) {
-    const header = data.thinkingProgressText ? `${data.label} · ${data.thinkingProgressText}` : data.label;
-    parts.push(`**${header}**\n${stripCodeFences(data.thinkDisplay)}`);
+    // Elapsed lives in the footer only (single timer). Header is the bare label.
+    parts.push(`**${data.label}**\n${stripCodeFences(data.thinkDisplay)}`);
   } else if (data.display) {
     if (data.rawThinking) {
       parts.push(`**${data.label}**\n${stripCodeFences(data.thinkSnippet)}`);
     }
     parts.push(ensureBalancedCodeFences(data.preview));
   } else if (data.thinkingProgressText) {
-    // Thinking phase with no streamed thinking/body text yet — show
-    // "{thinkLabel} · <elapsed>" so the card visibly ticks instead of sitting
-    // blank or frozen on a stale token snapshot.
-    parts.push(`**${data.label} · ${data.thinkingProgressText}**`);
+    // Thinking phase with no streamed thinking/body text yet — show the bare
+    // "{thinkLabel}" so the card isn't blank. The elapsed tick lives in the
+    // footer only (one timer, not two); the footer re-renders on the channel
+    // heartbeat, so the card still visibly advances.
+    parts.push(`**${data.label}**`);
   }
 
+  if (data.longRunHint) parts.push(data.longRunHint);
   if (options?.includeFooter !== false) {
     parts.push(formatPreviewFooter(input.agent, input.elapsedMs, input.meta ?? null, {
       model: input.model,

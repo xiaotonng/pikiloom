@@ -51,6 +51,7 @@ import {
   detectClaudeApiError,
 } from '../utils.js';
 import { encodePathAsDirName, getHome, whichSync } from '../../core/platform.js';
+import { createRetainedLogSink } from '../../core/logging.js';
 import { stripAnsiEscapes } from '../../core/utils.js';
 import {
   AGENT_STREAM_HARD_KILL_GRACE_MS,
@@ -64,6 +65,67 @@ import {
   registerClaudeBackgroundBashLaunch, pendingClaudeBackgroundBashCount,
   extractClaudeBackgroundTaskId,
 } from './claude.js';
+
+// ---------------------------------------------------------------------------
+// Stall diagnostics (capture-only)
+// ---------------------------------------------------------------------------
+//
+// We instrument the mid-turn freeze before tuning the watchdog: the next pause
+// should be classified from data, not guesswork. Records land append-only in
+// ~/.pikiclaw/diagnostics/claude-tui-stall.jsonl across three moments:
+//   - 'quiet'    — heartbeat while a turn has gone silent past the threshold
+//                  (captures the lead-up to a stall, throttled)
+//   - 'stall'    — the watchdog declared the turn dead and SIGTERMed it
+//   - 'resolved' — a turn that went quiet ended (completed / killed / aborted),
+//                  so benign long-thinking is separable from true freezes
+//
+// The decisive field is `ptyQuietMs` vs `quietMs`: a large quietMs (JSONL/hook
+// signals silent) paired with a small ptyQuietMs (PTY still painting frames)
+// means the model stream froze behind a live spinner — which defeats the
+// PTY-dead fast path and forces the slow 10-min quiet threshold. Confirming
+// that pattern (or refuting it) is the whole point of this pass.
+
+/** Begin recording heartbeats once no live signal has advanced for this long. */
+const STALL_DIAG_QUIET_THRESHOLD_MS = 45_000;
+/** Throttle heartbeats while a turn stays quiet, so a long freeze is sampled
+ *  (not logged every 200ms poll tick). */
+const STALL_DIAG_HEARTBEAT_INTERVAL_MS = 30_000;
+
+// undefined = not yet initialised; null = init failed (give up, never retry);
+// function = ready. Shared across all turns so every session appends to one file.
+let stallDiagSink: ((chunk: string) => void) | null | undefined;
+function writeStallDiag(record: Record<string, unknown>): void {
+  if (stallDiagSink === null) return;
+  try {
+    if (stallDiagSink === undefined) {
+      const file = path.join(getHome(), '.pikiclaw', 'diagnostics', 'claude-tui-stall.jsonl');
+      stallDiagSink = createRetainedLogSink(file, {
+        maxLines: 50_000,
+        maxAgeMs: 14 * 24 * 60 * 60_000,
+        trimEveryWrites: 500,
+      });
+      agentLog(`[claude-tui] stall diagnostics → ${file}`);
+    }
+    stallDiagSink(JSON.stringify({ ts: Date.now(), ...record }) + '\n');
+  } catch {
+    stallDiagSink = null;
+  }
+}
+
+/** Cheap capture-only label for the last transcript event before a quiet
+ *  stretch — the freeze signature is "next assistant never starts after a
+ *  tool_result", so the kind of the last event matters. */
+export function classifyClaudeJsonlEvent(ev: any): string {
+  const type = typeof ev?.type === 'string' ? ev.type : 'unknown';
+  const content = ev?.message?.content;
+  if (Array.isArray(content)) {
+    if (content.some((b: any) => b?.type === 'tool_use')) return `${type}:tool_use`;
+    if (content.some((b: any) => b?.type === 'tool_result')) return `${type}:tool_result`;
+    if (content.some((b: any) => b?.type === 'thinking')) return `${type}:thinking`;
+    if (content.some((b: any) => b?.type === 'text')) return `${type}:text`;
+  }
+  return type;
+}
 
 // ---------------------------------------------------------------------------
 // node-pty (dynamic import — optional dependency)
@@ -1129,6 +1191,13 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let lastToolEventAt = start;
   let lastSidecarEventAt = 0;
   let stallKilled = false;
+  // Stall diagnostics (capture-only) — see writeStallDiag.
+  let observedClaudeVersion = '';
+  let lastMainJsonlType = '';
+  let lastStallDiagHeartbeatAt = 0;
+  let stallDiagWentQuiet = false;
+  let stallDiagMaxQuietMs = 0;
+  let stallDiagPtyAliveWhileQuiet = false;
   /** Last state.stoppedAt for which pendingHookToolIds was reconciled. */
   let lastClearedStopAt = 0;
   /** Hook-reported tools still executing: PreToolUse seen, no PostToolUse. */
@@ -1315,6 +1384,8 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         }
         touched = true;
         lastMainJsonlEventAt = Date.now();
+        if (typeof ev.version === 'string' && ev.version) observedClaudeVersion = ev.version;
+        if (!isSubAgentEvent) lastMainJsonlType = classifyClaudeJsonlEvent(ev);
       }
       if (touched) {
         // Emit immediately so non-text changes (tool_use, plan, activity,
@@ -1424,6 +1495,39 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         state.promptSubmittedAt || 0,
       );
       const inPostStopHold = !!state.stoppedAt && state.stoppedAt >= nonStopProgressAt;
+      // Stall diagnostics: sample the quiet lead-up so the watchdog can later be
+      // tuned from data. Capture-only — changes no control flow.
+      {
+        const nowMs = Date.now();
+        const quietMs = nowMs - lastProgressAt;
+        if (quietMs >= STALL_DIAG_QUIET_THRESHOLD_MS && !inPostStopHold) {
+          const ptyQuietMs = nowMs - lastPtyDataAt;
+          stallDiagWentQuiet = true;
+          if (quietMs > stallDiagMaxQuietMs) stallDiagMaxQuietMs = quietMs;
+          // PTY still painting while every structured signal is silent = the
+          // frozen-stream-behind-a-live-spinner case that defeats the fast path.
+          if (ptyQuietMs < CLAUDE_TUI_STALL_PTY_DEAD_MS) stallDiagPtyAliveWhileQuiet = true;
+          if (nowMs - lastStallDiagHeartbeatAt >= STALL_DIAG_HEARTBEAT_INTERVAL_MS) {
+            lastStallDiagHeartbeatAt = nowMs;
+            writeStallDiag({
+              kind: 'quiet',
+              sessionId: activeSessionId,
+              version: observedClaudeVersion,
+              model: s.model || null,
+              elapsedTurnMs: nowMs - start,
+              quietMs,
+              ptyQuietMs,
+              lastJsonlType: lastMainJsonlType,
+              mainJsonlAgoMs: nowMs - lastMainJsonlEventAt,
+              toolEventAgoMs: nowMs - lastToolEventAt,
+              sidecarAgoMs: lastSidecarEventAt ? nowMs - lastSidecarEventAt : null,
+              pendingHookTools: pendingHookToolIds.size,
+              pendingBgAgents: pendingBgForStall,
+              pendingBgBash: pendingClaudeBackgroundBashCount(s),
+            });
+          }
+        }
+      }
       const stallDecision = decideClaudeTuiStall({
         now: Date.now(),
         lastProgressAt,
@@ -1435,6 +1539,21 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         const quietMin = Math.round((Date.now() - lastProgressAt) / 60_000);
         const ptyQuietS = Math.round((Date.now() - lastPtyDataAt) / 1000);
         s.stopReason = 'stalled';
+        writeStallDiag({
+          kind: 'stall',
+          sessionId: activeSessionId,
+          version: observedClaudeVersion,
+          model: s.model || null,
+          elapsedTurnMs: Date.now() - start,
+          quietMs: Date.now() - lastProgressAt,
+          ptyQuietMs: Date.now() - lastPtyDataAt,
+          // True ⇒ the freeze kept the PTY painting, so this stall came via the
+          // slow quiet threshold, not the 3-min PTY-dead fast path.
+          ptyAliveWhileQuiet: stallDiagPtyAliveWhileQuiet,
+          lastJsonlType: lastMainJsonlType,
+          pendingHookTools: pendingHookToolIds.size,
+          pendingBgAgents: pendingBgForStall,
+        });
         if (!s.errors) {
           s.errors = [`Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
         }
@@ -1553,6 +1672,30 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   const incomplete = !ok || s.stopReason === 'max_tokens' || s.stopReason === 'timeout';
   const elapsedS = (Date.now() - start) / 1000;
   agentLog(`[claude-tui] result ok=${ok} elapsed=${elapsedS.toFixed(1)}s text=${s.text.length}ch thinking=${s.thinking.length}ch session=${s.sessionId || '?'} stop=${stopHookFired}`);
+
+  // Stall diagnostics: a turn that went quiet has now ended. Recording the
+  // outcome separates benign long-thinking/long-tool (completed) from true
+  // freezes the watchdog had to kill (stalled-killed) — the calibration the
+  // threshold tuning needs.
+  if (stallDiagWentQuiet) {
+    writeStallDiag({
+      kind: 'resolved',
+      sessionId: activeSessionId,
+      version: observedClaudeVersion,
+      model: s.model || null,
+      elapsedTurnMs: Date.now() - start,
+      maxQuietMs: stallDiagMaxQuietMs,
+      ptyAliveWhileQuiet: stallDiagPtyAliveWhileQuiet,
+      lastJsonlType: lastMainJsonlType,
+      outcome: stallKilled ? 'stalled-killed'
+        : interrupted ? 'interrupted'
+        : timedOut ? 'timeout'
+        : stopHookFired ? 'completed'
+        : 'exited-no-stop',
+      stopReason: s.stopReason || null,
+      ok,
+    });
+  }
 
   // Build the message body. Order:
   //   1. Any assistant text captured from JSONL (the canonical reply).

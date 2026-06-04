@@ -905,7 +905,6 @@ export class FeishuBot extends Bot {
           `elapsed=${result.elapsedS.toFixed(1)}s tokens=in:${fmtTokens(result.inputTokens)}/out:${fmtTokens(result.outputTokens)} ` +
           `tools=${formatToolLog(result.activity)}`,
         );
-        await this.notifyBackgroundCompletion(ctx, session, taskId, { result });
       } catch (e: any) {
         const fallbackPlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
         if (task?.freezePreviewOnAbort && abortController.signal.aborted) {
@@ -931,7 +930,6 @@ export class FeishuBot extends Bot {
         const errorText = `**Error**\n\n\`${msgText.slice(0, 500)}\``;
         await this.editOrSendFresh(ctx.chatId, fallbackPlaceholderId, errorText, { logTag: 'final-error' })
           .catch(err => this.debug(`[handleMessage] error reply send failed chat=${ctx.chatId}: ${err?.message || err}`));
-        await this.notifyBackgroundCompletion(ctx, session, taskId, { errorMessage: msgText, elapsedMs: Date.now() - start });
       } finally {
         livePreview?.dispose();
         this.finishTask(taskId);
@@ -941,53 +939,6 @@ export class FeishuBot extends Bot {
       this.warn(`[handleMessage] queue execution failed: ${e}`);
       this.finishTask(taskId);
     });
-  }
-
-  /**
-   * When a task finishes (or errors) in a session that is no longer the chat's
-   * current active session, the user has likely moved on and won't see the
-   * placeholder card being edited in place. Surface a small fresh notice card
-   * so the completion bubbles to the bottom of the chat. Registered to the
-   * task's session so a reply to it resumes the right thread.
-   */
-  private async notifyBackgroundCompletion(
-    ctx: FeishuContext,
-    session: SessionRuntime,
-    taskId: string,
-    payload: { result?: StreamResult; errorMessage?: string; elapsedMs?: number },
-  ): Promise<void> {
-    const currentCs = this.chat(ctx.chatId);
-    if (currentCs.activeSessionKey === session.key) return;
-    try {
-      const shortId = (session.sessionId || '').slice(0, 8) || '(new)';
-      let header: string;
-      let detail = '';
-      if (payload.result) {
-        const r = payload.result;
-        if (r.ok && !r.incomplete) header = '✓ Background task done';
-        else if (r.incomplete) header = '⊘ Background task interrupted';
-        else header = '⚠ Background task failed';
-        const elapsed = `${r.elapsedS.toFixed(1)}s`;
-        detail = `elapsed ${elapsed} · in ${fmtTokens(r.inputTokens)} / out ${fmtTokens(r.outputTokens)}`;
-      } else {
-        header = '⚠ Background task failed';
-        const elapsed = payload.elapsedMs != null ? `${(payload.elapsedMs / 1000).toFixed(1)}s` : '';
-        const errSnippet = (payload.errorMessage || 'Unknown error').slice(0, 160);
-        detail = [elapsed && `elapsed ${elapsed}`, `error: ${errSnippet}`].filter(Boolean).join(' · ');
-      }
-      const lines = [
-        `${header} · \`${session.agent}:${shortId}\``,
-        detail,
-        '_Reply this card to continue this session._',
-      ].filter(Boolean);
-      const sent = await this.channel.send(ctx.chatId, lines.join('\n'));
-      if (sent) {
-        this.registerSessionMessage(ctx.chatId, sent, session);
-        this.debug(`[bg-completion] surfaced task=${taskId} session=${session.key} chat=${ctx.chatId} msg=${sent}`);
-      }
-    } catch (e: any) {
-      this.debug(`[bg-completion] ping failed task=${taskId} chat=${ctx.chatId}: ${e?.message || e}`);
-    }
   }
 
   /** Edit the placeholder if possible; otherwise send `text` as a fresh card

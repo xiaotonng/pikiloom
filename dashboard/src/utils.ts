@@ -216,8 +216,33 @@ export function normalizeLiveSessionState(sessionKey: string, snapshot: unknown)
   };
 }
 
+// A terminal 'done' snapshot lingers in the live-state map for up to 15 min
+// (its TTL) so the sidebar doesn't flash the stale "running" sessionsMap state
+// in the brief gap between a stream ending and the sessions API confirming
+// completion. The hazard: that retained 'done' must not bury a *new* run.
+//
+// The sessions API is authoritative for "is a turn active" — it reflects the
+// bot's live runningTaskIds. So when the server reports this session running,
+// trust it UNLESS the 'done' we hold is newer than the server's last run update
+// by more than this margin (a stream genuinely just ended and the API hasn't
+// caught up — the flash window). A 'done' that merely coincides with, or
+// predates, the server's run update is stale: a follow-up turn started right
+// after the previous one finished (back-to-back, so done ≈ run-start), or a WS
+// reconnect replayed no fresh 'start'. The margin is small, so a real run that
+// outlasted it still flips to 'completed' on end.
+const DONE_OVERRIDES_RUNNING_MARGIN_MS = 2_000;
+
 export function applyLiveSessionState(session: SessionInfo, liveState?: LiveSessionState | null): SessionInfo {
   if (!liveState) return session;
+
+  // Don't let a stale 'done' paint a server-confirmed running session gray.
+  // (Unknown server timestamp → fall through and apply 'done' as before.)
+  if (liveState.phase === 'done' && (session.running || session.runState === 'running')) {
+    const serverUpdatedMs = session.runUpdatedAt ? Date.parse(session.runUpdatedAt) : NaN;
+    if (Number.isFinite(serverUpdatedMs) && liveState.updatedAt - serverUpdatedMs <= DONE_OVERRIDES_RUNNING_MARGIN_MS) {
+      return session;
+    }
+  }
 
   const nextRunState: SessionDisplayState = liveState.phase === 'done'
     ? (liveState.incomplete ? 'incomplete' : 'completed')

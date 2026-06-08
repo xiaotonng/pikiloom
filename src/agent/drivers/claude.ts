@@ -2355,7 +2355,6 @@ async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
       message: [
         'The agent process stalled mid-turn and could not be auto-recovered (known claude CLI freeze, seen on 2.1.160).',
         'Your session is intact — re-send your message (or say "continue") to pick up where it stopped.',
-        'If this keeps happening, pin the claude CLI to a known-good version: npm install -g @anthropic-ai/claude-code@2.1.159',
       ].join(' '),
     };
   }

@@ -275,6 +275,114 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     expect(bot.getStreamSnapshot('codex:sess-freeform')?.phase).toBe('done');
   });
 
+  it('accepts a custom freeform answer on an options question (dashboard "Other" path)', async () => {
+    // Regression: the dashboard modal shows a freeform field alongside options
+    // when allowFreeform is set, and submits the custom text via an explicit
+    // button — WITHOUT first flipping awaitingFreeform (the IM-only "Other" chip
+    // step). interactionSubmitText used to reject this because the question had
+    // options, so the user's custom answer "couldn't be sent".
+    const doStreamMock = vi.mocked(doStream);
+
+    const optionsWithFreeform = buildTestInteraction({
+      questions: [
+        {
+          id: 'q1',
+          header: 'Question',
+          prompt: 'Pick one, or type your own:',
+          options: [
+            { label: 'A', description: 'first', value: 'A' },
+            { label: 'B', description: 'second', value: 'B' },
+          ],
+          allowFreeform: true,
+        },
+      ],
+    });
+
+    doStreamMock.mockImplementationOnce(async (opts) => {
+      const response = await opts.onInteraction?.(optionsWithFreeform);
+      expect(response).toEqual({
+        answers: { q1: { answers: ['my own answer'] } },
+      });
+      return makeStreamResult('codex', { sessionId: 'sess-other', message: 'done' });
+    });
+
+    const bot = new Bot();
+    bot.submitSessionTask({
+      agent: 'codex',
+      sessionId: 'sess-other',
+      workdir: process.env.PIKICLAW_WORKDIR!,
+      prompt: 'do work',
+    });
+
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const snap = bot.getStreamSnapshot('codex:sess-other');
+      if (snap?.interactions?.length) break;
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    const promptId = bot.getStreamSnapshot('codex:sess-other')!.interactions![0].promptId;
+
+    // Submit custom text directly — no prior select({ requestFreeform: true }).
+    const textResult = bot.interactionSubmitText(promptId, 'my own answer');
+    expect(textResult).toBeTruthy();
+    expect(textResult!.completed).toBe(true);
+
+    const doneDeadline = Date.now() + 2000;
+    while (Date.now() < doneDeadline) {
+      const s = bot.getStreamSnapshot('codex:sess-other');
+      if (s?.phase === 'done') break;
+      await new Promise(r => setTimeout(r, 10));
+    }
+    expect(bot.getStreamSnapshot('codex:sess-other')?.phase).toBe('done');
+  });
+
+  it('rejects freeform text on an options question that disallows freeform', async () => {
+    // Negative guard: when the question has options and allowFreeform is false,
+    // a stray text submission must still be rejected (returns null) rather than
+    // silently overriding the enumerated choice.
+    const doStreamMock = vi.mocked(doStream);
+
+    doStreamMock.mockImplementationOnce(async (opts) => {
+      // buildTestInteraction defaults to options + allowFreeform:false.
+      const response = await opts.onInteraction?.(buildTestInteraction());
+      expect(response).toEqual({ answers: { q1: { answers: ['Allow'] } } });
+      return makeStreamResult('codex', { sessionId: 'sess-noff', message: 'done' });
+    });
+
+    const bot = new Bot();
+    bot.submitSessionTask({
+      agent: 'codex',
+      sessionId: 'sess-noff',
+      workdir: process.env.PIKICLAW_WORKDIR!,
+      prompt: 'do work',
+    });
+
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const snap = bot.getStreamSnapshot('codex:sess-noff');
+      if (snap?.interactions?.length) break;
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    const promptId = bot.getStreamSnapshot('codex:sess-noff')!.interactions![0].promptId;
+
+    // Freeform is not allowed here → submission rejected.
+    expect(bot.interactionSubmitText(promptId, 'sneaky text')).toBeNull();
+
+    // The enumerated choice still resolves the prompt.
+    const selectResult = bot.interactionSelectOption(promptId, 'Allow');
+    expect(selectResult!.completed).toBe(true);
+
+    const doneDeadline = Date.now() + 2000;
+    while (Date.now() < doneDeadline) {
+      const s = bot.getStreamSnapshot('codex:sess-noff');
+      if (s?.phase === 'done') break;
+      await new Promise(r => setTimeout(r, 10));
+    }
+    expect(bot.getStreamSnapshot('codex:sess-noff')?.phase).toBe('done');
+  });
+
   it('handles skip via the public API', async () => {
     const doStreamMock = vi.mocked(doStream);
 

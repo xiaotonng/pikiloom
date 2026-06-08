@@ -1653,7 +1653,18 @@ export class Bot {
   interactionSubmitText(promptId: string, text: string) {
     const prompt = this.humanLoopPrompt(promptId);
     if (!prompt) return null;
-    if (!isHumanLoopAwaitingText(prompt)) return null;
+    // The dashboard modal submits a custom answer via an explicit Submit button,
+    // so accept the text whenever the current question PERMITS freeform — not
+    // only after an "Other" chip flipped `awaitingFreeform` (the IM-card flow,
+    // which `isHumanLoopAwaitingText` gates on). An options question only allows
+    // it when `allowFreeform` is set; an option-less question is freeform by
+    // definition. (The IM passive-text path keeps the stricter check so a normal
+    // chat message isn't silently captured as an answer.)
+    const question = currentHumanLoopQuestion(prompt);
+    if (!question) return null;
+    const hasOptions = !!question.options?.length;
+    const freeformAllowed = !hasOptions || question.allowFreeform !== false;
+    if (!freeformAllowed && !isHumanLoopAwaitingText(prompt)) return null;
     const result = setHumanLoopText(prompt, text);
     if (result.completed) this.resolveHumanLoopPrompt(prompt.promptId);
     return { prompt, ...result };

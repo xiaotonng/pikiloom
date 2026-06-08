@@ -9,7 +9,7 @@ import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
 import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent } from '../../types';
 import { TurnView, UserBubble, TurnDivider } from './TurnView';
-import { LivePreview, ThinkingDots, liveStreamShouldRender, RunEndNotice } from './LivePreview';
+import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
 import {
@@ -506,12 +506,24 @@ export const SessionPanel = memo(function SessionPanel({
             }
           : prev);
       const hasMoreQueued = !!state.queuedTaskIds?.length;
+      // A stopped/interrupted turn is SIGKILLed before the agent CLI flushes its
+      // partial assistant message to the transcript, so the history refetch below
+      // won't contain what the user already watched stream in. Freeze the live
+      // preview in place (skip arming the liveStream clear) so the streamed output
+      // stays on screen as a "stopped" turn instead of vanishing the instant the
+      // turn is stopped. Scoped to the plain-stop case (partial body, nothing
+      // queued) so the steer/handoff path — which hands the preview to the next
+      // queued task — is left untouched.
+      const live = liveStreamRef.current;
+      const hasPartialBody = !!live && liveStreamHasBody(live);
+      const freezePartial = !!state.incomplete && hasPartialBody && !hasMoreQueued;
       if (prevPhaseRef.current !== 'done') {
         if (!hasMoreQueued) clearPendingOnLoadRef.current = true;
         // Scope the pending clear to the finishing task so a steer handoff can
         // start a new task's stream without losing its preview when the history
-        // fetch resolves.
-        clearLiveStreamOnLoadRef.current = { taskId: state.taskId || null };
+        // fetch resolves. When freezing a stopped turn's partial output, leave
+        // the preview untouched — the refetch can't replace content it lacks.
+        clearLiveStreamOnLoadRef.current = freezePartial ? false : { taskId: state.taskId || null };
         void loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
       }
       if (!hasMoreQueued) localStreamPendingRef.current = false;

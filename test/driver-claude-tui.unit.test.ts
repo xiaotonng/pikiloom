@@ -196,6 +196,59 @@ describe('Claude TUI driver — terminal limit notices', () => {
   });
 });
 
+describe('Claude TUI driver — bypass-permissions prompt auto-answer', () => {
+  // The fix for the cross-machine startup hang: when the TUI paints its
+  // "Bypass Permissions mode" confirmation (default highlight on "No, exit"),
+  // the driver must recognise it from the raw PTY screen and select "Yes, I
+  // accept" rather than letting the blind prompt-submit Enter pick "No, exit".
+  it('detects the bypass dialog in the real (spaceless, cursor-positioned) PTY screen', async () => {
+    const { detectClaudeBypassPrompt } = await import('../src/agent/drivers/claude-tui.ts');
+    // Claude's TUI positions words with cursor-move escapes, so after ANSI strip
+    // the words run together. This mirrors the bytes captured live from claude
+    // 2.1.168 — note: NO spaces between words.
+    const realScreen =
+      '\x1b[2J\x1b[H\x1b[200GWARNING:ClaudeCoderunninginBypassPermissionsmode\r\n\r\n' +
+      'InBypassPermissionsmode,ClaudeCodewillnotaskforyourapproval\r\n\r\n' +
+      '\x1b[36m❯1.No,exit\x1b[0m\r\n2.Yes,Iaccept\r\n\r\nEntertoconfirm·Esctocancel\r\n';
+    expect(detectClaudeBypassPrompt(realScreen)).toBe(true);
+  });
+
+  it('also detects the space-preserving rendering', async () => {
+    const { detectClaudeBypassPrompt } = await import('../src/agent/drivers/claude-tui.ts');
+    const spaced =
+      '\x1b[1m WARNING: Claude Code running in Bypass Permissions mode\x1b[0m\r\n\r\n' +
+      '\x1b[36m❯ 1. No, exit\x1b[0m\r\n   2. Yes, I accept\r\n';
+    expect(detectClaudeBypassPrompt(spaced)).toBe(true);
+  });
+
+  it('does not fire on ordinary text or partial matches', async () => {
+    const { detectClaudeBypassPrompt } = await import('../src/agent/drivers/claude-tui.ts');
+    // Prose that merely mentions bypass mode — no option lines.
+    expect(detectClaudeBypassPrompt('Explain how Bypass Permissions mode works in Claude Code.')).toBe(false);
+    // Only one of the three required fragments present.
+    expect(detectClaudeBypassPrompt('1. No, exit\n2. Yes, I accept')).toBe(false);
+    // Unrelated startup screen.
+    expect(detectClaudeBypassPrompt('Choose the text style that looks best with your terminal')).toBe(false);
+    // Non-string / empty inputs.
+    expect(detectClaudeBypassPrompt('')).toBe(false);
+    expect(detectClaudeBypassPrompt(null)).toBe(false);
+    expect(detectClaudeBypassPrompt(undefined)).toBe(false);
+  });
+
+  it('matches the real PTY bytes captured live from claude 2.1.168', async () => {
+    const { detectClaudeBypassPrompt } = await import('../src/agent/drivers/claude-tui.ts');
+    // Raw bytes of the actual "Bypass Permissions mode" dialog frame, captured
+    // off a real PTY (claude 2.1.168) and decoded as UTF-8 exactly as node-pty
+    // delivers it to onData. This is the load-bearing case: the dialog lays
+    // words out with cursor-position escapes (\x1b[<col>G), so the detector must
+    // survive the real strip → no synthetic string can stand in for it.
+    const REAL_BYPASS_FRAME_B64 =
+      'GzcbW3IbOBtbPzI1aBtbPzI1bBtbPzIwMDRoG1s/MTAwNGgbWz8yMDMxaBtbPHUbWz4xdRtbPjQ7Mm0bWz8yMDI2aA0NChtbMzg7MjsyNTU7MTA3OzEyOG3ilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAbWzM5bQ0NChtbM0cbWzM4OzI7MjU1OzEwNzsxMjhtG1sxbVdBUk5JTkc6G1sxMkdDbGF1ZGUbWzE5R0NvZGUbWzI0R3J1bm5pbmcbWzMyR2luG1szNUdCeXBhc3MbWzQyR1Blcm1pc3Npb25zG1s1NEdtb2RlG1syMm0bWzM5bQ0NCg0NChtbM0dJbhtbNkdCeXBhc3MbWzEzR1Blcm1pc3Npb25zG1syNUdtb2RlLBtbMzFHQ2xhdWRlG1szOEdDb2RlG1s0M0d3aWxsG1s0OEdub3QbWzUyR2FzaxtbNTZHZm9yG1s2MEd5b3VyG1s2NUdhcHByb3ZhbA0NChtbM0diZWZvcmUbWzEwR3J1bm5pbmcbWzE4R3BvdGVudGlhbGx5G1szMEdkYW5nZXJvdXMbWzQwR2NvbW1hbmRzLg0NChtbM0dUaGlzG1s4R21vZGUbWzEzR3Nob3VsZBtbMjBHb25seRtbMjVHYmUbWzI4R3VzZWQbWzMzR2luG1szNkdhG1szOEdzYW5kYm94ZWQbWzQ4R2NvbnRhaW5lci9WTRtbNjFHdGhhdBtbNjZHaGFzDQ0KG1szR3Jlc3RyaWN0ZWQbWzE0R2ludGVybmV0G1syM0dhY2Nlc3MbWzMwR2FuZBtbMzRHY2FuG1szOEdlYXNpbHkbWzQ1R2JlG1s0OEdyZXN0b3JlZBtbNTdHaWYbWzYwR2RhbWFnZWQuDQ0KDQ0KG1szR0J5G1s2R3Byb2NlZWRpbmcsG1sxOEd5b3UbWzIyR2FjY2VwdBtbMjlHYWxsG1szM0dyZXNwb25zaWJpbGl0eRtbNDhHZm9yG1s1MkdhY3Rpb25zG1s2MEd0YWtlbhtbNjZHd2hpbGUbWzcyR3J1bm5pbmcNDQobWzNHaW4bWzZHQnlwYXNzG1sxM0dQZXJtaXNzaW9ucxtbMjVHbW9kZS4NDQoNDQobWzNHG104O2lkPXpheG1kYTtodHRwczovL2NvZGUuY2xhdWRlLmNvbS9kb2NzL2VuL3NlY3VyaXR5B2h0dHBzOi8vY29kZS5jbGF1ZGUuY29tL2RvY3MvZW4vc2VjdXJpdHkbXTg7OwcNDQoNDQobWzNHG1szODsyOzE3NzsxODU7MjQ5beKdrxtbNUcbWzM4OzI7MTUzOzE1MzsxNTNtMS4bWzhHG1szODsyOzE3NzsxODU7MjQ5bU5vLBtbMTJHZXhpdBtbMzltDQ0KG1s1RxtbMzg7MjsxNTM7MTUzOzE1M20yLhtbOEcbWzM5bVllcywbWzEzR0kbWzE1R2FjY2VwdA0NCg0NChtbM0cbWzM4OzI7MTUzOzE1MzsxNTNtG1szbUVudGVyG1s5R3RvG1sxMkdjb25maXJtG1syMEfCtxtbMjJHRXNjG1syNkd0bxtbMjlHY2FuY2VsG1syM20bWzM5bQ0NChtbMkMbWzRBG1s/MjAyNmw=';
+    const realFrame = Buffer.from(REAL_BYPASS_FRAME_B64, 'base64').toString('utf8');
+    expect(detectClaudeBypassPrompt(realFrame)).toBe(true);
+  });
+});
+
 describe('Claude TUI driver — stall diagnostics classifier', () => {
   // classifyClaudeJsonlEvent labels the last transcript event before a quiet
   // stretch. The labels are load-bearing for the freeze diagnostics: the known

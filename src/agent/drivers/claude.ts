@@ -2353,7 +2353,7 @@ async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
       ok: false,
       incomplete: true,
       message: [
-        'The agent process stalled mid-turn and could not be auto-recovered (known claude CLI freeze, seen on 2.1.160).',
+        'The agent process stalled mid-turn and could not be auto-recovered (a known claude CLI mid-turn freeze).',
         'Your session is intact — re-send your message (or say "continue") to pick up where it stopped.',
       ].join(' '),
     };

@@ -404,6 +404,39 @@ export function detectClaudeTuiTerminalLimitNotice(msgOrText: any): string | nul
 }
 
 /**
+ * Detect Claude Code's startup "Bypass Permissions mode" confirmation dialog in
+ * a slice of (ANSI-stripped) PTY screen output. When pikiclaw spawns the TUI
+ * with `--permission-mode bypassPermissions` (the default) on a machine that
+ * has not yet accepted bypass mode, Claude paints a blocking prompt:
+ *
+ *     WARNING: Claude Code running in Bypass Permissions mode
+ *     ...
+ *   ❯ 1. No, exit
+ *     2. Yes, I accept
+ *
+ * The default highlight sits on "No, exit", so the driver's blind prompt-submit
+ * Enter nudge would pick *exit* — the message never gets processed and the turn
+ * hangs on a pre-prompt. Seeding `bypassPermissionsModeAccepted` in config is
+ * not a reliable fix: it is version-fragile (observed no-op on 2.1.169) and
+ * gated by org policy (`isBypassPermissionsModeAvailable`). So we detect the
+ * dialog on the wire and auto-select "Yes, I accept". Require all three
+ * distinctive fragments so ordinary text mentioning "bypass" can't trigger it.
+ */
+export function detectClaudeBypassPrompt(screen: any): boolean {
+  if (typeof screen !== 'string' || !screen) return false;
+  // Claude's TUI lays words out with cursor-move escapes (`\x1b[<col>G`) rather
+  // than literal spaces, so once ANSI is stripped the on-screen text runs
+  // together — the real dialog reads "BypassPermissionsmode" / "Yes,Iaccept" /
+  // "No,exit", not the spaced form. Collapse all whitespace before matching so
+  // the detector fires on the live PTY screen *and* on space-preserving
+  // renderings. (Verified against claude 2.1.168's actual bypass screen.)
+  const t = stripAnsiEscapes(screen).replace(/\s+/g, '').toLowerCase();
+  return t.includes('bypasspermissionsmode')
+    && t.includes('yes,iaccept')
+    && t.includes('no,exit');
+}
+
+/**
  * Extract text / thinking blocks from an assistant JSONL event and route them:
  * text → the chunked stream buffer (slow drain), thinking → `s.thinking`
  * directly. Tool uses, stop reasons, sub-agents, etc. are still handled by
@@ -1119,6 +1152,30 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   const dbg = process.env.PIKICLAW_CLAUDE_TUI_DEBUG === '1';
   /** Wall-clock of the last raw PTY byte — stall watchdog fast-path signal. */
   let lastPtyDataAt = Date.now();
+  // Startup-dialog auto-answer. Claude's TUI can paint a blocking "Bypass
+  // Permissions mode" confirmation before it accepts our positional prompt
+  // (default highlight = "No, exit"). We keep a bounded ANSI-stripped tail of
+  // the screen, detect that dialog (see detectClaudeBypassPrompt), and select
+  // "Yes, I accept" so the turn never stalls on a pre-prompt.
+  const SCREEN_TAIL_MAX = 8192;
+  const BYPASS_ACCEPT_MAX_ATTEMPTS = 3;
+  // Settle delay after the dialog first paints before we send any key. Claude's
+  // Ink select drops input aimed at it during the first frames — sending the
+  // digit too early is a no-op. ~500ms is comfortably past readiness in repro.
+  const BYPASS_SETTLE_MS = 500;
+  // Gap between the selection key and the confirm Enter. Claude's Ink select
+  // swallows a combined "2\r" (only the digit lands; the Enter is dropped before
+  // the highlight repaints), so the two keystrokes must be split in time —
+  // 600ms is what reproduces reliably against the live 2.1.168 dialog.
+  const BYPASS_CONFIRM_DELAY_MS = 600;
+  // How long after the last bypass-dialog repaint we still treat it as on
+  // screen — suppresses the blind prompt-submit Enter nudge across the whole
+  // select→confirm sequence so a stray CR can't land on "No, exit".
+  const BYPASS_DIALOG_ACTIVE_WINDOW_MS = 2000;
+  let screenTail = '';
+  let bypassPromptLastSeenAt = 0;
+  let bypassAcceptAttempts = 0;
+  let bypassPhase: 'idle' | 'armed' | 'confirmed' = 'idle';
   proc.onData((data: string) => {
     // We deliberately do not parse the TUI screen output. The JSONL is the
     // canonical source of structured events. Stash bytes only when debugging.
@@ -1128,6 +1185,46 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     lastPtyDataAt = Date.now();
     if (dbg) {
       try { fs.appendFileSync(ptyLogPath, data); } catch {}
+    }
+    // Auto-answer the bypass-permissions confirmation. Detect it the moment it
+    // paints (off the raw PTY, not the 200ms poll tick) and arm a short timed
+    // keystroke sequence. Keep a bounded stripped tail across chunks so a dialog
+    // split across reads still matches.
+    screenTail = (screenTail + stripAnsiEscapes(data)).slice(-SCREEN_TAIL_MAX);
+    if (detectClaudeBypassPrompt(screenTail)) {
+      bypassPromptLastSeenAt = Date.now();
+      if (bypassPhase === 'idle' && bypassAcceptAttempts < BYPASS_ACCEPT_MAX_ATTEMPTS) {
+        bypassAcceptAttempts++;
+        bypassPhase = 'armed';
+        // Three timed steps — verified 3/3 against the live 2.1.168 dialog:
+        //   settle (dialog ignores input on its first frames)
+        //   → "2"  (jumps to the second option "Yes, I accept"; idempotent —
+        //           re-sending can't overshoot a 2-option menu onto "No, exit")
+        //   → Enter (confirms; must arrive *after* the highlight repaints — a
+        //            combined "2\r" gets swallowed, only the digit lands).
+        agentLog(`[claude-tui] bypass-permissions prompt — auto-accepting "Yes, I accept" (attempt ${bypassAcceptAttempts}/${BYPASS_ACCEPT_MAX_ATTEMPTS})`);
+        setTimeout(() => {
+          if (processExited) return;
+          try { proc.write('2'); } catch {}
+          setTimeout(() => {
+            if (processExited) return;
+            try { proc.write('\r'); } catch {}
+            bypassPhase = 'confirmed';
+            agentLog('[claude-tui] bypass-permissions — confirm Enter sent');
+            // Drop the buffered dialog frame: the post-accept REPL output can be
+            // tiny (e.g. a "Not logged in" line), so the old dialog text would
+            // otherwise linger in the 8192-char tail and make the re-arm below
+            // re-fire on a stale screen — typing "2"/Enter into the live prompt.
+            // Clearing means the re-arm only sees output that arrives *after*
+            // the confirm, so it re-fires only on a genuine repaint of the
+            // dialog (accept didn't take), never on stale bytes.
+            screenTail = '';
+            setTimeout(() => {
+              if (!processExited && detectClaudeBypassPrompt(screenTail)) bypassPhase = 'idle';
+            }, 1200);
+          }, BYPASS_CONFIRM_DELAY_MS);
+        }, BYPASS_SETTLE_MS);
+      }
     }
     // Capture stderr-ish bytes (TUI startup errors, "claude: command not
     // found"-style messages) for the final error payload when the run aborts
@@ -1343,8 +1440,15 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       activeJsonlPath = state.transcriptPath;
     }
 
-    // Submit nudge — only if UserPromptSubmit hook hasn't fired yet.
-    if (!promptNudged && !state.promptSubmittedAt && Date.now() - start > PROMPT_SUBMIT_NUDGE_MS) {
+    // Submit nudge — only if UserPromptSubmit hook hasn't fired yet. Suppress
+    // it while the bypass-permissions dialog is (or was just) on screen: a blind
+    // CR there lands on the default "No, exit" and kills the session. The dialog
+    // auto-answer in onData drives that screen instead; once it clears the
+    // prompt submits on its own (or this nudge fires on a later tick).
+    const bypassDialogActive = bypassPromptLastSeenAt > 0
+      && Date.now() - bypassPromptLastSeenAt < BYPASS_DIALOG_ACTIVE_WINDOW_MS;
+    if (!promptNudged && !state.promptSubmittedAt && !bypassDialogActive
+        && Date.now() - start > PROMPT_SUBMIT_NUDGE_MS) {
       promptNudged = true;
       try { proc.write('\r'); } catch {}
       agentLog(`[claude-tui] prompt-submit nudge sent (no UserPromptSubmit after ${PROMPT_SUBMIT_NUDGE_MS}ms)`);

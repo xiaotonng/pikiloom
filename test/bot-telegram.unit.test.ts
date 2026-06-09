@@ -72,8 +72,9 @@ beforeEach(() => {
   delete process.env.npm_config_yes;
 });
 
-describe('TelegramBot.sendFinalReply', () => {
-  it('compresses warnings, footers, and command activity into a minimal final reply', async () => {
+describe('TelegramBot', () => {
+  it('covers final reply rendering, steer preview, shutdown/restart, status/session UI, and streaming message handling', async () => {
+    // --- sendFinalReply: compresses warnings, footers, and command activity ---
     const failed = await renderFinalReply('claude', {
       ok: false,
       message: 'Should I continue?',
@@ -116,11 +117,8 @@ describe('TelegramBot.sendFinalReply', () => {
     expect(summarized.finalEdit.text).not.toContain('cached:');
     expect(summarized.finalEdit.text).not.toContain('npm run build');
     expect(summarized.finalEdit.text).not.toContain('npm test');
-  });
-});
 
-describe('TelegramBot steer handoff preview', () => {
-  it('freezes the previous preview content and clears its keyboard', async () => {
+    // --- steer handoff preview: freezes previous preview content and clears keyboard ---
     const harness = createBot();
 
     const messageIds = await (harness.bot as any).freezeSteerHandoffPreview(
@@ -136,11 +134,8 @@ describe('TelegramBot steer handoff preview', () => {
         opts: { parseMode: 'HTML', keyboard: { inline_keyboard: [] } },
       },
     ]);
-  });
-});
 
-describe('TelegramBot.run shutdown and restart', () => {
-  it('exits after SIGINT, treats shutdown as idempotent, and uses non-interactive npx restarts', async () => {
+    // --- run shutdown and restart: exits after SIGINT, idempotent shutdown, non-interactive npx restarts ---
     // --- Sub-scenario 1: shutdown handling ---
     {
       const bot = new TelegramBot();
@@ -276,11 +271,8 @@ describe('TelegramBot.run shutdown and restart', () => {
         defaultStopKeepAliveSpy.mockRestore();
       }
     }
-  });
-});
 
-describe('TelegramBot status and session previews', () => {
-  it('renders pickers, hides artifacts, shows history, and returns compact callback confirmations', async () => {
+    // --- status and session previews: renders pickers, hides artifacts, shows history, compact callbacks ---
     // --- Sub-scenario 1: renders compact agent and model pickers for mobile layouts ---
     {
       const { bot, ctx } = createBot();
@@ -481,11 +473,8 @@ describe('TelegramBot status and session previews', () => {
       expect(sends).toHaveLength(1);
       expect(sends[0].text).toContain('<b>Recent Context</b>');
     }
-  });
-});
 
-describe('TelegramBot.handleMessage streaming', () => {
-  it('streams sanitized previews, stages uploads, and falls back on non-editable channels', async () => {
+    // --- handleMessage streaming: previews, uploads, fallback, concurrency, serialization, session restore ---
     // --- Sub-scenario 1: streams sanitized previews, keeps elapsed updates alive, and finalizes in place ---
     {
       vi.useFakeTimers();
@@ -635,9 +624,8 @@ describe('TelegramBot.handleMessage streaming', () => {
       expect(edits).toHaveLength(0);
       expect(vi.mocked(channel.sendTyping)).toHaveBeenCalled();
     }
-  });
 
-  it('runs concurrent sessions and serializes follow-ups within a single session', async () => {
+    // --- runs concurrent sessions and serializes follow-ups within a single session ---
     // --- Sub-scenario 1: runs different sessions concurrently in the same chat ---
     {
       const { bot, ctx } = createBot();
@@ -755,9 +743,8 @@ describe('TelegramBot.handleMessage streaming', () => {
       await Promise.resolve();
       await Promise.resolve();
     }
-  });
 
-  it('restores reply follow-ups to the original workdir and agent after global switches', async () => {
+    // --- restores reply follow-ups to the original workdir and agent after global switches ---
     const { bot, ctx } = createBot();
     let nextReplyId = 3000;
     ctx.reply = vi.fn(async () => nextReplyId++);

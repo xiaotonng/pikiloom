@@ -100,35 +100,48 @@ afterEach(() => {
 });
 
 describe('DiscordChannel connect / send / edit', () => {
-  it('reads bot identity after gateway ready', async () => {
-    const ch = new DiscordChannel({ botToken: 'token' });
-    const bot = await ch.connect();
-    expect(bot.id).toBe('BOT_USER');
-    expect(bot.username).toBe('pikiclaw');
-  });
+  it('reads bot identity, sends messages, threads replies, and edits existing messages', async () => {
+    // reads bot identity after gateway ready
+    {
+      const ch = new DiscordChannel({ botToken: 'token' });
+      const bot = await ch.connect();
+      expect(bot.id).toBe('BOT_USER');
+      expect(bot.username).toBe('pikiclaw');
+    }
 
-  it('sends a text message and returns the message id', async () => {
-    const ch = new DiscordChannel({ botToken: 'token' });
-    await ch.connect();
-    const id = await ch.send('CHAN_1', 'hello');
-    expect(id).toMatch(/^M/);
-    expect(hoist.sentMessages.length).toBe(1);
-    expect(hoist.sentMessages[0]).toMatchObject({ channelId: 'CHAN_1', payload: { content: 'hello' } });
-  });
+    hoist.sentMessages.length = 0;
+    hoist.editedMessages.length = 0;
 
-  it('attaches a reply reference when replyTo is provided', async () => {
-    const ch = new DiscordChannel({ botToken: 'token' });
-    await ch.connect();
-    await ch.send('CHAN_2', 'reply text', { replyTo: 'M_PARENT' });
-    expect(hoist.sentMessages[0].payload.reply).toMatchObject({ messageReference: 'M_PARENT', failIfNotExists: false });
-  });
+    // sends a text message and returns the message id
+    {
+      const ch = new DiscordChannel({ botToken: 'token' });
+      await ch.connect();
+      const id = await ch.send('CHAN_1', 'hello');
+      expect(id).toMatch(/^M/);
+      expect(hoist.sentMessages.length).toBe(1);
+      expect(hoist.sentMessages[0]).toMatchObject({ channelId: 'CHAN_1', payload: { content: 'hello' } });
+    }
 
-  it('edits an existing message', async () => {
-    const ch = new DiscordChannel({ botToken: 'token' });
-    await ch.connect();
-    await ch.editMessage('CHAN_1', 'M_OLD', 'updated');
-    expect(hoist.editedMessages.length).toBe(1);
-    expect(hoist.editedMessages[0]).toMatchObject({ channelId: 'CHAN_1', messageId: 'M_OLD', payload: { content: 'updated' } });
+    hoist.sentMessages.length = 0;
+
+    // attaches a reply reference when replyTo is provided
+    {
+      const ch = new DiscordChannel({ botToken: 'token' });
+      await ch.connect();
+      await ch.send('CHAN_2', 'reply text', { replyTo: 'M_PARENT' });
+      expect(hoist.sentMessages[0].payload.reply).toMatchObject({ messageReference: 'M_PARENT', failIfNotExists: false });
+    }
+
+    hoist.editedMessages.length = 0;
+
+    // edits an existing message
+    {
+      const ch = new DiscordChannel({ botToken: 'token' });
+      await ch.connect();
+      await ch.editMessage('CHAN_1', 'M_OLD', 'updated');
+      expect(hoist.editedMessages.length).toBe(1);
+      expect(hoist.editedMessages[0]).toMatchObject({ channelId: 'CHAN_1', messageId: 'M_OLD', payload: { content: 'updated' } });
+    }
   });
 });
 
@@ -144,41 +157,47 @@ describe('DiscordChannel dispatch', () => {
     };
   }
 
-  it('strips the bot mention and delivers to handler', async () => {
-    const ch = new DiscordChannel({ botToken: 'token' });
-    await ch.connect();
-    const seen: { text: string; chatId: string }[] = [];
-    ch.onMessage((msg, ctx) => seen.push({ text: msg.text, chatId: ctx.chatId }));
-    await (ch as any).dispatchMessage(makeMsg({ dm: true, content: '<@BOT_USER> please ship it' }));
-    expect(seen).toEqual([{ text: 'please ship it', chatId: 'CHAN_1' }]);
-  });
+  it('strips mention for DMs, skips non-mentions, drops bot messages, and enforces allowlists', async () => {
+    // strips the bot mention and delivers to handler
+    {
+      const ch = new DiscordChannel({ botToken: 'token' });
+      await ch.connect();
+      const seen: { text: string; chatId: string }[] = [];
+      ch.onMessage((msg, ctx) => seen.push({ text: msg.text, chatId: ctx.chatId }));
+      await (ch as any).dispatchMessage(makeMsg({ dm: true, content: '<@BOT_USER> please ship it' }));
+      expect(seen).toEqual([{ text: 'please ship it', chatId: 'CHAN_1' }]);
+    }
 
-  it('skips channel messages without bot mention', async () => {
-    const ch = new DiscordChannel({ botToken: 'token' });
-    await ch.connect();
-    const seen: any[] = [];
-    ch.onMessage(msg => seen.push(msg));
-    await (ch as any).dispatchMessage(makeMsg({ dm: false, mentionsBot: false, content: 'random chatter' }));
-    expect(seen).toEqual([]);
-  });
+    // skips channel messages without bot mention
+    {
+      const ch = new DiscordChannel({ botToken: 'token' });
+      await ch.connect();
+      const seen: any[] = [];
+      ch.onMessage(msg => seen.push(msg));
+      await (ch as any).dispatchMessage(makeMsg({ dm: false, mentionsBot: false, content: 'random chatter' }));
+      expect(seen).toEqual([]);
+    }
 
-  it('drops bot-authored messages', async () => {
-    const ch = new DiscordChannel({ botToken: 'token' });
-    await ch.connect();
-    const seen: any[] = [];
-    ch.onMessage(msg => seen.push(msg));
-    const msg = makeMsg({ dm: true });
-    msg.author.bot = true;
-    await (ch as any).dispatchMessage(msg);
-    expect(seen).toEqual([]);
-  });
+    // drops bot-authored messages
+    {
+      const ch = new DiscordChannel({ botToken: 'token' });
+      await ch.connect();
+      const seen: any[] = [];
+      ch.onMessage(msg => seen.push(msg));
+      const msg = makeMsg({ dm: true });
+      msg.author.bot = true;
+      await (ch as any).dispatchMessage(msg);
+      expect(seen).toEqual([]);
+    }
 
-  it('respects allowedChatIds', async () => {
-    const ch = new DiscordChannel({ botToken: 'token', allowedChatIds: new Set(['CHAN_OK']) });
-    await ch.connect();
-    const seen: any[] = [];
-    ch.onMessage(msg => seen.push(msg));
-    await (ch as any).dispatchMessage(makeMsg({ dm: true, channelId: 'CHAN_BLOCKED' }));
-    expect(seen).toEqual([]);
+    // respects allowedChatIds
+    {
+      const ch = new DiscordChannel({ botToken: 'token', allowedChatIds: new Set(['CHAN_OK']) });
+      await ch.connect();
+      const seen: any[] = [];
+      ch.onMessage(msg => seen.push(msg));
+      await (ch as any).dispatchMessage(makeMsg({ dm: true, channelId: 'CHAN_BLOCKED' }));
+      expect(seen).toEqual([]);
+    }
   });
 });

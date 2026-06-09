@@ -56,7 +56,7 @@ export function getStartData(bot: Bot, chatId: ChatId): StartData {
     .map(a => ({
       agent: a.agent,
       model: bot.modelForAgent(a.agent) || '(default)',
-      effort: bot.effortForAgent(a.agent),
+      effort: bot.effortSelectionForAgent(a.agent),
     }));
   return {
     ...intro,
@@ -544,6 +544,10 @@ const EFFORT_LEVELS: Record<string, { id: string; label: string }[]> = {
     { id: 'high', label: 'High' },
     { id: 'xhigh', label: 'Very High' },
     { id: 'max', label: 'Max' },
+    // Synthetic top rung: "max depth + multi-agent Workflow orchestration", the
+    // same bundle as Claude's `ultracode` mode. Not a real --effort value — the
+    // bot decomposes it into (effort=max, workflow=on) at apply time.
+    { id: 'ultra', label: 'Ultra' },
   ],
   codex: [
     { id: 'low', label: 'Low' },
@@ -561,7 +565,9 @@ const EFFORT_LEVELS: Record<string, { id: string; label: string }[]> = {
 };
 
 function buildEffortData(bot: Bot, agent: Agent): ModelsListData['effort'] {
-  const currentEffort = bot.effortForAgent(agent);
+  // Display value folds workflow into the synthetic `ultra` rung — see
+  // Bot.effortSelectionForAgent.
+  const currentEffort = bot.effortSelectionForAgent(agent);
   if (!currentEffort) return null;
   const levels = EFFORT_LEVELS[agent];
   if (!levels) return null;

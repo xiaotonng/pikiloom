@@ -24,27 +24,24 @@ describe('dashboard browser status — remote CDP mode (issue #16)', () => {
     else process.env.PIKICLAW_BROWSER_CDP_URL = prev;
   });
 
-  it('surfaces the remote endpoint and explains remote mode when enabled', async () => {
+  it('surfaces remote endpoint when enabled, hides it when disabled, and returns null in local mode', async () => {
+    // surfaces the remote endpoint and explains remote mode when enabled
     process.env.PIKICLAW_BROWSER_CDP_URL = 'http://chromium:9223';
-    const { browser } = await buildBrowserStatusResponse({ browserEnabled: true } as any, headlessNoChrome);
+    const { browser: browser1 } = await buildBrowserStatusResponse({ browserEnabled: true } as any, headlessNoChrome);
+    expect(browser1.enabled).toBe(true);
+    expect(browser1.remoteCdpUrl).toBe('http://chromium:9223');
+    expect(browser1.detail).toMatch(/external Chrome over CDP/i);
 
-    expect(browser.enabled).toBe(true);
-    expect(browser.remoteCdpUrl).toBe('http://chromium:9223');
-    expect(browser.detail).toMatch(/external Chrome over CDP/i);
-  });
+    // does not surface a remote endpoint while browser automation is disabled
+    // (env var still set from above)
+    const { browser: browser2 } = await buildBrowserStatusResponse({ browserEnabled: false } as any, headlessNoChrome);
+    expect(browser2.enabled).toBe(false);
+    expect(browser2.remoteCdpUrl).toBeNull();
 
-  it('does not surface a remote endpoint while browser automation is disabled', async () => {
-    process.env.PIKICLAW_BROWSER_CDP_URL = 'http://chromium:9223';
-    const { browser } = await buildBrowserStatusResponse({ browserEnabled: false } as any, headlessNoChrome);
-
-    expect(browser.enabled).toBe(false);
-    expect(browser.remoteCdpUrl).toBeNull();
-  });
-
-  it('reports null remoteCdpUrl in local managed mode (no env var)', async () => {
-    const { browser } = await buildBrowserStatusResponse({ browserEnabled: true } as any, headlessNoChrome);
-
-    expect(browser.remoteCdpUrl).toBeNull();
-    expect(browser.status).toBe('chrome_missing');
+    // reports null remoteCdpUrl in local managed mode (no env var)
+    delete process.env.PIKICLAW_BROWSER_CDP_URL;
+    const { browser: browser3 } = await buildBrowserStatusResponse({ browserEnabled: true } as any, headlessNoChrome);
+    expect(browser3.remoteCdpUrl).toBeNull();
+    expect(browser3.status).toBe('chrome_missing');
   });
 });

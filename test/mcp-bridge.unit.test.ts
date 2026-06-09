@@ -87,183 +87,147 @@ describe('resolveSendFilePath', () => {
 });
 
 describe('resolveGuiIntegrationConfig', () => {
-  it('defaults browser automation to disabled managed-profile mode', () => {
-    const gui = resolveGuiIntegrationConfig({} as any, {});
-
-    expect(gui).toEqual({
+  it('resolves managed-profile defaults, env overrides, legacy alias, and remote-CDP implicit enable', () => {
+    // --- defaults browser automation to disabled managed-profile mode ---
+    expect(resolveGuiIntegrationConfig({} as any, {})).toEqual({
       browserEnabled: false,
       browserProfileDir: getManagedBrowserProfileDir(),
       browserHeadless: false,
       peekabooEnabled: false,
     });
-  });
 
-  it('prefers env overrides over user config defaults', () => {
-    const config = {
-      browserEnabled: false,
-    };
-    const gui = resolveGuiIntegrationConfig(config as any, {
+    // --- prefers env overrides over user config defaults ---
+    expect(resolveGuiIntegrationConfig({ browserEnabled: false } as any, {
       PIKICLAW_BROWSER_ENABLED: 'true',
       PIKICLAW_BROWSER_HEADLESS: 'true',
-    });
-
-    expect(gui).toEqual({
+    })).toEqual({
       browserEnabled: true,
       browserProfileDir: getManagedBrowserProfileDir(),
       browserHeadless: true,
       peekabooEnabled: false,
     });
-  });
 
-  it('keeps the legacy browser-use-profile env var as a compatibility alias', () => {
-    const gui = resolveGuiIntegrationConfig({} as any, {
+    // --- keeps the legacy browser-use-profile env var as a compatibility alias ---
+    expect(resolveGuiIntegrationConfig({} as any, {
       PIKICLAW_BROWSER_USE_PROFILE: 'true',
-    });
+    }).browserEnabled).toBe(true);
 
-    expect(gui.browserEnabled).toBe(true);
-  });
-
-  it('treats a configured remote CDP endpoint as implicitly enabling browser automation', () => {
-    const gui = resolveGuiIntegrationConfig({} as any, {
+    // --- treats a configured remote CDP endpoint as implicitly enabling browser automation ---
+    expect(resolveGuiIntegrationConfig({} as any, {
       PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223',
-    });
+    }).browserEnabled).toBe(true);
 
-    expect(gui.browserEnabled).toBe(true);
-  });
-
-  it('lets an explicit PIKICLAW_BROWSER_ENABLED=false override the remote-CDP implicit enable', () => {
-    const gui = resolveGuiIntegrationConfig({} as any, {
+    // --- explicit PIKICLAW_BROWSER_ENABLED=false overrides the remote-CDP implicit enable ---
+    expect(resolveGuiIntegrationConfig({} as any, {
       PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223',
       PIKICLAW_BROWSER_ENABLED: 'false',
-    });
-
-    expect(gui.browserEnabled).toBe(false);
+    }).browserEnabled).toBe(false);
   });
 });
 
-describe('getConfiguredRemoteCdpUrl', () => {
-  it('returns the normalized endpoint and strips trailing slashes', () => {
+describe('CDP endpoint resolution', () => {
+  it('normalizes configured remote URLs and resolves the bridge endpoint without probing local Chrome', async () => {
+    // --- getConfiguredRemoteCdpUrl returns the normalized endpoint and strips trailing slashes ---
     expect(getConfiguredRemoteCdpUrl({ PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223/' })).toBe('http://chromium:9223');
     expect(getConfiguredRemoteCdpUrl({ PIKICLAW_BROWSER_CDP_URL: 'http://chromium:9223' })).toBe('http://chromium:9223');
-  });
 
-  it('returns null when unset or blank', () => {
+    // --- getConfiguredRemoteCdpUrl returns null when unset or blank ---
     expect(getConfiguredRemoteCdpUrl({})).toBeNull();
     expect(getConfiguredRemoteCdpUrl({ PIKICLAW_BROWSER_CDP_URL: '   ' })).toBeNull();
-  });
-});
 
-describe('resolveBridgeBrowserEndpoint', () => {
-  it('returns the remote endpoint unconditionally without probing local Chrome', async () => {
-    // A bogus profile dir would yield no local DevToolsActivePort; the remote
-    // override must win and short-circuit any local probe.
-    const result = await resolveBridgeBrowserEndpoint('/nonexistent/profile/dir', 'http://chromium:9223');
+    // --- resolveBridgeBrowserEndpoint returns the remote endpoint unconditionally
+    // without probing local Chrome. A bogus profile dir would yield no local
+    // DevToolsActivePort; the remote override must win and short-circuit any local probe. ---
+    expect(await resolveBridgeBrowserEndpoint('/nonexistent/profile/dir', 'http://chromium:9223'))
+      .toEqual({ endpoint: 'http://chromium:9223', mode: 'remote' });
 
-    expect(result).toEqual({ endpoint: 'http://chromium:9223', mode: 'remote' });
-  });
-
-  it('falls back to none when no remote URL is set and no local Chrome is running', async () => {
+    // --- resolveBridgeBrowserEndpoint falls back to none when no remote URL is set
+    // and no local Chrome is running ---
     const emptyProfile = makeTmpDir('pikiclaw-no-chrome-');
-    const result = await resolveBridgeBrowserEndpoint(emptyProfile, null);
-
-    expect(result).toEqual({ endpoint: null, mode: 'none' });
+    expect(await resolveBridgeBrowserEndpoint(emptyProfile, null))
+      .toEqual({ endpoint: null, mode: 'none' });
   });
 });
 
-describe('buildSupplementalMcpServers', () => {
-  it('does not add Playwright MCP when browser automation is disabled', () => {
-    const servers = buildSupplementalMcpServers({
+describe('buildSupplementalMcpServers & buildGuiSetupHints', () => {
+  it('builds Playwright MCP servers and setup hints across disabled / user-data-dir / attach / remote modes', async () => {
+    // --- buildSupplementalMcpServers: no Playwright MCP when browser automation is disabled ---
+    expect(buildSupplementalMcpServers({
       browserEnabled: false,
       browserProfileDir: getManagedBrowserProfileDir(),
       browserHeadless: false,
-    });
+    })).toEqual([]);
 
-    expect(servers).toEqual([]);
-  });
-
-  it('spawns @playwright/mcp directly in user-data-dir mode when no CDP endpoint is supplied', () => {
-    const profileDir = getManagedBrowserProfileDir();
-    const expected = resolveManagedBrowserMcpCommand(profileDir, { headless: false });
-    const servers = buildSupplementalMcpServers({
+    // --- buildSupplementalMcpServers: spawns @playwright/mcp directly in user-data-dir
+    // mode when no CDP endpoint is supplied ---
+    const managedProfileDir = getManagedBrowserProfileDir();
+    const userDataExpected = resolveManagedBrowserMcpCommand(managedProfileDir, { headless: false });
+    expect(buildSupplementalMcpServers({
       browserEnabled: true,
-      browserProfileDir: profileDir,
+      browserProfileDir: managedProfileDir,
       browserHeadless: false,
-    });
-
-    expect(servers).toEqual([
+    })).toEqual([
       {
         name: 'pikiclaw-browser',
-        command: expected.command,
-        args: expected.args,
+        command: userDataExpected.command,
+        args: userDataExpected.args,
       },
     ]);
-  });
 
-  it('spawns @playwright/mcp in attach mode when a managed-browser CDP endpoint is supplied', () => {
-    const profileDir = path.join('/tmp', 'pikiclaw', 'browser', 'chrome-profile');
-    const cdpEndpoint = 'http://127.0.0.1:39222';
-    const expected = resolveManagedBrowserMcpCommand(profileDir, { headless: true, cdpEndpoint });
-    const servers = buildSupplementalMcpServers({
+    // --- buildSupplementalMcpServers: spawns @playwright/mcp in attach mode when a
+    // managed-browser CDP endpoint is supplied ---
+    const attachProfileDir = path.join('/tmp', 'pikiclaw', 'browser', 'chrome-profile');
+    const attachCdpEndpoint = 'http://127.0.0.1:39222';
+    const attachExpected = resolveManagedBrowserMcpCommand(attachProfileDir, { headless: true, cdpEndpoint: attachCdpEndpoint });
+    expect(buildSupplementalMcpServers({
       browserEnabled: true,
-      browserProfileDir: profileDir,
+      browserProfileDir: attachProfileDir,
       browserHeadless: true,
     }, {
-      cdpEndpoint,
-    });
-
-    expect(servers).toEqual([
+      cdpEndpoint: attachCdpEndpoint,
+    })).toEqual([
       {
         name: 'pikiclaw-browser',
-        command: expected.command,
-        args: expected.args,
+        command: attachExpected.command,
+        args: attachExpected.args,
       },
     ]);
-    expect(expected.args).toContain('--cdp-endpoint');
-    expect(expected.args).toContain(cdpEndpoint);
-  });
+    expect(attachExpected.args).toContain('--cdp-endpoint');
+    expect(attachExpected.args).toContain(attachCdpEndpoint);
 
-  it('attaches to a remote CDP endpoint without ever passing --user-data-dir (no local launch)', async () => {
-    // End-to-end guarantee for issue #16: PIKICLAW_BROWSER_CDP_URL must produce
-    // an attach-only playwright/mcp argv, never the user-data-dir launch path
-    // that would spawn a local Chrome the container may not even have.
+    // --- buildSupplementalMcpServers: attaches to a remote CDP endpoint without ever
+    // passing --user-data-dir (no local launch). End-to-end guarantee for issue #16:
+    // PIKICLAW_BROWSER_CDP_URL must produce an attach-only playwright/mcp argv, never
+    // the user-data-dir launch path that would spawn a local Chrome the container may
+    // not even have. ---
     const remote = 'http://chromium:9223';
     const { endpoint, mode } = await resolveBridgeBrowserEndpoint('/tmp/pikiclaw/profile', remote);
     expect(mode).toBe('remote');
-
-    const servers = buildSupplementalMcpServers({
+    const remoteServers = buildSupplementalMcpServers({
       browserEnabled: true,
       browserProfileDir: '/tmp/pikiclaw/profile',
       browserHeadless: false,
     }, { cdpEndpoint: endpoint });
+    const remoteArgs = remoteServers[0]?.args ?? [];
+    expect(remoteArgs).toContain('--cdp-endpoint');
+    expect(remoteArgs).toContain(remote);
+    expect(remoteArgs).not.toContain('--user-data-dir');
 
-    const args = servers[0]?.args ?? [];
-    expect(args).toContain('--cdp-endpoint');
-    expect(args).toContain(remote);
-    expect(args).not.toContain('--user-data-dir');
-  });
-});
-
-describe('buildGuiSetupHints', () => {
-  it('returns no browser hints when browser automation is disabled', () => {
-    const hints = buildGuiSetupHints({
+    // --- buildGuiSetupHints: no browser hints when browser automation is disabled ---
+    expect(buildGuiSetupHints({
       browserEnabled: false,
       browserProfileDir: getManagedBrowserProfileDir(),
       browserHeadless: false,
-    });
+    })).toEqual([]);
 
-    expect(hints).toEqual([]);
-  });
-
-  it('explains the dedicated managed browser profile mode', () => {
-    const profileDir = path.join('/tmp', 'pikiclaw', 'browser', 'chrome-profile');
-    const hints = buildGuiSetupHints({
+    // --- buildGuiSetupHints: explains the dedicated managed browser profile mode ---
+    const hintProfileDir = path.join('/tmp', 'pikiclaw', 'browser', 'chrome-profile');
+    expect(buildGuiSetupHints({
       browserEnabled: true,
-      browserProfileDir: profileDir,
+      browserProfileDir: hintProfileDir,
       browserHeadless: true,
-    });
-
-    expect(hints).toEqual([
-      `managed browser profile mode enabled; runtime sessions reuse ${profileDir}; configured MCP browser mode=headless. This mode keeps automation isolated from your everyday browser. If the managed browser is already open, pikiclaw will try to attach to it first. When using browser_tabs, use action="new" to open a tab, not "create".`,
+    })).toEqual([
+      `managed browser profile mode enabled; runtime sessions reuse ${hintProfileDir}; configured MCP browser mode=headless. This mode keeps automation isolated from your everyday browser. If the managed browser is already open, pikiclaw will try to attach to it first. When using browser_tabs, use action="new" to open a tab, not "create".`,
     ]);
   });
 });
@@ -271,32 +235,38 @@ describe('buildGuiSetupHints', () => {
 describe('_matchPlaywrightMcpProcessCommand', () => {
   const ENDPOINT = 'http://127.0.0.1:39222';
 
-  it('matches the direct cli.js invocation that pikiclaw itself spawns', () => {
-    const command = '/opt/homebrew/bin/node /repo/node_modules/@playwright/mcp/cli.js --cdp-endpoint http://127.0.0.1:39222 --output-dir /tmp/out';
-    expect(_matchPlaywrightMcpProcessCommand(command, ENDPOINT)).toBe(true);
-  });
+  it('matches real cli.js / bin-symlink invocations on our endpoint but skips mismatches, inline scripts, and empty inputs', () => {
+    // --- matches the direct cli.js invocation that pikiclaw itself spawns ---
+    expect(_matchPlaywrightMcpProcessCommand(
+      '/opt/homebrew/bin/node /repo/node_modules/@playwright/mcp/cli.js --cdp-endpoint http://127.0.0.1:39222 --output-dir /tmp/out',
+      ENDPOINT,
+    )).toBe(true);
 
-  it('matches the npm bin-symlink invocation used by npx / agent CLIs', () => {
-    const command = 'node /repo/node_modules/.bin/playwright-mcp --cdp-endpoint http://127.0.0.1:39222';
-    expect(_matchPlaywrightMcpProcessCommand(command, ENDPOINT)).toBe(true);
-  });
+    // --- matches the npm bin-symlink invocation used by npx / agent CLIs ---
+    expect(_matchPlaywrightMcpProcessCommand(
+      'node /repo/node_modules/.bin/playwright-mcp --cdp-endpoint http://127.0.0.1:39222',
+      ENDPOINT,
+    )).toBe(true);
 
-  it('skips processes attached to a different CDP endpoint', () => {
-    const command = 'node /repo/node_modules/@playwright/mcp/cli.js --cdp-endpoint http://127.0.0.1:9999';
-    expect(_matchPlaywrightMcpProcessCommand(command, ENDPOINT)).toBe(false);
-  });
+    // --- skips processes attached to a different CDP endpoint ---
+    expect(_matchPlaywrightMcpProcessCommand(
+      'node /repo/node_modules/@playwright/mcp/cli.js --cdp-endpoint http://127.0.0.1:9999',
+      ENDPOINT,
+    )).toBe(false);
 
-  it('skips unrelated node -e scripts whose inline source mentions playwright-mcp', () => {
-    const command = 'node -e console.log("@playwright/mcp/cli.js http://127.0.0.1:39222")';
-    expect(_matchPlaywrightMcpProcessCommand(command, ENDPOINT)).toBe(false);
-  });
+    // --- skips unrelated node -e scripts whose inline source mentions playwright-mcp ---
+    expect(_matchPlaywrightMcpProcessCommand(
+      'node -e console.log("@playwright/mcp/cli.js http://127.0.0.1:39222")',
+      ENDPOINT,
+    )).toBe(false);
 
-  it('skips bin-symlink processes that do not target our endpoint', () => {
-    const command = 'node /repo/node_modules/.bin/playwright-mcp';
-    expect(_matchPlaywrightMcpProcessCommand(command, ENDPOINT)).toBe(false);
-  });
+    // --- skips bin-symlink processes that do not target our endpoint ---
+    expect(_matchPlaywrightMcpProcessCommand(
+      'node /repo/node_modules/.bin/playwright-mcp',
+      ENDPOINT,
+    )).toBe(false);
 
-  it('returns false when given empty inputs', () => {
+    // --- returns false when given empty inputs ---
     expect(_matchPlaywrightMcpProcessCommand('', ENDPOINT)).toBe(false);
     expect(_matchPlaywrightMcpProcessCommand('node x.js --cdp-endpoint http://127.0.0.1:39222', '')).toBe(false);
   });

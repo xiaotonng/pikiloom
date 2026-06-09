@@ -26,88 +26,93 @@ async function flush(preview: LivePreview) {
 }
 
 describe('LivePreview placeholder lifecycle', () => {
-  it('abandons placeholder after consecutive edit failures', async () => {
-    const { channel, editMessage } = createChannel();
-    editMessage.mockRejectedValue(Object.assign(new Error('edit card failed: code=230020'), { feishuEditFailed: true }));
-    const preview = new LivePreview({
-      agent: 'claude',
-      chatId: 'c1',
-      placeholderMessageId: 'placeholder',
-      channel,
-      renderer,
-      streamEditIntervalMs: 0,
-      startTimeMs: Date.now(),
-      canEditMessages: true,
-      canSendTyping: false,
-      log: () => {},
-    });
+  it('abandons on consecutive failures, resets counter on success, and no-ops without a placeholder', async () => {
+    // abandons placeholder after consecutive edit failures
+    {
+      const { channel, editMessage } = createChannel();
+      editMessage.mockRejectedValue(Object.assign(new Error('edit card failed: code=230020'), { feishuEditFailed: true }));
+      const preview = new LivePreview({
+        agent: 'claude',
+        chatId: 'c1',
+        placeholderMessageId: 'placeholder',
+        channel,
+        renderer,
+        streamEditIntervalMs: 0,
+        startTimeMs: Date.now(),
+        canEditMessages: true,
+        canSendTyping: false,
+        log: () => {},
+      });
 
-    expect(preview.isPlaceholderAbandoned()).toBe(false);
+      expect(preview.isPlaceholderAbandoned()).toBe(false);
 
-    preview.update('text-1', '', '');
-    await flush(preview);
-    preview.update('text-2', '', '');
-    await flush(preview);
-    preview.update('text-3', '', '');
-    await flush(preview);
-
-    expect(preview.isPlaceholderAbandoned()).toBe(true);
-    const callsAtAbandon = editMessage.mock.calls.length;
-
-    // Further updates should NOT keep editing — we gave up.
-    preview.update('text-4', '', '');
-    await flush(preview);
-    preview.update('text-5', '', '');
-    await flush(preview);
-    expect(editMessage.mock.calls.length).toBe(callsAtAbandon);
-  });
-
-  it('resets the failure counter on a successful edit (transient blips do not poison the run)', async () => {
-    const { channel, editMessage } = createChannel();
-    editMessage
-      .mockRejectedValueOnce(new Error('blip-1'))
-      .mockRejectedValueOnce(new Error('blip-2'))
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('blip-3'))
-      .mockResolvedValueOnce(undefined);
-
-    const preview = new LivePreview({
-      agent: 'claude',
-      chatId: 'c1',
-      placeholderMessageId: 'placeholder',
-      channel,
-      renderer,
-      streamEditIntervalMs: 0,
-      startTimeMs: Date.now(),
-      canEditMessages: true,
-      canSendTyping: false,
-      log: () => {},
-    });
-
-    for (const txt of ['a', 'b', 'c', 'd', 'e']) {
-      preview.update(txt, '', '');
+      preview.update('text-1', '', '');
       await flush(preview);
-    }
-    expect(preview.isPlaceholderAbandoned()).toBe(false);
-  });
+      preview.update('text-2', '', '');
+      await flush(preview);
+      preview.update('text-3', '', '');
+      await flush(preview);
 
-  it('does nothing when no placeholder was created', async () => {
-    const { channel, editMessage } = createChannel();
-    const preview = new LivePreview({
-      agent: 'claude',
-      chatId: 'c1',
-      placeholderMessageId: null,
-      channel,
-      renderer,
-      streamEditIntervalMs: 0,
-      startTimeMs: Date.now(),
-      canEditMessages: true,
-      canSendTyping: false,
-      log: () => {},
-    });
-    preview.update('hello', '', '');
-    await flush(preview);
-    expect(editMessage).not.toHaveBeenCalled();
-    expect(preview.isPlaceholderAbandoned()).toBe(false);
+      expect(preview.isPlaceholderAbandoned()).toBe(true);
+      const callsAtAbandon = editMessage.mock.calls.length;
+
+      // Further updates should NOT keep editing — we gave up.
+      preview.update('text-4', '', '');
+      await flush(preview);
+      preview.update('text-5', '', '');
+      await flush(preview);
+      expect(editMessage.mock.calls.length).toBe(callsAtAbandon);
+    }
+
+    // resets the failure counter on a successful edit (transient blips do not poison the run)
+    {
+      const { channel, editMessage } = createChannel();
+      editMessage
+        .mockRejectedValueOnce(new Error('blip-1'))
+        .mockRejectedValueOnce(new Error('blip-2'))
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('blip-3'))
+        .mockResolvedValueOnce(undefined);
+
+      const preview = new LivePreview({
+        agent: 'claude',
+        chatId: 'c1',
+        placeholderMessageId: 'placeholder',
+        channel,
+        renderer,
+        streamEditIntervalMs: 0,
+        startTimeMs: Date.now(),
+        canEditMessages: true,
+        canSendTyping: false,
+        log: () => {},
+      });
+
+      for (const txt of ['a', 'b', 'c', 'd', 'e']) {
+        preview.update(txt, '', '');
+        await flush(preview);
+      }
+      expect(preview.isPlaceholderAbandoned()).toBe(false);
+    }
+
+    // does nothing when no placeholder was created
+    {
+      const { channel, editMessage } = createChannel();
+      const preview = new LivePreview({
+        agent: 'claude',
+        chatId: 'c1',
+        placeholderMessageId: null,
+        channel,
+        renderer,
+        streamEditIntervalMs: 0,
+        startTimeMs: Date.now(),
+        canEditMessages: true,
+        canSendTyping: false,
+        log: () => {},
+      });
+      preview.update('hello', '', '');
+      await flush(preview);
+      expect(editMessage).not.toHaveBeenCalled();
+      expect(preview.isPlaceholderAbandoned()).toBe(false);
+    }
   });
 });

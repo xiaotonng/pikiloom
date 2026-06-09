@@ -7,7 +7,8 @@ import { buildCodexMcpAddArgs, buildGeminiMcpConfig } from '../src/agent/mcp/bri
 import { withTempHome } from './support/env.ts';
 
 describe('getGlobalExtensionsAsServers — HTTP transport', () => {
-  it('emits HTTP entries with OAuth Authorization injected from the token store', async () => {
+  it('injects OAuth headers, skips disabled entries, and lets workspace .mcp.json override globals', async () => {
+    // --- HTTP entry with OAuth Authorization injected from the token store ---
     await withTempHome(async () => {
       saveUserConfig({
         extensions: {
@@ -37,9 +38,8 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
         headers: { Authorization: 'Bearer tok-abc' },
       });
     });
-  });
 
-  it('emits HTTP entries without Authorization when no token is stored', async () => {
+    // --- HTTP entry without Authorization when no token is stored ---
     await withTempHome(async () => {
       saveUserConfig({
         extensions: {
@@ -57,9 +57,8 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
       expect(server).toMatchObject({ name: 'generic', type: 'http', url: 'https://example.com/mcp' });
       expect(server.headers).toBeUndefined();
     });
-  });
 
-  it('skips disabled entries for both stdio and HTTP transports', async () => {
+    // --- Skips disabled entries for both stdio and HTTP transports ---
     await withTempHome(async () => {
       saveUserConfig({
         extensions: {
@@ -86,9 +85,8 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
       const names = getGlobalExtensionsAsServers().map(s => s.name).sort();
       expect(names).toEqual(['on-stdio']);
     });
-  });
 
-  it('lets a workspace .mcp.json override a global stdio entry with HTTP', async () => {
+    // --- Workspace .mcp.json overrides a global stdio entry with HTTP ---
     await withTempHome(async homeDir => {
       saveUserConfig({
         extensions: {
@@ -126,8 +124,9 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
 });
 
 describe('buildCodexMcpAddArgs', () => {
-  it('builds stdio argv with --env flags before the trailing command', () => {
-    const args = buildCodexMcpAddArgs(
+  it('builds stdio/HTTP argv, threads bearer tokens, sanitizes names, and returns null for malformed entries', () => {
+    // --- stdio argv with --env flags before the trailing command ---
+    const stdioArgs = buildCodexMcpAddArgs(
       {
         name: 'pikiclaw',
         type: 'stdio',
@@ -137,45 +136,41 @@ describe('buildCodexMcpAddArgs', () => {
       },
       {},
     );
-    expect(args).toEqual(['mcp', 'add', 'pikiclaw', '--env', 'FOO=bar', '--', '/usr/bin/node', 'session-server.js']);
-  });
+    expect(stdioArgs).toEqual(['mcp', 'add', 'pikiclaw', '--env', 'FOO=bar', '--', '/usr/bin/node', 'session-server.js']);
 
-  it('builds HTTP argv with --url and threads the bearer token into tokenEnv', () => {
-    const tokenEnv: Record<string, string> = {};
-    const args = buildCodexMcpAddArgs(
+    // --- HTTP argv with --url threading the bearer token into tokenEnv ---
+    const bearerEnv: Record<string, string> = {};
+    const httpArgs = buildCodexMcpAddArgs(
       {
         name: 'notion',
         type: 'http',
         url: 'https://mcp.notion.com/mcp',
         headers: { Authorization: 'Bearer tok-xyz' },
       },
-      tokenEnv,
+      bearerEnv,
     );
-    expect(args).toEqual([
+    expect(httpArgs).toEqual([
       'mcp', 'add', 'notion',
       '--url', 'https://mcp.notion.com/mcp',
       '--bearer-token-env-var', 'PIKICLAW_MCP_BEARER_NOTION',
     ]);
-    expect(tokenEnv).toEqual({ PIKICLAW_MCP_BEARER_NOTION: 'tok-xyz' });
-  });
+    expect(bearerEnv).toEqual({ PIKICLAW_MCP_BEARER_NOTION: 'tok-xyz' });
 
-  it('builds HTTP argv without bearer when no Authorization header is set', () => {
-    const tokenEnv: Record<string, string> = {};
-    const args = buildCodexMcpAddArgs(
+    // --- HTTP argv without bearer when no Authorization header is set ---
+    const noBearerEnv: Record<string, string> = {};
+    const openArgs = buildCodexMcpAddArgs(
       { name: 'open', type: 'http', url: 'https://example.com/mcp' },
-      tokenEnv,
+      noBearerEnv,
     );
-    expect(args).toEqual(['mcp', 'add', 'open', '--url', 'https://example.com/mcp']);
-    expect(tokenEnv).toEqual({});
-  });
+    expect(openArgs).toEqual(['mcp', 'add', 'open', '--url', 'https://example.com/mcp']);
+    expect(noBearerEnv).toEqual({});
 
-  it('returns null for malformed entries instead of throwing', () => {
+    // --- null for malformed entries instead of throwing ---
     expect(buildCodexMcpAddArgs({ name: 'broken' }, {})).toBeNull();
     expect(buildCodexMcpAddArgs({ name: 'broken-http', type: 'http' }, {})).toBeNull();
-  });
 
-  it('sanitizes server name into a valid env-var suffix', () => {
-    const tokenEnv: Record<string, string> = {};
+    // --- sanitizes server name into a valid env-var suffix ---
+    const sanitizeEnv: Record<string, string> = {};
     buildCodexMcpAddArgs(
       {
         name: 'my-fancy.server!',
@@ -183,14 +178,15 @@ describe('buildCodexMcpAddArgs', () => {
         url: 'https://example.com/mcp',
         headers: { Authorization: 'Bearer t' },
       },
-      tokenEnv,
+      sanitizeEnv,
     );
-    expect(Object.keys(tokenEnv)).toEqual(['PIKICLAW_MCP_BEARER_MY_FANCY_SERVER']);
+    expect(Object.keys(sanitizeEnv)).toEqual(['PIKICLAW_MCP_BEARER_MY_FANCY_SERVER']);
   });
 });
 
 describe('buildGeminiMcpConfig', () => {
-  it('emits {type, url, headers} for HTTP servers and {command, args, env} for stdio', () => {
+  it('emits HTTP/stdio shapes with trust and omits headers when absent', () => {
+    // --- {type, url, headers} for HTTP and {command, args, env} for stdio ---
     const config = buildGeminiMcpConfig([
       {
         name: 'notion',
@@ -221,13 +217,12 @@ describe('buildGeminiMcpConfig', () => {
         trust: true,
       },
     });
-  });
 
-  it('omits headers field for HTTP servers without headers', () => {
-    const config = buildGeminiMcpConfig([
+    // --- omits headers field for HTTP servers without headers ---
+    const openConfig = buildGeminiMcpConfig([
       { name: 'open', type: 'http', url: 'https://example.com/mcp' },
     ]);
-    expect(config.mcpServers.open).toEqual({
+    expect(openConfig.mcpServers.open).toEqual({
       type: 'http',
       url: 'https://example.com/mcp',
       trust: true,

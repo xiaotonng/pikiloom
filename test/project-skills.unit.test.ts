@@ -27,31 +27,32 @@ afterEach(() => {
 });
 
 describe('project skills', () => {
-  it('resolves claude skills with canonical project paths and injects context', () => {
-    const workdir = makeTmpDir('pikiclaw-claude-skill-');
-    writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'install', '---\nlabel: Install\ndescription: shared\n---\n');
-    writeSkill(path.join(workdir, '.claude', 'skills'), 'install', '---\nlabel: Install\ndescription: claude\n---\n');
+  it('resolves skill paths, routes per-agent, merges legacy roots, and collapses shorthand', () => {
+    // resolves claude skills with canonical project paths and injects context
+    {
+      const workdir = makeTmpDir('pikiclaw-claude-skill-');
+      writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'install', '---\nlabel: Install\ndescription: shared\n---\n');
+      writeSkill(path.join(workdir, '.claude', 'skills'), 'install', '---\nlabel: Install\ndescription: claude\n---\n');
 
-    const bot = new Bot();
-    bot.switchWorkdir(workdir, { persist: false });
-    bot.chat(1).agent = 'claude';
+      const bot = new Bot();
+      bot.switchWorkdir(workdir, { persist: false });
+      bot.chat(1).agent = 'claude';
 
-    expect(getProjectSkillPaths(workdir, 'install')).toEqual({
-      sharedSkillFile: path.join(workdir, '.pikiclaw', 'skills', 'install', 'SKILL.md'),
-      claudeSkillFile: path.join(workdir, '.claude', 'skills', 'install', 'SKILL.md'),
-      agentsSkillFile: path.join(workdir, '.agents', 'skills', 'install', 'SKILL.md'),
-    });
+      expect(getProjectSkillPaths(workdir, 'install')).toEqual({
+        sharedSkillFile: path.join(workdir, '.pikiclaw', 'skills', 'install', 'SKILL.md'),
+        claudeSkillFile: path.join(workdir, '.claude', 'skills', 'install', 'SKILL.md'),
+        agentsSkillFile: path.join(workdir, '.agents', 'skills', 'install', 'SKILL.md'),
+      });
 
-    const resolved = resolveSkillPrompt(bot, 1, 'sk_install', 'ship it');
-    expect(resolved).not.toBeNull();
-    expect(resolved!.skillName).toBe('install');
-    expect(resolved!.prompt).toContain(workdir);
-    expect(resolved!.prompt).toContain('.claude/skills/install/SKILL.md');
-    expect(resolved!.prompt).toContain('Additional context: ship it');
-  });
+      const resolved = resolveSkillPrompt(bot, 1, 'sk_install', 'ship it');
+      expect(resolved).not.toBeNull();
+      expect(resolved!.skillName).toBe('install');
+      expect(resolved!.prompt).toContain(workdir);
+      expect(resolved!.prompt).toContain('.claude/skills/install/SKILL.md');
+      expect(resolved!.prompt).toContain('Additional context: ship it');
+    }
 
-  it('routes codex skills to project files and merges legacy skill roots into canonical', () => {
-    // Scenario 1: routes codex skills to project skill files instead of hard-coding .claude paths
+    // routes codex skills to project skill files instead of hard-coding .claude paths
     {
       const workdir = makeTmpDir('pikiclaw-codex-skill-');
       writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'fixup', '---\nlabel: Fixup\ndescription: shared\n---\n');
@@ -68,7 +69,7 @@ describe('project skills', () => {
       expect(resolved!.prompt).toContain('.claude/skills/fixup/SKILL.md');
     }
 
-    // Scenario 2: merges legacy skill roots into .pikiclaw/skills and links .claude/.agents back to canonical
+    // merges legacy skill roots into .pikiclaw/skills and links .claude/.agents back to canonical
     {
       const workdir = makeTmpDir('pikiclaw-migrate-skill-');
       writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'ship', '---\nlabel: Ship\ndescription: shared\n---\n');
@@ -92,33 +93,34 @@ describe('project skills', () => {
       expect(fs.realpathSync(path.join(workdir, '.claude', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiclaw', 'skills')));
       expect(fs.realpathSync(path.join(workdir, '.agents', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiclaw', 'skills')));
     }
-  });
 
-  it('collapses canonical skill expansions back to the slash command shorthand', () => {
-    const workdir = makeTmpDir('pikiclaw-collapse-skill-');
-    writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'install', '---\nlabel: Install\n---\n');
-    const bot = new Bot();
-    bot.switchWorkdir(workdir, { persist: false });
-    bot.chat(7).agent = 'claude';
+    // collapses canonical skill expansions back to the slash command shorthand
+    {
+      const workdir = makeTmpDir('pikiclaw-collapse-skill-');
+      writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'install', '---\nlabel: Install\n---\n');
+      const bot = new Bot();
+      bot.switchWorkdir(workdir, { persist: false });
+      bot.chat(7).agent = 'claude';
 
-    // Round-trip: produce the expansion, then verify the inverse returns `/install`.
-    const noArgs = resolveSkillPrompt(bot, 7, 'sk_install', '');
-    expect(noArgs).not.toBeNull();
-    expect(collapseSkillPrompt(noArgs!.prompt)).toBe('/install');
+      // Round-trip: produce the expansion, then verify the inverse returns `/install`.
+      const noArgs = resolveSkillPrompt(bot, 7, 'sk_install', '');
+      expect(noArgs).not.toBeNull();
+      expect(collapseSkillPrompt(noArgs!.prompt)).toBe('/install');
 
-    const withArgs = resolveSkillPrompt(bot, 7, 'sk_install', 'ship it now');
-    expect(withArgs).not.toBeNull();
-    expect(collapseSkillPrompt(withArgs!.prompt)).toBe('/install ship it now');
+      const withArgs = resolveSkillPrompt(bot, 7, 'sk_install', 'ship it now');
+      expect(withArgs).not.toBeNull();
+      expect(collapseSkillPrompt(withArgs!.prompt)).toBe('/install ship it now');
 
-    // The claude driver collapses interior whitespace before surfacing user
-    // messages. Make sure we still recognize that single-space variant.
-    const flattened = noArgs!.prompt.replace(/\s+/g, ' ').trim();
-    expect(collapseSkillPrompt(flattened)).toBe('/install');
+      // The claude driver collapses interior whitespace before surfacing user
+      // messages. Make sure we still recognize that single-space variant.
+      const flattened = noArgs!.prompt.replace(/\s+/g, ' ').trim();
+      expect(collapseSkillPrompt(flattened)).toBe('/install');
 
-    // Free-form text and partial matches should not collapse.
-    expect(collapseSkillPrompt('hello world')).toBeNull();
-    expect(collapseSkillPrompt('')).toBeNull();
-    expect(collapseSkillPrompt(null)).toBeNull();
-    expect(collapseSkillPrompt('[Project directory: /tmp]\n\nbuild the app')).toBeNull();
+      // Free-form text and partial matches should not collapse.
+      expect(collapseSkillPrompt('hello world')).toBeNull();
+      expect(collapseSkillPrompt('')).toBeNull();
+      expect(collapseSkillPrompt(null)).toBeNull();
+      expect(collapseSkillPrompt('[Project directory: /tmp]\n\nbuild the app')).toBeNull();
+    }
   });
 });

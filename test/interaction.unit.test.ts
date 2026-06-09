@@ -72,364 +72,208 @@ function buildTestInteraction(overrides: Partial<AgentInteraction> = {}): AgentI
 // ---- tests ------------------------------------------------------------------
 
 describe('Bot interaction handler via submitSessionTask (dashboard path)', () => {
-  it('creates interaction prompts, emits SSE events, and resolves via public API', async () => {
+  it('creates interaction prompts and resolves via select, cancel, and freeform text APIs', async () => {
     const doStreamMock = vi.mocked(doStream);
     const events: StreamEvent[] = [];
 
-    // doStream captures onInteraction and triggers it mid-stream
-    let capturedOnInteraction: StreamOpts['onInteraction'];
-
+    // --- select: creates interaction prompts, emits SSE events, resolves via selectOption ---
     doStreamMock.mockImplementationOnce(async (opts) => {
-      capturedOnInteraction = opts.onInteraction;
-      // Simulate agent requesting user input
       const interactionPromise = opts.onInteraction?.(buildTestInteraction());
-
-      // The promise should NOT be resolved yet — waiting for user
       expect(interactionPromise).toBeInstanceOf(Promise);
-
-      // We'll resolve it from outside after checking the state
       const response = await interactionPromise;
-      expect(response).toEqual({
-        answers: { q1: { answers: ['Allow'] } },
-      });
-
-      return makeStreamResult('codex', {
-        sessionId: 'sess-interaction',
-        message: 'done after interaction',
-      });
+      expect(response).toEqual({ answers: { q1: { answers: ['Allow'] } } });
+      return makeStreamResult('codex', { sessionId: 'sess-interaction', message: 'done after interaction' });
     });
 
     const bot = new Bot();
-
-    // Subscribe to SSE events
     bot.onStreamSnapshot((key, snap) => {
       if (snap?.interactions?.length) {
         events.push({ type: 'interaction', taskId: snap.taskId, interaction: snap.interactions[0] });
       }
     });
-
-    const submitted = bot.submitSessionTask({
-      agent: 'codex',
-      sessionId: 'sess-interaction',
-      workdir: process.env.PIKICLAW_WORKDIR!,
-      prompt: 'do work',
-    });
-
+    const submitted = bot.submitSessionTask({ agent: 'codex', sessionId: 'sess-interaction', workdir: process.env.PIKICLAW_WORKDIR!, prompt: 'do work' });
     expect(submitted.ok).toBe(true);
 
-    // Wait for the stream to reach the interaction point
-    const deadline = Date.now() + 2000;
+    let deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      const snap = bot.getStreamSnapshot('codex:sess-interaction');
-      if (snap?.interactions?.length) break;
+      if (bot.getStreamSnapshot('codex:sess-interaction')?.interactions?.length) break;
       await new Promise(r => setTimeout(r, 10));
     }
 
-    // Verify interaction snapshot is present
     const snap = bot.getStreamSnapshot('codex:sess-interaction');
     expect(snap?.interactions).toHaveLength(1);
-    expect(snap!.interactions![0]).toMatchObject({
-      kind: 'user-input',
-      title: 'User Input Required',
-    });
+    expect(snap!.interactions![0]).toMatchObject({ kind: 'user-input', title: 'User Input Required' });
     const promptId = snap!.interactions![0].promptId;
 
-    // Verify prompt is accessible via public API
     const promptState = bot.interactionPrompt(promptId);
     expect(promptState).toBeTruthy();
     expect(promptState!.title).toBe('User Input Required');
     expect(promptState!.questions).toHaveLength(1);
 
-    // Respond via public API (simulating dashboard REST call)
     const selectResult = bot.interactionSelectOption(promptId, 'Allow');
     expect(selectResult).toBeTruthy();
     expect(selectResult!.completed).toBe(true);
 
-    // Wait for stream to complete
-    const doneDeadline = Date.now() + 2000;
-    while (Date.now() < doneDeadline) {
-      const s = bot.getStreamSnapshot('codex:sess-interaction');
-      if (s?.phase === 'done') break;
+    deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (bot.getStreamSnapshot('codex:sess-interaction')?.phase === 'done') break;
       await new Promise(r => setTimeout(r, 10));
     }
-
-    // Verify final state
-    const finalSnap = bot.getStreamSnapshot('codex:sess-interaction');
-    expect(finalSnap?.phase).toBe('done');
-    expect(finalSnap?.interactions).toBeUndefined();
-
-    // Verify prompt is no longer active
+    expect(bot.getStreamSnapshot('codex:sess-interaction')?.phase).toBe('done');
+    expect(bot.getStreamSnapshot('codex:sess-interaction')?.interactions).toBeUndefined();
     expect(bot.interactionPrompt(promptId)).toBeNull();
-  });
 
-  it('cancels interaction prompts and rejects the agent promise', async () => {
-    const doStreamMock = vi.mocked(doStream);
-
+    // --- cancel: cancels interaction and rejects the agent promise ---
     doStreamMock.mockImplementationOnce(async (opts) => {
       try {
         await opts.onInteraction?.(buildTestInteraction());
-        // Should not reach here
         return makeStreamResult('codex', { message: 'unexpected' });
       } catch (error: any) {
         expect(error.message).toContain('Cancelled');
-        return makeStreamResult('codex', {
-          sessionId: 'sess-cancel',
-          message: 'cancelled interaction',
-          incomplete: true,
-        });
+        return makeStreamResult('codex', { sessionId: 'sess-cancel', message: 'cancelled interaction', incomplete: true });
       }
     });
 
-    const bot = new Bot();
-    bot.submitSessionTask({
-      agent: 'codex',
-      sessionId: 'sess-cancel',
-      workdir: process.env.PIKICLAW_WORKDIR!,
-      prompt: 'do work',
-    });
+    const bot2 = new Bot();
+    bot2.submitSessionTask({ agent: 'codex', sessionId: 'sess-cancel', workdir: process.env.PIKICLAW_WORKDIR!, prompt: 'do work' });
 
-    // Wait for interaction
-    const deadline = Date.now() + 2000;
+    deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      const snap = bot.getStreamSnapshot('codex:sess-cancel');
-      if (snap?.interactions?.length) break;
+      if (bot2.getStreamSnapshot('codex:sess-cancel')?.interactions?.length) break;
       await new Promise(r => setTimeout(r, 10));
     }
-
-    const snap = bot.getStreamSnapshot('codex:sess-cancel');
-    const promptId = snap!.interactions![0].promptId;
-
-    // Cancel via public API
-    const cancelResult = bot.interactionCancel(promptId);
+    const cancelPromptId = bot2.getStreamSnapshot('codex:sess-cancel')!.interactions![0].promptId;
+    const cancelResult = bot2.interactionCancel(cancelPromptId);
     expect(cancelResult).toBeTruthy();
 
-    // Wait for stream to complete
-    const doneDeadline = Date.now() + 2000;
-    while (Date.now() < doneDeadline) {
-      const s = bot.getStreamSnapshot('codex:sess-cancel');
-      if (s?.phase === 'done') break;
+    deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (bot2.getStreamSnapshot('codex:sess-cancel')?.phase === 'done') break;
       await new Promise(r => setTimeout(r, 10));
     }
+    expect(bot2.getStreamSnapshot('codex:sess-cancel')?.phase).toBe('done');
 
-    expect(bot.getStreamSnapshot('codex:sess-cancel')?.phase).toBe('done');
-  });
-
-  it('handles freeform text submission through the public API', async () => {
-    const doStreamMock = vi.mocked(doStream);
-
+    // --- freeform text: handles freeform text submission through the public API ---
     const freeformInteraction = buildTestInteraction({
-      questions: [
-        {
-          id: 'q1',
-          header: 'Question',
-          prompt: 'Enter your API key:',
-          secret: true,
-          allowFreeform: true,
-        },
-      ],
+      questions: [{ id: 'q1', header: 'Question', prompt: 'Enter your API key:', secret: true, allowFreeform: true }],
     });
-
     doStreamMock.mockImplementationOnce(async (opts) => {
       const response = await opts.onInteraction?.(freeformInteraction);
-      expect(response).toEqual({
-        answers: { q1: { answers: ['my-secret-key'] } },
-      });
-      return makeStreamResult('codex', {
-        sessionId: 'sess-freeform',
-        message: 'done',
-      });
+      expect(response).toEqual({ answers: { q1: { answers: ['my-secret-key'] } } });
+      return makeStreamResult('codex', { sessionId: 'sess-freeform', message: 'done' });
     });
 
-    const bot = new Bot();
-    bot.submitSessionTask({
-      agent: 'codex',
-      sessionId: 'sess-freeform',
-      workdir: process.env.PIKICLAW_WORKDIR!,
-      prompt: 'do work',
-    });
+    const bot3 = new Bot();
+    bot3.submitSessionTask({ agent: 'codex', sessionId: 'sess-freeform', workdir: process.env.PIKICLAW_WORKDIR!, prompt: 'do work' });
 
-    // Wait for interaction
-    const deadline = Date.now() + 2000;
+    deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      const snap = bot.getStreamSnapshot('codex:sess-freeform');
-      if (snap?.interactions?.length) break;
+      if (bot3.getStreamSnapshot('codex:sess-freeform')?.interactions?.length) break;
       await new Promise(r => setTimeout(r, 10));
     }
-
-    const snap = bot.getStreamSnapshot('codex:sess-freeform');
-    const promptId = snap!.interactions![0].promptId;
-
-    // Submit text via public API
-    const textResult = bot.interactionSubmitText(promptId, 'my-secret-key');
+    const freeformPromptId = bot3.getStreamSnapshot('codex:sess-freeform')!.interactions![0].promptId;
+    const textResult = bot3.interactionSubmitText(freeformPromptId, 'my-secret-key');
     expect(textResult).toBeTruthy();
     expect(textResult!.completed).toBe(true);
 
-    // Wait for done
-    const doneDeadline = Date.now() + 2000;
-    while (Date.now() < doneDeadline) {
-      const s = bot.getStreamSnapshot('codex:sess-freeform');
-      if (s?.phase === 'done') break;
+    deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (bot3.getStreamSnapshot('codex:sess-freeform')?.phase === 'done') break;
       await new Promise(r => setTimeout(r, 10));
     }
-
-    expect(bot.getStreamSnapshot('codex:sess-freeform')?.phase).toBe('done');
+    expect(bot3.getStreamSnapshot('codex:sess-freeform')?.phase).toBe('done');
   });
 
-  it('accepts a custom freeform answer on an options question (dashboard "Other" path)', async () => {
-    // Regression: the dashboard modal shows a freeform field alongside options
-    // when allowFreeform is set, and submits the custom text via an explicit
-    // button — WITHOUT first flipping awaitingFreeform (the IM-only "Other" chip
-    // step). interactionSubmitText used to reject this because the question had
-    // options, so the user's custom answer "couldn't be sent".
+  it('handles dashboard "Other" path, rejects disallowed freeform, and resolves via skip', async () => {
     const doStreamMock = vi.mocked(doStream);
 
+    // --- options+freeform: accepts custom freeform answer on an options question (dashboard "Other" path) ---
     const optionsWithFreeform = buildTestInteraction({
-      questions: [
-        {
-          id: 'q1',
-          header: 'Question',
-          prompt: 'Pick one, or type your own:',
-          options: [
-            { label: 'A', description: 'first', value: 'A' },
-            { label: 'B', description: 'second', value: 'B' },
-          ],
-          allowFreeform: true,
-        },
-      ],
+      questions: [{
+        id: 'q1', header: 'Question', prompt: 'Pick one, or type your own:',
+        options: [{ label: 'A', description: 'first', value: 'A' }, { label: 'B', description: 'second', value: 'B' }],
+        allowFreeform: true,
+      }],
     });
-
     doStreamMock.mockImplementationOnce(async (opts) => {
       const response = await opts.onInteraction?.(optionsWithFreeform);
-      expect(response).toEqual({
-        answers: { q1: { answers: ['my own answer'] } },
-      });
+      expect(response).toEqual({ answers: { q1: { answers: ['my own answer'] } } });
       return makeStreamResult('codex', { sessionId: 'sess-other', message: 'done' });
     });
 
-    const bot = new Bot();
-    bot.submitSessionTask({
-      agent: 'codex',
-      sessionId: 'sess-other',
-      workdir: process.env.PIKICLAW_WORKDIR!,
-      prompt: 'do work',
-    });
+    const bot4 = new Bot();
+    bot4.submitSessionTask({ agent: 'codex', sessionId: 'sess-other', workdir: process.env.PIKICLAW_WORKDIR!, prompt: 'do work' });
 
-    const deadline = Date.now() + 2000;
+    let deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      const snap = bot.getStreamSnapshot('codex:sess-other');
-      if (snap?.interactions?.length) break;
+      if (bot4.getStreamSnapshot('codex:sess-other')?.interactions?.length) break;
       await new Promise(r => setTimeout(r, 10));
     }
+    const otherPromptId = bot4.getStreamSnapshot('codex:sess-other')!.interactions![0].promptId;
+    const otherResult = bot4.interactionSubmitText(otherPromptId, 'my own answer');
+    expect(otherResult).toBeTruthy();
+    expect(otherResult!.completed).toBe(true);
 
-    const promptId = bot.getStreamSnapshot('codex:sess-other')!.interactions![0].promptId;
-
-    // Submit custom text directly — no prior select({ requestFreeform: true }).
-    const textResult = bot.interactionSubmitText(promptId, 'my own answer');
-    expect(textResult).toBeTruthy();
-    expect(textResult!.completed).toBe(true);
-
-    const doneDeadline = Date.now() + 2000;
-    while (Date.now() < doneDeadline) {
-      const s = bot.getStreamSnapshot('codex:sess-other');
-      if (s?.phase === 'done') break;
+    deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (bot4.getStreamSnapshot('codex:sess-other')?.phase === 'done') break;
       await new Promise(r => setTimeout(r, 10));
     }
-    expect(bot.getStreamSnapshot('codex:sess-other')?.phase).toBe('done');
-  });
+    expect(bot4.getStreamSnapshot('codex:sess-other')?.phase).toBe('done');
 
-  it('rejects freeform text on an options question that disallows freeform', async () => {
-    // Negative guard: when the question has options and allowFreeform is false,
-    // a stray text submission must still be rejected (returns null) rather than
-    // silently overriding the enumerated choice.
-    const doStreamMock = vi.mocked(doStream);
-
+    // --- reject freeform: rejects freeform text on an options question that disallows freeform ---
     doStreamMock.mockImplementationOnce(async (opts) => {
-      // buildTestInteraction defaults to options + allowFreeform:false.
       const response = await opts.onInteraction?.(buildTestInteraction());
       expect(response).toEqual({ answers: { q1: { answers: ['Allow'] } } });
       return makeStreamResult('codex', { sessionId: 'sess-noff', message: 'done' });
     });
 
-    const bot = new Bot();
-    bot.submitSessionTask({
-      agent: 'codex',
-      sessionId: 'sess-noff',
-      workdir: process.env.PIKICLAW_WORKDIR!,
-      prompt: 'do work',
-    });
+    const bot5 = new Bot();
+    bot5.submitSessionTask({ agent: 'codex', sessionId: 'sess-noff', workdir: process.env.PIKICLAW_WORKDIR!, prompt: 'do work' });
 
-    const deadline = Date.now() + 2000;
+    deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      const snap = bot.getStreamSnapshot('codex:sess-noff');
-      if (snap?.interactions?.length) break;
+      if (bot5.getStreamSnapshot('codex:sess-noff')?.interactions?.length) break;
       await new Promise(r => setTimeout(r, 10));
     }
+    const noffPromptId = bot5.getStreamSnapshot('codex:sess-noff')!.interactions![0].promptId;
+    expect(bot5.interactionSubmitText(noffPromptId, 'sneaky text')).toBeNull();
+    const noffSelectResult = bot5.interactionSelectOption(noffPromptId, 'Allow');
+    expect(noffSelectResult!.completed).toBe(true);
 
-    const promptId = bot.getStreamSnapshot('codex:sess-noff')!.interactions![0].promptId;
-
-    // Freeform is not allowed here → submission rejected.
-    expect(bot.interactionSubmitText(promptId, 'sneaky text')).toBeNull();
-
-    // The enumerated choice still resolves the prompt.
-    const selectResult = bot.interactionSelectOption(promptId, 'Allow');
-    expect(selectResult!.completed).toBe(true);
-
-    const doneDeadline = Date.now() + 2000;
-    while (Date.now() < doneDeadline) {
-      const s = bot.getStreamSnapshot('codex:sess-noff');
-      if (s?.phase === 'done') break;
+    deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (bot5.getStreamSnapshot('codex:sess-noff')?.phase === 'done') break;
       await new Promise(r => setTimeout(r, 10));
     }
-    expect(bot.getStreamSnapshot('codex:sess-noff')?.phase).toBe('done');
-  });
+    expect(bot5.getStreamSnapshot('codex:sess-noff')?.phase).toBe('done');
 
-  it('handles skip via the public API', async () => {
-    const doStreamMock = vi.mocked(doStream);
-
+    // --- skip: handles skip via the public API ---
     doStreamMock.mockImplementationOnce(async (opts) => {
       const response = await opts.onInteraction?.(buildTestInteraction());
-      expect(response).toEqual({
-        answers: { q1: { answers: [] } },
-      });
-      return makeStreamResult('codex', {
-        sessionId: 'sess-skip',
-        message: 'done',
-      });
+      expect(response).toEqual({ answers: { q1: { answers: [] } } });
+      return makeStreamResult('codex', { sessionId: 'sess-skip', message: 'done' });
     });
 
-    const bot = new Bot();
-    bot.submitSessionTask({
-      agent: 'codex',
-      sessionId: 'sess-skip',
-      workdir: process.env.PIKICLAW_WORKDIR!,
-      prompt: 'do work',
-    });
+    const bot6 = new Bot();
+    bot6.submitSessionTask({ agent: 'codex', sessionId: 'sess-skip', workdir: process.env.PIKICLAW_WORKDIR!, prompt: 'do work' });
 
-    // Wait for interaction
-    const deadline = Date.now() + 2000;
+    deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      const snap = bot.getStreamSnapshot('codex:sess-skip');
-      if (snap?.interactions?.length) break;
+      if (bot6.getStreamSnapshot('codex:sess-skip')?.interactions?.length) break;
       await new Promise(r => setTimeout(r, 10));
     }
-
-    const snap = bot.getStreamSnapshot('codex:sess-skip');
-    const promptId = snap!.interactions![0].promptId;
-
-    // Skip via public API
-    const skipResult = bot.interactionSkip(promptId);
+    const skipPromptId = bot6.getStreamSnapshot('codex:sess-skip')!.interactions![0].promptId;
+    const skipResult = bot6.interactionSkip(skipPromptId);
     expect(skipResult).toBeTruthy();
     expect(skipResult!.completed).toBe(true);
 
-    // Wait for done
-    const doneDeadline = Date.now() + 2000;
-    while (Date.now() < doneDeadline) {
-      const s = bot.getStreamSnapshot('codex:sess-skip');
-      if (s?.phase === 'done') break;
+    deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (bot6.getStreamSnapshot('codex:sess-skip')?.phase === 'done') break;
       await new Promise(r => setTimeout(r, 10));
     }
-
-    expect(bot.getStreamSnapshot('codex:sess-skip')?.phase).toBe('done');
+    expect(bot6.getStreamSnapshot('codex:sess-skip')?.phase).toBe('done');
   });
 });
 

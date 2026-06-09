@@ -125,7 +125,9 @@ describe('Claude context fallback', () => {
     else process.env.PATH = originalPath;
   });
 
-  it('uses 1M fallback for Opus and Sonnet base models', async () => {
+  it('derives context window via 1M fallback and accumulates turnOutputTokens across calls', async () => {
+    // --- uses 1M fallback for Opus and Sonnet base models ---
+    {
     const { doClaudeStream } = await import('../src/agent/index.ts');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-claude-context-'));
     const fakeBin = path.join(tmpDir, 'bin');
@@ -168,9 +170,10 @@ describe('Claude context fallback', () => {
     expect(result.contextWindow).toBe(967_000);
     // 26000 used / 967000 = 2.689... → 2.7
     expect(result.contextPercent).toBe(2.7);
-  });
+    }
 
-  it('accumulates turnOutputTokens across per-call message_start resets', async () => {
+    // --- accumulates turnOutputTokens across per-call message_start resets ---
+    {
     const { doClaudeStream } = await import('../src/agent/index.ts');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-claude-turnout-'));
     const fakeBin = path.join(tmpDir, 'bin');
@@ -206,5 +209,6 @@ describe('Claude context fallback', () => {
     // counter keeps climbing across the message_start reset (500 + 300).
     expect(lastMeta?.outputTokens).toBe(300);
     expect(lastMeta?.turnOutputTokens).toBe(800);
+    }
   });
 });

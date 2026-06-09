@@ -60,8 +60,8 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('TelegramChannel connect and listen', () => {
-  it('fetches bot info and reports polling conflicts and HTTP failures', async () => {
+describe('TelegramChannel', () => {
+  it('fetches bot info, reports errors, sends and edits messages, routes files, and dispatches updates', async () => {
     // --- Sub-scenario 1: fetches bot info via getMe ---
     {
       const { ch, apiCalls } = createTestChannel();
@@ -129,11 +129,8 @@ describe('TelegramChannel connect and listen', () => {
         globalThis.fetch = origFetch2;
       }
     }
-  });
-});
 
-describe('TelegramChannel send, media, edit, and draft helpers', () => {
-  it('sends messages with retry and fallback, routes files by mime type, and edits messages', async () => {
+    // --- send, media, edit, and draft helpers ---
     // --- Sub-scenario 1: passes options through and logs outgoing text verbatim ---
     {
       const { ch, apiCalls } = createTestChannel();
@@ -336,11 +333,9 @@ describe('TelegramChannel send, media, edit, and draft helpers', () => {
         writeSpy.mockRestore();
       }
     }
-  });
-});
 
-describe('TelegramChannel dispatch flow', () => {
-  it('handles commands, plain messages, photos, callbacks, filtering, menus, and drains updates', async () => {
+    // --- dispatch flow ---
+    {
     const flow = createTestChannel();
     await flow.ch.connect();
 
@@ -439,5 +434,6 @@ describe('TelegramChannel dispatch flow', () => {
 
     (flow.ch as any).api = vi.fn(async () => ({ ok: true, result: [{ update_id: 999 }] }));
     expect(await flow.ch.drain()).toBe(1);
+    }
   });
 });

@@ -37,33 +37,46 @@ afterEach(() => {
 });
 
 describe('process-control restart flow', () => {
-  it('rejects restart while any registered runtime still has active tasks', async () => {
-    const mod = await loadModule();
-    const cleanupSpy = vi.fn();
-    const unregister = mod.registerProcessRuntime({
-      label: 'test-runtime',
-      getActiveTaskCount: () => 2,
-      prepareForRestart: cleanupSpy,
-    });
-    const exitSpy = vi.fn();
-
-    try {
-      const result = await mod.requestProcessRestart({ exit: exitSpy as any });
-      expect(result).toEqual({
-        ok: false,
-        restarting: false,
-        error: '2 task(s) still running. Wait for them to finish or try again.',
-        activeTasks: 2,
+  it('rejects active tasks, signals supervisor in daemon mode, and spawns replacement in no-daemon mode', async () => {
+    // rejects restart while any registered runtime still has active tasks
+    {
+      const mod = await loadModule();
+      const cleanupSpy = vi.fn();
+      const unregister = mod.registerProcessRuntime({
+        label: 'test-runtime',
+        getActiveTaskCount: () => 2,
+        prepareForRestart: cleanupSpy,
       });
-      expect(cleanupSpy).not.toHaveBeenCalled();
-      expect(exitSpy).not.toHaveBeenCalled();
-      expect(spawnMock).not.toHaveBeenCalled();
-    } finally {
-      unregister();
-    }
-  });
+      const exitSpy = vi.fn();
 
-  it('hands restart requests to the supervisor via state file in daemon mode and spawns a replacement process in no-daemon mode', async () => {
+      try {
+        const result = await mod.requestProcessRestart({ exit: exitSpy as any });
+        expect(result).toEqual({
+          ok: false,
+          restarting: false,
+          error: '2 task(s) still running. Wait for them to finish or try again.',
+          activeTasks: 2,
+        });
+        expect(cleanupSpy).not.toHaveBeenCalled();
+        expect(exitSpy).not.toHaveBeenCalled();
+        expect(spawnMock).not.toHaveBeenCalled();
+      } finally {
+        unregister();
+      }
+    }
+
+    // Reset between scenarios
+    vi.resetModules();
+    spawnMock.mockReset();
+    spawnMock.mockReturnValue({ pid: 4321, unref: vi.fn() } as any);
+    process.env = { ...ORIGINAL_ENV };
+    delete process.env.PIKICLAW_DAEMON_CHILD;
+    delete process.env.PIKICLAW_RESTART_STATE_FILE;
+    delete process.env.PIKICLAW_RESTART_CMD;
+    delete process.env.TELEGRAM_ALLOWED_CHAT_IDS;
+    delete process.env.FEISHU_ALLOWED_CHAT_IDS;
+    delete process.env.npm_config_yes;
+
     // --- Daemon child scenario ---
     {
       const mod = await loadModule();

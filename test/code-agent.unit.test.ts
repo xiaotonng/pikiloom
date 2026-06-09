@@ -71,7 +71,8 @@ afterEach(() => {
 });
 
 describe('buildCodexTurnInput and usage helpers', () => {
-  it('uses localImage for images, explicit file references for documents, and normalizes rate-limit windows', () => {
+  it('builds turn input, normalizes windows, sanitizes previews, and merges managed/native sessions', async () => {
+    // --- uses localImage for images, explicit file references for documents, and normalizes rate-limit windows ---
     const imagePath = path.join(tmpDir, 'shot.png');
     const docPath = path.join(tmpDir, 'notes.txt');
 
@@ -85,9 +86,8 @@ describe('buildCodexTurnInput and usage helpers', () => {
 
     expect(labelFromWindowMinutes(301, 'Primary')).toBe('5h');
     expect(labelFromWindowMinutes(10081, 'Secondary')).toBe('7d');
-  });
 
-  it('filters interrupted placeholder prompts out of session previews', () => {
+    // --- filters interrupted placeholder prompts out of session previews ---
     expect(sanitizeSessionUserPreviewText('[Request interrupted by user]')).toBe('');
     expect(sanitizeSessionUserPreviewText('[Request interrupted by user for tool use]')).toBe('');
     expect(sanitizeSessionUserPreviewText('[Image: original 2316x1558, displayed at 2000x1338]')).toBe('');
@@ -101,9 +101,9 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(sanitizeSessionUserPreviewText('@/tmp/a.jpg @/tmp/b.webp prompt')).toBe('prompt');
     // Leaves unmatched bare @ tokens alone (not an image extension).
     expect(sanitizeSessionUserPreviewText('@user mentions are not paths')).toBe('@user mentions are not paths');
-  });
 
-  it('prefers native session metadata while keeping pikiclaw workspace and run state', () => {
+    // --- prefers native session metadata while keeping pikiclaw workspace and run state ---
+    {
     const merged = mergeManagedAndNativeSessions([
       {
         sessionId: 'sess-1',
@@ -155,9 +155,10 @@ describe('buildCodexTurnInput and usage helpers', () => {
       lastAnswer: 'local answer',
       lastMessageText: 'local answer',
     });
-  });
+    }
 
-  it('prefers newer native previews when the native session has advanced further', () => {
+    // --- prefers newer native previews when the native session has advanced further ---
+    {
     const merged = mergeManagedAndNativeSessions([
       {
         sessionId: 'sess-2',
@@ -203,9 +204,10 @@ describe('buildCodexTurnInput and usage helpers', () => {
       lastAnswer: 'new answer',
       lastMessageText: 'new answer',
     });
-  });
+    }
 
-  it('keeps managed preview when managed is newer than native', () => {
+    // --- keeps managed preview when managed is newer than native ---
+    {
     const merged = mergeManagedAndNativeSessions([
       {
         sessionId: 'sess-preview-1',
@@ -251,9 +253,10 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(s.lastQuestion).toBe('managed question');
     expect(s.lastAnswer).toBe('managed answer (latest)');
     expect(s.lastMessageText).toBe('managed answer (latest)');
-  });
+    }
 
-  it('switches to native preview when native is updated after managed', () => {
+    // --- switches to native preview when native is updated after managed ---
+    {
     const merged = mergeManagedAndNativeSessions([
       {
         sessionId: 'sess-preview-2',
@@ -301,9 +304,9 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(s.lastMessageText).toBe('native answer (latest)');
     // but managed workspace is preserved
     expect(s.workspacePath).toBe('/tmp/pikiclaw/workspace');
-  });
+    }
 
-  it('filters codex subagent native sessions from session listings', async () => {
+    // --- filters codex subagent native sessions from session listings ---
     await withTempHome(async (homeDir) => {
       const workdir = makeTmpDir('pikiclaw-workdir-');
       const otherWorkdir = makeTmpDir('pikiclaw-other-workdir-');
@@ -355,7 +358,9 @@ describe('buildCodexTurnInput and usage helpers', () => {
 });
 
 describe('stageSessionFiles', () => {
-  it('stores uploads in managed workspaces and migrates legacy sessions', () => {
+  it('stages/migrates uploads, sets titles, promotes pending sessions, and keeps per-agent records distinct', () => {
+    // --- stores uploads in managed workspaces and migrates legacy sessions ---
+    {
     const uploadDir = makeTmpDir('pikiclaw-upload-');
     const uploadPath = path.join(uploadDir, 'report.txt');
     fs.writeFileSync(uploadPath, 'hello');
@@ -407,9 +412,10 @@ describe('stageSessionFiles', () => {
     expect(fs.existsSync(path.join(migrated.workspacePath, 'legacy.txt'))).toBe(true);
     expect(fs.existsSync(path.join(migratedDir, 'session.json'))).toBe(true);
     expect(fs.existsSync(legacyWorkspacePath)).toBe(false);
-  });
+    }
 
-  it('uses the first question line as the new session title prefix', () => {
+    // --- uses the first question line as the new session title prefix ---
+    {
     const staged = stageSessionFiles({
       agent: 'claude',
       workdir: tmpDir,
@@ -419,9 +425,10 @@ describe('stageSessionFiles', () => {
 
     const record = listPikiclawSessions(tmpDir, 'claude').find(entry => entry.sessionId === staged.sessionId);
     expect(record?.title).toBe('第一行问题前缀');
-  });
+    }
 
-  it('promotes pending sessions without leaving stale pending records or breaking old workspace paths', () => {
+    // --- promotes pending sessions without leaving stale pending records or breaking old workspace paths ---
+    {
     const workdir = makeTmpDir('pikiclaw-promote-');
     const uploadDir = makeTmpDir('pikiclaw-image-');
     const uploadPath = path.join(uploadDir, 'shot.jpg');
@@ -446,9 +453,10 @@ describe('stageSessionFiles', () => {
     const records = listPikiclawSessions(workdir, 'codex');
     expect(records.map(entry => entry.sessionId)).toContain('thread-native');
     expect(records.map(entry => entry.sessionId)).not.toContain(staged.sessionId);
-  });
+    }
 
-  it('keeps per-agent records distinct even when session ids match, and resolves thread bindings by agent', () => {
+    // --- keeps per-agent records distinct even when session ids match, and resolves thread bindings by agent ---
+    {
     ensureManagedSession({
       agent: 'claude',
       workdir: tmpDir,
@@ -477,11 +485,14 @@ describe('stageSessionFiles', () => {
       sessionId: 'shared-session',
       threadId: 'thread-shared',
     });
+    }
   });
 });
 
 describe('codex stream', () => {
-  it('passes developerInstructions on resume and surfaces structured plans and file changes', async () => {
+  it('resumes with instructions, surfaces plans/usage, keeps commentary, and runs turns in parallel', async () => {
+    // --- passes developerInstructions on resume and surfaces structured plans and file changes ---
+    {
     const callsFile = path.join(tmpDir, 'codex-rpc-calls.jsonl');
     const script = `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -723,9 +734,14 @@ rl.on('line', (line) => {
     expect(result3.contextUsedTokens).toBe(11542);
     expect(result3.contextPercent).toBe(4.5);
     expect(previewMeta.some(meta => meta?.contextPercent === 4.5)).toBe(true);
-  });
+    }
 
-  it('keeps long codex commentary lines intact and runs turns in parallel across sessions', async () => {
+    // Reset the codex app-server singleton between merged scenarios, mirroring
+    // the per-test `shutdownCodexServer()` the beforeEach would have run.
+    shutdownCodexServer();
+
+    // --- keeps long codex commentary lines intact and runs turns in parallel across sessions ---
+    {
     const commentary = 'I am verifying the release workflow, the npm publish result, and the final changelog content before I close this out. Tail marker: KEEP_THIS_VISIBLE_AT_THE_END';
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -898,11 +914,14 @@ rl.on('line', (line) => {
 
     const spawns = fs.readFileSync(spawnLog, 'utf-8').trim().split('\n').filter(Boolean);
     expect(spawns).toHaveLength(2);
+    }
   });
 });
 
 describe('gemini stream', () => {
-  it('injects MCP through temporary Gemini settings and enables full-access defaults', async () => {
+  it('injects MCP/defaults, dedupes flags, computes context percent, parses tools, and normalizes errors', async () => {
+    // --- injects MCP through temporary Gemini settings and enables full-access defaults ---
+    {
     const argvFile = path.join(tmpDir, 'gemini-argv.json');
     const envFile = path.join(tmpDir, 'gemini-env.json');
     const copiedSettingsFile = path.join(tmpDir, 'gemini-settings-copy.json');
@@ -953,9 +972,10 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(settings.mcpServers?.pikiclaw?.command).toBeTruthy();
     expect(settings.mcpServers?.pikiclaw?.env?.MCP_CALLBACK_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(settings.mcpServers?.pikiclaw?.trust).toBe(true);
-  });
+    }
 
-  it('does not duplicate Gemini approval or sandbox flags when extra args already override them', async () => {
+    // --- does not duplicate Gemini approval or sandbox flags when extra args already override them ---
+    {
     const argvFile = path.join(tmpDir, 'gemini-argv-override.json');
     const script = `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -979,9 +999,10 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(argv.filter((arg: string) => arg === '--sandbox')).toHaveLength(1);
     expect(argv).toContain('default');
     expect(argv).toContain('true');
-  });
+    }
 
-  it('computes Gemini context percent from model fallback and input-side tokens', async () => {
+    // --- computes Gemini context percent from model fallback and input-side tokens ---
+    {
     writeFakeScript('gemini', [
       { type: 'init', session_id: 'gemini-ctx', model: 'gemini-2.5-pro' },
       { type: 'message', role: 'assistant', delta: true, content: 'OK' },
@@ -1000,9 +1021,10 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     // double-count the cached portion.
     expect(result.contextUsedTokens).toBe(9302);
     expect(result.contextPercent).toBe(0.9);
-  });
+    }
 
-  it('parses Gemini tool_use and tool_result events into readable activity previews', async () => {
+    // --- parses Gemini tool_use and tool_result events into readable activity previews ---
+    {
     const activities: string[] = [];
     writeFakeScript('gemini', [
       { type: 'init', session_id: 'gemini-tools', model: 'gemini-2.5-pro' },
@@ -1023,9 +1045,10 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(result.activity).toContain('List files: .');
     expect(result.activity).toContain('List files: . -> Listed 38 item(s). (2 ignored)');
     expect(activities.some(activity => activity.includes('List files: . -> Listed 38 item(s). (2 ignored)'))).toBe(true);
-  });
+    }
 
-  it('normalizes structured Gemini result errors without crashing', async () => {
+    // --- normalizes structured Gemini result errors without crashing ---
+    {
     writeFakeScript('gemini', [
       { type: 'init', session_id: 'gemini-error', model: 'gemini-2.5-pro' },
       {
@@ -1042,11 +1065,14 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(result.message).toBe('Operation cancelled.');
     expect(result.error).toBe('Operation cancelled.');
     expect(result.incomplete).toBe(true);
+    }
   });
 });
 
 describe('claude stream', () => {
-  it('parses text, thinking, tool activity, retries expired sessions, and marks edge cases correctly', async () => {
+  it('streams claude/codex turns: text, thinking, tool activity, retries, steering, and codex session ids', async () => {
+    // --- parses text, thinking, tool activity, retries expired sessions, and marks edge cases correctly ---
+    {
     const activities: string[] = [];
     writeFakeScript('claude', [
       { type: 'system', session_id: 's-tools', model: 'claude-opus-4-7', thinking_level: 'high' },
@@ -1192,9 +1218,9 @@ exit 1`;
     const empty = await doClaudeStream(baseOpts('claude'));
     expect(empty.ok).toBe(true);
     expect(empty.message).toBe('(no textual response)');
-  });
+    }
 
-  it('hides system-injected user events (task-notification, system-reminder, IDE state) from rendered history', async () => {
+    // --- hides system-injected user events (task-notification, system-reminder, IDE state) from rendered history ---
     await withTempHome(async (homeDir) => {
       const workdir = '/Users/test/sysinj';
       const projectDir = path.join(homeDir, '.claude', 'projects', workdir.replace(/[/\\:]/g, '-'));
@@ -1227,9 +1253,8 @@ exit 1`;
       expect(allText).not.toContain('<system-reminder>');
       expect(allText).not.toContain('<ide_opened_file>');
     });
-  });
 
-  it('resolves session JSONL when workdir contains underscores or dots (matching Claude Code\'s project-dir encoding)', async () => {
+    // --- resolves session JSONL when workdir contains underscores or dots (matching Claude Code's project-dir encoding) ---
     await withTempHome(async (homeDir) => {
       // Claude Code collapses every non-alphanumeric character (including `_`
       // and `.`) to `-` when writing `~/.claude/projects/<dir>/`. If our
@@ -1257,9 +1282,8 @@ exit 1`;
       const userMsgs = (result.messages || []).filter(m => m.role === 'user').map(m => m.text);
       expect(userMsgs).toEqual(['first turn', 'second turn', 'third turn']);
     });
-  });
 
-  it('preserves long legitimate user prompts (no length-based system-injected heuristic)', async () => {
+    // --- preserves long legitimate user prompts (no length-based system-injected heuristic) ---
     await withTempHome(async (homeDir) => {
       // Compression-summary detection used to fire on any user text > 800
       // chars, which silently dropped multi-paragraph user prompts (briefs,
@@ -1292,9 +1316,8 @@ exit 1`;
       expect(userTexts[1].length).toBeGreaterThan(800);
       expect(userTexts[2]).toBe('follow-up');
     });
-  });
 
-  it('still hides genuine compression summaries injected as user events (marker-based)', async () => {
+    // --- still hides genuine compression summaries injected as user events (marker-based) ---
     await withTempHome(async (homeDir) => {
       const workdir = '/Users/test/compress';
       const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-compress');
@@ -1318,9 +1341,8 @@ exit 1`;
       const userTexts = (result.messages || []).filter(m => m.role === 'user').map(m => m.text);
       expect(userTexts).toEqual(['pre-compaction opener', 'post-compaction prompt']);
     });
-  });
 
-  it('lifts Claude TUI @/path image mentions into structured image blocks for the user bubble', async () => {
+    // --- lifts Claude TUI @/path image mentions into structured image blocks for the user bubble ---
     await withTempHome(async (homeDir) => {
       // Claude TUI persists user `content` as a plain string with leading
       // `@/abs/path/image.png` mentions because that's how it ingests local
@@ -1381,9 +1403,8 @@ exit 1`;
       const t3Images = userTurns[2].blocks.filter(b => b.type === 'image');
       expect(t3Images).toHaveLength(0);
     });
-  });
 
-  it('hydrates historical sub-agent blocks from sidecar JSONL/meta files and hides the result text from parent activity', async () => {
+    // --- hydrates historical sub-agent blocks from sidecar JSONL/meta files and hides the result text from parent activity ---
     await withTempHome(async (homeDir) => {
       const workdir = '/Users/test/workspace';
       const projectDir = path.join(homeDir, '.claude', 'projects', workdir.replace(/[/\\:]/g, '-'));
@@ -1459,7 +1480,9 @@ exit 1`;
     });
   });
 
-  it('isolates Task sub-agent tool calls into their own group, leaving parent activity clean', async () => {
+  it('isolates sub-agents, exposes claude+codex steering, and surfaces codex session ids and raw response items', async () => {
+    // --- isolates Task sub-agent tool calls into their own group, leaving parent activity clean ---
+    {
     writeFakeScript('claude', [
       { type: 'system', session_id: 's-sub', model: 'claude-opus-4-7' },
       // Parent invokes the sub-agent tool (rebranded "Agent" in v2 stream output, but Task still flows through)
@@ -1530,9 +1553,10 @@ exit 1`;
     expect(lastMeta[0].model).toBe('claude-sonnet-4-6');
     expect(lastMeta[0].status).toBe('done');
     expect(lastMeta[0].tools.map((t: any) => t.name)).toEqual(['Grep']);
-  });
+    }
 
-  it('exposes in-process Claude steering and keeps only the latest steered response', async () => {
+    // --- exposes in-process Claude steering and keeps only the latest steered response ---
+    {
     const argsFile = path.join(tmpDir, 'claude-steer-args.txt');
     const inputsFile = path.join(tmpDir, 'claude-steer-inputs.jsonl');
     const script = `#!/usr/bin/env node
@@ -1612,9 +1636,10 @@ rl.on('close', () => setTimeout(() => process.exit(0), 30));`;
       expect.objectContaining({ type: 'text', text: expect.stringContaining(notesPath) }),
       expect.objectContaining({ type: 'text', text: 'change direction' }),
     ]));
-  });
+    }
 
-  it('auto-closes Claude stdin after a coalesced steered result without dropping the answer', async () => {
+    // --- auto-closes Claude stdin after a coalesced steered result without dropping the answer ---
+    {
     const inputsFile = path.join(tmpDir, 'claude-steer-coalesced-inputs.jsonl');
     const script = `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -1670,9 +1695,14 @@ rl.on('close', () => process.exit(0));`;
       .filter(Boolean)
       .map(line => JSON.parse(line));
     expect(inputs).toHaveLength(2);
-  });
+    }
 
-  it('exposes the native codex session id before the turn finishes', async () => {
+    // Switching from claude to codex scenarios: reset the codex app-server
+    // singleton, mirroring the per-test `shutdownCodexServer()` in beforeEach.
+    shutdownCodexServer();
+
+    // --- exposes the native codex session id before the turn finishes ---
+    {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -1735,9 +1765,13 @@ rl.on('line', (line) => {
     const result = await streamPromise;
     expect(result.ok).toBe(true);
     expect(result.sessionId).toBe('thread-early');
-  });
+    }
 
-  it('exposes native codex steering and forwards steer input to turn/steer', async () => {
+    // Reset codex app-server singleton before the next codex scenario.
+    shutdownCodexServer();
+
+    // --- exposes native codex steering and forwards steer input to turn/steer ---
+    {
     const callsFile = path.join(tmpDir, 'codex-steer-calls.jsonl');
     const script = `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -1826,9 +1860,13 @@ rl.on('line', (line) => {
       expectedTurnId: 'turn-steer',
       input: buildCodexTurnInput('switch direction', [path.join(tmpDir, 'notes.txt')]),
     });
-  });
+    }
 
-  it('surfaces raw response items like web search calls in codex activity', async () => {
+    // Reset codex app-server singleton before the next codex scenario.
+    shutdownCodexServer();
+
+    // --- surfaces raw response items like web search calls in codex activity ---
+    {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -1873,11 +1911,14 @@ rl.on('line', (line) => {
     const result = await doCodexStream(baseOpts('codex'));
     expect(result.ok).toBe(true);
     expect(result.activity).toContain('Search web: latest gold price');
+    }
   });
 });
 
 describe('doStream and attachments', () => {
-  it('promotes codex sessions to native ids and keeps the native workspace path', async () => {
+  it('promotes codex sessions, persists run states, routes attachments, and gates the Workflow tool', async () => {
+    // --- promotes codex sessions to native ids and keeps the native workspace path ---
+    {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -1931,9 +1972,13 @@ rl.on('line', (line) => {
     const record = listPikiclawSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'thread-native');
     expect(record?.title).toBe('给我讲故事');
     expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiclaw', 'sessions', 'codex', 'thread-native', 'workspace'));
-  });
+    }
 
-  it('forwards early native codex session ids through doStream while promoting the managed session', async () => {
+    // Reset codex app-server singleton before the next codex scenario.
+    shutdownCodexServer();
+
+    // --- forwards early native codex session ids through doStream while promoting the managed session ---
+    {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -2000,9 +2045,13 @@ rl.on('line', (line) => {
 
     const record = listPikiclawSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'thread-forwarded');
     expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiclaw', 'sessions', 'codex', 'thread-forwarded', 'workspace'));
-  });
+    }
 
-  it('persists completed and incomplete run states in managed session records', async () => {
+    // Done with codex scenarios; reset the singleton before the claude cases.
+    shutdownCodexServer();
+
+    // --- persists completed and incomplete run states in managed session records ---
+    {
     writeFakeScript('claude', [
       { type: 'system', session_id: 'sess-status' },
       { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'done' } } },
@@ -2029,9 +2078,10 @@ exit 1`;
     record = listPikiclawSessions(tmpDir, 'claude').find(entry => entry.sessionId === 'sess-status');
     expect(record?.runState).toBe('incomplete');
     expect(record?.runDetail).toContain('quota exceeded');
-  });
+    }
 
-  it('routes to claude, clears stale manifests, and uses stream-json attachments only when needed', async () => {
+    // --- routes to claude, clears stale manifests, and uses stream-json attachments only when needed ---
+    {
     writeFakeScript('claude', [
       { type: 'system', session_id: 's-unified' },
       { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'via claude' } } },
@@ -2099,9 +2149,10 @@ echo '{"type":"result","session_id":"s-no"}'`;
     const withoutAttachments = await doClaudeStream(baseOpts('claude', { attachments: [] }));
     expect(withoutAttachments.ok).toBe(true);
     expect(fs.readFileSync(emptyArgsFile, 'utf-8')).not.toContain('--input-format');
-  });
+    }
 
-  it('hard-disables the Workflow tool by default and re-enables it only when claudeWorkflowEnabled is set', async () => {
+    // --- hard-disables the Workflow tool by default and re-enables it only when claudeWorkflowEnabled is set ---
+    {
     const argsFile = path.join(tmpDir, 'claude-wf-args.txt');
     const script = `#!/bin/sh
 echo "$@" > ${argsFile}
@@ -2119,6 +2170,7 @@ echo '{"type":"result","session_id":"s-wf"}'`;
     const on = await doClaudeStream(baseOpts('claude', { prompt: 'b', claudeWorkflowEnabled: true }));
     expect(on.ok).toBe(true);
     expect(fs.readFileSync(argsFile, 'utf-8')).not.toContain('--disallowed-tools Workflow');
+    }
   });
 });
 
@@ -2279,50 +2331,42 @@ exit 0`;
 });
 
 describe('sessionListDisplayTitle', () => {
-  it('prefers the session title (set from the original prompt) over lastQuestion', () => {
-    const text = sessionListDisplayTitle({
+  it('prefers title, ignores sub-agent prompts, falls back to lastQuestion/sessionId, and skips placeholders', () => {
+    // --- prefers the session title (set from the original prompt) over lastQuestion ---
+    expect(sessionListDisplayTitle({
       title: 'Refactor logger',
       lastQuestion: 'Investigate auth bug',
       sessionId: 'sess-1',
-    });
-    expect(text).toBe('Refactor logger');
-  });
+    })).toBe('Refactor logger');
 
-  it('does not surface sub-agent prompts that landed in lastQuestion', () => {
+    // --- does not surface sub-agent prompts that landed in lastQuestion ---
     // Simulates the Task-tool case where a Claude sub-agent prompt
     // overwrites lastQuestion mid-conversation. Title must still win.
-    const text = sessionListDisplayTitle({
+    expect(sessionListDisplayTitle({
       title: 'Implement signup flow',
       lastQuestion: 'You are a security review sub-agent. Audit auth/login.ts...',
       sessionId: 'sess-2',
-    });
-    expect(text).toBe('Implement signup flow');
-  });
+    })).toBe('Implement signup flow');
 
-  it('falls back to lastQuestion when title is missing', () => {
-    const text = sessionListDisplayTitle({
+    // --- falls back to lastQuestion when title is missing ---
+    expect(sessionListDisplayTitle({
       title: null,
       lastQuestion: 'Fix flaky CI',
       sessionId: 'sess-3',
-    });
-    expect(text).toBe('Fix flaky CI');
-  });
+    })).toBe('Fix flaky CI');
 
-  it('falls back to sessionId when both title and lastQuestion are empty', () => {
-    const text = sessionListDisplayTitle({
+    // --- falls back to sessionId when both title and lastQuestion are empty ---
+    expect(sessionListDisplayTitle({
       title: null,
       lastQuestion: null,
       sessionId: 'sess-4',
-    });
-    expect(text).toBe('sess-4');
-  });
+    })).toBe('sess-4');
 
-  it('skips "[Request interrupted by user]" placeholders', () => {
-    const text = sessionListDisplayTitle({
+    // --- skips "[Request interrupted by user]" placeholders ---
+    expect(sessionListDisplayTitle({
       title: null,
       lastQuestion: '[Request interrupted by user]',
       sessionId: 'sess-5',
-    });
-    expect(text).toBe('sess-5');
+    })).toBe('sess-5');
   });
 });

@@ -9,7 +9,8 @@ afterEach(() => {
 });
 
 describe('Codex session history', () => {
-  it('reconstructs commentary, tools, plan, and persisted thinking for rich history', async () => {
+  it('reconstructs rich history (commentary/tools/plan/thinking) and surfaces generated images', async () => {
+    // --- reconstructs commentary, tools, plan, and persisted thinking for rich history ---
     await withTempHome(async homeDir => {
       const workdir = path.join(homeDir, 'project');
       const workspacePath = path.join(workdir, '.pikiclaw', 'sessions', 'codex', 'sess-rich', 'workspace');
@@ -185,9 +186,8 @@ describe('Codex session history', () => {
         content: 'Fixed the panel to keep activity, thinking, and plan after completion.',
       });
     });
-  });
 
-  it('surfaces image_generation_call rollout entries as image MessageBlocks', async () => {
+    // --- surfaces image_generation_call rollout entries as image MessageBlocks ---
     await withTempHome(async homeDir => {
       const sessionId = 'sess-img';
       const workdir = path.join(homeDir, 'project');

@@ -39,63 +39,73 @@ describe('Gemini usage resolution', () => {
     else process.env.HOME = originalHome;
   });
 
-  it('fetches Gemini quota usage live and caches the latest successful snapshot', async () => {
-    execSyncMock.mockReturnValue(JSON.stringify({
-      buckets: [
-        { modelId: 'gemini-2.5-flash', remainingFraction: 0.75, resetTime: '2026-03-16T00:30:00Z' },
-        { modelId: 'gemini-2.5-pro', remainingFraction: 0.7, resetTime: '2026-03-16T01:00:00Z' },
-        { modelId: 'gemini-3.1-flash-lite-preview', remainingFraction: 0.4, resetTime: '2026-03-16T00:45:00Z' },
-        { modelId: 'gemini-3-pro-preview', remainingFraction: 0.9, resetTime: '2026-03-16T02:00:00Z' },
-      ],
-    }) + '\n200');
+  it('fetches live quota and caches it, then surfaces an HTTP error when the query fails uncached', async () => {
+    // --- fetches Gemini quota usage live and caches the latest successful snapshot ---
+    {
+      execSyncMock.mockReturnValue(JSON.stringify({
+        buckets: [
+          { modelId: 'gemini-2.5-flash', remainingFraction: 0.75, resetTime: '2026-03-16T00:30:00Z' },
+          { modelId: 'gemini-2.5-pro', remainingFraction: 0.7, resetTime: '2026-03-16T01:00:00Z' },
+          { modelId: 'gemini-3.1-flash-lite-preview', remainingFraction: 0.4, resetTime: '2026-03-16T00:45:00Z' },
+          { modelId: 'gemini-3-pro-preview', remainingFraction: 0.9, resetTime: '2026-03-16T02:00:00Z' },
+        ],
+      }) + '\n200');
 
-    const { getDriver } = await import('../src/agent/driver.ts');
-    const { getUsage } = await import('../src/agent/index.ts');
-    const driver = getDriver('gemini');
+      const { getDriver } = await import('../src/agent/driver.ts');
+      const { getUsage } = await import('../src/agent/index.ts');
+      const driver = getDriver('gemini');
 
-    const usage = await driver.getUsageLive!({ agent: 'gemini', model: 'gemini-2.5-pro' });
+      const usage = await driver.getUsageLive!({ agent: 'gemini', model: 'gemini-2.5-pro' });
 
-    expect(execSyncMock).toHaveBeenCalledOnce();
-    expect(String(execSyncMock.mock.calls[0]?.[0])).toContain('cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota');
-    expect(usage.ok).toBe(true);
-    expect(usage.source).toBe('quota-api');
-    expect(usage.status).toBe('allowed');
-    expect(usage.windows.map(window => window.label)).toEqual(['Pro', 'Flash', 'Flash Lite']);
-    expect(usage.windows.find(window => window.label === 'Pro')).toMatchObject({
-      usedPercent: 30,
-      remainingPercent: 70,
-      resetAfterSeconds: 3600,
-      status: 'allowed',
-    });
-    expect(usage.windows.find(window => window.label === 'Flash')).toMatchObject({
-      usedPercent: 25,
-      remainingPercent: 75,
-      resetAfterSeconds: 1800,
-    });
-    expect(usage.windows.find(window => window.label === 'Flash Lite')).toMatchObject({
-      usedPercent: 60,
-      remainingPercent: 40,
-      resetAfterSeconds: 2700,
-    });
+      expect(execSyncMock).toHaveBeenCalledOnce();
+      expect(String(execSyncMock.mock.calls[0]?.[0])).toContain('cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota');
+      expect(usage.ok).toBe(true);
+      expect(usage.source).toBe('quota-api');
+      expect(usage.status).toBe('allowed');
+      expect(usage.windows.map(window => window.label)).toEqual(['Pro', 'Flash', 'Flash Lite']);
+      expect(usage.windows.find(window => window.label === 'Pro')).toMatchObject({
+        usedPercent: 30,
+        remainingPercent: 70,
+        resetAfterSeconds: 3600,
+        status: 'allowed',
+      });
+      expect(usage.windows.find(window => window.label === 'Flash')).toMatchObject({
+        usedPercent: 25,
+        remainingPercent: 75,
+        resetAfterSeconds: 1800,
+      });
+      expect(usage.windows.find(window => window.label === 'Flash Lite')).toMatchObject({
+        usedPercent: 60,
+        remainingPercent: 40,
+        resetAfterSeconds: 2700,
+      });
 
-    const cached = getUsage({ agent: 'gemini' });
-    expect(cached.ok).toBe(true);
-    expect(cached.windows.map(window => window.label)).toEqual(['Pro', 'Flash', 'Flash Lite']);
-  });
+      const cached = getUsage({ agent: 'gemini' });
+      expect(cached.ok).toBe(true);
+      expect(cached.windows.map(window => window.label)).toEqual(['Pro', 'Flash', 'Flash Lite']);
+    }
 
-  it('returns a surfaced HTTP error when the live quota query fails without cached data', async () => {
-    execSyncMock.mockReturnValue(JSON.stringify({ error: { message: 'invalid token' } }) + '\n401');
+    // Drop the module-level usage cache (the success snapshot above) and the
+    // execSync mock so the next scenario starts uncached — mirrors the
+    // per-test reset the original sibling case relied on via beforeEach.
+    vi.resetModules();
+    execSyncMock.mockReset();
 
-    const { getDriver } = await import('../src/agent/driver.ts');
-    const { getUsage } = await import('../src/agent/index.ts');
-    const driver = getDriver('gemini');
+    // --- returns a surfaced HTTP error when the live quota query fails without cached data ---
+    {
+      execSyncMock.mockReturnValue(JSON.stringify({ error: { message: 'invalid token' } }) + '\n401');
 
-    const usage = await driver.getUsageLive!({ agent: 'gemini' });
+      const { getDriver } = await import('../src/agent/driver.ts');
+      const { getUsage } = await import('../src/agent/index.ts');
+      const driver = getDriver('gemini');
 
-    expect(usage.ok).toBe(false);
-    expect(usage.error).toContain('HTTP 401');
-    expect(usage.error).toContain('invalid token');
-    expect(getUsage({ agent: 'gemini' }).ok).toBe(false);
+      const usage = await driver.getUsageLive!({ agent: 'gemini' });
+
+      expect(usage.ok).toBe(false);
+      expect(usage.error).toContain('HTTP 401');
+      expect(usage.error).toContain('invalid token');
+      expect(getUsage({ agent: 'gemini' }).ok).toBe(false);
+    }
   });
 });
 
@@ -155,23 +165,20 @@ describe('Gemini session tail', () => {
 });
 
 describe('Gemini prompt builder', () => {
-  it('embeds attachment paths as @-references so gemini -p can inline them', async () => {
+  it('embeds, quotes, and omits @-references depending on attachments', async () => {
     const { buildGeminiPromptText } = await import('../src/agent/drivers/gemini.ts');
+
+    // --- embeds attachment paths as @-references so gemini -p can inline them ---
     const prompt = buildGeminiPromptText('describe this image', ['/tmp/foo/shot.png']);
     expect(prompt).toContain('@/tmp/foo/shot.png');
     expect(prompt).toContain('describe this image');
     // Reference precedes the question so gemini binds it as input context.
     expect(prompt.indexOf('@/tmp/foo/shot.png')).toBeLessThan(prompt.indexOf('describe'));
-  });
 
-  it('quotes paths that contain whitespace', async () => {
-    const { buildGeminiPromptText } = await import('../src/agent/drivers/gemini.ts');
-    const prompt = buildGeminiPromptText('look', ['/tmp/has space/img.png']);
-    expect(prompt).toContain('@"/tmp/has space/img.png"');
-  });
+    // --- quotes paths that contain whitespace ---
+    expect(buildGeminiPromptText('look', ['/tmp/has space/img.png'])).toContain('@"/tmp/has space/img.png"');
 
-  it('passes the prompt through unchanged when there are no attachments', async () => {
-    const { buildGeminiPromptText } = await import('../src/agent/drivers/gemini.ts');
+    // --- passes the prompt through unchanged when there are no attachments ---
     expect(buildGeminiPromptText('hello', [])).toBe('hello');
   });
 });
@@ -193,99 +200,99 @@ describe('Gemini session listing', () => {
     else process.env.HOME = originalHome;
   });
 
-  it('reads session titles directly from native Gemini session files', async () => {
-    const workdir = '/tmp/pikiclaw';
-    const geminiDir = path.join(process.env.HOME!, '.gemini');
-    fs.mkdirSync(geminiDir, { recursive: true });
-    fs.writeFileSync(path.join(geminiDir, 'projects.json'), JSON.stringify({
-      projects: { [workdir]: 'pikiclaw' },
-    }));
-
-    const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw', 'chats');
-    fs.mkdirSync(chatsDir, { recursive: true });
-    fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-abc.json'), JSON.stringify({
-      sessionId: 'gemini-session-1',
-      startTime: '2026-03-16T00:00:00.000Z',
-      lastUpdated: '2026-03-16T00:01:00.000Z',
-      messages: [
-        { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: [{ text: 'How do I add dark mode to my React app with CSS variables?' }] },
-      ],
-      kind: 'chat',
-    }, null, 2));
-
+  it('reads native session titles, hides stub files, and returns empty when chats are missing', async () => {
     const { getSessions } = await import('../src/agent/index.ts');
-    const result = await getSessions({ agent: 'gemini', workdir, limit: 5 });
-
-    expect(result.ok).toBe(true);
-    expect(result.sessions).toHaveLength(1);
-    expect(result.sessions[0]).toMatchObject({
-      sessionId: 'gemini-session-1',
-      title: 'How do I add dark mode to my React app with CSS variables?',
-      createdAt: '2026-03-16T00:00:00.000Z',
-    });
-    expect(execSyncMock).not.toHaveBeenCalled();
-  });
-
-  it('hides Gemini CLI stub session files (no messages, e.g. a2a-server)', async () => {
     const workdir = '/tmp/pikiclaw';
-    const geminiDir = path.join(process.env.HOME!, '.gemini');
-    fs.mkdirSync(geminiDir, { recursive: true });
-    fs.writeFileSync(path.join(geminiDir, 'projects.json'), JSON.stringify({
-      projects: { [workdir]: 'pikiclaw' },
-    }));
 
-    const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw', 'chats');
-    fs.mkdirSync(chatsDir, { recursive: true });
-    // a2a-server stub Gemini CLI writes for its internal bookkeeping.
-    fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-a2a-serv.jsonl'),
-      JSON.stringify({
-        sessionId: 'a2a-server',
-        projectHash: 'abc',
+    // Each scenario gets its own HOME so chats directories never bleed across
+    // segments (the original sibling cases each relied on a fresh beforeEach HOME).
+    const freshHome = () => {
+      process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-sessions-'));
+      const geminiDir = path.join(process.env.HOME!, '.gemini');
+      fs.mkdirSync(geminiDir, { recursive: true });
+      fs.writeFileSync(path.join(geminiDir, 'projects.json'), JSON.stringify({
+        projects: { [workdir]: 'pikiclaw' },
+      }));
+      return geminiDir;
+    };
+
+    // --- reads session titles directly from native Gemini session files ---
+    {
+      const geminiDir = freshHome();
+      const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw', 'chats');
+      fs.mkdirSync(chatsDir, { recursive: true });
+      fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-abc.json'), JSON.stringify({
+        sessionId: 'gemini-session-1',
         startTime: '2026-03-16T00:00:00.000Z',
-        lastUpdated: '2026-03-16T00:00:00.000Z',
-        kind: 'main',
-      }) + '\n');
-    // Abandoned UUID-named stub with no messages.
-    fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-01-abandon.jsonl'),
-      JSON.stringify({
-        sessionId: '70c89d0f-3276-4c21-9a1e-f9765098ab35',
-        projectHash: 'abc',
-        startTime: '2026-03-16T00:01:00.000Z',
         lastUpdated: '2026-03-16T00:01:00.000Z',
+        messages: [
+          { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: [{ text: 'How do I add dark mode to my React app with CSS variables?' }] },
+        ],
+        kind: 'chat',
+      }, null, 2));
+
+      const result = await getSessions({ agent: 'gemini', workdir, limit: 5 });
+
+      expect(result.ok).toBe(true);
+      expect(result.sessions).toHaveLength(1);
+      expect(result.sessions[0]).toMatchObject({
+        sessionId: 'gemini-session-1',
+        title: 'How do I add dark mode to my React app with CSS variables?',
+        createdAt: '2026-03-16T00:00:00.000Z',
+      });
+      expect(execSyncMock).not.toHaveBeenCalled();
+    }
+
+    // --- hides Gemini CLI stub session files (no messages, e.g. a2a-server) ---
+    {
+      const geminiDir = freshHome();
+      const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw', 'chats');
+      fs.mkdirSync(chatsDir, { recursive: true });
+      // a2a-server stub Gemini CLI writes for its internal bookkeeping.
+      fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-a2a-serv.jsonl'),
+        JSON.stringify({
+          sessionId: 'a2a-server',
+          projectHash: 'abc',
+          startTime: '2026-03-16T00:00:00.000Z',
+          lastUpdated: '2026-03-16T00:00:00.000Z',
+          kind: 'main',
+        }) + '\n');
+      // Abandoned UUID-named stub with no messages.
+      fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-01-abandon.jsonl'),
+        JSON.stringify({
+          sessionId: '70c89d0f-3276-4c21-9a1e-f9765098ab35',
+          projectHash: 'abc',
+          startTime: '2026-03-16T00:01:00.000Z',
+          lastUpdated: '2026-03-16T00:01:00.000Z',
+          kind: 'main',
+        }) + '\n');
+      // Real chat — should appear.
+      fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-02-real.json'), JSON.stringify({
+        sessionId: 'real-session',
+        startTime: '2026-03-16T00:02:00.000Z',
+        lastUpdated: '2026-03-16T00:02:30.000Z',
+        messages: [
+          { id: '1', timestamp: '2026-03-16T00:02:00.000Z', type: 'user', content: 'hi' },
+        ],
         kind: 'main',
-      }) + '\n');
-    // Real chat — should appear.
-    fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-02-real.json'), JSON.stringify({
-      sessionId: 'real-session',
-      startTime: '2026-03-16T00:02:00.000Z',
-      lastUpdated: '2026-03-16T00:02:30.000Z',
-      messages: [
-        { id: '1', timestamp: '2026-03-16T00:02:00.000Z', type: 'user', content: 'hi' },
-      ],
-      kind: 'main',
-    }, null, 2));
+      }, null, 2));
 
-    const { getSessions } = await import('../src/agent/index.ts');
-    const result = await getSessions({ agent: 'gemini', workdir, limit: 10 });
+      const result = await getSessions({ agent: 'gemini', workdir, limit: 10 });
 
-    expect(result.ok).toBe(true);
-    expect(result.sessions.map(s => s.sessionId)).toEqual(['real-session']);
-  });
+      expect(result.ok).toBe(true);
+      expect(result.sessions.map(s => s.sessionId)).toEqual(['real-session']);
+    }
 
-  it('returns an empty native session list when the Gemini chats directory is missing', async () => {
-    const workdir = '/tmp/pikiclaw';
-    const geminiDir = path.join(process.env.HOME!, '.gemini');
-    fs.mkdirSync(geminiDir, { recursive: true });
-    fs.writeFileSync(path.join(geminiDir, 'projects.json'), JSON.stringify({
-      projects: { [workdir]: 'pikiclaw' },
-    }));
+    // --- returns an empty native session list when the Gemini chats directory is missing ---
+    {
+      freshHome();
 
-    const { getSessions } = await import('../src/agent/index.ts');
-    const result = await getSessions({ agent: 'gemini', workdir, limit: 5 });
+      const result = await getSessions({ agent: 'gemini', workdir, limit: 5 });
 
-    expect(result.ok).toBe(true);
-    expect(result.sessions).toHaveLength(0);
-    expect(execSyncMock).not.toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+      expect(result.sessions).toHaveLength(0);
+      expect(execSyncMock).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -328,85 +335,86 @@ describe('Gemini session messages content cleanup', () => {
     }, null, 2));
   }
 
-  it('strips the orchestrator system preamble and referenced-files markers from rich user bubbles', async () => {
-    const userContent = [
-      '[Browser Automation]',
-      'A Playwright MCP browser server is already configured...',
-      'Do not call browser_install unless a browser tool explicitly reports that Chrome or the browser is missing.',
-      'If you need a new tab, use browser_tabs with action="new".',
-      '',
-      'tell me a joke',
-      '',
-      '--- Content from referenced files ---',
-      '',
-      '--- End of content ---',
-    ].join('\n');
-    writeGeminiSession([
-      { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: userContent },
-      { id: '2', timestamp: '2026-03-16T00:00:10.000Z', type: 'gemini', content: 'sure' },
-    ]);
-
+  it('cleans system preamble, promotes staged image refs, and leaves unresolved refs as text', async () => {
     const { getSessionMessages } = await import('../src/agent/index.ts');
-    const result = await getSessionMessages({
+    const read = () => getSessionMessages({
       agent: 'gemini', sessionId: 'gemini-session-clean', workdir, rich: true,
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.messages[0]).toEqual({ role: 'user', text: 'tell me a joke' });
-    expect(result.richMessages?.[0]).toEqual({
-      role: 'user',
-      text: 'tell me a joke',
-      blocks: [{ type: 'text', content: 'tell me a joke' }],
-    });
-  });
+    // --- strips the orchestrator system preamble and referenced-files markers from rich user bubbles ---
+    {
+      const userContent = [
+        '[Browser Automation]',
+        'A Playwright MCP browser server is already configured...',
+        'Do not call browser_install unless a browser tool explicitly reports that Chrome or the browser is missing.',
+        'If you need a new tab, use browser_tabs with action="new".',
+        '',
+        'tell me a joke',
+        '',
+        '--- Content from referenced files ---',
+        '',
+        '--- End of content ---',
+      ].join('\n');
+      writeGeminiSession([
+        { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: userContent },
+        { id: '2', timestamp: '2026-03-16T00:00:10.000Z', type: 'gemini', content: 'sure' },
+      ]);
 
-  it('promotes staged @<path> image refs into image blocks alongside the user text', async () => {
-    const imageDir = path.join(workdir, '.pikiclaw', 'sessions', 'gemini', 'pending_abc', 'workspace');
-    fs.mkdirSync(imageDir, { recursive: true });
-    fs.writeFileSync(path.join(imageDir, 'image.png'), PNG_BYTES);
+      const result = await read();
 
-    const userContent = [
-      '[Browser Automation]',
-      'noise line',
-      '',
-      '@.pikiclaw/sessions/gemini/pending_abc/workspace/image.png',
-      '',
-      'what is in this image?',
-      '',
-      '--- Content from referenced files ---',
-      '--- End of content ---',
-    ].join('\n');
-    writeGeminiSession([
-      { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: userContent },
-    ]);
+      expect(result.ok).toBe(true);
+      expect(result.messages[0]).toEqual({ role: 'user', text: 'tell me a joke' });
+      expect(result.richMessages?.[0]).toEqual({
+        role: 'user',
+        text: 'tell me a joke',
+        blocks: [{ type: 'text', content: 'tell me a joke' }],
+      });
+    }
 
-    const { getSessionMessages } = await import('../src/agent/index.ts');
-    const result = await getSessionMessages({
-      agent: 'gemini', sessionId: 'gemini-session-clean', workdir, rich: true,
-    });
+    // --- promotes staged @<path> image refs into image blocks alongside the user text ---
+    {
+      const imageDir = path.join(workdir, '.pikiclaw', 'sessions', 'gemini', 'pending_abc', 'workspace');
+      fs.mkdirSync(imageDir, { recursive: true });
+      fs.writeFileSync(path.join(imageDir, 'image.png'), PNG_BYTES);
 
-    expect(result.ok).toBe(true);
-    const rich = result.richMessages?.[0];
-    expect(rich?.text).toBe('what is in this image?');
-    expect(rich?.blocks?.[0]).toEqual({ type: 'text', content: 'what is in this image?' });
-    expect(rich?.blocks?.[1]).toMatchObject({ type: 'image', imageMime: 'image/png' });
-    expect(rich?.blocks?.[1]?.content).toMatch(/^data:image\/png;base64,/);
-  });
+      const userContent = [
+        '[Browser Automation]',
+        'noise line',
+        '',
+        '@.pikiclaw/sessions/gemini/pending_abc/workspace/image.png',
+        '',
+        'what is in this image?',
+        '',
+        '--- Content from referenced files ---',
+        '--- End of content ---',
+      ].join('\n');
+      writeGeminiSession([
+        { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: userContent },
+      ]);
 
-  it('leaves @<path> refs that do not resolve as readable images in the text', async () => {
-    writeGeminiSession([
-      { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: 'check @docs/intro.md for context' },
-    ]);
+      const result = await read();
 
-    const { getSessionMessages } = await import('../src/agent/index.ts');
-    const result = await getSessionMessages({
-      agent: 'gemini', sessionId: 'gemini-session-clean', workdir, rich: true,
-    });
+      expect(result.ok).toBe(true);
+      const rich = result.richMessages?.[0];
+      expect(rich?.text).toBe('what is in this image?');
+      expect(rich?.blocks?.[0]).toEqual({ type: 'text', content: 'what is in this image?' });
+      expect(rich?.blocks?.[1]).toMatchObject({ type: 'image', imageMime: 'image/png' });
+      expect(rich?.blocks?.[1]?.content).toMatch(/^data:image\/png;base64,/);
+    }
 
-    expect(result.ok).toBe(true);
-    expect(result.messages[0].text).toBe('check @docs/intro.md for context');
-    expect(result.richMessages?.[0].blocks).toEqual([
-      { type: 'text', content: 'check @docs/intro.md for context' },
-    ]);
+    // --- leaves @<path> refs that do not resolve as readable images in the text ---
+    {
+      writeGeminiSession([
+        { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: 'check @docs/intro.md for context' },
+      ]);
+
+      const result = await read();
+
+      expect(result.ok).toBe(true);
+      expect(result.messages[0].text).toBe('check @docs/intro.md for context');
+      expect(result.richMessages?.[0].blocks).toEqual([
+        { type: 'text', content: 'check @docs/intro.md for context' },
+      ]);
+    }
   });
 });

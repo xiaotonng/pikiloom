@@ -2232,11 +2232,40 @@ export class Bot {
 
   switchEffortForChat(chatId: ChatId, effort: string) {
     const cs = this.chat(chatId);
-    this.setEffortForAgent(cs.agent, effort);
+    // "ultra" is a synthetic top rung in the effort picker, NOT a real --effort
+    // value (the claude CLI rejects anything outside low|medium|high|xhigh|max).
+    // It bundles "max reasoning depth + permit multi-agent Workflow
+    // orchestration" — the same pairing as Claude's own `ultracode` mode. Decode
+    // it here, the single apply choke point, so the rest of the pipeline only
+    // ever sees a concrete effort value plus the orthogonal workflow flag.
+    // Because the rungs are mutually exclusive, picking any concrete level also
+    // clears the workflow opt-in (capability-gated — only claude advertises it).
+    const ultra = effort === 'ultra';
+    const realEffort = ultra ? 'max' : effort;
+
+    this.setEffortForAgent(cs.agent, realEffort);
     const session = this.getSelectedSession(cs);
-    if (session) session.thinkingEffort = effort;
-    this.persistAgentPreference(cs.agent, 'effort', effort);
-    this.log(`effort switched to ${effort} for ${cs.agent} chat=${chatId}`);
+    if (session) session.thinkingEffort = realEffort;
+    this.persistAgentPreference(cs.agent, 'effort', realEffort);
+
+    if (getDriverCapabilities(cs.agent).workflow) {
+      this.setWorkflowEnabledForAgent(cs.agent, ultra);
+      this.persistAgentPreference(cs.agent, 'workflow', ultra ? '1' : '0');
+    }
+    this.log(`effort switched to ${effort} (effort=${realEffort}, workflow=${ultra}) for ${cs.agent} chat=${chatId}`);
+  }
+
+  /**
+   * Effort value to *display* in the picker. Workflow is orthogonal under the
+   * hood, but the UI folds "max depth + workflow on" into the single synthetic
+   * `ultra` rung (see {@link switchEffortForChat}), so report it as current when
+   * the agent has orchestration enabled. Mirrors the decomposition above.
+   */
+  effortSelectionForAgent(agent: Agent): string | null {
+    const effort = this.effortForAgent(agent);
+    if (!effort) return null;
+    if (getDriverCapabilities(agent).workflow && this.workflowEnabledForAgent(agent)) return 'ultra';
+    return effort;
   }
 
   switchPermissionModeForChat(chatId: ChatId, mode: string) {

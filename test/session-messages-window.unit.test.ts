@@ -11,24 +11,24 @@ function conversation(turns: number): TailMessage[] {
 }
 
 describe('applyTurnWindow', () => {
-  it('returns a stable turn window with pagination metadata', () => {
-    const result = applyTurnWindow(conversation(4), { turnOffset: 1, turnLimit: 2 });
-
-    expect(result.ok).toBe(true);
-    expect(result.totalTurns).toBe(4);
-    expect(result.messages.map(message => message.text)).toEqual([
+  it('returns a windowed slice with pagination metadata and returns all turns when no window is requested', () => {
+    // returns a stable turn window with pagination metadata
+    const windowed = applyTurnWindow(conversation(4), { turnOffset: 1, turnLimit: 2 });
+    expect(windowed.ok).toBe(true);
+    expect(windowed.totalTurns).toBe(4);
+    expect(windowed.messages.map(message => message.text)).toEqual([
       'user 2',
       'assistant 2',
       'user 3',
       'assistant 3',
     ]);
-    expect(result.richMessages?.map(message => message.text)).toEqual([
+    expect(windowed.richMessages?.map(message => message.text)).toEqual([
       'user 2',
       'assistant 2',
       'user 3',
       'assistant 3',
     ]);
-    expect(result.window).toEqual({
+    expect(windowed.window).toEqual({
       offset: 1,
       limit: 2,
       returnedTurns: 2,
@@ -38,14 +38,12 @@ describe('applyTurnWindow', () => {
       startTurn: 1,
       endTurn: 3,
     });
-  });
 
-  it('returns all turns when no window is requested', () => {
-    const result = applyTurnWindow(conversation(3), {});
-
-    expect(result.ok).toBe(true);
-    expect(result.messages).toHaveLength(6);
-    expect(result.window).toEqual({
+    // returns all turns when no window is requested
+    const all = applyTurnWindow(conversation(3), {});
+    expect(all.ok).toBe(true);
+    expect(all.messages).toHaveLength(6);
+    expect(all.window).toEqual({
       offset: 0,
       limit: 3,
       returnedTurns: 3,

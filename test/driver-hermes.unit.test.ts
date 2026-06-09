@@ -189,123 +189,132 @@ async function runDriver(scenario: Scenario, opts: Partial<StreamOpts> = {}): Pr
 }
 
 describe('Hermes ACP driver', () => {
-  it('streams a happy-path turn end-to-end', async () => {
-    const { result, deltas } = await runDriver({
-      promptChunks: ['Hi! ', 'How can I ', 'help you today?'],
-      stopReason: 'end_turn',
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.message).toBe('Hi! How can I help you today?');
-    expect(result.sessionId).toBe('sess-test-001');
-    expect(result.stopReason).toBe('end_turn');
-    expect(result.error).toBeNull();
-    // The streaming callback should have fired multiple times with growing text.
-    expect(deltas.length).toBeGreaterThanOrEqual(3);
-    expect(deltas[deltas.length - 1]).toBe('Hi! How can I help you today?');
-  });
-
-  it('does not pollute reply with replay chunks on session resume', async () => {
-    const { result } = await runDriver(
-      {
-        promptChunks: ['Fresh reply. '],
-        replayChunks: ['OLD-USER: prior turn\n', 'OLD-ASSISTANT: prior reply\n'],
+  it('handles happy path, resume, refusals, images, tool-call chains, and missing sessions', async () => {
+    // --- streams a happy-path turn end-to-end ---
+    {
+      const { result, deltas } = await runDriver({
+        promptChunks: ['Hi! ', 'How can I ', 'help you today?'],
         stopReason: 'end_turn',
-      },
-      { sessionId: 'sess-test-001' },
-    );
+      });
 
-    expect(result.ok).toBe(true);
-    expect(result.message).toBe('Fresh reply.');
-    expect(result.message).not.toContain('OLD-USER');
-    expect(result.message).not.toContain('OLD-ASSISTANT');
-  });
+      expect(result.ok).toBe(true);
+      expect(result.message).toBe('Hi! How can I help you today?');
+      expect(result.sessionId).toBe('sess-test-001');
+      expect(result.stopReason).toBe('end_turn');
+      expect(result.error).toBeNull();
+      // The streaming callback should have fired multiple times with growing text.
+      expect(deltas.length).toBeGreaterThanOrEqual(3);
+      expect(deltas[deltas.length - 1]).toBe('Hi! How can I help you today?');
+    }
 
-  it('flags model safety refusals so the user knows it is the model, not pikiclaw', async () => {
-    const { result } = await runDriver({
-      promptChunks: ["I'm sorry, but I cannot assist with that request."],
-      stopReason: 'end_turn',
-    });
+    // --- does not pollute reply with replay chunks on session resume ---
+    {
+      const { result } = await runDriver(
+        {
+          promptChunks: ['Fresh reply. '],
+          replayChunks: ['OLD-USER: prior turn\n', 'OLD-ASSISTANT: prior reply\n'],
+          stopReason: 'end_turn',
+        },
+        { sessionId: 'sess-test-001' },
+      );
 
-    expect(result.message).toBe("I'm sorry, but I cannot assist with that request.");
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/safety refusal/i);
-    expect(result.stopReason).toBe('end_turn');
-  });
+      expect(result.ok).toBe(true);
+      expect(result.message).toBe('Fresh reply.');
+      expect(result.message).not.toContain('OLD-USER');
+      expect(result.message).not.toContain('OLD-ASSISTANT');
+    }
 
-  it('still surfaces a non-refusal short reply as a successful turn', async () => {
-    const { result } = await runDriver({
-      promptChunks: ['ok'],
-      stopReason: 'end_turn',
-    });
-    expect(result.ok).toBe(true);
-    expect(result.message).toBe('ok');
-    expect(result.error).toBeNull();
-  });
-
-  it('forwards image attachments as ACP image content blocks', async () => {
-    // Stage a tiny PNG so the driver has a real file to read + base64-encode.
-    const pngBytes = Buffer.from([
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-      0x00, 0x00, 0x00, 0x00,
-    ]);
-    const imagePath = path.join(tmpDir, 'shot.png');
-    fs.writeFileSync(imagePath, pngBytes);
-
-    const { result, capturedPrompt } = await runDriver(
-      { promptChunks: ['ack'], stopReason: 'end_turn' },
-      { attachments: [imagePath] },
-    );
-
-    expect(result.ok).toBe(true);
-    expect(Array.isArray(capturedPrompt)).toBe(true);
-    const imageBlocks = capturedPrompt.filter((b: any) => b?.type === 'image');
-    expect(imageBlocks).toHaveLength(1);
-    expect(imageBlocks[0].mimeType).toBe('image/png');
-    expect(imageBlocks[0].data).toBe(pngBytes.toString('base64'));
-    // The user's text still rides along after the image.
-    const textBlocks = capturedPrompt.filter((b: any) => b?.type === 'text');
-    expect(textBlocks.map((b: any) => b.text)).toContain('你好');
-  });
-
-  it('accumulates the tool-call chain in activity instead of overwriting per tool', async () => {
-    // Three tools fire in sequence; each completes before the next starts.
-    // The pre-fix behaviour wiped activity on every completion, so users only
-    // saw "in-flight title or empty". Now we keep the whole chain visible.
-    const { activities } = await runDriver({
-      promptChunks: ['Done.'],
-      stopReason: 'end_turn',
-      toolEvents: [
-        { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read foo.py', status: 'in_progress' },
-        { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' },
-        { sessionUpdate: 'tool_call', toolCallId: 't2', title: 'Grep bar', status: 'in_progress' },
-        { sessionUpdate: 'tool_call_update', toolCallId: 't2', status: 'completed' },
-        { sessionUpdate: 'tool_call', toolCallId: 't3', title: 'Edit baz.py', status: 'in_progress' },
-        { sessionUpdate: 'tool_call_update', toolCallId: 't3', status: 'failed' },
-      ],
-    });
-    const final = activities[activities.length - 1] || '';
-    expect(final).toContain('Read foo.py');
-    expect(final).toContain('Read foo.py done');
-    expect(final).toContain('Grep bar');
-    expect(final).toContain('Grep bar done');
-    expect(final).toContain('Edit baz.py');
-    expect(final).toContain('Edit baz.py failed');
-    // And the chain should be ordered: start ▸ done ▸ next start ▸ next done...
-    expect(final.indexOf('Read foo.py')).toBeLessThan(final.indexOf('Grep bar'));
-    expect(final.indexOf('Grep bar')).toBeLessThan(final.indexOf('Edit baz.py'));
-  });
-
-  it('keeps going when session/load returns null (session not in DB)', async () => {
-    const { result } = await runDriver(
-      {
-        loadBehavior: 'null',
-        promptChunks: ['Recovered.'],
+    // --- flags model safety refusals so the user knows it is the model, not pikiclaw ---
+    {
+      const { result } = await runDriver({
+        promptChunks: ["I'm sorry, but I cannot assist with that request."],
         stopReason: 'end_turn',
-      },
-      { sessionId: 'unknown-id' },
-    );
-    expect(result.ok).toBe(true);
-    expect(result.message).toBe('Recovered.');
+      });
+
+      expect(result.message).toBe("I'm sorry, but I cannot assist with that request.");
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/safety refusal/i);
+      expect(result.stopReason).toBe('end_turn');
+    }
+
+    // --- still surfaces a non-refusal short reply as a successful turn ---
+    {
+      const { result } = await runDriver({
+        promptChunks: ['ok'],
+        stopReason: 'end_turn',
+      });
+      expect(result.ok).toBe(true);
+      expect(result.message).toBe('ok');
+      expect(result.error).toBeNull();
+    }
+
+    // --- forwards image attachments as ACP image content blocks ---
+    {
+      // Stage a tiny PNG so the driver has a real file to read + base64-encode.
+      const pngBytes = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x00,
+      ]);
+      const imagePath = path.join(tmpDir, 'shot.png');
+      fs.writeFileSync(imagePath, pngBytes);
+
+      const { result, capturedPrompt } = await runDriver(
+        { promptChunks: ['ack'], stopReason: 'end_turn' },
+        { attachments: [imagePath] },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(Array.isArray(capturedPrompt)).toBe(true);
+      const imageBlocks = capturedPrompt.filter((b: any) => b?.type === 'image');
+      expect(imageBlocks).toHaveLength(1);
+      expect(imageBlocks[0].mimeType).toBe('image/png');
+      expect(imageBlocks[0].data).toBe(pngBytes.toString('base64'));
+      // The user's text still rides along after the image.
+      const textBlocks = capturedPrompt.filter((b: any) => b?.type === 'text');
+      expect(textBlocks.map((b: any) => b.text)).toContain('你好');
+    }
+
+    // --- accumulates the tool-call chain in activity instead of overwriting per tool ---
+    {
+      // Three tools fire in sequence; each completes before the next starts.
+      // The pre-fix behaviour wiped activity on every completion, so users only
+      // saw "in-flight title or empty". Now we keep the whole chain visible.
+      const { activities } = await runDriver({
+        promptChunks: ['Done.'],
+        stopReason: 'end_turn',
+        toolEvents: [
+          { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read foo.py', status: 'in_progress' },
+          { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' },
+          { sessionUpdate: 'tool_call', toolCallId: 't2', title: 'Grep bar', status: 'in_progress' },
+          { sessionUpdate: 'tool_call_update', toolCallId: 't2', status: 'completed' },
+          { sessionUpdate: 'tool_call', toolCallId: 't3', title: 'Edit baz.py', status: 'in_progress' },
+          { sessionUpdate: 'tool_call_update', toolCallId: 't3', status: 'failed' },
+        ],
+      });
+      const final = activities[activities.length - 1] || '';
+      expect(final).toContain('Read foo.py');
+      expect(final).toContain('Read foo.py done');
+      expect(final).toContain('Grep bar');
+      expect(final).toContain('Grep bar done');
+      expect(final).toContain('Edit baz.py');
+      expect(final).toContain('Edit baz.py failed');
+      // And the chain should be ordered: start ▸ done ▸ next start ▸ next done...
+      expect(final.indexOf('Read foo.py')).toBeLessThan(final.indexOf('Grep bar'));
+      expect(final.indexOf('Grep bar')).toBeLessThan(final.indexOf('Edit baz.py'));
+    }
+
+    // --- keeps going when session/load returns null (session not in DB) ---
+    {
+      const { result } = await runDriver(
+        {
+          loadBehavior: 'null',
+          promptChunks: ['Recovered.'],
+          stopReason: 'end_turn',
+        },
+        { sessionId: 'unknown-id' },
+      );
+      expect(result.ok).toBe(true);
+      expect(result.message).toBe('Recovered.');
+    }
   });
 });

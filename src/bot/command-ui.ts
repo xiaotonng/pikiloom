@@ -489,22 +489,20 @@ export function buildModeCommandView(bot: Bot, chatId: ChatId): CommandSelection
   ];
 
   const metaLines: string[] = [];
-  if (!isClaude && !supportsWorkflow) metaLines.push('Permission mode is only available for Claude.');
+  if (!isClaude) metaLines.push('Permission mode is only available for Claude.');
+  // Workflow orchestration is no longer a standalone toggle here — it folded
+  // into the effort picker as the top "Ultra" rung (max depth + multi-agent
+  // fan-out). Surface its state and point users to /models so the capability
+  // stays discoverable.
   if (supportsWorkflow) {
-    metaLines.push(`Workflow orchestration: ${workflowOn ? 'On' : 'Off'} — multi-agent fan-out for large tasks.`);
-    rows.push([
-      { label: 'Workflow On', action: { kind: 'workflow.toggle', enabled: true },
-        state: workflowOn ? 'current' : 'default', primary: workflowOn },
-      { label: 'Workflow Off', action: { kind: 'workflow.toggle', enabled: false },
-        state: workflowOn ? 'default' : 'current', primary: !workflowOn },
-    ]);
+    metaLines.push(`Workflow orchestration: ${workflowOn ? 'On (Ultra effort)' : 'Off'} — pick the Ultra rung in /models to toggle.`);
   }
 
   return {
     kind: 'mode',
     title: 'Agent Mode',
     detail: `Current: ${isPlanMode ? 'Plan (read-only)' : 'Code (full access)'}`
-      + (supportsWorkflow ? ` · Workflow ${workflowOn ? 'On' : 'Off'}` : ''),
+      + (supportsWorkflow && workflowOn ? ' · Ultra (workflow)' : ''),
     metaLines,
     items: [],
     rows,
@@ -624,7 +622,7 @@ export async function executeCommandAction(
 
     case 'effort.set': {
       const chat = bot.chat(chatId);
-      const currentEffort = bot.effortForAgent(chat.agent);
+      const currentEffort = bot.effortSelectionForAgent(chat.agent);
       if (action.effort === currentEffort) {
         return { kind: 'noop', message: `Already using ${action.effort} effort` };
       }
@@ -663,7 +661,7 @@ export async function executeCommandAction(
       if (!draft) return { kind: 'noop', message: 'No changes' };
 
       const currentModel = bot.modelForAgent(chat.agent);
-      const currentEffort = bot.effortForAgent(chat.agent);
+      const currentEffort = bot.effortSelectionForAgent(chat.agent);
       const currentProfileId = bot.activeProfileIdForAgent(chat.agent);
       const profileChanged = (draft.profileId || null) !== (currentProfileId || null);
       const modelChanged = profileChanged

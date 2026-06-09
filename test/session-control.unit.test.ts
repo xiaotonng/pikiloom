@@ -23,51 +23,59 @@ describe('session-control', () => {
     vi.resetModules();
   });
 
-  it('queues dashboard tasks through the public bot API', async () => {
-    const submitSessionTask = vi.fn(() => ({ ok: true, queued: true, taskId: 'task-1', sessionKey: 'codex:sess-1' }));
-    getBotRefMock.mockReturnValue({ submitSessionTask });
+  it('queues tasks and surfaces stream state, cancel, and steer through public bot methods', async () => {
+    // queues dashboard tasks through the public bot API
+    {
+      const submitSessionTask = vi.fn(() => ({ ok: true, queued: true, taskId: 'task-1', sessionKey: 'codex:sess-1' }));
+      getBotRefMock.mockReturnValue({ submitSessionTask });
 
-    const { queueDashboardSessionTask } = await import('../src/dashboard/session-control.ts');
-    const result = await queueDashboardSessionTask({
-      workdir: '/tmp/pikiclaw',
-      agent: 'codex',
-      sessionId: 'sess-1',
-      prompt: 'check',
-      attachments: ['/tmp/a.png'],
-    });
+      const { queueDashboardSessionTask } = await import('../src/dashboard/session-control.ts');
+      const result = await queueDashboardSessionTask({
+        workdir: '/tmp/pikiclaw',
+        agent: 'codex',
+        sessionId: 'sess-1',
+        prompt: 'check',
+        attachments: ['/tmp/a.png'],
+      });
 
-    expect(submitSessionTask).toHaveBeenCalledWith({
-      workdir: '/tmp/pikiclaw',
-      agent: 'codex',
-      sessionId: 'sess-1',
-      prompt: 'check',
-      attachments: ['/tmp/a.png'],
-      // Threaded on every send (even when false) — see session-control.ts.
-      workflowEnabled: false,
-    });
-    expect(result).toEqual({ ok: true, queued: true, taskId: 'task-1', sessionKey: 'codex:sess-1' });
-  });
+      expect(submitSessionTask).toHaveBeenCalledWith({
+        workdir: '/tmp/pikiclaw',
+        agent: 'codex',
+        sessionId: 'sess-1',
+        prompt: 'check',
+        attachments: ['/tmp/a.png'],
+        // Threaded on every send (even when false) — see session-control.ts.
+        workflowEnabled: false,
+      });
+      expect(result).toEqual({ ok: true, queued: true, taskId: 'task-1', sessionKey: 'codex:sess-1' });
+    }
 
-  it('surfaces stream state, cancel, and steer through public bot methods', async () => {
-    const cancelTask = vi.fn(() => ({ cancelled: true, interrupted: false, task: {} }));
-    const steerTask = vi.fn(async () => ({ steered: true, interrupted: true, task: {} }));
-    getBotRefMock.mockReturnValue({
-      getStreamSnapshot: vi.fn(() => ({ phase: 'queued', taskId: 'task-1', updatedAt: 1 })),
-      cancelTask,
-      steerTask,
-    });
+    // Reset between dynamic imports to avoid module cache cross-contamination.
+    vi.clearAllMocks();
+    vi.resetModules();
 
-    const {
-      cancelSessionTask,
-      getSessionStreamState,
-      steerSessionTask,
-    } = await import('../src/dashboard/session-control.ts');
+    // surfaces stream state, cancel, and steer through public bot methods
+    {
+      const cancelTask = vi.fn(() => ({ cancelled: true, interrupted: false, task: {} }));
+      const steerTask = vi.fn(async () => ({ steered: true, interrupted: true, task: {} }));
+      getBotRefMock.mockReturnValue({
+        getStreamSnapshot: vi.fn(() => ({ phase: 'queued', taskId: 'task-1', updatedAt: 1 })),
+        cancelTask,
+        steerTask,
+      });
 
-    expect(getSessionStreamState('codex', 'sess-1')).toEqual({
-      ok: true,
-      state: { phase: 'queued', taskId: 'task-1', updatedAt: 1 },
-    });
-    expect(cancelSessionTask('task-1')).toEqual({ ok: true, recalled: true });
-    expect(await steerSessionTask('task-1')).toEqual({ ok: true, steered: true });
+      const {
+        cancelSessionTask,
+        getSessionStreamState,
+        steerSessionTask,
+      } = await import('../src/dashboard/session-control.ts');
+
+      expect(getSessionStreamState('codex', 'sess-1')).toEqual({
+        ok: true,
+        state: { phase: 'queued', taskId: 'task-1', updatedAt: 1 },
+      });
+      expect(cancelSessionTask('task-1')).toEqual({ ok: true, recalled: true });
+      expect(await steerSessionTask('task-1')).toEqual({ ok: true, steered: true });
+    }
   });
 });

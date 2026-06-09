@@ -416,7 +416,6 @@ export function buildStreamPreviewHtml(input: StreamPreviewRenderInput): string 
     parts.push(`<blockquote><b>${escapeHtml(data.label)}</b></blockquote>`);
   }
 
-  if (data.longRunHint) parts.push(`<i>${escapeHtml(data.longRunHint)}</i>`);
   parts.push(formatPreviewFooterHtml(input.agent, input.elapsedMs, input.meta ?? null, {
     model: input.model,
     effort: input.effort,

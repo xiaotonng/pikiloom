@@ -299,7 +299,6 @@ function buildPreviewMarkdown(input: StreamPreviewRenderInput, options?: { inclu
     parts.push(`**${data.label}**`);
   }
 
-  if (data.longRunHint) parts.push(data.longRunHint);
   if (options?.includeFooter !== false) {
     parts.push(formatPreviewFooter(input.agent, input.elapsedMs, input.meta ?? null, {
       model: input.model,

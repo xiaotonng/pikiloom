@@ -249,6 +249,28 @@ describe('Claude TUI driver — bypass-permissions prompt auto-answer', () => {
   });
 });
 
+describe('Claude TUI driver — stall screen classifier', () => {
+  // Capture-only: when a turn goes quiet, classifyStallScreen flags whether the
+  // screen looks like a blocking interactive prompt (the mid-turn dialog-hang
+  // we cannot otherwise distinguish from a long think or a frozen stream).
+  it('flags interactive prompts (confirm footer / numbered select / trust)', async () => {
+    const { classifyStallScreen } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(classifyStallScreen('\x1b[36m❯ 1. No, exit\x1b[0m\r\n2. Yes, I accept\r\nEnter to confirm · Esc to cancel').looksLikePrompt).toBe(true);
+    expect(classifyStallScreen('Do you want to proceed with this edit? (y/n)').looksLikePrompt).toBe(true);
+    expect(classifyStallScreen('Quick safety check: Is this a project you trust this folder...').looksLikePrompt).toBe(true);
+  });
+
+  it('does not flag a spinner / thinking screen or plain output, and returns a sample', async () => {
+    const { classifyStallScreen } = await import('../src/agent/drivers/claude-tui.ts');
+    const thinking = classifyStallScreen('\x1b[2m✻ Cogitating… (45s · esc to interrupt)\x1b[0m');
+    expect(thinking.looksLikePrompt).toBe(false);
+    expect(thinking.sample.length).toBeGreaterThan(0);
+    expect(classifyStallScreen('Running tests…\n  ✓ 325 passed').looksLikePrompt).toBe(false);
+    expect(classifyStallScreen('').looksLikePrompt).toBe(false);
+    expect(classifyStallScreen(null).looksLikePrompt).toBe(false);
+  });
+});
+
 describe('Claude TUI driver — stall diagnostics classifier', () => {
   // classifyClaudeJsonlEvent labels the last transcript event before a quiet
   // stretch. The labels are load-bearing for the freeze diagnostics: the known

@@ -437,6 +437,36 @@ export function detectClaudeBypassPrompt(screen: any): boolean {
 }
 
 /**
+ * Capture-only classifier for the stall watchdog. When the turn goes quiet we
+ * cannot tell from timing alone whether the TUI is (a) frozen mid-turn (the
+ * known CLI bug — PTY dead), (b) just thinking for a long time (PTY repaints a
+ * spinner), or (c) blocked on an interactive prompt that bypass mode does NOT
+ * suppress and that's waiting for input it will never get (trust-a-new-folder,
+ * a "Do you want to proceed?" confirmation, an expired-login prompt, …). The
+ * raw PTY screen is the only thing that disambiguates them, and we don't
+ * otherwise persist it — so on a stall we record a compact stripped sample plus
+ * a conservative "looks like an interactive prompt" flag. Changes no control
+ * flow; it exists purely to make the next stall diagnosable from data.
+ */
+export function classifyStallScreen(screen: any): { looksLikePrompt: boolean; sample: string } {
+  if (typeof screen !== 'string' || !screen) return { looksLikePrompt: false, sample: '' };
+  const stripped = stripAnsiEscapes(screen);
+  const sample = stripped.replace(/\s+/g, ' ').trim().slice(-400);
+  // Claude positions words with cursor moves, so the live screen is spaceless;
+  // match against the despaced form (see detectClaudeBypassPrompt).
+  const ds = stripped.replace(/\s+/g, '').toLowerCase();
+  const looksLikePrompt =
+    ds.includes('esctocancel')        // claude's confirm-dialog footer ("Enter to confirm · Esc to cancel")
+    || ds.includes('doyouwant')
+    || ds.includes('wouldyoulike')
+    || ds.includes('trustthisfolder')
+    || ds.includes('yes,iaccept')
+    || ds.includes('(y/n)')
+    || (ds.includes('❯') && ds.includes('1.') && ds.includes('2.'));  // numbered select with cursor
+  return { looksLikePrompt, sample };
+}
+
+/**
  * Extract text / thinking blocks from an assistant JSONL event and route them:
  * text → the chunked stream buffer (slow drain), thinking → `s.thinking`
  * directly. Tool uses, stop reasons, sub-agents, etc. are still handled by
@@ -1613,6 +1643,9 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           if (ptyQuietMs < CLAUDE_TUI_STALL_PTY_DEAD_MS) stallDiagPtyAliveWhileQuiet = true;
           if (nowMs - lastStallDiagHeartbeatAt >= STALL_DIAG_HEARTBEAT_INTERVAL_MS) {
             lastStallDiagHeartbeatAt = nowMs;
+            // Snapshot the screen so a quiet stretch can later be classified as
+            // a frozen stream vs a long think vs a blocking interactive prompt.
+            const screenInfo = classifyStallScreen(screenTail);
             writeStallDiag({
               kind: 'quiet',
               sessionId: activeSessionId,
@@ -1628,6 +1661,8 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
               pendingHookTools: pendingHookToolIds.size,
               pendingBgAgents: pendingBgForStall,
               pendingBgBash: pendingClaudeBackgroundBashCount(s),
+              looksLikePrompt: screenInfo.looksLikePrompt,
+              screenSample: screenInfo.sample,
             });
           }
         }
@@ -1643,6 +1678,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         const quietMin = Math.round((Date.now() - lastProgressAt) / 60_000);
         const ptyQuietS = Math.round((Date.now() - lastPtyDataAt) / 1000);
         s.stopReason = 'stalled';
+        const stallScreen = classifyStallScreen(screenTail);
         writeStallDiag({
           kind: 'stall',
           sessionId: activeSessionId,
@@ -1657,6 +1693,11 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           lastJsonlType: lastMainJsonlType,
           pendingHookTools: pendingHookToolIds.size,
           pendingBgAgents: pendingBgForStall,
+          // looksLikePrompt=true here is the signal that the "stall" was really
+          // a blocking interactive prompt waiting for input bypass can't skip —
+          // the mid-turn dialog-hang hypothesis, confirmable from screenSample.
+          looksLikePrompt: stallScreen.looksLikePrompt,
+          screenSample: stallScreen.sample,
         });
         if (!s.errors) {
           s.errors = [`Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];

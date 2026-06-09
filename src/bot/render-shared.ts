@@ -401,16 +401,6 @@ export interface StreamPreviewData {
    * ticking even when no stream events arrive. Driver-agnostic.
    */
   thinkingProgressText: string | null;
-  /**
-   * Reassurance banner for long-running turns. A long silent operation (a
-   * backgrounded Bash/agent the driver is holding the turn open for, or a slow
-   * foreground command) produces no streamed events, so the card can look
-   * frozen even though work is progressing. Once the turn passes
-   * LONG_RUN_HINT_AFTER_MS we surface a short "still working" status line. It
-   * carries NO elapsed time of its own — the footer is the single source of the
-   * ticking clock, so the card never shows two timers. Null below the threshold.
-   */
-  longRunHint: string | null;
 }
 
 /**
@@ -435,13 +425,6 @@ function renderSubAgentsForPreview(meta?: StreamPreviewMeta | null): string {
   return lines.join('\n');
 }
 
-/** After this much wall-clock, a still-running turn shows a text-only "still
- *  working" banner (see StreamPreviewData.longRunHint) so a long silent
- *  operation (held background task, slow command) doesn't read as a frozen
- *  card. Deliberately above the chunked-stream cadence so quick turns never
- *  flash it. */
-const LONG_RUN_HINT_AFTER_MS = 60_000;
-
 export function extractStreamPreviewData(input: StreamPreviewRenderInput): StreamPreviewData {
   const maxBody = 2400;
   const display = input.bodyText.trim();
@@ -462,14 +445,6 @@ export function extractStreamPreviewData(input: StreamPreviewRenderInput): Strea
   const elapsedMs = Math.max(0, input.elapsedMs);
   const thinkingProgressText = elapsedMs >= 1000 ? fmtCompactUptime(elapsedMs) : null;
 
-  // After a turn has run a while, a long silent operation (a held background
-  // task, a slow command) can make the card look frozen. Surface a text-only
-  // "still working" line so the user knows it's alive and can switch away. No
-  // elapsed time here — the footer keeps the single clock, so no second timer.
-  const longRunHint = elapsedMs >= LONG_RUN_HINT_AFTER_MS
-    ? '⏳ Still working — the result will update in this card'
-    : null;
-
   return {
     display,
     rawThinking,
@@ -482,6 +457,5 @@ export function extractStreamPreviewData(input: StreamPreviewRenderInput): Strea
     thinkSnippet,
     preview,
     thinkingProgressText,
-    longRunHint,
   };
 }

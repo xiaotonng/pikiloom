@@ -33,6 +33,7 @@ import {
   createClaudeStreamState,
   pendingClaudeBackgroundAgentCount,
   extractClaudeWorkflowRunId,
+  claudeEffortAndWorkflowArgs,
 } from '../src/agent/drivers/claude.ts';
 import { makeTmpDir, withTempHome } from './support/env.ts';
 
@@ -2386,6 +2387,36 @@ describe('sessionListDisplayTitle', () => {
       lastQuestion: '[Request interrupted by user]',
       sessionId: 'sess-5',
     })).toBe('sess-5');
+  });
+});
+
+describe('claudeEffortAndWorkflowArgs (shared effort + Workflow gate)', () => {
+  // The gate must behave identically for both spawn paths — the `claude -p`
+  // driver and the PTY/TUI driver both build their argv through this helper, so
+  // the TUI path can never again leave Workflow always-on.
+  it('drops the Workflow tool by default (orchestration off)', () => {
+    const args = claudeEffortAndWorkflowArgs({ thinkingEffort: 'high', claudeWorkflowEnabled: false });
+    expect(args.join(' ')).toContain('--effort high');
+    expect(args.join(' ')).toContain('--disallowed-tools Workflow');
+  });
+
+  it('keeps the Workflow tool when explicitly enabled', () => {
+    const args = claudeEffortAndWorkflowArgs({ thinkingEffort: 'high', claudeWorkflowEnabled: true });
+    expect(args).not.toContain('Workflow');
+    expect(args.join(' ')).toContain('--effort high');
+  });
+
+  it('translates the synthetic "ultra" rung to --effort max and permits Workflow', () => {
+    const args = claudeEffortAndWorkflowArgs({ thinkingEffort: 'ultra', claudeWorkflowEnabled: false });
+    expect(args.join(' ')).toContain('--effort max');
+    expect(args.join(' ')).not.toContain('--effort ultra');
+    expect(args).not.toContain('Workflow');
+  });
+
+  it('omits --effort entirely when no effort is set, still gating Workflow', () => {
+    const args = claudeEffortAndWorkflowArgs({ thinkingEffort: undefined, claudeWorkflowEnabled: false });
+    expect(args).not.toContain('--effort');
+    expect(args.join(' ')).toContain('--disallowed-tools Workflow');
   });
 });
 

@@ -64,6 +64,7 @@ import {
   registerClaudeBackgroundAgentLaunch, pendingClaudeBackgroundAgentCount,
   registerClaudeBackgroundBashLaunch, pendingClaudeBackgroundBashCount,
   extractClaudeBackgroundTaskId, extractClaudeWorkflowRunId,
+  claudeEffortAndWorkflowArgs,
 } from './claude.js';
 
 // ---------------------------------------------------------------------------
@@ -1093,7 +1094,9 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   const model = normalizeClaudeModelId(opts.claudeModel);
   if (model) claudeArgs.push('--model', model);
   if (opts.claudePermissionMode) claudeArgs.push('--permission-mode', opts.claudePermissionMode);
-  if (opts.thinkingEffort) claudeArgs.push('--effort', opts.thinkingEffort);
+  // Effort + Workflow gate — same source of truth as the `claude -p` driver, so
+  // the TUI path drops the Workflow tool unless orchestration was opted in.
+  claudeArgs.push(...claudeEffortAndWorkflowArgs(opts));
   if (opts.claudeAppendSystemPrompt) claudeArgs.push('--append-system-prompt', opts.claudeAppendSystemPrompt);
   if (opts.mcpConfigPath) claudeArgs.push('--mcp-config', opts.mcpConfigPath);
   if (opts.claudeExtraArgs?.length) claudeArgs.push(...opts.claudeExtraArgs);

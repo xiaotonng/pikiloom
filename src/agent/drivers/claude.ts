@@ -68,6 +68,30 @@ function claudeUsesStreamJsonInput(o: StreamOpts): boolean {
 
 const CLAUDE_STEER_IDLE_CLOSE_MS = 1200;
 
+/**
+ * Effort + multi-agent-Workflow gate args, shared by BOTH Claude spawn paths
+ * (`claude -p` in claudeCmd below and the PTY/TUI driver in claude-tui.ts).
+ * Kept in one place so the gate can never drift between them — the omission
+ * that once left the Workflow tool always-on under the TUI driver.
+ *
+ * "ultra" is a synthetic picker rung (max depth + Workflow orchestration), never
+ * a real --effort value — translate it to `max` so a stray "ultra" can't reach
+ * and break the CLI, and treat it as an implicit workflow opt-in. The Workflow
+ * tool ships in the default toolset and triggers on a bare "workflow" keyword;
+ * under the bypassPermissions mode pikiclaw runs by default that could auto-spawn
+ * a fleet of sub-agents, so drop it entirely unless orchestration was explicitly
+ * enabled (the workflow flag or the "ultra" rung).
+ */
+export function claudeEffortAndWorkflowArgs(
+  o: Pick<StreamOpts, 'thinkingEffort' | 'claudeWorkflowEnabled'>,
+): string[] {
+  const args: string[] = [];
+  const ultraEffort = o.thinkingEffort === 'ultra';
+  if (o.thinkingEffort) args.push('--effort', ultraEffort ? 'max' : o.thinkingEffort);
+  if (!o.claudeWorkflowEnabled && !ultraEffort) args.push('--disallowed-tools', 'Workflow');
+  return args;
+}
+
 // ---------------------------------------------------------------------------
 // Command & parser
 // ---------------------------------------------------------------------------
@@ -92,19 +116,9 @@ function claudeCmd(o: StreamOpts): string[] {
     if (o.onSteerReady) args.push('--replay-user-messages');
     if (o.attachments?.length) o._stdinOverride = buildClaudeUserMessage(o.prompt, o.attachments);
   }
-  // "ultra" is a synthetic picker rung (max depth + Workflow orchestration),
-  // never a real --effort value. The effort-write paths decompose it upstream;
-  // translate defensively here too so a stray "ultra" can never reach — and
-  // break — the CLI, and so it never suppresses the Workflow tool below.
-  const ultraEffort = o.thinkingEffort === 'ultra';
-  if (o.thinkingEffort) args.push('--effort', ultraEffort ? 'max' : o.thinkingEffort);
-  // Multi-agent Workflow gate. The Workflow tool is always present in the
-  // toolset and triggers on a bare "workflow" keyword — combined with the
-  // bypassPermissions mode pikiclaw runs by default, that means an offhand
-  // mention could auto-spawn a fleet of sub-agents. Unless orchestration is
-  // explicitly enabled, drop the tool entirely so it can't fire at all. When
-  // enabled, the bot injects a standing opt-in directive via the system prompt.
-  if (!o.claudeWorkflowEnabled && !ultraEffort) args.push('--disallowed-tools', 'Workflow');
+  // Effort + Workflow gate — shared with the TUI driver (claude-tui.ts) so the
+  // two spawn paths can never drift. See claudeEffortAndWorkflowArgs.
+  args.push(...claudeEffortAndWorkflowArgs(o));
   if (o.claudeAppendSystemPrompt) args.push('--append-system-prompt', o.claudeAppendSystemPrompt);
   if (o.mcpConfigPath) args.push('--mcp-config', o.mcpConfigPath);
   if (o.claudeExtraArgs?.length) args.push(...o.claudeExtraArgs);

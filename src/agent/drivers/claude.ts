@@ -198,8 +198,8 @@ export function claudeContextWindowFromModel(model: unknown): number | null {
   const id = normalizeClaudeModelId(model).toLowerCase();
   if (!id) return null;
   if (id === 'haiku' || /^claude-haiku-/.test(id)) return 200_000;
-  if (id === 'opus' || id === 'sonnet') return 1_000_000;
-  if (/^claude-(opus|sonnet)-/.test(id)) return 1_000_000;
+  if (id === 'opus' || id === 'sonnet' || id === 'fable') return 1_000_000;
+  if (/^claude-(opus|sonnet)-/.test(id) || /^claude-fable-/.test(id)) return 1_000_000;
   return null;
 }
 
@@ -2003,6 +2003,7 @@ function hydrateSubAgentBlocksFromSidecar(richMsgs: RichMessage[], subAgentsDir:
 // ---------------------------------------------------------------------------
 
 const CLAUDE_MODELS: ModelInfo[] = [
+  { id: 'claude-fable-5', alias: 'fable' },
   { id: 'claude-opus-4-8', alias: 'opus' },
   { id: 'claude-sonnet-4-6', alias: 'sonnet' },
   { id: 'claude-haiku-4-5-20251001', alias: 'haiku' },

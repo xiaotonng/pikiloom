@@ -517,6 +517,7 @@ export interface ModelsListData {
 function claudeModelFamily(modelId: string | null | undefined): string | null {
   const value = normalizeClaudeModelId(modelId).toLowerCase();
   if (!value) return null;
+  if (value === 'fable' || value.startsWith('claude-fable-')) return 'fable';
   if (value === 'opus' || value.startsWith('claude-opus-')) return 'opus';
   if (value === 'sonnet' || value.startsWith('claude-sonnet-')) return 'sonnet';
   if (value === 'haiku' || value.startsWith('claude-haiku-')) return 'haiku';
@@ -525,7 +526,7 @@ function claudeModelFamily(modelId: string | null | undefined): string | null {
 
 function isClaudeFamilyAlias(modelId: string): boolean {
   const v = modelId.trim().toLowerCase();
-  return v === 'opus' || v === 'sonnet' || v === 'haiku';
+  return v === 'fable' || v === 'opus' || v === 'sonnet' || v === 'haiku';
 }
 
 export function modelMatchesSelection(agent: Agent, selection: string, currentModel: string): boolean {

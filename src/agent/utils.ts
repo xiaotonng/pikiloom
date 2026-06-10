@@ -479,6 +479,7 @@ export function parseJsonTail(raw: string): any | null {
 export function modelFamily(model: string | null | undefined): string | null {
   const lower = model?.toLowerCase() || '';
   if (!lower) return null;
+  if (lower.includes('fable')) return 'fable';
   if (lower.includes('opus')) return 'opus';
   if (lower.includes('sonnet')) return 'sonnet';
   return null;

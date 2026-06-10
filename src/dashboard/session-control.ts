@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { getProjectSkillPaths, listSkills, stageSessionFiles, ensureManagedSession, findPikiclawSession, getDriverCapabilities, isPendingSessionId, type Agent, type HandoverRef } from '../agent/index.js';
 import { loadUserConfig } from '../core/config/user-config.js';
+import { decomposeEffortSelection } from '../core/config/runtime-config.js';
 import { runtime } from './runtime.js';
 
 const KNOWN_AGENTS = new Set<Agent>(['claude', 'codex', 'gemini', 'hermes']);
@@ -114,9 +115,14 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     ? request.agent as Agent
     : runtime.getRuntimeDefaultAgent(config);
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
-  const thinkingEffort = resolvedAgent === 'gemini'
-    ? ''
-    : (typeof request.effort === 'string' ? request.effort.trim().toLowerCase() : '');
+  // "ultra" is a synthetic effort rung = max depth + Workflow orchestration;
+  // decompose it so the spawn carries a real --effort value plus the workflow
+  // flag (the per-send pick is the single knob — no separate workflow control).
+  const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
+    typeof request.effort === 'string' ? request.effort : '',
+  );
+  const thinkingEffort = resolvedAgent === 'gemini' ? '' : splitEffort;
+  const workflowEnabled = ultraWorkflow || request.workflow === true;
 
   // /goal — route directly to the goal bridge (claude native slash, codex RPC,
   // or portable goal.json for gemini/hermes). Must run BEFORE skill resolution
@@ -171,8 +177,9 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     ...(modelId ? { modelId } : {}),
     ...(thinkingEffort ? { thinkingEffort } : {}),
     // Always thread the per-send workflow choice (even when false) so the run
-    // explicitly reflects the composer toggle rather than any ambient default.
-    workflowEnabled: request.workflow === true,
+    // explicitly reflects the picked rung (Ultra ⇒ on) rather than any ambient
+    // default.
+    workflowEnabled,
     ...(handoverFrom ? { handoverFrom } : {}),
   });
 }
@@ -248,9 +255,12 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
   }
 
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
-  const thinkingEffort = agent === 'gemini'
-    ? ''
-    : (typeof request.effort === 'string' ? request.effort.trim().toLowerCase() : '');
+  // Same "ultra" decomposition as the send path — a forked turn launched at
+  // Ultra inherits max depth + Workflow orchestration.
+  const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
+    typeof request.effort === 'string' ? request.effort : '',
+  );
+  const thinkingEffort = agent === 'gemini' ? '' : splitEffort;
 
   // Resolve /skill-name shorthand the same way send/queue does, so a forked
   // turn that starts with `/skill-name` runs the skill against the child.
@@ -290,6 +300,7 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
     forkOf: { parentSessionId: request.parentSessionId, atTurn: request.atTurn },
     ...(modelId ? { modelId } : {}),
     ...(thinkingEffort ? { thinkingEffort } : {}),
+    ...(ultraWorkflow ? { workflowEnabled: true } : {}),
   });
 }
 

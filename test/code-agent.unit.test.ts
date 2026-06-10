@@ -28,6 +28,12 @@ import {
   stageSessionFiles,
   type StreamOpts,
 } from '../src/agent/index.ts';
+import {
+  claudeParse,
+  createClaudeStreamState,
+  pendingClaudeBackgroundAgentCount,
+  extractClaudeWorkflowRunId,
+} from '../src/agent/drivers/claude.ts';
 import { makeTmpDir, withTempHome } from './support/env.ts';
 
 const tmpDir = path.join(os.tmpdir(), 'pikiclaw-test-' + process.pid);
@@ -2170,6 +2176,17 @@ echo '{"type":"result","session_id":"s-wf"}'`;
     const on = await doClaudeStream(baseOpts('claude', { prompt: 'b', claudeWorkflowEnabled: true }));
     expect(on.ok).toBe(true);
     expect(fs.readFileSync(argsFile, 'utf-8')).not.toContain('--disallowed-tools Workflow');
+
+    // "ultra" is the synthetic max+workflow rung — never a real --effort value.
+    // The driver's safety net translates it to `--effort max` (so the CLI never
+    // sees "ultra") and leaves the Workflow tool available even without the
+    // explicit flag.
+    const ultra = await doClaudeStream(baseOpts('claude', { prompt: 'c', thinkingEffort: 'ultra' }));
+    expect(ultra.ok).toBe(true);
+    const ultraArgs = fs.readFileSync(argsFile, 'utf-8');
+    expect(ultraArgs).toContain('--effort max');
+    expect(ultraArgs).not.toContain('--effort ultra');
+    expect(ultraArgs).not.toContain('--disallowed-tools Workflow');
     }
   });
 });
@@ -2369,5 +2386,65 @@ describe('sessionListDisplayTitle', () => {
       lastQuestion: '[Request interrupted by user]',
       sessionId: 'sess-5',
     })).toBe('sess-5');
+  });
+});
+
+describe('claude Workflow background-launch tracking', () => {
+  // A Workflow is ALWAYS backgrounded: the tool returns immediately with a
+  // runId and the orchestration keeps running inside the claude process,
+  // signalling completion via a later <task-notification>. The driver must
+  // count it as pending background work so decideClaudeTuiStop holds the PTY
+  // open instead of SIGTERMing the in-flight workflow on the launch segment's
+  // Stop (otherwise: "ultra workflow 离线跑、TUI 误判结束退出把 workflow 打断").
+  const baseState = () =>
+    createClaudeStreamState({ sessionId: 's', model: null, thinkingEffort: 'max' } as any);
+
+  it('counts a backgrounded Workflow as pending until its task-notification (by tool-use-id)', () => {
+    const s = baseState();
+    const WF = 'toolu_wf_1';
+
+    claudeParse({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: WF, name: 'Workflow', input: { script: 'export const meta={}' } }] },
+    }, s);
+    // Registered on launch — no run_in_background flag needed (always async).
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
+
+    // The launch ack is NOT completion — the workflow is still running.
+    claudeParse({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: WF, content: 'Workflow started. runId: wf_run012345' }] },
+    }, s);
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
+    expect(s.bgTaskIdToToolUse.get('wf_run012345')).toBe(WF);
+
+    // Completion notification (carries the tool-use-id) → pending drops to 0,
+    // releasing the hold for a normal Stop.
+    claudeParse({
+      type: 'user',
+      message: { content: [{ type: 'text', text: `<task-notification>\n<task-id>wf_run012345</task-id>\n<tool-use-id>${WF}</tool-use-id>\n<status>completed</status>\n</task-notification>` }] },
+    }, s);
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(0);
+  });
+
+  it('resolves a Workflow completion that carries only the runId (no tool-use-id)', () => {
+    const s = baseState();
+    const WF = 'toolu_wf_2';
+
+    claudeParse({ type: 'assistant', message: { content: [{ type: 'tool_use', id: WF, name: 'Workflow', input: {} }] } }, s);
+    // JSON-shaped ack, as the real tool returns { runId, scriptPath, ... }.
+    claudeParse({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: WF, content: '{"runId":"wf_zzz99aaa","scriptPath":"/x.js"}' }] } }, s);
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
+
+    // Notification omits <tool-use-id> — must resolve via the runId→tool_use map.
+    claudeParse({ type: 'user', message: { content: [{ type: 'text', text: '<task-notification>\n<task-id>wf_zzz99aaa</task-id>\n<status>completed</status>\n</task-notification>' }] } }, s);
+    expect(pendingClaudeBackgroundAgentCount(s)).toBe(0);
+  });
+
+  it('extractClaudeWorkflowRunId pulls wf_ ids from text, array, and JSON acks', () => {
+    expect(extractClaudeWorkflowRunId('Workflow launched with runId: wf_abc123')).toBe('wf_abc123');
+    expect(extractClaudeWorkflowRunId([{ type: 'text', text: 'runId wf_deadbeef01' }])).toBe('wf_deadbeef01');
+    expect(extractClaudeWorkflowRunId({ runId: 'wf_objform99' })).toBe('wf_objform99');
+    expect(extractClaudeWorkflowRunId('no workflow id here')).toBeNull();
   });
 });

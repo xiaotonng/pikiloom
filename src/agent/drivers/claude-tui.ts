@@ -63,7 +63,7 @@ import {
   claudeContextWindowFromModel, claudeEffectiveContextWindow,
   registerClaudeBackgroundAgentLaunch, pendingClaudeBackgroundAgentCount,
   registerClaudeBackgroundBashLaunch, pendingClaudeBackgroundBashCount,
-  extractClaudeBackgroundTaskId,
+  extractClaudeBackgroundTaskId, extractClaudeWorkflowRunId,
 } from './claude.js';
 
 // ---------------------------------------------------------------------------
@@ -437,6 +437,39 @@ export function detectClaudeBypassPrompt(screen: any): boolean {
 }
 
 /**
+ * Detect Claude Code's *mid-turn* per-command permission confirmation in a slice
+ * of (ANSI-stripped) PTY screen output. Even under `--permission-mode
+ * bypassPermissions`, an explicit `ask` rule in settings (e.g. `Bash(git tag:*)`,
+ * `git commit`, `git push`) is still honoured, so the TUI paints:
+ *
+ *     Permission rule Bash(git tag:*) requires confirmation for this command.
+ *     Do you want to proceed?
+ *   ❯ 1. Yes
+ *     2. Yes, and don't ask again for: …
+ *     3. No
+ *     Esc to cancel · Tab to amend · ctrl+e to explain
+ *
+ * Nothing answers it (detectClaudeBypassPrompt only handles the *startup* bypass
+ * dialog), so the turn hangs until the stall watchdog SIGTERMs it and mislabels
+ * the block as a "CLI freeze". We detect it on the wire and select "1. Yes" —
+ * restoring the bypass intent turn-by-turn without mutating the user's settings
+ * (option 2 "don't ask again" would). Require three distinctive fragments so
+ * ordinary assistant prose can't trigger it: the proceed question, the literal
+ * "1. Yes" affirmative (also keeps it disjoint from the bypass dialog, whose
+ * option 1 is "No, exit"), and the Ink confirm-dialog footer "Esc to cancel".
+ */
+export function detectClaudeProceedPrompt(screen: any): boolean {
+  if (typeof screen !== 'string' || !screen) return false;
+  // Same despacing rationale as detectClaudeBypassPrompt: the live PTY lays
+  // words out with cursor-move escapes, so the on-screen text runs together.
+  const t = stripAnsiEscapes(screen).replace(/\s+/g, '').toLowerCase();
+  const asksToProceed = t.includes('doyouwanttoproceed') || t.includes('wouldyouliketoproceed');
+  return asksToProceed
+    && t.includes('1.yes')      // affirmative is option 1 (not the bypass "1. No, exit")
+    && t.includes('esctocancel'); // Ink dialog footer — absent from plain prose
+}
+
+/**
  * Capture-only classifier for the stall watchdog. When the turn goes quiet we
  * cannot tell from timing alone whether the TUI is (a) frozen mid-turn (the
  * known CLI bug — PTY dead), (b) just thinking for a long time (PTY repaints a
@@ -597,6 +630,14 @@ export function applyHookToolEvent(ev: any, s: any): boolean {
     if (toolName === 'Bash' && ev.tool_input?.run_in_background === true) {
       registerClaudeBackgroundBashLaunch(s, toolUseId);
     }
+    // Workflow → always-backgrounded multi-agent orchestration. Same in-process
+    // lifecycle as a run_in_background Task; register so the turn's Stop holds
+    // the PTY instead of SIGTERMing the in-flight workflow. The hook fires live;
+    // the JSONL replay of the same tool_use dedupes via seenClaudeToolIds, so
+    // this is the only registration point in TUI mode.
+    if (toolName === 'Workflow') {
+      registerClaudeBackgroundAgentLaunch(s, toolUseId);
+    }
     const summary = summarizeClaudeToolUse(toolName, ev.tool_input || {});
     pushRecentActivity(s.recentActivity, summary);
     s.seenClaudeToolIds.add(toolUseId);
@@ -665,6 +706,13 @@ export function applyHookToolEvent(ev: any, s: any): boolean {
         && !s.bgAgentCompletedToolUseIds?.has(toolUseId)) {
       const taskId = extractClaudeBackgroundTaskId(ev.tool_response);
       if (taskId && !s.bgTaskIdToToolUse.has(taskId)) s.bgTaskIdToToolUse.set(taskId, toolUseId);
+    }
+    // Workflow launch ack → map runId → tool_use for notification resolution
+    // (the workflow's <task-notification> may carry only the task id).
+    if (toolName === 'Workflow' && s.bgAgentLaunchedToolUseIds?.has(toolUseId)
+        && !s.bgAgentCompletedToolUseIds?.has(toolUseId)) {
+      const runId = extractClaudeWorkflowRunId(ev.tool_response);
+      if (runId && !s.bgTaskIdToToolUse.has(runId)) s.bgTaskIdToToolUse.set(runId, toolUseId);
     }
     s.seenClaudeToolResultIds.add(toolUseId);
     return true;
@@ -1202,10 +1250,24 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // screen — suppresses the blind prompt-submit Enter nudge across the whole
   // select→confirm sequence so a stray CR can't land on "No, exit".
   const BYPASS_DIALOG_ACTIVE_WINDOW_MS = 2000;
+  // Mid-turn permission-prompt auto-answer (see detectClaudeProceedPrompt).
+  // Same Ink-select timing as the bypass dialog: settle past the frames where
+  // input is dropped, send the digit, then a split-out Enter to confirm. Unlike
+  // the bypass dialog (fires once at startup), `ask`-rule prompts recur — one
+  // per gated command — so we re-arm after each answer instead of capping at a
+  // few total attempts. PROCEED_ANSWER_MAX is only a runaway backstop.
+  const PROCEED_SETTLE_MS = 500;
+  const PROCEED_CONFIRM_DELAY_MS = 600;
+  // After confirming, wait before re-arming so a stale dialog frame can't drive
+  // a double "1\r"; a genuine next prompt always trails its command by longer.
+  const PROCEED_REARM_MS = 1000;
+  const PROCEED_ANSWER_MAX = 40;
   let screenTail = '';
   let bypassPromptLastSeenAt = 0;
   let bypassAcceptAttempts = 0;
   let bypassPhase: 'idle' | 'armed' | 'confirmed' = 'idle';
+  let proceedAnswerCount = 0;
+  let proceedPhase: 'idle' | 'armed' = 'idle';
   proc.onData((data: string) => {
     // We deliberately do not parse the TUI screen output. The JSONL is the
     // canonical source of structured events. Stash bytes only when debugging.
@@ -1254,6 +1316,35 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
             }, 1200);
           }, BYPASS_CONFIRM_DELAY_MS);
         }, BYPASS_SETTLE_MS);
+      }
+    }
+    // Auto-answer a *mid-turn* permission confirmation. `else if` so the startup
+    // bypass dialog (handled above) never falls through here — its option 1 is
+    // "No, exit", so a stray "1" would quit. detectClaudeProceedPrompt only
+    // matches when option 1 is literally "Yes". These recur (one per ask-gated
+    // command), so we re-arm after each answer rather than cap total attempts.
+    else if (detectClaudeProceedPrompt(screenTail)) {
+      if (proceedPhase === 'idle' && proceedAnswerCount < PROCEED_ANSWER_MAX) {
+        proceedAnswerCount++;
+        proceedPhase = 'armed';
+        agentLog(`[claude-tui] mid-turn permission prompt — auto-selecting "1. Yes" (answer ${proceedAnswerCount}/${PROCEED_ANSWER_MAX})`);
+        // settle → "1" (jump to "Yes"; idempotent — the highlight already sits
+        // there) → split-out Enter (a combined "1\r" gets swallowed like the
+        // bypass dialog's "2\r"). Then drop the answered frame and re-arm.
+        setTimeout(() => {
+          if (processExited) return;
+          try { proc.write('1'); } catch {}
+          setTimeout(() => {
+            if (processExited) return;
+            try { proc.write('\r'); } catch {}
+            agentLog('[claude-tui] permission prompt — confirm Enter sent');
+            // Clear the buffered dialog text so the re-arm below only sees
+            // output that arrives *after* the confirm — never the stale frame
+            // we just answered (same hazard the bypass path guards against).
+            screenTail = '';
+            setTimeout(() => { if (!processExited) proceedPhase = 'idle'; }, PROCEED_REARM_MS);
+          }, PROCEED_CONFIRM_DELAY_MS);
+        }, PROCEED_SETTLE_MS);
       }
     }
     // Capture stderr-ish bytes (TUI startup errors, "claude: command not
@@ -1700,7 +1791,12 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           screenSample: stallScreen.sample,
         });
         if (!s.errors) {
-          s.errors = [`Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
+          // Be honest about which kind of stall this is. looksLikePrompt here
+          // means the auto-answer (detectClaudeProceedPrompt) did NOT clear an
+          // interactive prompt — so it's a blocking dialog, not the CLI freeze.
+          s.errors = [stallScreen.looksLikePrompt
+            ? `Claude blocked mid-turn on an interactive prompt (PTY quiet ${ptyQuietS}s) that auto-answer couldn't clear. Terminated for auto-resume.`
+            : `Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
         }
         agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}, ptyQuiet=${ptyQuietS}s) — terminating TUI pid=${proc.pid} for auto-resume`);
         pushRecentActivity(s.recentActivity, `Agent stalled (${quietMin}m silent) — restarting turn`);

@@ -240,6 +240,49 @@ describe('Claude TUI driver — bypass-permissions prompt auto-answer', () => {
   });
 });
 
+describe('Claude TUI driver — mid-turn permission prompt auto-answer', () => {
+  // bypassPermissions does NOT suppress explicit `ask` rules (e.g. Bash(git tag:*)),
+  // so the TUI paints a "Do you want to proceed? ❯ 1. Yes … 3. No" confirmation
+  // mid-turn. The driver must recognise it and select "1. Yes" rather than let it
+  // hang until the stall watchdog SIGTERMs and mislabels it a "CLI freeze".
+  it('detects the proceed dialog (spaceless + spaced), stays disjoint from bypass + prose', async () => {
+    const { detectClaudeProceedPrompt, detectClaudeBypassPrompt } =
+      await import('../src/agent/drivers/claude-tui.ts');
+
+    // Real (spaceless, cursor-positioned) git-tag confirmation frame — mirrors
+    // the bytes captured live in ~/.pikiclaw/diagnostics/claude-tui-stall.jsonl.
+    const realScreen =
+      '\x1b[2J\x1b[H\x1b[36mPermissionruleBash(gittag:*)requiresconfirmationforthiscommand.\r\n' +
+      '/permissionstoupdaterules\r\n\r\nDoyouwanttoproceed?\r\n' +
+      '\x1b[36m❯1.Yes\x1b[0m\r\n2.Yes,anddon’taskagainfor:node-p\r\n3.No\r\n\r\n' +
+      'Esctocancel·Tabtoamend·ctrl+etoexplain\r\n';
+    expect(detectClaudeProceedPrompt(realScreen)).toBe(true);
+
+    // Space-preserving rendering also matches.
+    const spaced =
+      'Do you want to proceed?\r\n❯ 1. Yes\r\n  2. Yes, and don’t ask again for: git tag\r\n  3. No\r\n\r\nEsc to cancel · Tab to amend\r\n';
+    expect(detectClaudeProceedPrompt(spaced)).toBe(true);
+
+    // Disjoint from the startup bypass dialog: its option 1 is "No, exit", so a
+    // "1" keystroke would quit — the proceed handler must never claim that frame.
+    const bypass =
+      '\x1b[1mWARNING: Claude Code running in Bypass Permissions mode\x1b[0m\r\n' +
+      '\x1b[36m❯ 1. No, exit\x1b[0m\r\n  2. Yes, I accept\r\nEnter to confirm · Esc to cancel\r\n';
+    expect(detectClaudeProceedPrompt(bypass)).toBe(false);
+    expect(detectClaudeBypassPrompt(bypass)).toBe(true); // sanity: bypass owns this frame
+
+    // Conservative: needs the proceed question AND "1. Yes" AND the Esc footer.
+    expect(detectClaudeProceedPrompt('Do you want to proceed? (just prose, no menu)')).toBe(false);
+    expect(detectClaudeProceedPrompt('❯ 1. Yes\n2. No\nEsc to cancel')).toBe(false); // no question
+    // Assistant prose describing a prompt must not trigger a keystroke injection
+    // (no Ink "Esc to cancel" footer, so it stays inert).
+    expect(detectClaudeProceedPrompt('The CLI asks "Do you want to proceed?" with 1. Yes / 2. No.')).toBe(false);
+    expect(detectClaudeProceedPrompt('')).toBe(false);
+    expect(detectClaudeProceedPrompt(null)).toBe(false);
+    expect(detectClaudeProceedPrompt(undefined)).toBe(false);
+  });
+});
+
 describe('Claude TUI driver — stall screen classifier', () => {
   // Capture-only: when a turn goes quiet, classifyStallScreen flags whether the
   // screen looks like a blocking interactive prompt (the mid-turn dialog-hang

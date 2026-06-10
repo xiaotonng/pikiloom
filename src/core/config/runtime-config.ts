@@ -148,3 +148,24 @@ export function setAgentEffortEnv(agent: Agent, value: string, env: NodeJS.Proce
     case 'hermes': env.HERMES_REASONING_EFFORT = value; break;
   }
 }
+
+// ---------------------------------------------------------------------------
+// "Ultra" effort rung — the single user-facing knob that folds workflow in
+//
+// Surfaced as the top rung of every effort picker (IM /models + dashboard),
+// "ultra" means "max reasoning depth + permit multi-agent Workflow
+// orchestration" — the same bundle as Claude's native `ultracode` mode. It is
+// NOT a real --effort value (the CLI hard-rejects anything outside
+// low|medium|high|xhigh|max), so every effort-write path decomposes it into a
+// concrete effort plus the orthogonal workflow flag via this single helper.
+// Because the rungs are mutually exclusive, picking any concrete level clears
+// the orchestration opt-in. See Bot.switchEffortForChat for the IM mirror.
+// ---------------------------------------------------------------------------
+
+export const ULTRA_EFFORT = 'ultra';
+
+export function decomposeEffortSelection(raw: string | null | undefined): { effort: string; workflow: boolean } {
+  const value = trimmed(raw).toLowerCase();
+  if (value === ULTRA_EFFORT) return { effort: 'max', workflow: true };
+  return { effort: value, workflow: false };
+}

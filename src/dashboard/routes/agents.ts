@@ -12,6 +12,7 @@ import { setAgentBoundModelId, type AgentDetectOptions, type UsageResult } from 
 import { getAgentUpdateState, checkAgentLatestVersion, manualAgentUpdate } from '../../agent/auto-update.js';
 import type { Agent } from '../../agent/index.js';
 import { getDriver, getDriverCapabilities } from '../../agent/driver.js';
+import { decomposeEffortSelection } from '../../core/config/runtime-config.js';
 import {
   getActiveProfile, getProvider,
   peekProviderModelList, prefetchProviderModels,
@@ -383,7 +384,12 @@ app.post('/api/runtime-agent', async (c) => {
   const defaultAgent = body?.defaultAgent;
   const targetAgent = body?.agent;
   const model = typeof body?.model === 'string' ? body.model.trim() : '';
-  const effort = typeof body?.effort === 'string' ? body.effort.trim().toLowerCase() : '';
+  const rawEffort = typeof body?.effort === 'string' ? body.effort.trim().toLowerCase() : '';
+  // "ultra" folds max depth + Workflow orchestration into one rung; decompose
+  // so the stored effort is always a real --effort value and orchestration
+  // follows the pick (any concrete rung ⇒ off). Mirrors Bot.switchEffortForChat.
+  const { effort, workflow: effortWorkflow } = decomposeEffortSelection(rawEffort);
+  const hasEffort = rawEffort !== '';
   const botRef = runtime.getBotRef();
 
   if (defaultAgent != null) {
@@ -394,7 +400,7 @@ app.post('/api/runtime-agent', async (c) => {
     if (botRef) botRef.setDefaultAgent(defaultAgent);
   }
 
-  if (model || effort) {
+  if (model || hasEffort) {
     if (!runtime.isAgent(targetAgent)) return c.json({ ok: false, error: 'Invalid agent' }, 400);
     if (model) {
       runtime.runtimePrefs.models[targetAgent] = model;
@@ -410,7 +416,7 @@ app.post('/api/runtime-agent', async (c) => {
       }
       if (botRef) botRef.setModelForAgent(targetAgent, model);
     }
-    if (effort) {
+    if (hasEffort) {
       runtime.runtimePrefs.efforts[targetAgent] = effort;
       runtime.setEffortEnv(targetAgent, effort);
       if (targetAgent === 'claude') nextConfig.claudeReasoningEffort = effort;
@@ -418,6 +424,15 @@ app.post('/api/runtime-agent', async (c) => {
       if (targetAgent === 'gemini') nextConfig.geminiReasoningEffort = effort;
       if (targetAgent === 'hermes') nextConfig.hermesReasoningEffort = effort;
       if (botRef) botRef.setEffortForAgent(targetAgent, effort);
+      // The effort pick is also the single knob for orchestration: Ultra turns
+      // it on, any concrete rung turns it off (mutual exclusion). Only claude
+      // advertises the capability today.
+      if (targetAgent === 'claude') {
+        runtime.runtimePrefs.workflow.claude = effortWorkflow;
+        runtime.setWorkflowEnv('claude', effortWorkflow);
+        nextConfig.claudeWorkflowEnabled = effortWorkflow;
+        if (botRef) botRef.setWorkflowEnabledForAgent('claude', effortWorkflow);
+      }
     }
   }
 

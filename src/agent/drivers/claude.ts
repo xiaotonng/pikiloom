@@ -92,14 +92,19 @@ function claudeCmd(o: StreamOpts): string[] {
     if (o.onSteerReady) args.push('--replay-user-messages');
     if (o.attachments?.length) o._stdinOverride = buildClaudeUserMessage(o.prompt, o.attachments);
   }
-  if (o.thinkingEffort) args.push('--effort', o.thinkingEffort);
+  // "ultra" is a synthetic picker rung (max depth + Workflow orchestration),
+  // never a real --effort value. The effort-write paths decompose it upstream;
+  // translate defensively here too so a stray "ultra" can never reach — and
+  // break — the CLI, and so it never suppresses the Workflow tool below.
+  const ultraEffort = o.thinkingEffort === 'ultra';
+  if (o.thinkingEffort) args.push('--effort', ultraEffort ? 'max' : o.thinkingEffort);
   // Multi-agent Workflow gate. The Workflow tool is always present in the
   // toolset and triggers on a bare "workflow" keyword — combined with the
   // bypassPermissions mode pikiclaw runs by default, that means an offhand
   // mention could auto-spawn a fleet of sub-agents. Unless orchestration is
   // explicitly enabled, drop the tool entirely so it can't fire at all. When
   // enabled, the bot injects a standing opt-in directive via the system prompt.
-  if (!o.claudeWorkflowEnabled) args.push('--disallowed-tools', 'Workflow');
+  if (!o.claudeWorkflowEnabled && !ultraEffort) args.push('--disallowed-tools', 'Workflow');
   if (o.claudeAppendSystemPrompt) args.push('--append-system-prompt', o.claudeAppendSystemPrompt);
   if (o.mcpConfigPath) args.push('--mcp-config', o.mcpConfigPath);
   if (o.claudeExtraArgs?.length) args.push(...o.claudeExtraArgs);
@@ -438,6 +443,29 @@ export function extractClaudeBackgroundTaskId(content: any): string | null {
 }
 
 /**
+ * Pull the workflow runId (`wf_…`) out of a Workflow launch ack. The Workflow
+ * tool returns immediately with `{ runId }` and the orchestration runs in the
+ * background; its later `<task-notification>` may carry only that id (no
+ * `<tool-use-id>`), so mapping runId → tool_use here is what lets
+ * applyClaudeTaskNotification resolve the completion and release the PTY hold.
+ */
+export function extractClaudeWorkflowRunId(content: any): string | null {
+  let text = '';
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    text = content
+      .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+      .map((b: any) => b.text)
+      .join('\n');
+  } else if (content && typeof content === 'object') {
+    try { text = JSON.stringify(content); } catch { return null; }
+  }
+  if (!text) return null;
+  const m = text.match(/\bwf_[a-z0-9][a-z0-9-]{4,}\b/i);
+  return m ? m[0] : null;
+}
+
+/**
  * Parse a `<task-notification>` wrapper out of a user event's content.
  * Shape (observed, Claude Code 2.x):
  *   <task-notification>
@@ -656,6 +684,17 @@ export function claudeParse(ev: any, s: any) {
       if (toolName === 'Bash' && block?.input?.run_in_background === true) {
         registerClaudeBackgroundBashLaunch(s, toolId);
       }
+      // Workflow → multi-agent orchestration. ALWAYS backgrounded: the tool
+      // returns immediately with a runId and the orchestration keeps running
+      // *inside the claude process*, reporting completion via a later
+      // `<task-notification>` — the same in-process lifecycle as a
+      // run_in_background Task. Register it so decideClaudeTuiStop holds the PTY
+      // open instead of SIGTERMing the in-flight workflow when the launch
+      // segment's Stop fires (the「ultra 下 workflow 离线跑、TUI 误判结束退出把
+      // workflow 打断」failure — the workflow analogue of the bg-Bash fix above).
+      if (toolName === 'Workflow') {
+        registerClaudeBackgroundAgentLaunch(s, toolId);
+      }
       const tool = {
         name: toolName,
         summary: summarizeClaudeToolUse(block?.name, block?.input || {}),
@@ -741,6 +780,14 @@ export function claudeParse(ev: any, s: any) {
           && !s.bgAgentCompletedToolUseIds?.has(toolId)) {
         const taskId = extractClaudeBackgroundTaskId(block?.content);
         if (taskId && !s.bgTaskIdToToolUse.has(taskId)) s.bgTaskIdToToolUse.set(taskId, toolId);
+      }
+      // Workflow launch ack carries the runId (wf_…). Map it → tool_use so a
+      // later <task-notification> that identifies the workflow only by task id
+      // (no <tool-use-id>) still resolves and decrements the pending count.
+      if (tool?.name === 'Workflow' && s.bgAgentLaunchedToolUseIds?.has(toolId)
+          && !s.bgAgentCompletedToolUseIds?.has(toolId)) {
+        const runId = extractClaudeWorkflowRunId(block?.content);
+        if (runId && !s.bgTaskIdToToolUse.has(runId)) s.bgTaskIdToToolUse.set(runId, toolId);
       }
       pushRecentActivity(s.recentActivity, summarizeClaudeToolResult(tool, block, ev.tool_use_result));
       // MCP / Skill tool_result with multimodal content — recurse for image

@@ -21,7 +21,7 @@ import { api } from '../../api';
 import { createT, type Locale } from '../../i18n';
 import { useStore } from '../../store';
 import type { Agent, AgentRuntimeStatus, AgentStatusResponse, ModelInfo } from '../../types';
-import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, getAgentMeta } from '../../utils';
+import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, foldUltraEffort, getAgentMeta } from '../../utils';
 import { BrandIcon } from '../../components/BrandIcon';
 import { Badge, Button, Input, Label, Modal, ModalHeader, ModelSelect, Select, Spinner } from '../../components/ui';
 import { SectionCard } from '../shared';
@@ -439,14 +439,16 @@ interface ConfigDraft {
   modelId: string;
   /** Active Profile id when kind='profile'; null when kind='native'. */
   profileId: string | null;
-  /** Agent-level effort override. Stored in runtime config regardless of kind. */
+  /**
+   * Agent-level effort override (stored in runtime config regardless of kind).
+   * Carries the synthetic `ultra` rung too — selecting it folds in multi-agent
+   * Workflow orchestration; the backend decomposes it into (max, workflow=on).
+   */
   effort: string;
-  /** Multi-agent Workflow orchestration toggle. Agent-level, kind-independent. */
-  workflow: boolean;
 }
 
 function makeInitialDraft(
-  _agentId: Agent,
+  agentId: Agent,
   agentStatus: AgentRuntimeStatus | null,
   boundInfo: BoundProfileInfo | null,
 ): ConfigDraft {
@@ -455,8 +457,8 @@ function makeInitialDraft(
       kind: 'profile',
       modelId: boundInfo.modelId,
       profileId: boundInfo.profileId,
-      effort: boundInfo.effort || '',
-      workflow: !!agentStatus?.workflowEnabled,
+      // Fold orchestration into the synthetic `ultra` rung for display.
+      effort: foldUltraEffort(agentId, boundInfo.effort, agentStatus?.workflowEnabled),
     };
   }
   const native = agentStatus?.nativeConfig || null;
@@ -464,8 +466,7 @@ function makeInitialDraft(
     kind: 'native',
     modelId: native?.model || agentStatus?.selectedModel || '',
     profileId: null,
-    effort: native?.effort || agentStatus?.selectedEffort || '',
-    workflow: !!agentStatus?.workflowEnabled,
+    effort: foldUltraEffort(agentId, native?.effort || agentStatus?.selectedEffort, agentStatus?.workflowEnabled),
   };
 }
 
@@ -473,8 +474,7 @@ function draftEqual(a: ConfigDraft, b: ConfigDraft): boolean {
   return a.kind === b.kind
     && (a.profileId || '') === (b.profileId || '')
     && a.modelId.trim() === b.modelId.trim()
-    && (a.effort || '') === (b.effort || '')
-    && a.workflow === b.workflow;
+    && (a.effort || '') === (b.effort || '');
 }
 
 /** Encode/decode the unified selection on the wire used by ModelSelect.
@@ -626,6 +626,9 @@ function AgentInlineConfig({
     setError(null);
     setSubmitting(true);
     try {
+      // `targetEffort` may be the synthetic `ultra` rung — the backend
+      // decomposes it into (max, workflow=on) and a concrete rung clears
+      // orchestration, so effort is the single knob (no separate workflow PATCH).
       const targetEffort = draft.effort || null;
 
       if (draft.kind === 'native') {
@@ -636,8 +639,11 @@ function AgentInlineConfig({
         if (!externalNative) {
           const patch: Record<string, unknown> = { agent: agentId };
           const targetModel = draft.modelId.trim();
+          // Compare against the *displayed* current effort (ultra-folded) so an
+          // unchanged Ultra selection doesn't look dirty against the raw "max".
+          const currentEffort = foldUltraEffort(agentId, agentStatus.nativeSelectedEffort, agentStatus.workflowEnabled) || null;
           if (targetModel && targetModel !== (agentStatus.nativeSelectedModel || '')) patch.model = targetModel;
-          if (targetEffort !== (agentStatus.nativeSelectedEffort || null)) patch.effort = targetEffort;
+          if (targetEffort !== currentEffort) patch.effort = targetEffort;
           if (Object.keys(patch).length > 1) {
             const res = await api.updateRuntimeAgent(patch);
             if (!res.ok) throw new Error(res.error || 'Failed to update agent');
@@ -648,18 +654,11 @@ function AgentInlineConfig({
         await layer.setActiveProfile(agentId, draft.profileId);
         // Effort is an agent-level override; we keep it in runtime config
         // rather than mutating the shared Profile entry from here.
-        if (targetEffort !== (agentStatus.selectedEffort || null)) {
+        const currentEffort = foldUltraEffort(agentId, agentStatus.selectedEffort, agentStatus.workflowEnabled) || null;
+        if (targetEffort !== currentEffort) {
           const res = await api.updateRuntimeAgent({ agent: agentId, effort: targetEffort });
           if (!res.ok) throw new Error(res.error || 'Failed to update agent');
         }
-      }
-
-      // Workflow orchestration is an agent-level toggle, orthogonal to the
-      // model/effort/provider binding above — sync it independently when it
-      // diverges from the saved state and the driver supports it.
-      if (agentStatus.capabilities?.workflow && draft.workflow !== !!agentStatus.workflowEnabled) {
-        const res = await api.updateRuntimeAgent({ agent: agentId, workflow: draft.workflow });
-        if (!res.ok) throw new Error(res.error || 'Failed to update agent');
       }
 
       await Promise.resolve(onSaved());
@@ -718,22 +717,12 @@ function AgentInlineConfig({
         </div>
       </div>
 
-      {/* Workflow orchestration — orthogonal toggle, only for drivers that
-          advertise the capability (claude). Default OFF; enabling lets the
-          agent fan out multi-agent Workflows on large tasks. */}
-      {agentStatus.capabilities?.workflow && (
-        <div>
-          <Label className="!mb-1 text-[11px]">{copy.rowWorkflow}</Label>
-          <Select
-            value={draft.workflow ? 'on' : 'off'}
-            options={[
-              { value: 'off', label: copy.workflowOff },
-              { value: 'on', label: copy.workflowOn },
-            ]}
-            onChange={v => setDraft(d => ({ ...d, workflow: v === 'on' }))}
-          />
-          <div className="mt-1 text-[11px] leading-relaxed text-fg-5">{copy.workflowHint}</div>
-        </div>
+      {/* Multi-agent Workflow orchestration is no longer a separate toggle — it
+          folded into the effort picker as the top "Ultra" rung (max depth +
+          orchestration). Surface the explanation when Ultra is the active pick
+          so the capability stays discoverable. */}
+      {agentStatus.capabilities?.workflow && draft.effort === 'ultra' && (
+        <div className="text-[11px] leading-relaxed text-fg-5">{copy.workflowHint}</div>
       )}
 
       {/* External-native (Hermes) hint when native is selected. */}
@@ -786,7 +775,9 @@ function buildRowSummary(
       providerBrand: boundInfo.providerBrand,
       providerLabel: boundInfo.providerName,
       modelText: boundInfo.modelId || copy.rowSummaryNoModel,
-      effortText: boundInfo.effort || copy.rowSummaryNoEffort,
+      // workflowEnabled is only ever set for the workflow-capable driver
+      // (claude), so folding to "ultra" here needs no agent-id check.
+      effortText: agent.workflowEnabled ? 'ultra' : (boundInfo.effort || copy.rowSummaryNoEffort),
     };
   }
   const native = agent.nativeConfig || null;
@@ -795,7 +786,9 @@ function buildRowSummary(
     providerBrand: brandIdForNativeSlug(nativeSlug),
     providerLabel: copy.rowSummaryNative,
     modelText: agent.nativeSelectedModel || native?.model || agent.selectedModel || copy.rowSummaryNoModel,
-    effortText: agent.nativeSelectedEffort || native?.effort || agent.selectedEffort || copy.rowSummaryNoEffort,
+    effortText: agent.workflowEnabled
+      ? 'ultra'
+      : (agent.nativeSelectedEffort || native?.effort || agent.selectedEffort || copy.rowSummaryNoEffort),
   };
 }
 
@@ -870,15 +863,9 @@ function AgentRow({
               <span className="text-fg-6" aria-hidden="true">·</span>
               <span className="font-mono text-fg-3">{summary.modelText}</span>
               <span className="text-fg-6" aria-hidden="true">·</span>
+              {/* Orchestration state is conveyed by the effort summary itself —
+                  it reads "ultra" when Workflow is on (see getSummary). */}
               <span>{summary.effortText}</span>
-              {agent.capabilities?.workflow && (
-                <>
-                  <span className="text-fg-6" aria-hidden="true">·</span>
-                  {agent.workflowEnabled
-                    ? <Badge variant="accent">{copy.rowWorkflowChipOn}</Badge>
-                    : <span className="text-fg-5">{copy.rowWorkflowChipOff}</span>}
-                </>
-              )}
             </div>
           ) : tagline ? (
             <div className="mt-0.5 truncate text-[11px] text-fg-5">{tagline}</div>

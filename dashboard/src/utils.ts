@@ -128,7 +128,13 @@ export function getAgentMeta(agent: string): AgentMeta {
 }
 
 export const EFFORT_OPTIONS: Record<Agent, string[]> = {
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  // "ultra" is the top rung: max reasoning depth + multi-agent Workflow
+  // orchestration, the same bundle as Claude's native `ultracode`. It is not a
+  // real --effort value — the backend decomposes it into (max, workflow=on) on
+  // every write path (decomposeEffortSelection), and picking any concrete rung
+  // turns orchestration back off. This is the single knob; there is no separate
+  // workflow toggle.
+  claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   codex: ['low', 'medium', 'high', 'xhigh'],
   gemini: ['low', 'high'],
   // The Hermes driver forwards the chosen value via ACP `session/set_mode`;
@@ -136,6 +142,21 @@ export const EFFORT_OPTIONS: Record<Agent, string[]> = {
   // surface the standard knob so users can change it from any picker.
   hermes: ['low', 'medium', 'high', 'xhigh'],
 };
+
+/**
+ * Effort value to *display* as the current pick. Workflow is orthogonal under
+ * the hood, but the UI folds "orchestration on" into the synthetic `ultra`
+ * rung (claude only), mirroring the backend's decomposeEffortSelection. Pass
+ * the raw stored effort + the agent's workflow flag.
+ */
+export function foldUltraEffort(
+  agentId: string,
+  effort: string | null | undefined,
+  workflowEnabled: boolean | null | undefined,
+): string {
+  if (agentId === 'claude' && workflowEnabled) return 'ultra';
+  return effort || '';
+}
 
 /**
  * Shorten a model ID for compact display.

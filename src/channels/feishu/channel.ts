@@ -392,7 +392,7 @@ class FeishuChannel extends Channel {
         url: '/open-apis/bot/v3/info',
         data: {},
       });
-      this._log(`[connect] bot info resp: ${JSON.stringify(resp)}`, 'info');
+      this._debug(`[connect] bot info resp: ${JSON.stringify(resp)}`);
       const info = (resp as any)?.bot;
       this.bot = {
         id: info?.open_id || this.appId,
@@ -501,10 +501,10 @@ class FeishuChannel extends Channel {
   }
 
   private async _handleMessageEvent(event: any) {
-    this._log(`[recv] raw event received: ${JSON.stringify(event)}`, 'info');
+    this._debug(`[recv] raw event received: ${JSON.stringify(event)}`);
     const msg = event?.message;
     if (!msg) {
-      this._log(`[recv] event has no message object`, 'warn');
+      this._debug(`[recv] event has no message object`);
       return;
     }
 
@@ -544,9 +544,9 @@ class FeishuChannel extends Channel {
 
     // Group: require @mention
     if (chatType === 'group') {
-      this._log(`[recv] group check mention: bot=${JSON.stringify(this.bot)}, mentions=${JSON.stringify(msg.mentions)}`, 'info');
+      this._debug(`[recv] group check mention: bot=${JSON.stringify(this.bot)}, mentions=${JSON.stringify(msg.mentions)}`);
       if (!this._isBotMentioned(msg)) {
-        this._log(`[recv] skipped: not mentioned in group ${chatId}`, 'info');
+        this._debug(`[recv] skipped: not mentioned in group ${chatId}`);
         return;
       }
     }

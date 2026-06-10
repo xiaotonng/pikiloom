@@ -140,11 +140,10 @@ export class TelegramBot extends Bot {
     if (config.telegramAllowedChatIds) {
       for (const id of parseAllowedChatIds(config.telegramAllowedChatIds)) this.allowedChatIds.add(id);
     }
-    // Restore chats persisted across restarts so sendStartupNotice can greet
-    // them even when the env-based hand-off was lost (crash-style respawn).
-    for (const id of loadKnownChatIds('telegram')) {
-      // Do NOT add to allowedChatIds
-    }
+    // NOTE: persisted known chats are restored into channel.knownChats in run()
+    // (for the startup greeting / per-chat menu) — deliberately NOT into
+    // allowedChatIds. allowedChatIds is the explicit allowlist; folding known
+    // chats into it flips _isAllowed() into allowlist-only mode.
     this.token = String(config.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
     if (!this.token) throw new Error('Missing Telegram token. Configure via dashboard or set TELEGRAM_BOT_TOKEN');
   }
@@ -163,9 +162,8 @@ export class TelegramBot extends Bot {
 
     const mergedAllowed = parseAllowedChatIds(process.env.PIKICLAW_ALLOWED_IDS || '');
     for (const id of parseAllowedChatIds(String(config.telegramAllowedChatIds || ''))) mergedAllowed.add(id);
-    for (const id of loadKnownChatIds('telegram')) {
-      for (const parsed of parseAllowedChatIds(id)) mergedAllowed.add(parsed);
-    }
+    // Known chats are NOT merged here — doing so would re-pollute the allowlist on
+    // every config reload. They live in channel.knownChats (restored in run()).
     this.allowedChatIds = mergedAllowed;
   }
 
@@ -224,8 +222,10 @@ export class TelegramBot extends Bot {
   }
 
   private buildRestartEnv(): Record<string, string> {
-    const knownChats = this.channel.knownChats instanceof Set ? this.channel.knownChats : new Set<number>();
-    return buildKnownChatEnv(this.allowedChatIds, knownChats, 'TELEGRAM_ALLOWED_CHAT_IDS');
+    // Hand off only the explicit allowlist. Known chats persist to setting.json
+    // and are restored via loadKnownChatIds, so they must NOT ride along in the
+    // allowlist env — that would re-pollute allowedChatIds on the next boot.
+    return buildKnownChatEnv(this.allowedChatIds, [], 'TELEGRAM_ALLOWED_CHAT_IDS');
   }
 
   private beginShutdown(sig: ShutdownSignal) {
@@ -1323,8 +1323,15 @@ export class TelegramBot extends Bot {
 
       this.channel.skipPendingUpdatesOnNextListen();
 
-      // Seed knownChats so setupMenu applies per-chat commands
+      // Seed knownChats so setupMenu applies per-chat commands and the startup
+      // greeting can reach them: the explicit allowlist + persisted known chats
+      // (restored here instead of via allowedChatIds, which stays explicit-only).
       for (const cid of this.allowedChatIds) if (typeof cid === 'number') this.channel.knownChats.add(cid);
+      for (const id of loadKnownChatIds('telegram')) {
+        for (const parsed of parseAllowedChatIds(id)) {
+          if (typeof parsed === 'number') this.channel.knownChats.add(parsed);
+        }
+      }
 
       for (const ag of this.fetchAgents().agents) {
         this.log(`agent ${ag.agent}: ${ag.path || 'NOT FOUND'}`);

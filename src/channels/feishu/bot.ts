@@ -189,13 +189,11 @@ export class FeishuBot extends Bot {
     if (process.env.FEISHU_ALLOWED_CHAT_IDS) {
       for (const id of parseAllowedChatIds(process.env.FEISHU_ALLOWED_CHAT_IDS)) this.allowedChatIds.add(id);
     }
-    // Restore chats persisted across restarts so sendStartupNotice can greet
-    // them even when the env-based hand-off was lost (crash-style respawn).
-    for (const id of loadKnownChatIds('feishu')) {
-      // Do NOT add to allowedChatIds, as that would lock out new chats
-      // if the user didn't explicitly configure an allowlist.
-      // The channel will load these into its own knownChats later.
-    }
+    // NOTE: persisted known chats are restored into channel.knownChats in run()
+    // (for the startup greeting / per-chat menu) — deliberately NOT into
+    // allowedChatIds. allowedChatIds is the explicit allowlist; folding known
+    // chats into it flips _isAllowed() from allow-all into allowlist-only and
+    // silently drops every new chat.
 
     this.appId = String(config.feishuAppId || process.env.FEISHU_APP_ID || '').trim();
     this.appSecret = String(config.feishuAppSecret || process.env.FEISHU_APP_SECRET || '').trim();
@@ -280,7 +278,11 @@ export class FeishuBot extends Bot {
   }
 
   private buildRestartEnv(): Record<string, string> {
-    return buildKnownChatEnv(this.allowedChatIds, this.channel.knownChats, 'FEISHU_ALLOWED_CHAT_IDS');
+    // Hand off only the explicit allowlist. Known chats persist to setting.json
+    // (recordKnownChatId) and are restored via loadKnownChatIds, so they must NOT
+    // ride along in the allowlist env — that would re-pollute allowedChatIds on
+    // the next boot and lock out new chats.
+    return buildKnownChatEnv(this.allowedChatIds, [], 'FEISHU_ALLOWED_CHAT_IDS');
   }
 
   // ---- session tracking -----------------------------------------------------
@@ -1290,6 +1292,9 @@ export class FeishuBot extends Bot {
         ? this.allowedChatIds as Set<string>
         : undefined,
     });
+    // Restore persisted known chats into the channel so the startup greeting and
+    // per-chat menu can address them — without polluting the allowlist.
+    for (const id of loadKnownChatIds('feishu')) this.channel.knownChats.add(id);
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'feishu',

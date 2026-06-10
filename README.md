@@ -334,6 +334,12 @@ Every layer of this project was designed from the ground up to be **extended**. 
 
 ---
 
+## Community & Contact
+
+Questions, feedback, or want to compare notes on agent orchestration? Add me on WeChat: **18317014390** (please note `pikiclaw` when you reach out).
+
+---
+
 ## Star History
 
 <a href="https://www.star-history.com/#xiaotonng/pikiclaw&Date">

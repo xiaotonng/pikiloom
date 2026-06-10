@@ -333,6 +333,12 @@ npx pikiclaw@latest --doctor      # 检测本机环境健康度
 
 ---
 
+## 交流与联系
+
+有任何问题、建议，或想一起聊聊 Agent 编排，欢迎加作者微信：**18317014390**（添加时请备注 `pikiclaw`）。
+
+---
+
 ## Star 历史趋势
 
 <a href="https://www.star-history.com/#xiaotonng/pikiclaw&Date">

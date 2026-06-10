@@ -404,6 +404,37 @@ export function detectClaudeTuiTerminalLimitNotice(msgOrText: any): string | nul
 }
 
 /**
+ * Evidence-based arbitration for a detected limit notice. The banner text is
+ * deliberately matched broadly (wording shifts across CLI versions and some
+ * notices are informational — "You're now using usage credits · Your session
+ * limit resets 3pm" means the turn CONTINUES on extra-usage credits), so a
+ * match alone must never fail the turn. What decides the outcome is whether
+ * the turn produced anything substantive after the banner:
+ *
+ *  - 'info'  — assistant text exists, or a substantive signal (non-synthetic
+ *              assistant JSONL, hook tool event, sub-agent sidecar) postdates
+ *              the notice. The turn is alive; the notice is informational.
+ *  - 'fatal' — nothing substantive after the banner. The limit genuinely ate
+ *              the turn; surface the banner text as a rate_limit failure.
+ *  - 'none'  — no notice was seen.
+ *
+ * Worst case of the broad matching is therefore an activity line, not a
+ * killed turn (the bug this replaced: the credits banner used to SIGTERM the
+ * process mid-answer).
+ */
+export function resolveClaudeTuiLimitOutcome(input: {
+  noticeText: string | null;
+  noticeAt: number;
+  /** Freshest substantive signal: non-synthetic assistant JSONL event, hook tool event, sub-agent sidecar event. */
+  lastSubstantiveEventAt: number;
+  hasOutputText: boolean;
+}): 'none' | 'info' | 'fatal' {
+  if (!input.noticeText) return 'none';
+  if (input.hasOutputText || input.lastSubstantiveEventAt > input.noticeAt) return 'info';
+  return 'fatal';
+}
+
+/**
  * Detect Claude Code's startup "Bypass Permissions mode" confirmation dialog in
  * a slice of (ANSI-stripped) PTY screen output. When pikiclaw spawns the TUI
  * with `--permission-mode bypassPermissions` (the default) on a machine that
@@ -1131,6 +1162,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let exitCode: number | null = null;
   let exitSignal: number | null = null;
   let terminalLimitNotice: string | null = null;
+  let terminalLimitNoticeAt = 0;
   let proc: PtyProcess;
 
   const emit = () => {
@@ -1144,14 +1176,19 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     }, after);
   };
 
-  const markTerminalLimitNotice = (notice: string): void => {
+  // Record-only: a limit banner is EVIDENCE, not a verdict. Some banners are
+  // informational (extra-usage credits kick in and the turn continues), so
+  // killing here would shoot healthy turns. resolveClaudeTuiLimitOutcome
+  // arbitrates later — at the stall watchdog and at result assembly — based
+  // on whether the turn produced anything substantive after the banner.
+  const noteTerminalLimitNotice = (notice: string): void => {
     if (terminalLimitNotice) return;
     terminalLimitNotice = notice;
-    s.stopReason = 'rate_limit';
-    s.errors = [notice];
-    agentWarn(`[claude-tui] terminal limit notice detected: ${notice}`);
+    terminalLimitNoticeAt = Date.now();
+    agentWarn(`[claude-tui] limit notice observed (watching turn liveness): ${notice}`);
+    pushRecentActivity(s.recentActivity, `Claude usage notice: ${notice}`);
+    s.activity = s.recentActivity.join('\n');
     emit();
-    if (!processExited) killProc('SIGTERM', 1500);
   };
 
   // Simulated streaming. See TuiStreamBuffer / applyAssistantStreaming above.
@@ -1358,7 +1395,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       stderrCapture += stripAnsiEscapes(data);
       if (stderrCapture.length > 4096) stderrCapture = stderrCapture.slice(0, 4096);
       const notice = detectClaudeTuiTerminalLimitNotice(stderrCapture);
-      if (notice) markTerminalLimitNotice(notice);
+      if (notice) noteTerminalLimitNotice(notice);
     }
   });
 
@@ -1408,6 +1445,11 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // decideClaudeTuiStall for why this exists (claude CLI mid-turn freeze).
   let lastToolEventAt = start;
   let lastSidecarEventAt = 0;
+  // Last non-synthetic assistant JSONL event — substantive-progress signal
+  // for the limit-notice arbitration (resolveClaudeTuiLimitOutcome). Distinct
+  // from lastMainJsonlEventAt, which also counts bookkeeping lines (mode,
+  // last-prompt, …) that land right after submit and prove nothing.
+  let lastAssistantEventAt = 0;
   let stallKilled = false;
   // Stall diagnostics (capture-only) — see writeStallDiag.
   let observedClaudeVersion = '';
@@ -1593,13 +1635,14 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         if (!isSubAgentEvent && ev.type === 'assistant') {
           const notice = detectClaudeTuiTerminalLimitNotice(ev.message);
           if (notice) {
-            markTerminalLimitNotice(notice);
+            noteTerminalLimitNotice(notice);
             touched = true;
             continue;
           }
           applyAssistantStreaming(s, ev.message, streamBuf);
           applyAssistantUsage(s, ev.message);
           if (ev.message?.model && ev.message.model !== '<synthetic>' && typeof ev.message.model === 'string') {
+            lastAssistantEventAt = Date.now();
             s.model = ev.message.model;
             applyModelContextWindow(s);
           }
@@ -1791,15 +1834,33 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           screenSample: stallScreen.sample,
         });
         if (!s.errors) {
-          // Be honest about which kind of stall this is. looksLikePrompt here
-          // means the auto-answer (detectClaudeProceedPrompt) did NOT clear an
-          // interactive prompt — so it's a blocking dialog, not the CLI freeze.
-          s.errors = [stallScreen.looksLikePrompt
-            ? `Claude blocked mid-turn on an interactive prompt (PTY quiet ${ptyQuietS}s) that auto-answer couldn't clear. Terminated for auto-resume.`
-            : `Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
+          // Limit-notice arbitration first: a turn that showed a limit banner
+          // and then produced nothing substantive didn't freeze — the limit
+          // ate it. Label it rate_limit with the banner's own text (which
+          // carries the reset time) so the user gets the real reason, and so
+          // doClaudeWithRetry doesn't auto-resume into the same wall.
+          const limitOutcome = resolveClaudeTuiLimitOutcome({
+            noticeText: terminalLimitNotice,
+            noticeAt: terminalLimitNoticeAt,
+            lastSubstantiveEventAt: Math.max(lastAssistantEventAt, lastToolEventAt, lastSidecarEventAt),
+            hasOutputText: !!s.text.trim(),
+          });
+          if (limitOutcome === 'fatal') {
+            s.stopReason = 'rate_limit';
+            s.errors = [terminalLimitNotice!];
+          } else {
+            // Be honest about which kind of stall this is. looksLikePrompt here
+            // means the auto-answer (detectClaudeProceedPrompt) did NOT clear an
+            // interactive prompt — so it's a blocking dialog, not the CLI freeze.
+            s.errors = [stallScreen.looksLikePrompt
+              ? `Claude blocked mid-turn on an interactive prompt (PTY quiet ${ptyQuietS}s) that auto-answer couldn't clear. Terminated for auto-resume.`
+              : `Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
+          }
         }
-        agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}, ptyQuiet=${ptyQuietS}s) — terminating TUI pid=${proc.pid} for auto-resume`);
-        pushRecentActivity(s.recentActivity, `Agent stalled (${quietMin}m silent) — restarting turn`);
+        agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}, ptyQuiet=${ptyQuietS}s) — terminating TUI pid=${proc.pid}${s.stopReason === 'rate_limit' ? ' (usage limit)' : ' for auto-resume'}`);
+        pushRecentActivity(s.recentActivity, s.stopReason === 'rate_limit'
+          ? 'Usage limit blocked the turn — stopping'
+          : `Agent stalled (${quietMin}m silent) — restarting turn`);
         s.activity = s.recentActivity.join('\n');
         emit();
         killProc('SIGTERM');
@@ -1842,13 +1903,14 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       if (!isSubAgentEvent && ev.type === 'assistant') {
         const notice = detectClaudeTuiTerminalLimitNotice(ev.message);
         if (notice) {
-          markTerminalLimitNotice(notice);
+          noteTerminalLimitNotice(notice);
           touched = true;
           continue;
         }
         applyAssistantStreaming(s, ev.message, streamBuf);
         applyAssistantUsage(s, ev.message);
         if (ev.message?.model && ev.message.model !== '<synthetic>' && typeof ev.message.model === 'string') {
+          lastAssistantEventAt = Date.now();
           s.model = ev.message.model;
           applyModelContextWindow(s);
         }
@@ -1895,6 +1957,23 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     s.stopReason = 'api_error';
     s.text = '';
     if (!s.errors) s.errors = [`Anthropic API error: ${apiErrorReason}`];
+  }
+  // Limit-notice arbitration (see resolveClaudeTuiLimitOutcome). Covers the
+  // paths the stall watchdog never reaches: the TUI painted a limit banner,
+  // then Stop fired on an empty turn or the process exited — nothing
+  // substantive ever followed the banner, so the limit ate the turn. A banner
+  // followed by real output stays informational (already in the activity log).
+  if (!interrupted && !timedOut && !s.errors) {
+    const limitOutcome = resolveClaudeTuiLimitOutcome({
+      noticeText: terminalLimitNotice,
+      noticeAt: terminalLimitNoticeAt,
+      lastSubstantiveEventAt: Math.max(lastAssistantEventAt, lastToolEventAt, lastSidecarEventAt),
+      hasOutputText: !!s.text.trim(),
+    });
+    if (limitOutcome === 'fatal') {
+      s.stopReason = 'rate_limit';
+      s.errors = [terminalLimitNotice!];
+    }
   }
   const errorText = joinErrorMessages(s.errors);
   // "ok" requires: process exited cleanly (or via our own SIGTERM after Stop

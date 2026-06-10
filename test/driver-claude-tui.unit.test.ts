@@ -185,9 +185,44 @@ describe('Claude TUI driver — terminal limit notices', () => {
       content: [{ type: 'text', text: "You've hit your session limit · resets 9:40pm (Asia/Shanghai)" }],
     });
     expect(notice).toContain("You've hit your session limit");
+    // The extra-usage-credits banner is informational (the turn continues!)
+    // but still matches — detection is deliberately broad; the arbitration
+    // below is what keeps it from failing the turn.
+    expect(detectClaudeTuiTerminalLimitNotice(
+      "You're now using usage credits · Your session limit resets 3pm(Asia/Shanghai)",
+    )).toContain('usage credits');
     // Screen-only limit text vs. ordinary prose about rate limits.
     expect(detectClaudeTuiTerminalLimitNotice('Usage limit reached. Please try again later.')).toContain('Usage limit reached');
     expect(detectClaudeTuiTerminalLimitNotice('Please explain how rate limit handling works in this codebase.')).toBeNull();
+  });
+
+  it('arbitrates a notice by turn liveness: output or post-notice activity → info, dead turn → fatal', async () => {
+    const { resolveClaudeTuiLimitOutcome } = await import('../src/agent/drivers/claude-tui.ts');
+    const noticeAt = 1_000_000;
+    const banner = "You're now using usage credits · Your session limit resets 3pm(Asia/Shanghai)";
+
+    // No notice seen → nothing to arbitrate.
+    expect(resolveClaudeTuiLimitOutcome({
+      noticeText: null, noticeAt: 0, lastSubstantiveEventAt: 0, hasOutputText: false,
+    })).toBe('none');
+
+    // Credits banner + the reply landed → informational, turn must NOT fail.
+    // (The regression this guards: the banner used to SIGTERM the process
+    // mid-answer and paint the dashboard red.)
+    expect(resolveClaudeTuiLimitOutcome({
+      noticeText: banner, noticeAt, lastSubstantiveEventAt: 0, hasOutputText: true,
+    })).toBe('info');
+
+    // Banner + no text yet, but tools/sub-agents kept running after it → alive.
+    expect(resolveClaudeTuiLimitOutcome({
+      noticeText: banner, noticeAt, lastSubstantiveEventAt: noticeAt + 5_000, hasOutputText: false,
+    })).toBe('info');
+
+    // Banner + nothing substantive ever followed → the limit ate the turn.
+    expect(resolveClaudeTuiLimitOutcome({
+      noticeText: "You've hit your session limit · resets 9:40pm (Asia/Shanghai)",
+      noticeAt, lastSubstantiveEventAt: noticeAt - 60_000, hasOutputText: false,
+    })).toBe('fatal');
   });
 });
 

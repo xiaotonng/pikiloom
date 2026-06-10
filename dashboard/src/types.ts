@@ -377,6 +377,26 @@ export interface WorkspaceEntry {
   name: string;
 }
 
+export interface GitStatus {
+  branch: string | null;
+  detached: boolean;
+  shortSha: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  changed: number;
+}
+
+export interface WorkspaceGitResult {
+  ok: boolean;
+  isGit: boolean;
+  git: GitStatus | null;
+  error?: string;
+}
+
 export interface SessionHubResult {
   ok: boolean;
   workdir: string;

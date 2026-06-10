@@ -9,6 +9,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { loadUserConfig, saveUserConfig, applyUserConfig, hasUserConfigFile } from '../../core/config/user-config.js';
 import { expandTilde } from '../../core/platform.js';
+import { readGitStatus } from '../../core/git.js';
 import { isSetupReady } from '../../cli/onboarding.js';
 import {
   validateDingtalkConfig,
@@ -491,6 +492,15 @@ app.get('/api/git-changes', (c) => {
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
   }
+});
+
+// Git status summary for a workspace: branch, ahead/behind, dirty count.
+// Backed by the same readGitStatus helper that feeds the IM /status command.
+app.get('/api/workspace-git', (c) => {
+  const dir = c.req.query('path');
+  if (!dir) return c.json({ ok: false, error: 'path is required' }, 400);
+  const git = readGitStatus(dir);
+  return c.json({ ok: true, isGit: git !== null, git });
 });
 
 // Open file/directory in a selected editor or file browser

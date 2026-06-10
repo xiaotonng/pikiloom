@@ -15,7 +15,7 @@ import type {
   CommandSelectionView,
 } from '../../bot/command-ui.js';
 import { encodeCommandAction } from '../../bot/command-ui.js';
-import { fmtUptime, fmtTokens, fmtBytes } from '../../bot/bot.js';
+import { fmtUptime, fmtTokens, fmtBytes, formatGitStatusLine } from '../../bot/bot.js';
 import type { StartData, SessionsPageData, AgentsListData, ModelsListData, SkillsListData, StatusData, HostData, WorkspacesData } from '../../bot/commands.js';
 import { summarizePromptForStatus } from '../../bot/commands.js';
 import type { LivePreviewRenderer } from '../telegram/live-preview.js';
@@ -529,6 +529,7 @@ export function renderSkillsCard(d: SkillsListData): FeishuCardView {
 }
 
 export function renderStatus(d: StatusData): string {
+  const gitLine = formatGitStatusLine(d.git);
   const lines = [
     `**pikiclaw** v${d.version}`,
     '',
@@ -536,6 +537,7 @@ export function renderStatus(d: StatusData): string {
     `**Memory:** ${(d.memRss / 1024 / 1024).toFixed(0)}MB RSS / ${(d.memHeap / 1024 / 1024).toFixed(0)}MB heap`,
     `**PID:** ${d.pid}`,
     `**Workdir:** \`${d.workdir}\``,
+    ...(gitLine ? [`**Git:** ${gitLine}`] : []),
     '',
     `**Agent:** ${d.agent}`,
     `**Model:** ${d.model}`,

@@ -25,6 +25,7 @@ import type {
   SessionTailMessage,
   SessionsPageResult,
   WorkspaceEntry,
+  WorkspaceGitResult,
   WeixinLoginStartResult,
   WeixinLoginWaitResult,
   WeixinValidationResult,
@@ -325,6 +326,8 @@ export const api = {
   getWorkspaces: () => json<{ ok: boolean; workspaces: WorkspaceEntry[] }>('/api/workspaces'),
   getWorkspaceSessions: (workdir: string, opts?: ApiRequestOptions) =>
     post<SessionHubResult>('/api/session-hub/sessions', { workdir }, opts),
+  getWorkspaceGit: (workdir: string, opts?: ApiRequestOptions) =>
+    json<WorkspaceGitResult>(`/api/workspace-git?path=${encodeURIComponent(workdir)}`, { timeoutMs: 6_000, ...opts }),
   getSessionMessages: (
     workdir: string,
     agent: string,

@@ -408,3 +408,14 @@ export const GEMINI_USAGE_TIMEOUTS = {
 
 /** Default interval for the user config file sync poll. */
 export const USER_CONFIG_SYNC_DEFAULT_INTERVAL_MS = 1_000;
+
+// ---------------------------------------------------------------------------
+// Git status
+// ---------------------------------------------------------------------------
+
+/**
+ * Upper bound for a single `git status` invocation. Bounded so a huge repo or a
+ * stuck `.git/index.lock` can never block `/status` or a workspace poll. Matches
+ * the timeout used by the existing `/api/git-changes` endpoint.
+ */
+export const GIT_STATUS_TIMEOUT_MS = 5_000;

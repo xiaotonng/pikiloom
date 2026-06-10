@@ -25,6 +25,7 @@ import { summarizePromptForStatus } from './streaming.js';
 import { getSessionStatusForChat } from './session-status.js';
 import { loadWorkspaces } from '../core/config/user-config.js';
 import { VERSION } from '../core/version.js';
+import { readGitStatus, type GitStatus } from '../core/git.js';
 
 // ---------------------------------------------------------------------------
 // Welcome / Start
@@ -631,6 +632,8 @@ export interface StatusData {
   running: { prompt: string; startedAt: number } | null;
   stats: { totalTurns: number; totalInputTokens: number; totalOutputTokens: number; totalCachedTokens: number };
   usage: any;
+  /** Git status of the workdir, or null when it isn't a git repo. */
+  git: GitStatus | null;
 }
 
 export async function getStatusDataAsync(bot: Bot, chatId: ChatId): Promise<StatusData> {
@@ -643,6 +646,7 @@ export async function getStatusDataAsync(bot: Bot, chatId: ChatId): Promise<Stat
     ...d,
     running: d.running ? { prompt: d.running.prompt, startedAt: d.running.startedAt } : null,
     usage,
+    git: readGitStatus(d.workdir),
   };
 }
 

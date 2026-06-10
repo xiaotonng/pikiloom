@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import {
   Bot, type Agent, type SessionRuntime, type StreamResult,
   type ImTaskPresenter, type ImTaskPresenterOpts,
-  fmtTokens, fmtUptime, fmtBytes, buildPrompt,
+  fmtTokens, fmtUptime, fmtBytes, buildPrompt, formatGitStatusLine,
   parseAllowedChatIds,
 } from '../../bot/bot.js';
 import {
@@ -447,12 +447,14 @@ export class TelegramBot extends Bot {
 
   private async cmdStatus(ctx: TgContext) {
     const d = await getStatusDataAsync(this, ctx.chatId);
+    const gitLine = formatGitStatusLine(d.git);
     const lines = [
       `<b>pikiclaw</b> v${d.version}\n`,
       `<b>Uptime:</b> ${fmtUptime(d.uptime)}`,
       `<b>Memory:</b> ${(d.memRss / 1024 / 1024).toFixed(0)}MB RSS / ${(d.memHeap / 1024 / 1024).toFixed(0)}MB heap`,
       `<b>PID:</b> ${d.pid}`,
       `<b>Workdir:</b> <code>${escapeHtml(d.workdir)}</code>`,
+      ...(gitLine ? [`<b>Git:</b> ${escapeHtml(gitLine)}`] : []),
       '',
       `<b>Agent:</b> ${escapeHtml(d.agent)}`,
       `<b>Model:</b> ${escapeHtml(d.model)}`,

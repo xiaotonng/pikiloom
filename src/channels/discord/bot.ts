@@ -14,6 +14,7 @@ import {
   buildPrompt,
   fmtUptime,
   fmtBytes,
+  formatGitStatusLine,
   normalizeAgent,
   parseAllowedChatIds,
   type SessionRuntime,
@@ -186,11 +187,13 @@ export class DiscordBot extends Bot {
 
   private async cmdStatus(ctx: DiscordContext) {
     const d = await getStatusDataAsync(this, ctx.chatId);
+    const gitLine = formatGitStatusLine(d.git);
     const lines = [
       `pikiclaw v${d.version}`,
       `Uptime: ${fmtUptime(d.uptime)}`,
       `PID: ${d.pid} | RSS: ${fmtBytes(d.memRss)} | Heap: ${fmtBytes(d.memHeap)}`,
       `Workdir: ${d.workdir}`,
+      ...(gitLine ? [`Git: ${gitLine}`] : []),
       '',
       `Agent: ${d.agent}`,
       `Model: ${d.model || '-'}`,

@@ -22,8 +22,9 @@ import { createT, type Locale } from '../../i18n';
 import { useStore } from '../../store';
 import type { Agent, AgentRuntimeStatus, AgentStatusResponse, ModelInfo } from '../../types';
 import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, foldUltraEffort, getAgentMeta } from '../../utils';
+import { displayableUsageWindows, usagePercentText, usageTone, usageTooltip, usageWindowTone, worstUsageWindow } from '../../usage';
 import { BrandIcon } from '../../components/BrandIcon';
-import { Badge, Button, Input, Label, Modal, ModalHeader, ModelSelect, Select, Spinner } from '../../components/ui';
+import { Badge, Button, Input, Label, Modal, ModalHeader, ModelSelect, Select, Spinner, Tooltip } from '../../components/ui';
 import { SectionCard } from '../shared';
 import ModelsSection, { useModelLayer, type ModelLayerSnapshot } from '../models/ModelsTab';
 import LocalModelsSection, { useLocalBackends } from '../local-models/LocalModelsSection';
@@ -823,6 +824,18 @@ function AgentRow({
   const tagline = meta.advantageKey ? t(meta.advantageKey) : '';
   const summary = agent.installed ? buildRowSummary(agent, boundInfo, copy) : null;
 
+  // Usage — quiet by default. The inline segments show the first two windows
+  // (drivers order them short-to-long: 5h, 7d) plus the worst window when it
+  // isn't already among them; the badge appears only at warn/err so the badge
+  // row stays calm while quota is healthy. The telemetry fallback emits
+  // status-only windows (null percent) — those drive `usageAlert` but render
+  // no numbers.
+  const usageWindows = agent.installed ? displayableUsageWindows(agent.usage) : [];
+  const worstWindow = worstUsageWindow(agent.usage);
+  const inlineUsage = usageWindows.slice(0, 2);
+  if (worstWindow && !inlineUsage.includes(worstWindow)) inlineUsage.push(worstWindow);
+  const usageAlert = agent.installed ? usageTone(agent.usage) : 'ok';
+
   return (
     <div
       className="glass rounded-md border border-edge px-3.5 py-2.5 shadow-[0_1px_0_rgba(255,255,255,0.02),0_4px_12px_rgba(15,23,42,0.05)]"
@@ -846,6 +859,13 @@ function AgentRow({
             {agent.installed && agent.updateAvailable && (
               <Badge variant="warn">{copy.updateAvailable}</Badge>
             )}
+            {usageAlert !== 'ok' && (
+              <Tooltip content={usageTooltip(agent.usage, t)}>
+                <Badge variant={usageAlert}>
+                  {usageAlert === 'err' ? t('config.limitReached') : t('config.balanceTight')}
+                </Badge>
+              </Tooltip>
+            )}
             {agent.installed && agent.version && (
               <span className="text-[11px] font-mono text-fg-5">v{agent.version}</span>
             )}
@@ -866,6 +886,27 @@ function AgentRow({
               {/* Orchestration state is conveyed by the effort summary itself —
                   it reads "ultra" when Workflow is on (see getSummary). */}
               <span>{summary.effortText}</span>
+              {inlineUsage.length > 0 && (
+                <>
+                  <span className="text-fg-6" aria-hidden="true">·</span>
+                  <Tooltip content={usageTooltip(agent.usage, t)} className="items-center gap-1.5">
+                    {inlineUsage.map(window => {
+                      const tone = usageWindowTone(window);
+                      return (
+                        <span
+                          key={window.label}
+                          className={cn(
+                            'font-mono',
+                            tone === 'err' ? 'text-err' : tone === 'warn' ? 'text-warn' : 'text-fg-3',
+                          )}
+                        >
+                          {window.label} {usagePercentText(window)}
+                        </span>
+                      );
+                    })}
+                  </Tooltip>
+                </>
+              )}
             </div>
           ) : tagline ? (
             <div className="mt-0.5 truncate text-[11px] text-fg-5">{tagline}</div>

@@ -1,9 +1,10 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, getAgentMeta, shortenModel } from '../../utils';
+import { usagePercentText, usageTooltip, usageWindowTone, worstUsageWindow } from '../../usage';
 import { api } from '../../api';
 import { useStore } from '../../store';
-import { Spinner } from '../../components/ui';
+import { Spinner, Tooltip } from '../../components/ui';
 import { BrandIcon } from '../../components/BrandIcon';
 import {
   makeComposerImageAttachment,
@@ -655,6 +656,13 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     ? displayProfile.name
     : shortModel;
 
+  // Usage alert chip — hidden until the effective agent's account is at ≥80%
+  // of a rate-limit window (warn) or fully limited (err). Healthy usage
+  // renders nothing: the composer is a decision point, not a monitoring
+  // surface — the Agents page carries the always-on numbers.
+  const usageAlertWindow = worstUsageWindow(currentAgent?.usage ?? null);
+  const usageAlertTone = usageAlertWindow ? usageWindowTone(usageAlertWindow) : 'ok';
+
   // Plain-text fallback used as the button tooltip when the user hovers.
   const cascadeLabel = [
     displayMeta.shortLabel,
@@ -919,6 +927,19 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                 <polyline points="6 9 12 15 18 9" />
               </svg>
             </button>
+
+            {usageAlertWindow && usageAlertTone !== 'ok' && (
+              <Tooltip
+                content={usageTooltip(currentAgent?.usage ?? null, t)}
+                side="top"
+                className={cn(
+                  'shrink-0 select-none px-1 font-mono text-[10px]',
+                  usageAlertTone === 'err' ? 'text-err/75' : 'text-warn/75',
+                )}
+              >
+                {usageAlertWindow.label} {usagePercentText(usageAlertWindow)}
+              </Tooltip>
+            )}
 
             {/* Cascade dropdown — rendered via portal to escape overflow:hidden */}
             {cascadeStep !== 'closed' && cascadePos && createPortal(

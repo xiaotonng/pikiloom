@@ -17,7 +17,7 @@ import {
   sessionListDisplayText,
   type LiveSessionState,
 } from '../../utils';
-import { Dot, Spinner, Modal, ModalHeader, Button, IconPicker } from '../../components/ui';
+import { Dot, Spinner, Modal, ModalHeader, Button, IconPicker, Tooltip } from '../../components/ui';
 import { BrandIcon } from '../../components/BrandIcon';
 import { DirBrowser } from '../../components/DirBrowser';
 import type { SessionInfo, WorkspaceEntry, DirEntry, OpenTarget, GitStatus } from '../../types';
@@ -1376,11 +1376,14 @@ function NewSessionView({
    Callbacks now take wsPath as a parameter so parent can
    pass stable function refs instead of inline closures.
    ══════════════════════════════════════════════════════ */
-// Compact git badge for a workspace header: branch · ahead/behind · dirty count.
-// Full breakdown is in the title tooltip. Renders nothing for non-git dirs.
+// Git status indicator for a workspace header — a single small branch icon
+// hugging the name. Color is the only always-on signal (amber = dirty tree,
+// sky = clean but diverged from upstream, muted = clean); everything else
+// (branch, upstream, ↑/↓, change breakdown) lives in the hover tooltip. The
+// header is a navigation row — it must not compete with the workspace name.
+// Renders nothing for non-git dirs.
 function GitBadge({ git }: { git: GitStatus | null }) {
   if (!git) return null;
-  const head = git.detached ? (git.shortSha ? `@${git.shortSha}` : 'detached') : git.branch || '?';
   const tip = [
     git.detached ? `detached HEAD${git.shortSha ? ` @ ${git.shortSha}` : ''}` : `branch ${git.branch ?? '?'}`,
     git.upstream ? `upstream ${git.upstream}` : git.detached ? '' : 'no upstream',
@@ -1388,24 +1391,21 @@ function GitBadge({ git }: { git: GitStatus | null }) {
     git.changed > 0
       ? `${git.changed} changed (${git.staged} staged · ${git.unstaged} unstaged · ${git.untracked} untracked)`
       : 'clean',
-  ].filter(Boolean).join('  ·  ');
+  ].filter(Boolean).join('\n');
   return (
-    <span
-      className="shrink-0 flex items-center gap-0.5 text-[10px] text-fg-5 font-mono"
-      title={tip}
+    <Tooltip
+      content={tip}
+      className={cn(
+        'shrink-0 items-center',
+        git.changed > 0 ? 'text-amber-400/80' : git.ahead || git.behind ? 'text-sky-400/70' : 'text-fg-5/50',
+      )}
       onClick={e => e.stopPropagation()}
     >
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" />
         <path d="M6 8.5v7" /><path d="M18 10.5c0 4.5-6 3-6 7.5" />
       </svg>
-      <span className="truncate max-w-[72px]">{head}</span>
-      {git.ahead > 0 && <span className="text-sky-400/80">↑{git.ahead}</span>}
-      {git.behind > 0 && <span className="text-orange-400/80">↓{git.behind}</span>}
-      {git.changed > 0
-        ? <span className="text-amber-400/90">●{git.changed}</span>
-        : <span className="text-emerald-400/70">✓</span>}
-    </span>
+    </Tooltip>
   );
 }
 
@@ -1472,10 +1472,12 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
         >
           <polyline points="9 6 15 12 9 18" />
         </svg>
-        <span className={cn('flex-1 min-w-0 truncate text-[12px] font-semibold', isActive ? 'text-primary' : 'text-fg-3')}>
-          {workspace.name}
-        </span>
-        <GitBadge git={git} />
+        <div className="flex-1 min-w-0 flex items-center gap-1.5">
+          <span className={cn('min-w-0 truncate text-[12px] font-semibold', isActive ? 'text-primary' : 'text-fg-3')}>
+            {workspace.name}
+          </span>
+          <GitBadge git={git} />
+        </div>
         {isActive && <Dot variant="ok" />}
         <div className="flex items-center gap-1 shrink-0">
           <button

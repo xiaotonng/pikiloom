@@ -1,10 +1,10 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, getAgentMeta, shortenModel } from '../../utils';
-import { usagePercentText, usageTooltip, usageWindowTone, worstUsageWindow } from '../../usage';
+import { usageWindowTone, worstUsageWindow } from '../../usage';
 import { api } from '../../api';
 import { useStore } from '../../store';
-import { Spinner, Tooltip } from '../../components/ui';
+import { Spinner } from '../../components/ui';
 import { BrandIcon } from '../../components/BrandIcon';
 import {
   makeComposerImageAttachment,
@@ -656,13 +656,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     ? displayProfile.name
     : shortModel;
 
-  // Usage alert chip — hidden until the effective agent's account is at ≥80%
-  // of a rate-limit window (warn) or fully limited (err). Healthy usage
-  // renders nothing: the composer is a decision point, not a monitoring
-  // surface — the Agents page carries the always-on numbers.
-  const usageAlertWindow = worstUsageWindow(currentAgent?.usage ?? null);
-  const usageAlertTone = usageAlertWindow ? usageWindowTone(usageAlertWindow) : 'ok';
-
   // Plain-text fallback used as the button tooltip when the user hovers.
   const cascadeLabel = [
     displayMeta.shortLabel,
@@ -928,19 +921,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
               </svg>
             </button>
 
-            {usageAlertWindow && usageAlertTone !== 'ok' && (
-              <Tooltip
-                content={usageTooltip(currentAgent?.usage ?? null, t)}
-                side="top"
-                className={cn(
-                  'shrink-0 select-none px-1 font-mono text-[10px]',
-                  usageAlertTone === 'err' ? 'text-err/75' : 'text-warn/75',
-                )}
-              >
-                {usageAlertWindow.label} {usagePercentText(usageAlertWindow)}
-              </Tooltip>
-            )}
-
             {/* Cascade dropdown — rendered via portal to escape overflow:hidden */}
             {cascadeStep !== 'closed' && cascadePos && createPortal(
               <div
@@ -994,6 +974,11 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                 <div className="max-h-[200px] overflow-y-auto py-1">
                   {cascadeStep === 'agent' && agents.filter(a => a.installed).map(a => {
                     const am = getAgentMeta(a.agent);
+                    // Per-agent quota at the moment of choosing: the worst
+                    // rate-limit window, so "claude is full, who has room?"
+                    // is answerable right inside the picker.
+                    const rowUsage = worstUsageWindow(a.usage);
+                    const rowTone = rowUsage ? usageWindowTone(rowUsage) : 'ok';
                     return (
                       <CascadeItem key={a.agent} selected={a.agent === (pendingAgent || effectiveAgent)} onClick={() => {
                         setPendingAgent(a.agent);
@@ -1013,6 +998,14 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                       }}>
                         <BrandIcon brand={a.agent} size={14} />
                         <span style={{ color: am.color }}>{am.label}</span>
+                        {rowUsage && (
+                          <span className={cn(
+                            'ml-auto font-mono text-[10px]',
+                            rowTone === 'err' ? 'text-err' : rowTone === 'warn' ? 'text-warn' : 'text-fg-5',
+                          )}>
+                            {rowUsage.label} {Math.round(rowUsage.usedPercent ?? 0)}%
+                          </span>
+                        )}
                       </CascadeItem>
                     );
                   })}

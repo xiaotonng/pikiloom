@@ -55,6 +55,19 @@ export function usagePercentText(window: UsageWindowInfo): string {
   return `${Math.round(window.usedPercent ?? 0)}%`;
 }
 
+/** Live remaining seconds for a window's reset. Anchored to the absolute
+ *  `resetAt` timestamp when present, so a stale snapshot still counts down
+ *  correctly (the capture-time `resetAfterSeconds` freezes the moment the
+ *  driver sampled it). Negative result = the window has already reset and
+ *  the snapshot is overdue for a refresh. */
+export function resetSecondsFor(window: UsageWindowInfo): number | null {
+  if (window.resetAt) {
+    const at = Date.parse(window.resetAt);
+    if (Number.isFinite(at)) return Math.round((at - Date.now()) / 1000);
+  }
+  return window.resetAfterSeconds;
+}
+
 /** Compact reset countdown: "45m" / "2h15m" / "3d4h". */
 export function formatResetShort(seconds: number | null): string | null {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return null;
@@ -70,24 +83,13 @@ export function formatResetShort(seconds: number | null): string | null {
   return remHours ? `${days}d${remHours}h` : `${days}d`;
 }
 
-/** Multi-line tooltip: one line per window plus an "as of" footer. */
-export function usageTooltip(usage: UsageResult | null, t: (key: string) => string): string {
-  if (!usage?.ok) return usage?.error || t('config.balanceUnavailable');
-  const lines: string[] = [];
-  for (const window of usage.windows) {
-    const parts: string[] = [];
-    if (window.usedPercent != null) parts.push(`${usagePercentText(window)} ${t('usage.used')}`);
-    else if (window.status) parts.push(window.status);
-    const reset = formatResetShort(window.resetAfterSeconds);
-    if (reset) parts.push(`${t('usage.resets')} ${reset}`);
-    if (parts.length) lines.push(`${window.label}: ${parts.join(' · ')}`);
-  }
-  if (!lines.length) return usage.error || t('config.balanceUnavailable');
-  if (usage.capturedAt) {
-    const at = new Date(usage.capturedAt);
-    if (!Number.isNaN(at.getTime())) {
-      lines.push(`${t('usage.asOf')} ${at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
-    }
-  }
-  return lines.join('\n');
+/** Capture timestamp for display. A bare HH:MM reads as "today", so the
+ *  month/day is included whenever the snapshot is older than that. */
+export function formatCapturedAt(iso: string): string | null {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return sameDay
+    ? at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : at.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }

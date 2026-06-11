@@ -22,8 +22,9 @@ import { createT, type Locale } from '../../i18n';
 import { useStore } from '../../store';
 import type { Agent, AgentRuntimeStatus, AgentStatusResponse, ModelInfo } from '../../types';
 import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, foldUltraEffort, getAgentMeta } from '../../utils';
-import { displayableUsageWindows, usagePercentText, usageTone, usageTooltip, usageWindowTone, worstUsageWindow } from '../../usage';
+import { displayableUsageWindows, usagePercentText, usageTone, usageWindowTone, worstUsageWindow } from '../../usage';
 import { BrandIcon } from '../../components/BrandIcon';
+import { UsageTooltipContent } from '../../components/UsageTooltip';
 import { Badge, Button, Input, Label, Modal, ModalHeader, ModelSelect, Select, Spinner, Tooltip } from '../../components/ui';
 import { SectionCard } from '../shared';
 import ModelsSection, { useModelLayer, type ModelLayerSnapshot } from '../models/ModelsTab';
@@ -860,7 +861,7 @@ function AgentRow({
               <Badge variant="warn">{copy.updateAvailable}</Badge>
             )}
             {usageAlert !== 'ok' && (
-              <Tooltip content={usageTooltip(agent.usage, t)}>
+              <Tooltip content={<UsageTooltipContent usage={agent.usage} t={t} />}>
                 <Badge variant={usageAlert}>
                   {usageAlert === 'err' ? t('config.limitReached') : t('config.balanceTight')}
                 </Badge>
@@ -889,7 +890,7 @@ function AgentRow({
               {inlineUsage.length > 0 && (
                 <>
                   <span className="text-fg-6" aria-hidden="true">·</span>
-                  <Tooltip content={usageTooltip(agent.usage, t)} className="items-center gap-1.5">
+                  <Tooltip content={<UsageTooltipContent usage={agent.usage} t={t} />} className="items-center gap-1.5">
                     {inlineUsage.map(window => {
                       const tone = usageWindowTone(window);
                       return (

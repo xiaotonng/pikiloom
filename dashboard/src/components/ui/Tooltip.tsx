@@ -22,10 +22,13 @@ export interface TooltipProps extends HTMLAttributes<HTMLSpanElement> {
   /** Show delay — long enough to ignore accidental sweeps, far below the
    *  native title's ~1s. */
   delayMs?: number;
+  /** Fires when the panel actually opens (after the show delay) — a hook for
+   *  refreshing whatever data the tooltip displays. */
+  onShow?: () => void;
   children: ReactNode;
 }
 
-export function Tooltip({ content, side = 'bottom', delayMs = 120, children, className, ...rest }: TooltipProps) {
+export function Tooltip({ content, side = 'bottom', delayMs = 120, onShow, children, className, ...rest }: TooltipProps) {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const timerRef = useRef<number | null>(null);
   // side=top anchors the panel's bottom edge (via fixed `bottom`) so the
@@ -54,6 +57,7 @@ export function Tooltip({ content, side = 'bottom', delayMs = 120, children, cla
           ? { bottom: window.innerHeight - rect.top + 6 }
           : { top: rect.bottom + 6 }),
       });
+      onShow?.();
     }, delayMs);
   };
 

@@ -82,6 +82,7 @@ export function App() {
   const locale = useStore(s => s.locale);
   const toast = useStore(s => s.toast);
   const reload = useStore(s => s.reload);
+  const refreshAgentStatus = useStore(s => s.refreshAgentStatus);
 
   const location = useLocation();
   const tab = locationToTab(location.pathname);
@@ -97,6 +98,26 @@ export function App() {
   useEffect(() => {
     if (tab === 'sessions') setSessionsTabReady(true);
   }, [tab]);
+
+  // Agent usage (rate-limit windows) ages out in minutes, but `agentStatus`
+  // otherwise only refreshes on user interaction — a dashboard left open
+  // would show quota snapshots from hours ago. Poll quietly while visible
+  // (the backend's 30s stale-while-revalidate cache absorbs the cost) and
+  // refresh immediately when the tab becomes visible again, which is exactly
+  // the "came back to the machine" moment where a stale snapshot misleads.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (!document.hidden) void refreshAgentStatus();
+    }, 60_000);
+    const onVisibility = () => {
+      if (!document.hidden) void refreshAgentStatus();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [refreshAgentStatus]);
 
   useEffect(() => {
     if (

@@ -115,6 +115,37 @@ describe('Claude usage resolution', () => {
       expect(usage.windows[0]?.status).toBe('warning');
     }
   });
+
+  it('throttles the OAuth usage query and serves the last good result within the window', async () => {
+    // First poll: OAuth returns real utilization → cached as last-good.
+    execSyncMock.mockImplementation((cmd: string) => {
+      if (cmd.includes('security find-generic-password')) {
+        return JSON.stringify({ claudeAiOauth: { accessToken: 'oauth-token' } });
+      }
+      if (cmd.includes('api/oauth/usage')) {
+        return JSON.stringify({
+          five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+        });
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    });
+
+    const { getUsage } = await import('../src/agent/index.ts');
+    const usageCalls = () => execSyncMock.mock.calls.filter(c => String(c[0]).includes('api/oauth/usage')).length;
+
+    const first = getUsage({ agent: 'claude', model: 'claude-opus-4-7' });
+    expect(first.source).toBe('oauth-api');
+    expect(first.windows[0]?.usedPercent).toBe(42);
+    expect(usageCalls()).toBe(1);
+
+    // Second poll inside the throttle window must NOT re-query the (rate-limited)
+    // endpoint, and must keep serving the cached good windows — so a transient
+    // 429 between polls can't blank the header ring.
+    const second = getUsage({ agent: 'claude', model: 'claude-opus-4-7' });
+    expect(second.source).toBe('oauth-api');
+    expect(second.windows[0]?.usedPercent).toBe(42);
+    expect(usageCalls()).toBe(1); // unchanged → query was throttled
+  });
 });
 
 describe('Claude context fallback', () => {

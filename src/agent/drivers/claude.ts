@@ -2108,6 +2108,17 @@ const CLAUDE_MODELS: ModelInfo[] = [
 // Usage
 // ---------------------------------------------------------------------------
 
+// The account-usage query below hits api.anthropic.com/api/oauth/usage, which is
+// itself rate-limited. The dashboard rebuilds agent status ~every 30s (plus a
+// forced refresh on usage-ring hover), and querying that often trips the
+// endpoint's 429 — which (since we treat a query error as "unknown") blanks the
+// header usage ring entirely. Quota windows (5h/7d) move slowly, so we query at
+// most once per this interval and serve the last good result in between
+// (including across transient 429s), decoupling usage cadence from how often
+// agent status is rebuilt.
+const CLAUDE_USAGE_QUERY_TTL_MS = 5 * 60_000;
+const claudeUsageCache: { lastGood: UsageResult | null; lastAttemptAt: number } = { lastGood: null, lastAttemptAt: 0 };
+
 function getClaudeOAuthToken(): string | null {
   // `security` is macOS-only; other platforms store Claude creds differently
   // (DPAPI on Windows, libsecret on Linux) and Claude Code manages those itself.
@@ -2528,9 +2539,26 @@ class ClaudeDriver implements AgentDriver {
   getUsage(opts: UsageOpts): UsageResult {
     const home = getHome();
     if (!home) return emptyUsage('claude', 'HOME is not set.');
-    return getClaudeUsageFromOAuth()
-      || getClaudeUsageFromTelemetry(home, opts.model)
+    const telemetry = () => getClaudeUsageFromTelemetry(home, opts.model)
       || emptyUsage('claude', 'No recent Claude usage data found.');
+
+    // Throttle the rate-limited OAuth usage query (see CLAUDE_USAGE_QUERY_TTL_MS).
+    // Within the window we reuse the last good result rather than re-querying on
+    // every agent-status rebuild, so a transient query-API 429 can't blank the
+    // ring between successful polls.
+    const now = Date.now();
+    if (now - claudeUsageCache.lastAttemptAt < CLAUDE_USAGE_QUERY_TTL_MS) {
+      return claudeUsageCache.lastGood ?? telemetry();
+    }
+    claudeUsageCache.lastAttemptAt = now;
+    const oauth = getClaudeUsageFromOAuth();
+    if (oauth) {
+      claudeUsageCache.lastGood = oauth;
+      return oauth;
+    }
+    // OAuth unavailable (non-mac, no token, or transient 429): keep showing the
+    // last good windows if we have any; otherwise fall back to telemetry.
+    return claudeUsageCache.lastGood ?? telemetry();
   }
 
   async deleteNativeSession(workdir: string, sessionId: string): Promise<string[]> {

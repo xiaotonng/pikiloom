@@ -12,7 +12,7 @@ import type { Agent, AgentDetectOptions } from '../agent/index.js';
 import type { UserConfig } from '../core/config/user-config.js';
 import type { SetupState } from '../cli/onboarding.js';
 import { applyChannelEnvFallback, loadUserConfig, resolveUserWorkdir } from '../core/config/user-config.js';
-import { listAgents } from '../agent/index.js';
+import { listAgents, resolveDefaultAgent } from '../agent/index.js';
 import { collectSetupState } from '../cli/onboarding.js';
 import {
   validateDingtalkConfig,
@@ -279,8 +279,11 @@ class Runtime {
 
   getRuntimeDefaultAgent(config: Partial<UserConfig>): Agent {
     if (this.botRef) return this.botRef.defaultAgent;
-    const raw = String(this.runtimePrefs.defaultAgent || config.defaultAgent || 'codex').trim().toLowerCase();
-    return this.isAgent(raw) ? raw : 'codex';
+    // No bot yet (e.g. setup flow): resolve the stored preference (baseline
+    // 'codex' when unset) against installed CLIs so the dashboard never
+    // surfaces an uninstalled default the user can't run.
+    const preferred = this.runtimePrefs.defaultAgent || config.defaultAgent || 'codex';
+    return resolveDefaultAgent(preferred, listAgents().agents);
   }
 
   setModelEnv(agent: Agent, value: string): void {

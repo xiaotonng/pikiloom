@@ -94,7 +94,7 @@ export {
 
 // ── Re-export: stream & detection ───────────────────────────────────────────
 export {
-  detectAgentBin, listAgents,
+  detectAgentBin, listAgents, resolveDefaultAgent,
   run, doStream,
   listModels, resolveAgentModels, getUsage, getAgentBoundModelId, setAgentBoundModelId,
 } from './stream.js';

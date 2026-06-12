@@ -7,6 +7,16 @@ vi.mock('../src/agent/index.ts', async importOriginal => {
   return {
     ...actual,
     doStream: vi.fn(),
+    // Pin agent detection so the install-aware default-agent resolution is
+    // deterministic regardless of which agent CLIs the test host has on PATH.
+    listAgents: () => ({
+      agents: [
+        { agent: 'claude', installed: false, path: null, version: null },
+        { agent: 'codex', installed: true, path: '/usr/bin/codex', version: null },
+        { agent: 'gemini', installed: false, path: null, version: null },
+        { agent: 'hermes', installed: false, path: null, version: null },
+      ],
+    }),
   };
 });
 

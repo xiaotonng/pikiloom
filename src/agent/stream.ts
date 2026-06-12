@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { restartManagedBrowser } from '../browser-supervisor.js';
 import { terminateProcessTree } from '../core/process-control.js';
 import { AGENT_DETECT_TIMEOUTS, AGENT_STREAM_HARD_KILL_GRACE_MS } from '../core/constants.js';
-import { getDriver, allDrivers, getAcceptedProviderKinds } from './driver.js';
+import { getDriver, allDrivers, getAcceptedProviderKinds, hasDriver } from './driver.js';
 import {
   resolveAgentInjection, getActiveProfile, getActiveProfileId, getProvider, updateProfile, listProfiles,
 } from '../model/index.js';
@@ -187,6 +187,35 @@ export function detectAgentBin(cmd: string, agent: string, options: AgentDetectO
 
 export function listAgents(options: AgentDetectOptions = {}): AgentListResult {
   return { agents: allDrivers().map(d => detectAgentBin(d.cmd, d.id, options)) };
+}
+
+/**
+ * Resolve the *effective* default agent for new conversations.
+ *
+ * The stored value is only a *preference* — a new conversation can run only an
+ * agent whose CLI is actually installed. So when the preference's CLI isn't
+ * installed, we clamp to the first installed agent (in driver-registration
+ * order: claude → codex → gemini → hermes) instead of surfacing an uninstalled
+ * default the user can't run. When the preference *is* installed it always
+ * wins, so machines with the historical 'codex' default are unaffected. When
+ * nothing is installed we keep the prior behaviour (honour a valid preference,
+ * else 'codex') so the result is always defined.
+ *
+ * Resolution is derived, never persisted: if the user later installs their
+ * preferred agent, the original preference is honoured again automatically.
+ * `agents` is injected (defaults to live detection) so the resolution is a pure
+ * function of (preference, install-state) and trivially testable.
+ */
+export function resolveDefaultAgent(
+  preferred: Agent | string | null | undefined,
+  agents: AgentInfo[] = listAgents().agents,
+): Agent {
+  const want = typeof preferred === 'string' ? preferred.trim().toLowerCase() : '';
+  const wantValid = !!want && hasDriver(want);
+  const installed = agents.filter(a => a.installed).map(a => a.agent);
+  if (wantValid && installed.includes(want as Agent)) return want as Agent;
+  if (installed.length) return installed[0];
+  return wantValid ? (want as Agent) : 'codex';
 }
 
 // ---------------------------------------------------------------------------

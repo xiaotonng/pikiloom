@@ -482,8 +482,10 @@ async function awaitDashboardConfig(
       channel,
       tokenProvided: channels.length > 0 && hasConfiguredChannelToken({ ...ctx.userConfig, ...ctx.configOverrides }, channel, ctx.args.token),
     });
-    const nextNeedsSetup = channels.length === 0
-      || !hasReadyAgent(nextSetupState);
+    // Dashboard-as-terminal: an installed agent is the only prerequisite to
+    // start. IM channels are optional — the dashboard is itself a terminal, so
+    // don't block startup waiting for a channel token.
+    const nextNeedsSetup = !hasReadyAgent(nextSetupState);
     if (!nextNeedsSetup) {
       const resumeTs = new Date().toTimeString().slice(0, 8);
       process.stdout.write(`[pikiclaw ${resumeTs}] configuration detected, starting bot channels...\n`);
@@ -517,7 +519,12 @@ async function runSetupPhase(
 
   const useDashboard = !args.noDashboard && !args.setup;
   let dashboard: DashboardServer | null = null;
-  const needsSetup = channels.length === 0 || !tokenProvided || !hasReadyAgent(setupState);
+  // With the dashboard as a terminal, an installed agent is enough to start.
+  // Without the dashboard (headless server / --no-dashboard), an IM channel is
+  // still required as the only terminal.
+  const needsSetup = useDashboard
+    ? !hasReadyAgent(setupState)
+    : (channels.length === 0 || !tokenProvided || !hasReadyAgent(setupState));
 
   if (useDashboard) {
     // Suppress the browser pop on auto-start when there's no user-facing
@@ -566,13 +573,16 @@ async function runSetupPhase(
 /* ── Phase: post-setup validation ─────────────────────────────────── */
 
 /**
- * Re-resolve channels after setup phase and validate that we have at least
- * one working channel with a ready agent. Exits on failure.
+ * Re-resolve channels after the setup phase and validate we have a runnable
+ * terminal: an installed agent is mandatory; an IM channel is required only
+ * when the dashboard isn't serving as the terminal. Exits on failure.
+ * Returns the (possibly empty) channel set — empty is valid in dashboard mode.
  */
 function validatePostSetupChannels(
   configOverrides: Partial<UserConfig>,
   userConfig: Partial<UserConfig>,
   args: Record<string, any>,
+  useDashboard: boolean,
 ): { channels: ChannelName[]; channel: ChannelName } {
   const effectiveConfig = { ...userConfig, ...configOverrides };
   const channels = resolveConfiguredChannels({
@@ -580,26 +590,25 @@ function validatePostSetupChannels(
     tokenOverride: args.token,
   });
   const channel: ChannelName = channels[0] || 'feishu';
-  const refreshedTokenProvided = channels.length > 0;
-
-  if (!refreshedTokenProvided) {
-    const refreshedSetupState = collectSetupState({
-      agents: listStartupAgents(),
-      channel,
-      tokenProvided: false,
-    });
-    process.stdout.write(buildSetupGuide(refreshedSetupState, VERSION));
-    process.exit(0);
-  }
 
   const refreshedSetupState = collectSetupState({
     agents: listStartupAgents(),
     channel,
-    tokenProvided: refreshedTokenProvided,
+    tokenProvided: channels.length > 0,
   });
+
+  // An installed agent is the hard requirement — no terminal can run a session
+  // without one.
   if (!hasReadyAgent(refreshedSetupState)) {
     process.stderr.write(buildSetupGuide(refreshedSetupState, VERSION, { doctor: true }));
     process.exit(1);
+  }
+
+  // Zero IM channels is fine when the dashboard is the terminal; only bail when
+  // there's no terminal at all (dashboard disabled AND no channel configured).
+  if (channels.length === 0 && !useDashboard) {
+    process.stdout.write(buildSetupGuide(refreshedSetupState, VERSION));
+    process.exit(0);
   }
 
   return { channels, channel };
@@ -747,13 +756,15 @@ export async function main() {
   if (args.doctor) runDoctorCheck(channel, tokenProvided);
 
   // Setup phase: dashboard, wizard, or guide.
+  const useDashboard = !args.noDashboard && !args.setup;
   let dashboard: DashboardServer | null;
   ({ dashboard, userConfig, channels, channel } = await runSetupPhase(
     args, userConfig, configOverrides, channels, channel, tokenProvided,
   ));
 
-  // Validate channels are ready after setup.
-  ({ channels, channel } = validatePostSetupChannels(configOverrides, userConfig, args));
+  // Validate the terminal is runnable after setup (channels may be empty when
+  // the dashboard is serving as the terminal).
+  ({ channels, channel } = validatePostSetupChannels(configOverrides, userConfig, args, useDashboard));
 
   // Apply runtime config, env overrides, and start config sync.
   applyRuntimeConfig(args, userConfig, configOverrides, channel);

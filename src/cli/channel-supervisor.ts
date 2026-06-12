@@ -8,6 +8,12 @@
  * disposes its transport, and (if still configured) launches a fresh
  * instance with the new config — all in-process, leaving the dashboard,
  * other channels, and active coding sessions on unaffected bots running.
+ *
+ * Dashboard-as-terminal: the Web Dashboard is a first-class terminal, equal to
+ * the IM channels. When no IM channel is configured, the supervisor keeps a
+ * headless bot attached to the dashboard so it's a fully usable terminal on its
+ * own; when an IM channel is added, that channel's bot takes over the dashboard
+ * attachment and the headless bot is torn down.
  */
 
 import type { Bot } from '../bot/bot.js';
@@ -156,6 +162,8 @@ export interface ChannelSupervisorOpts {
 
 export class ChannelSupervisor {
   private readonly running = new Map<ChannelName, RunningBot>();
+  /** Headless dashboard-terminal bot, present only while no IM channel runs. */
+  private headless: { bot: Bot; runPromise: Promise<void> } | null = null;
   private readonly dashboard: DashboardServer | null;
   private readonly log: (message: string) => void;
   private reconcileInFlight = false;
@@ -188,6 +196,7 @@ export class ChannelSupervisor {
     this.unsubscribe = null;
     const channels = [...this.running.keys()];
     await Promise.all(channels.map(channel => this.stopChannel(channel)));
+    await this.stopHeadless();
   }
 
   /** Reconcile running bots against the desired channel set + credentials. */
@@ -255,6 +264,40 @@ export class ChannelSupervisor {
         this.log(`channel ${channel}: failed to start — ${describeError(err)}`);
       }
     }
+
+    // Dashboard-as-terminal: keep a headless bot attached whenever no channel
+    // bot is actually running (none configured, or all failed to start), so the
+    // dashboard stays a usable terminal on its own. Gate on `running.size`
+    // rather than `desired.length` so a channel that fails to come up still
+    // leaves the dashboard with a working bot.
+    if (this.running.size > 0) {
+      await this.stopHeadless();
+    } else {
+      await this.startHeadless();
+    }
+  }
+
+  /** Launch the headless dashboard-terminal bot and attach it to the dashboard. */
+  private async startHeadless(): Promise<void> {
+    if (this.headless) return;
+    this.log('dashboard terminal: starting (no IM channel configured)');
+    const { HeadlessBot } = await import('../bot/headless-bot.js');
+    const bot = new HeadlessBot();
+    if (this.dashboard) this.dashboard.attachBot(bot);
+    const runPromise = bot.run().catch((err: unknown) => {
+      this.log(`dashboard terminal: run() exited with error — ${describeError(err)}`);
+    });
+    this.headless = { bot, runPromise };
+  }
+
+  /** Tear down the headless bot once a real channel bot owns the dashboard. */
+  private async stopHeadless(): Promise<void> {
+    if (!this.headless) return;
+    this.log('dashboard terminal: stopping (IM channel took over)');
+    const { bot, runPromise } = this.headless;
+    this.headless = null;
+    bot.requestStop();
+    try { await runPromise; } catch { /* already logged */ }
   }
 
   private async startChannel(channel: ChannelName, config: Partial<UserConfig>): Promise<void> {

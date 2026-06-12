@@ -1105,15 +1105,20 @@ export function AgentTab() {
   }, [defaultAgent, defaultsModalOpen]);
 
   const handleSaveDefaults = useCallback(async () => {
-    if (defaultsDraft === defaultAgent) {
+    if (!defaultsDraft) {
       setDefaultsModalOpen(false);
       return;
     }
+    // Always persist, even when the draft equals the currently *shown* default.
+    // The displayed value can be a runtime-derived fallback (e.g. clamped to the
+    // only installed agent) that was never written to setting.json — disabling
+    // Save on equality would strand single-agent machines with no way to commit
+    // the choice. The write is idempotent, so re-affirming is harmless.
     const result = await updateRuntime({ defaultAgent: defaultsDraft });
     if (!result) return;
     toast(copy.defaultsSaved);
     setDefaultsModalOpen(false);
-  }, [copy.defaultsSaved, defaultAgent, defaultsDraft, toast, updateRuntime]);
+  }, [copy.defaultsSaved, defaultsDraft, toast, updateRuntime]);
 
   const handleInstall = useCallback(async (agent: AgentRuntimeStatus) => {
     if (installingAgent) return;
@@ -1343,7 +1348,7 @@ export function AgentTab() {
           </Button>
           <Button
             variant="primary"
-            disabled={updating || defaultsDraft === defaultAgent}
+            disabled={updating || !defaultsDraft}
             onClick={() => void handleSaveDefaults()}
           >
             {updating ? t('config.validating') : t('modal.save')}

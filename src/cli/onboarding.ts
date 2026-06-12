@@ -158,8 +158,10 @@ export function hasInstalledAgent(state: SetupState): boolean {
 }
 
 export function isSetupReady(state: SetupState): boolean {
-  const readyChannel = state.channels?.some(channel => channel.ready) ?? state.tokenProvided;
-  return readyChannel && hasReadyAgent(state);
+  // The Web Dashboard is always an available terminal, so an installed agent is
+  // the only hard prerequisite. IM channels are optional add-ons — their
+  // readiness is surfaced separately (per-channel status), not gated here.
+  return hasReadyAgent(state);
 }
 
 export function buildSetupGuide(state: SetupState, version: string, options?: { doctor?: boolean }): string {

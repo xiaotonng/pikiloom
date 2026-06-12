@@ -212,3 +212,39 @@ describe('Claude context fallback', () => {
     }
   });
 });
+
+describe('Claude session-context env scrub', () => {
+  it('removes the markers a parent claude session exports, keeps user config', async () => {
+    const { scrubClaudeSessionContextEnv } = await import('../src/agent/drivers/claude.ts');
+    const env: Record<string, string | undefined> = {
+      // Runtime context markers — leak from an agent-launched daemon and flip
+      // spawned claudes into child-session mode (transcript never written).
+      CLAUDECODE: '1',
+      CLAUDE_CODE_CHILD_SESSION: 'true',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_EXECPATH: '/opt/homebrew/bin/claude',
+      CLAUDE_CODE_SESSION_ID: 'abc-123',
+      CLAUDE_CODE_SSE_PORT: '12345',
+      CLAUDE_EFFORT: 'max',
+      CLAUDE_PERMISSION_MODE: 'bypassPermissions',
+      // Deliberate user config — must survive the scrub.
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192',
+      ANTHROPIC_BASE_URL: 'https://proxy.example.com',
+      PATH: '/usr/bin',
+    };
+    scrubClaudeSessionContextEnv(env);
+    expect(env.CLAUDECODE).toBeUndefined();
+    expect(env.CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+    expect(env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(env.CLAUDE_CODE_EXECPATH).toBeUndefined();
+    expect(env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+    expect(env.CLAUDE_CODE_SSE_PORT).toBeUndefined();
+    expect(env.CLAUDE_EFFORT).toBeUndefined();
+    expect(env.CLAUDE_PERMISSION_MODE).toBeUndefined();
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe('1');
+    expect(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('8192');
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://proxy.example.com');
+    expect(env.PATH).toBe('/usr/bin');
+  });
+});

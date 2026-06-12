@@ -92,6 +92,40 @@ export function claudeEffortAndWorkflowArgs(
   return args;
 }
 
+/**
+ * Env keys the claude CLI exports to its own subprocesses (Bash tool, hooks)
+ * to mark them as children of a running session. If pikiclaw itself was
+ * launched from inside a Claude Code session — agent-driven `npm run dev`
+ * restarts, `! npx pikiclaw` typed into the TUI, the self-bootstrap path —
+ * these leak into the daemon's environment and every claude it spawns
+ * inherits them. A claude started with `CLAUDE_CODE_CHILD_SESSION` set runs
+ * in child-session mode: it mirrors transcript persistence to its (absent)
+ * SDK parent instead of writing `~/.claude/projects/<dir>/<id>.jsonl`.
+ * The TUI driver tails that JSONL as its only text source, so a contaminated
+ * spawn streams nothing, returns "(no textual response)", and loses the whole
+ * turn on SIGTERM. Verified on 2.1.173: with these vars set the transcript
+ * never grows past the ai-title line; with them scrubbed every event lands
+ * 0.2–1.2s after it happens.
+ *
+ * Deliberately a closed list: config-style vars users set on purpose
+ * (CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_MAX_OUTPUT_TOKENS, …) must survive.
+ * Shared by both spawn paths (`claude -p` here and the PTY/TUI driver).
+ */
+const CLAUDE_SESSION_CONTEXT_ENV_KEYS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_EFFORT',
+  'CLAUDE_PERMISSION_MODE',
+];
+
+export function scrubClaudeSessionContextEnv(env: Record<string, string | undefined>): void {
+  for (const key of CLAUDE_SESSION_CONTEXT_ENV_KEYS) delete env[key];
+}
+
 // ---------------------------------------------------------------------------
 // Command & parser
 // ---------------------------------------------------------------------------
@@ -990,7 +1024,7 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
   agentLog(`[spawn] prompt (stdin): "${opts.prompt.slice(0, 300)}${opts.prompt.length > 300 ? '…' : ''}"`);
 
   const spawnEnv = { ...process.env, ...(opts.extraEnv || {}) };
-  delete spawnEnv.CLAUDECODE;
+  scrubClaudeSessionContextEnv(spawnEnv);
   const proc = spawn(shellCmd, {
     cwd: opts.workdir,
     env: spawnEnv,

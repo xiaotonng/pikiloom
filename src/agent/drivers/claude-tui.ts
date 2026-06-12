@@ -64,7 +64,7 @@ import {
   registerClaudeBackgroundAgentLaunch, pendingClaudeBackgroundAgentCount,
   registerClaudeBackgroundBashLaunch, pendingClaudeBackgroundBashCount,
   extractClaudeBackgroundTaskId, extractClaudeWorkflowRunId,
-  claudeEffortAndWorkflowArgs,
+  claudeEffortAndWorkflowArgs, scrubClaudeSessionContextEnv,
 } from './claude.js';
 
 // ---------------------------------------------------------------------------
@@ -330,10 +330,10 @@ function readJsonlIncrement(filePath: string, fromOffset: number): { offset: num
  *
  * The print-mode driver gets per-character streaming for free from
  * `stream_event/content_block_delta`. The JSONL transcript that TUI mode
- * reads only carries *complete* content blocks — for a plain-text answer that
- * means the whole response lands in one write, and without this buffer the
- * dashboard / IM would see a sudden big "splat" of text instead of the
- * familiar typing effect.
+ * reads is written incrementally but only carries *complete* content blocks —
+ * each text block (a status note between tool calls, the final answer) lands
+ * as one chunk, and without this buffer the dashboard / IM would see those
+ * block-sized "splats" of text instead of the familiar typing effect.
  *
  * Mechanism: text extracted from each assistant JSONL event accumulates into
  * `trueText`. A timer chews through it `TUI_STREAM_CHUNK_CHARS` at a time,
@@ -1055,12 +1055,16 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     // PATH inside the claude TUI's hook subprocess on every distro.
     const nodeBin = Q(process.execPath);
     const hookCmd = (event: string) => `${nodeBin} ${Q(hookPath)} ${event} ${Q(statePath)} ${Q(toolEventsPath)}`;
-    // Pre/PostToolUse hooks give us a live event stream. Claude Code 2.x
-    // buffers the JSONL transcript and only flushes it when Stop fires, so
-    // without these hooks the dashboard / IM see absolutely no progress
-    // during a 30s+ turn. The hook script writes to tool-events.jsonl via
-    // atomic appends, sidestepping the read-modify-write race that affects
-    // the shared state.json file.
+    // Pre/PostToolUse hooks give us a live tool-event stream. The transcript
+    // JSONL is itself written incrementally (events land ~0.2–1.2s after they
+    // happen — measured on 2.1.173), but the hooks still earn their keep:
+    // PreToolUse fires the instant a tool *starts* (the JSONL tool_use only
+    // proves it was requested; a long-running Bash would otherwise sit
+    // invisible), they carry agent_id for sub-agent attribution, and they are
+    // the registration point for run_in_background launches that the Stop
+    // gating in decideClaudeTuiStop depends on. The hook script writes to
+    // tool-events.jsonl via atomic appends, sidestepping the
+    // read-modify-write race that affects the shared state.json file.
     // Pre/PostToolUse require an explicit `matcher` field — without it Claude
     // Code's hook dispatcher silently never fires the hook (the lifecycle
     // hooks below don't need a matcher because they aren't tool-scoped).
@@ -1230,9 +1234,13 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   for (const [k, v] of Object.entries(opts.extraEnv || {})) {
     if (typeof v === 'string') spawnEnv[k] = v;
   }
-  // CLAUDECODE is set automatically by the parent claude process when calling
-  // children — clear it so this is treated as a fresh top-level invocation.
-  delete spawnEnv.CLAUDECODE;
+  // Strip the session-context markers a parent claude process exports to its
+  // subprocesses (CLAUDECODE, CLAUDE_CODE_CHILD_SESSION, …). Inherited e.g.
+  // when an agent restarted the pikiclaw daemon from inside a Claude Code
+  // session, they flip this spawn into child-session mode — the transcript
+  // JSONL (our only text source) is then never written locally and the turn
+  // streams nothing. See CLAUDE_SESSION_CONTEXT_ENV_KEYS in claude.ts.
+  scrubClaudeSessionContextEnv(spawnEnv);
   // Critical: leaving ANTHROPIC_API_KEY set would route TUI through API
   // billing too, defeating the whole point. Strip it unless the user
   // explicitly opts back in.
@@ -1465,11 +1473,58 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let lastClearedStopAt = 0;
   /** Hook-reported tools still executing: PreToolUse seen, no PostToolUse. */
   const pendingHookToolIds = new Set<string>();
+
+  // Incremental main-JSONL drain — the canonical text/thinking/usage feed.
+  // Used by both the 200ms poll tick and the post-exit final drain. Returns
+  // true when any line was consumed so callers can emit().
+  const drainMainJsonl = (): boolean => {
+    if (!fs.existsSync(activeJsonlPath)) return false;
+    const inc = readJsonlIncrement(activeJsonlPath, jsonlReadOffset);
+    jsonlReadOffset = inc.offset;
+    let touched = false;
+    for (const line of inc.lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed[0] !== '{') continue;
+      lineCount++;
+      let ev: any;
+      try { ev = JSON.parse(trimmed); } catch { continue; }
+      // Ignore sub-agent sidecar events — they belong to a child agent's
+      // stream and would re-enter the parent's accumulator. claudeParse's
+      // own sub-agent routing handles them.
+      const isSubAgentEvent = typeof ev.parent_tool_use_id === 'string' && ev.parent_tool_use_id;
+      if (!isSubAgentEvent && ev.type === 'assistant') {
+        const notice = detectClaudeTuiTerminalLimitNotice(ev.message);
+        if (notice) {
+          // A synthetic limit banner is not substantive progress — skip the
+          // liveness/type bookkeeping below so the limit arbitration and the
+          // stall watchdog don't mistake it for a live model segment.
+          noteTerminalLimitNotice(notice);
+          touched = true;
+          continue;
+        }
+        applyAssistantStreaming(s, ev.message, streamBuf);
+        applyAssistantUsage(s, ev.message);
+        if (ev.message?.model && ev.message.model !== '<synthetic>' && typeof ev.message.model === 'string') {
+          lastAssistantEventAt = Date.now();
+          s.model = ev.message.model;
+          applyModelContextWindow(s);
+        }
+      }
+      try { callClaudeParseForTui(ev, s); } catch (e: any) {
+        agentWarn(`[claude-tui] claudeParse threw on line: ${e?.message || e}`);
+      }
+      touched = true;
+      lastMainJsonlEventAt = Date.now();
+      if (typeof ev.version === 'string' && ev.version) observedClaudeVersion = ev.version;
+      if (!isSubAgentEvent) lastMainJsonlType = classifyClaudeJsonlEvent(ev);
+    }
+    return touched;
+  };
   // Append-only tool-events log fed by PreToolUse / PostToolUse hooks. We
-  // tail it with the same incremental reader the JSONL transcript uses, so
-  // tool calls + plan changes surface live during the turn even while the
-  // canonical JSONL stays empty (Claude Code 2.x buffers the whole transcript
-  // until the Stop hook fires).
+  // tail it with the same incremental reader the JSONL transcript uses. Hook
+  // events usually beat their JSONL counterpart by a second or so (and
+  // PreToolUse fires before the tool even runs); whichever feed arrives first
+  // wins, the other dedups via seenClaudeToolIds / seenClaudeToolResultIds.
   let toolEventsReadOffset = 0;
   const drainToolEvents = (): boolean => {
     if (!fs.existsSync(toolEventsPath)) return false;
@@ -1621,59 +1676,19 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     }
 
     // JSONL tail.
-    if (fs.existsSync(activeJsonlPath)) {
-      const inc = readJsonlIncrement(activeJsonlPath, jsonlReadOffset);
-      jsonlReadOffset = inc.offset;
-      let touched = false;
-      for (const line of inc.lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed[0] !== '{') continue;
-        lineCount++;
-        let ev: any;
-        try { ev = JSON.parse(trimmed); } catch { continue; }
-        // Ignore sub-agent sidecar events — they belong to a child agent's
-        // stream and would re-enter the parent's accumulator. claudeParse's
-        // own sub-agent routing handles them.
-        const isSubAgentEvent = typeof ev.parent_tool_use_id === 'string' && ev.parent_tool_use_id;
-        if (!isSubAgentEvent && ev.type === 'assistant') {
-          const notice = detectClaudeTuiTerminalLimitNotice(ev.message);
-          if (notice) {
-            noteTerminalLimitNotice(notice);
-            touched = true;
-            continue;
-          }
-          applyAssistantStreaming(s, ev.message, streamBuf);
-          applyAssistantUsage(s, ev.message);
-          if (ev.message?.model && ev.message.model !== '<synthetic>' && typeof ev.message.model === 'string') {
-            lastAssistantEventAt = Date.now();
-            s.model = ev.message.model;
-            applyModelContextWindow(s);
-          }
-        }
-        try { callClaudeParseForTui(ev, s); } catch (e: any) {
-          agentWarn(`[claude-tui] claudeParse threw on line: ${e?.message || e}`);
-        }
-        touched = true;
-        lastMainJsonlEventAt = Date.now();
-        if (typeof ev.version === 'string' && ev.version) observedClaudeVersion = ev.version;
-        if (!isSubAgentEvent) lastMainJsonlType = classifyClaudeJsonlEvent(ev);
-      }
-      if (touched) {
-        // Emit immediately so non-text changes (tool_use, plan, activity,
-        // thinking, usage) reach the dashboard without waiting for the
-        // chunked stream tick. The streaming timer separately advances
-        // s.text from the buffer over the next few ticks.
-        emit();
-        scheduleStreamTick();
-      }
+    if (drainMainJsonl()) {
+      // Emit immediately so non-text changes (tool_use, plan, activity,
+      // thinking, usage) reach the dashboard without waiting for the
+      // chunked stream tick. The streaming timer separately advances
+      // s.text from the buffer over the next few ticks.
+      emit();
+      scheduleStreamTick();
     }
 
-    // Live tool-events stream — fed by Pre/PostToolUse hooks.  Order matters:
-    // we drain hooks BEFORE the JSONL tail above already ran so any hook
-    // events that beat their JSONL counterpart are recorded in
-    // seenClaudeToolIds first; subsequent JSONL pass deduplicates naturally.
-    // In practice JSONL doesn't land until Stop, so this is the only signal
-    // that fires during a normal turn.
+    // Live tool-events stream — fed by Pre/PostToolUse hooks. Hook and JSONL
+    // feeds race per tool call; both record into seenClaudeToolIds /
+    // seenClaudeToolResultIds so whichever lands first wins and the other
+    // pass dedups naturally.
     if (drainToolEvents()) emit();
 
     // Sub-agent sidecar discovery + pump. Order matters: discovery first so a
@@ -1892,37 +1907,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
 
   // 11. Final drain — pick up anything written between the last poll and
   // process exit. Claude flushes its remaining JSONL events on shutdown.
-  if (fs.existsSync(activeJsonlPath)) {
-    const inc = readJsonlIncrement(activeJsonlPath, jsonlReadOffset);
-    jsonlReadOffset = inc.offset;
-    let touched = false;
-    for (const line of inc.lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed[0] !== '{') continue;
-      lineCount++;
-      let ev: any;
-      try { ev = JSON.parse(trimmed); } catch { continue; }
-      const isSubAgentEvent = typeof ev.parent_tool_use_id === 'string' && ev.parent_tool_use_id;
-      if (!isSubAgentEvent && ev.type === 'assistant') {
-        const notice = detectClaudeTuiTerminalLimitNotice(ev.message);
-        if (notice) {
-          noteTerminalLimitNotice(notice);
-          touched = true;
-          continue;
-        }
-        applyAssistantStreaming(s, ev.message, streamBuf);
-        applyAssistantUsage(s, ev.message);
-        if (ev.message?.model && ev.message.model !== '<synthetic>' && typeof ev.message.model === 'string') {
-          lastAssistantEventAt = Date.now();
-          s.model = ev.message.model;
-          applyModelContextWindow(s);
-        }
-      }
-      try { callClaudeParseForTui(ev, s); } catch {}
-      touched = true;
-    }
-    if (touched) emit();
-  }
+  if (drainMainJsonl()) emit();
   // Final tool-events drain — any PreToolUse / PostToolUse hooks that fired
   // between the last poll tick and process exit.
   if (drainToolEvents()) emit();

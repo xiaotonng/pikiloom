@@ -311,12 +311,21 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
       || '';
     if (!targetAgent) return;
     const targetStatus = agents.find(a => a.agent === targetAgent) || null;
-    // Per-session pick wins over the global runtime default. selectedModel/Effort
-    // is set by applyCascade and only applies to this session's React state.
-    const targetModel = (selectedModel || targetStatus?.selectedModel || '').trim() || null;
+    // Mirror the chip's resolution (see currentModel/currentEffort): cascade
+    // pick → session's own last-used → agent global default. Keeping send in
+    // sync with what the chip shows means a resume continues with the session's
+    // model/effort instead of silently switching to the global default.
+    const sendOwnsSessionAgent = !!session.agent && targetAgent === session.agent;
+    const targetModel = (selectedModel
+      || (sendOwnsSessionAgent ? (session.model || '') : '')
+      || targetStatus?.selectedModel
+      || '').trim() || null;
     const targetEffort = targetAgent === 'gemini'
       ? null
-      : ((selectedEffort || targetStatus?.selectedEffort || '').trim() || null);
+      : ((selectedEffort
+        || (sendOwnsSessionAgent ? (session.thinkingEffort || '') : '')
+        || targetStatus?.selectedEffort
+        || '').trim() || null);
     const isAgentSwitch = targetAgent !== session.agent;
     const targetSessionId = isAgentSwitch ? '' : session.sessionId;
     // When switching agent, pass the live session of the outgoing agent so the
@@ -560,13 +569,23 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const firstProfileIdx = useMemo(() => models.findIndex(m => m.kind === 'profile'), [models]);
   // Index of the currently-active Profile in the unified list (or -1).
   const activeProfileIdForAgent = activeProfiles[cascadeAgentId] || null;
-  // Per-session cascade choice wins over the global runtime default. Falling
-  // back to currentAgent fields means an unset session shows the user's global
-  // default; once they pick from the cascade, that pick scopes to this session.
-  const currentModel = selectedModel || currentAgent?.selectedModel || '';
+  // Resolution precedence: (1) this session's cascade pick, (2) the session's
+  // OWN last-used model/effort so reopening a session restores what it actually
+  // ran with, (3) the agent's global default. The session fallback is gated on
+  // the effective agent still being the session's agent — after a cascade
+  // agent-switch the outgoing agent's model/effort must not leak into the new
+  // agent's chip.
+  const sessionOwnsAgent = !!session.agent && effectiveAgent === session.agent;
+  const currentModel = selectedModel
+    || (sessionOwnsAgent ? (session.model || '') : '')
+    || currentAgent?.selectedModel
+    || '';
   const currentEffort = effectiveAgent === 'gemini'
     ? ''
-    : (selectedEffort || currentAgent?.selectedEffort || '');
+    : (selectedEffort
+      || (sessionOwnsAgent ? (session.thinkingEffort || '') : '')
+      || currentAgent?.selectedEffort
+      || '');
   // Surface the resolved selection to the parent so the rerun action sends with
   // the model/effort the user currently sees, not the stale session runtime.
   useEffect(() => {

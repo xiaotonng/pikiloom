@@ -226,6 +226,38 @@ describe('Claude TUI driver — terminal limit notices', () => {
   });
 });
 
+describe('Claude TUI driver — selected-model-unavailable detection', () => {
+  it('detects the banner from clean -p text AND the whitespace-mangled TUI screen, but not ordinary prose', async () => {
+    const { detectClaudeModelError } = await import('../src/agent/utils.ts');
+    // Clean `-p`/stream-json synthetic text.
+    expect(detectClaudeModelError(
+      "There's an issue with the selected model (claude-fable-5). It may not exist or you may not have access to it. Run --model to pick a different model.",
+    )).toBe(true);
+    // TUI screen scrape: ANSI-stripped paint collapses spaces and wraps lines —
+    // the detector must be whitespace-insensitive to survive it. This is the
+    // exact shape captured from a live PTY (2026-06-13).
+    expect(detectClaudeModelError(
+      "⏺There's an issuewiththeselectedmodel(claude-fable-5).Itmaynotexistor\nyoumaynothaveaccesstoit.Run/modeltopickadifferentmodel.",
+    )).toBe(true);
+    // Ordinary prose that merely mentions a "selected model" or "access" must
+    // NOT trip it — the fragments are deliberately long + specific.
+    expect(detectClaudeModelError('Please explain why the selected model failed to load in this codebase.')).toBe(false);
+    expect(detectClaudeModelError('The service account may not have access to the storage bucket.')).toBe(false);
+    expect(detectClaudeModelError('')).toBe(false);
+    expect(detectClaudeModelError(null)).toBe(false);
+  });
+
+  it('composes a user-facing message with and without a model id', async () => {
+    const { claudeModelErrorMessage } = await import('../src/agent/utils.ts');
+    const withId = claudeModelErrorMessage('claude-fable-5');
+    expect(withId).toContain('(claude-fable-5)');
+    expect(withId.toLowerCase()).toContain('unavailable');
+    const noId = claudeModelErrorMessage(null);
+    expect(noId).not.toContain('(');
+    expect(noId.toLowerCase()).toContain('unavailable');
+  });
+});
+
 describe('Claude TUI driver — bypass-permissions prompt auto-answer', () => {
   // The fix for the cross-machine startup hang: when the TUI paints its
   // "Bypass Permissions mode" confirmation (default highlight on "No, exit"),

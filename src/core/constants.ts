@@ -363,6 +363,15 @@ export const CLAUDE_TUI_STALL_PENDING_TOOL_MS = 30 * 60_000;
  */
 export const CLAUDE_TUI_STALL_PTY_DEAD_MS = 3 * 60_000;
 /**
+ * Settle window after the TUI paints the "selected model is unavailable" banner
+ * (a 404 model_not_found). The notice is terminal — claude paints it then idles
+ * at the REPL forever: no JSONL is written, no Stop hook fires. We wait this
+ * brief window to cross-validate that nothing substantive followed (the banner
+ * alone is evidence, not a verdict — same discipline as resolveClaudeTuiLimitOutcome)
+ * before ending the turn, instead of waiting out the 3–10 minute stall watchdog.
+ */
+export const CLAUDE_TUI_MODEL_ERROR_SETTLE_MS = 2_500;
+/**
  * TTL for the post-Stop `hold-background` path. The hold protects
  * run_in_background agents living inside the claude process — but a live
  * agent keeps emitting hook/sidecar/JSONL traffic. If the hold sees no

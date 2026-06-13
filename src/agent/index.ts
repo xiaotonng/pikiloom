@@ -63,6 +63,7 @@ export {
   dedupeStrings, numberOrNull,
   normalizeStreamPreviewPlan, parseTodoWriteAsPlan, normalizeActivityLine, pushRecentActivity,
   detectClaudeApiError, isRetryableClaudeApiError,
+  detectClaudeModelError, claudeModelErrorMessage,
   firstNonEmptyLine, shortValue, normalizeErrorMessage, joinErrorMessages,
   appendSystemPrompt, mimeForExt, computeContext, buildStreamPreviewMeta,
   summarizeClaudeToolUse, summarizeClaudeToolResult,

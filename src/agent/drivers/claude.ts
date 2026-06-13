@@ -21,6 +21,7 @@ import {
   summarizeClaudeToolUse, summarizeClaudeToolResult, joinErrorMessages, parseTodoWriteAsPlan,
   previewToolCallInput, previewToolCallResult,
   detectClaudeApiError, isRetryableClaudeApiError,
+  detectClaudeModelError, claudeModelErrorMessage,
   emitSessionIdUpdate,
   IMAGE_EXTS, mimeForExt,
   listPikiclawSessions, findPikiclawSession, isPendingSessionId,
@@ -658,7 +659,22 @@ export function claudeParse(ev: any, s: any) {
     // model error, …), not real Claude output. The historical jsonl reader
     // converts them into `system_notice` blocks; on the live stream we just
     // drop them so they don't pollute s.text / s.thinking.
-    if (msg.model === '<synthetic>') return;
+    if (msg.model === '<synthetic>') {
+      // …except the "selected model is unavailable" notice (404 model_not_found):
+      // a hard, non-retryable failure. The result event's text fallback below
+      // also catches it, but recording s.errors here upgrades the turn from a
+      // bare "(no textual response)" reply to a clear error + non-retryable
+      // stopReason (so doClaudeWithRetry won't loop on the same dead model).
+      if (!s.errors) {
+        const synthText = (msg.content || [])
+          .filter((b: any) => b?.type === 'text').map((b: any) => b.text || '').join(' ');
+        if (ev.error === 'model_not_found' || detectClaudeModelError(synthText)) {
+          s.stopReason = 'model_error';
+          s.errors = [claudeModelErrorMessage(s.model)];
+        }
+      }
+      return;
+    }
     const contents = msg.content || [];
     const th = contents.filter((b: any) => b?.type === 'thinking').map((b: any) => b.thinking || '').join('\n\n');
     const tx = contents.filter((b: any) => b?.type === 'text').map((b: any) => b.text || '').join('\n\n');
@@ -855,7 +871,10 @@ export function claudeParse(ev: any, s: any) {
     s.model = ev.model ?? s.model;
     if (ev.is_error && ev.errors?.length) s.errors = ev.errors;
     if (ev.result && !s.text.trim()) s.text = ev.result;
-    s.stopReason = ev.stop_reason ?? s.stopReason;
+    // A model-unavailable turn carries a normal stop_reason on its result event
+    // (e.g. 'stop_sequence') that would otherwise clobber the 'model_error' the
+    // synthetic handler set — preserve it so the failure stays diagnosable.
+    if (s.stopReason !== 'model_error') s.stopReason = ev.stop_reason ?? s.stopReason;
     const u = ev.usage;
     if (u) {
       // Per-call semantics: the last message_start/message_delta snapshot is

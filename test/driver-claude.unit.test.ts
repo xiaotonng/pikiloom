@@ -26,6 +26,40 @@ describe('Claude API retry classification', () => {
   });
 });
 
+describe('Claude -p driver — selected-model-unavailable surfaces as a non-retryable error', () => {
+  it('records s.errors + model_error stopReason from the <synthetic> model_not_found event', async () => {
+    const { createClaudeStreamState, claudeParse } = await import('../src/agent/drivers/claude.ts');
+    const s = createClaudeStreamState({
+      agent: 'claude', prompt: '你好', workdir: '/tmp', timeout: 60,
+      sessionId: null, model: 'claude-fable-5', thinkingEffort: 'high',
+      onText: () => {},
+    } as any);
+    // The disabled model surfaces as a `<synthetic>` assistant event carrying
+    // `error:"model_not_found"` — dropped from s.text on the live channel, but
+    // we record it as a hard error here.
+    claudeParse({
+      type: 'assistant',
+      error: 'model_not_found',
+      message: {
+        model: '<synthetic>',
+        content: [{ type: 'text', text: "There's an issue with the selected model (claude-fable-5). It may not exist or you may not have access to it." }],
+      },
+    }, s);
+    expect(s.stopReason).toBe('model_error');
+    expect(Array.isArray(s.errors) && s.errors.length > 0).toBe(true);
+    expect(String(s.errors[0])).toContain('(claude-fable-5)');
+    expect(String(s.errors[0]).toLowerCase()).toContain('unavailable');
+    // The result event carries a benign stop_reason ('stop_sequence') that must
+    // NOT clobber the 'model_error' we set, and its text is harmless to fold in.
+    claudeParse({
+      type: 'result', is_error: true, api_error_status: 404, stop_reason: 'stop_sequence',
+      result: "There's an issue with the selected model (claude-fable-5).", session_id: 'sess-1',
+    }, s);
+    expect(s.stopReason).toBe('model_error');
+    expect(String(s.errors[0])).toContain('(claude-fable-5)');
+  });
+});
+
 describe('Claude usage resolution', () => {
   const originalHome = process.env.HOME;
   let homeDir = '';

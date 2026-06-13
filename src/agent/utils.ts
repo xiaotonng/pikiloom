@@ -206,6 +206,38 @@ export function isRetryableClaudeApiError(reason: string): boolean {
   return /overloaded|overload|timeout|timed out|500|502|503|504|529|temporar|gateway|connection|network|internal (server )?error/i.test(r);
 }
 
+/**
+ * Detect Claude Code's "selected model is unavailable" notice — emitted when
+ * the requested `--model` id is disabled / not provisioned for the account (a
+ * 404 model_not_found). Its delivery differs by mode:
+ *   - `-p`/stream-json: a `<synthetic>` assistant event carrying
+ *     `error:"model_not_found"` plus the banner text, and a `result` event with
+ *     `is_error` — both reach the parser.
+ *   - TUI: the banner is *only* painted to the PTY screen. It is never written
+ *     to the transcript JSONL and fires no Stop hook (verified 2026-06-13), so
+ *     the screen scrape is the sole signal and the turn would otherwise hang
+ *     until the stall watchdog (3–10 min).
+ *
+ * Matching is whitespace-insensitive on purpose: the TUI renders the banner
+ * character-by-character with cursor positioning, so after ANSI stripping the
+ * words lose their spaces and wrap arbitrarily ("issuewiththeselectedmodel").
+ * Collapsing whitespace on both sides makes the match survive that rendering.
+ * Callers compose the user-facing message via `claudeModelErrorMessage` with
+ * the concrete model id they hold.
+ */
+export function detectClaudeModelError(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const collapsed = text.replace(/\s+/g, '').toLowerCase();
+  return collapsed.includes('issuewiththeselectedmodel')
+    || collapsed.includes('maynotexistoryoumaynothaveaccess');
+}
+
+/** User-facing message for an unavailable / no-access model (see {@link detectClaudeModelError}). */
+export function claudeModelErrorMessage(model: string | null | undefined): string {
+  const id = (model || '').trim();
+  return `The selected model${id ? ` (${id})` : ''} is unavailable — it may not exist, or this account doesn't have access to it. Switch to a different model in pikiclaw settings.`;
+}
+
 export function appendSystemPrompt(base: string | undefined, extra: string): string {
   const lhs = String(base || '').trim();
   const rhs = String(extra || '').trim();

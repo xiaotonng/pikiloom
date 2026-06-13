@@ -48,7 +48,7 @@ import {
   emitSessionIdUpdate, normalizeClaudeModelId,
   pushRecentActivity, summarizeClaudeToolUse, summarizeClaudeToolResult,
   previewToolCallInput, previewToolCallResult,
-  detectClaudeApiError,
+  detectClaudeApiError, detectClaudeModelError, claudeModelErrorMessage,
 } from '../utils.js';
 import { encodePathAsDirName, getHome, whichSync } from '../../core/platform.js';
 import { createRetainedLogSink } from '../../core/logging.js';
@@ -57,6 +57,7 @@ import {
   AGENT_STREAM_HARD_KILL_GRACE_MS,
   CLAUDE_TUI_STALL_QUIET_MS, CLAUDE_TUI_STALL_PENDING_TOOL_MS,
   CLAUDE_TUI_STALL_PTY_DEAD_MS, CLAUDE_TUI_STOP_HOLD_QUIET_TTL_MS,
+  CLAUDE_TUI_MODEL_ERROR_SETTLE_MS,
 } from '../../core/constants.js';
 import {
   claudeParse, createClaudeStreamState,
@@ -1170,6 +1171,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let exitSignal: number | null = null;
   let terminalLimitNotice: string | null = null;
   let terminalLimitNoticeAt = 0;
+  let terminalModelError: string | null = null;
   let proc: PtyProcess;
 
   const emit = () => {
@@ -1196,6 +1198,35 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     pushRecentActivity(s.recentActivity, `Claude usage notice: ${notice}`);
     s.activity = s.recentActivity.join('\n');
     emit();
+  };
+
+  // Selected-model-unavailable notice (404 model_not_found). Unlike the limit
+  // banner this is terminal AND invisible to every structured signal: the TUI
+  // paints it to the PTY screen, writes nothing to the JSONL, and fires no Stop
+  // hook — so the turn would otherwise idle at the REPL until the 3–10 min stall
+  // watchdog kills it with a misleading "CLI freeze" message. We surface the
+  // real reason and end the turn now. The banner is still EVIDENCE, not a bare
+  // verdict: a short settle confirms nothing substantive followed (cross-
+  // validating the screen scrape) before we kill — never granting a lone text
+  // match the authority to shoot a healthy turn.
+  const noteTerminalModelError = (notice: string): void => {
+    if (terminalModelError) return;
+    terminalModelError = notice;
+    agentWarn(`[claude-tui] model unavailable observed (settling before terminate): ${notice}`);
+    pushRecentActivity(s.recentActivity, notice);
+    s.activity = s.recentActivity.join('\n');
+    emit();
+    setTimeout(() => {
+      if (processExited || interrupted) return;
+      const hadOutput = !!s.text.trim()
+        || lastAssistantEventAt > 0 || lastSidecarEventAt > 0 || lastToolEventAt > start;
+      if (hadOutput) {
+        agentWarn('[claude-tui] model-unavailable banner was followed by real output — not terminating');
+        return;
+      }
+      agentWarn('[claude-tui] model unavailable confirmed (no JSONL/tool/Stop activity) — terminating turn');
+      killProc('SIGTERM');
+    }, CLAUDE_TUI_MODEL_ERROR_SETTLE_MS);
   };
 
   // Simulated streaming. See TuiStreamBuffer / applyAssistantStreaming above.
@@ -1407,6 +1438,13 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       if (stderrCapture.length > 4096) stderrCapture = stderrCapture.slice(0, 4096);
       const notice = detectClaudeTuiTerminalLimitNotice(stderrCapture);
       if (notice) noteTerminalLimitNotice(notice);
+    }
+    // Selected-model-unavailable notice — see noteTerminalModelError. The TUI
+    // only paints this to the screen (no JSONL, no Stop hook), so the live
+    // screen tail is the sole signal. detectClaudeModelError is whitespace-
+    // insensitive so it survives the TUI's char-by-char paint.
+    if (!terminalModelError && detectClaudeModelError(screenTail)) {
+      noteTerminalModelError(claudeModelErrorMessage(s.model || opts.claudeModel || null));
     }
   });
 
@@ -1852,27 +1890,37 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           screenSample: stallScreen.sample,
         });
         if (!s.errors) {
-          // Limit-notice arbitration first: a turn that showed a limit banner
-          // and then produced nothing substantive didn't freeze — the limit
-          // ate it. Label it rate_limit with the banner's own text (which
-          // carries the reset time) so the user gets the real reason, and so
-          // doClaudeWithRetry doesn't auto-resume into the same wall.
-          const limitOutcome = resolveClaudeTuiLimitOutcome({
-            noticeText: terminalLimitNotice,
-            noticeAt: terminalLimitNoticeAt,
-            lastSubstantiveEventAt: Math.max(lastAssistantEventAt, lastToolEventAt, lastSidecarEventAt),
-            hasOutputText: !!s.text.trim(),
-          });
-          if (limitOutcome === 'fatal') {
-            s.stopReason = 'rate_limit';
-            s.errors = [terminalLimitNotice!];
+          if (terminalModelError && !s.text.trim()) {
+            // Model-unavailable arbitration first: if the stall watchdog beat the
+            // settle-timer (noteTerminalModelError) to the kill, the turn didn't
+            // freeze — the selected model is disabled / no-access. Surface the real
+            // reason; stopReason 'model_error' is non-retryable so doClaudeWithRetry
+            // won't auto-resume into the same dead model.
+            s.stopReason = 'model_error';
+            s.errors = [terminalModelError];
           } else {
-            // Be honest about which kind of stall this is. looksLikePrompt here
-            // means the auto-answer (detectClaudeProceedPrompt) did NOT clear an
-            // interactive prompt — so it's a blocking dialog, not the CLI freeze.
-            s.errors = [stallScreen.looksLikePrompt
-              ? `Claude blocked mid-turn on an interactive prompt (PTY quiet ${ptyQuietS}s) that auto-answer couldn't clear. Terminated for auto-resume.`
-              : `Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
+            // Limit-notice arbitration: a turn that showed a limit banner and then
+            // produced nothing substantive didn't freeze — the limit ate it. Label
+            // it rate_limit with the banner's own text (which carries the reset
+            // time) so the user gets the real reason, and so doClaudeWithRetry
+            // doesn't auto-resume into the same wall.
+            const limitOutcome = resolveClaudeTuiLimitOutcome({
+              noticeText: terminalLimitNotice,
+              noticeAt: terminalLimitNoticeAt,
+              lastSubstantiveEventAt: Math.max(lastAssistantEventAt, lastToolEventAt, lastSidecarEventAt),
+              hasOutputText: !!s.text.trim(),
+            });
+            if (limitOutcome === 'fatal') {
+              s.stopReason = 'rate_limit';
+              s.errors = [terminalLimitNotice!];
+            } else {
+              // Be honest about which kind of stall this is. looksLikePrompt here
+              // means the auto-answer (detectClaudeProceedPrompt) did NOT clear an
+              // interactive prompt — so it's a blocking dialog, not the CLI freeze.
+              s.errors = [stallScreen.looksLikePrompt
+                ? `Claude blocked mid-turn on an interactive prompt (PTY quiet ${ptyQuietS}s) that auto-answer couldn't clear. Terminated for auto-resume.`
+                : `Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
+            }
           }
         }
         agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}, ptyQuiet=${ptyQuietS}s) — terminating TUI pid=${proc.pid}${s.stopReason === 'rate_limit' ? ' (usage limit)' : ' for auto-resume'}`);
@@ -1945,6 +1993,16 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     s.stopReason = 'api_error';
     s.text = '';
     if (!s.errors) s.errors = [`Anthropic API error: ${apiErrorReason}`];
+  }
+  // Model-unavailable arbitration: the TUI painted the "selected model is
+  // unavailable" banner (noteTerminalModelError) and the turn produced nothing
+  // — no JSONL, no Stop hook. The early settle-timer's SIGTERM (or any exit)
+  // brought us here; surface the real reason instead of a bare "(no textual
+  // response)". stopReason 'model_error' is non-retryable (doClaudeWithRetry
+  // only auto-resumes 'stalled'), so we never loop on the same dead model.
+  if (!interrupted && !s.errors && terminalModelError && !s.text.trim()) {
+    s.stopReason = 'model_error';
+    s.errors = [terminalModelError];
   }
   // Limit-notice arbitration (see resolveClaudeTuiLimitOutcome). Covers the
   // paths the stall watchdog never reaches: the TUI painted a limit banner,

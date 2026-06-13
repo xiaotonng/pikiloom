@@ -824,6 +824,12 @@ function AgentRow({
   const meta = getAgentMeta(agent.agent);
   const tagline = meta.advantageKey ? t(meta.advantageKey) : '';
   const summary = agent.installed ? buildRowSummary(agent, boundInfo, copy) : null;
+  // Mid-update: the CLI is being reinstalled via `npm install -g`, so its
+  // binary briefly vanishes from PATH and detection reports installed:false.
+  // Don't flash a misleading "Install" button — show an updating state until
+  // the reinstall lands and detection recovers (auto-update sets this status
+  // before the npm call and clears it after).
+  const updating = agent.updateStatus === 'updating';
 
   // Usage — quiet by default. The inline segments show the first two windows
   // (drivers order them short-to-long: 5h, 7d) plus the worst window when it
@@ -854,10 +860,12 @@ function AgentRow({
             {agent.isDefault && <Badge variant="accent">{copy.defaultBadge}</Badge>}
             {loading
               ? <Badge variant="muted"><Spinner className="h-3 w-3" /> {t('status.loading')}</Badge>
-              : agent.installed
-                ? <Badge variant="ok">{copy.installed}</Badge>
-                : <Badge variant="muted">{copy.notInstalled}</Badge>}
-            {agent.installed && agent.updateAvailable && (
+              : updating
+                ? <Badge variant="accent"><Spinner className="h-3 w-3" /> {copy.updating}</Badge>
+                : agent.installed
+                  ? <Badge variant="ok">{copy.installed}</Badge>
+                  : <Badge variant="muted">{copy.notInstalled}</Badge>}
+            {!updating && agent.installed && agent.updateAvailable && (
               <Badge variant="warn">{copy.updateAvailable}</Badge>
             )}
             {usageAlert !== 'ok' && (
@@ -921,17 +929,24 @@ function AgentRow({
               <Spinner className="h-3 w-3" />
             </div>
           )}
-          {!loading && !agent.installed && (
+          {/* Mid-reinstall: suppress install/configure (the binary is in flux) and
+              show an updating indicator instead — see the `updating` note above. */}
+          {!loading && updating && (
+            <div className="inline-flex h-7 items-center gap-2 px-2 text-[11px] text-fg-5">
+              <Spinner className="h-3 w-3" /> {copy.updating}
+            </div>
+          )}
+          {!loading && !updating && !agent.installed && (
             <Button variant="primary" size="sm" disabled={installing} onClick={() => onInstall(agent)}>
               {installing ? copy.installing : copy.install}
             </Button>
           )}
-          {!loading && agent.installed && agent.updateAvailable && (
+          {!loading && !updating && agent.installed && agent.updateAvailable && (
             <Button variant="outline" size="sm" disabled={updatingAgent} onClick={() => onUpdate(agent)}>
               {updatingAgent ? copy.updating : copy.update}
             </Button>
           )}
-          {!loading && agent.installed && !agent.updateAvailable && (
+          {!loading && !updating && agent.installed && !agent.updateAvailable && (
             <Button
               variant="ghost"
               size="icon"
@@ -944,7 +959,7 @@ function AgentRow({
               {checkingAgent ? <Spinner className="h-3 w-3" /> : <span aria-hidden="true">↻</span>}
             </Button>
           )}
-          {!loading && agent.installed && (
+          {!loading && !updating && agent.installed && (
             <Button variant="outline" size="sm" onClick={() => onEdit(agent)}>
               {copy.configure}
             </Button>

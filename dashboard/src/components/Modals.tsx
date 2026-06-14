@@ -1164,7 +1164,7 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
     }
 
     if (refreshed?.browser.remoteCdpUrl) {
-      // Remote CDP endpoint \u2014 pikiloop owns no local browser, so there is nothing
+      // Remote CDP endpoint \u2014 pikiloom owns no local browser, so there is nothing
       // to launch. Saving enabled is enough; sign-in happens in the Chrome that
       // owns the endpoint (e.g. the sidecar's web VNC).
       setResult({ ok: true, text: '\u2713 ' + t('ext.browserRemoteStep') });

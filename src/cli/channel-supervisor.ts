@@ -1,7 +1,7 @@
 /**
  * channel-supervisor.ts — Owns the set of running IM channel bots and
  * reconciles it against the current user config without restarting the
- * pikiloop process.
+ * pikiloom process.
  *
  * Subscribes to onUserConfigChange. Whenever the channels array or any
  * channel's credentials change, the supervisor stops the affected bot,

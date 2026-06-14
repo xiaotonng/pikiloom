@@ -6,11 +6,11 @@
  * to `~/.claude/projects/<encoded>/<id>.jsonl` and surface tool/text/usage
  * events through the same `claudeParse` parser used by the print-mode driver.
  *
- * Default driver for Claude turns. Set `PIKILOOP_CLAUDE_PRINT=1` (or the
- * legacy `PIKILOOP_CLAUDE_TUI=0`) to force the print-mode driver instead.
+ * Default driver for Claude turns. Set `PIKILOOM_CLAUDE_PRINT=1` (or the
+ * legacy `PIKILOOM_CLAUDE_TUI=0`) to force the print-mode driver instead.
  * When any startup prerequisite fails (node-pty missing, prebuilt helper
  * unusable, PTY allocation refused) this function THROWS — the dispatcher in
- * `claude.ts` catches that and falls back to print mode so pikiloop stays
+ * `claude.ts` catches that and falls back to print mode so pikiloom stays
  * working out of the box.
  *
  * How it works:
@@ -74,7 +74,7 @@ import {
 //
 // We instrument the mid-turn freeze before tuning the watchdog: the next pause
 // should be classified from data, not guesswork. Records land append-only in
-// ~/.pikiloop/diagnostics/claude-tui-stall.jsonl across three moments:
+// ~/.pikiloom/diagnostics/claude-tui-stall.jsonl across three moments:
 //   - 'quiet'    — heartbeat while a turn has gone silent past the threshold
 //                  (captures the lead-up to a stall, throttled)
 //   - 'stall'    — the watchdog declared the turn dead and SIGTERMed it
@@ -100,7 +100,7 @@ function writeStallDiag(record: Record<string, unknown>): void {
   if (stallDiagSink === null) return;
   try {
     if (stallDiagSink === undefined) {
-      const file = path.join(getHome(), '.pikiloop', 'diagnostics', 'claude-tui-stall.jsonl');
+      const file = path.join(getHome(), '.pikiloom', 'diagnostics', 'claude-tui-stall.jsonl');
       stallDiagSink = createRetainedLogSink(file, {
         maxLines: 50_000,
         maxAgeMs: 14 * 24 * 60 * 60_000,
@@ -438,7 +438,7 @@ export function resolveClaudeTuiLimitOutcome(input: {
 
 /**
  * Detect Claude Code's startup "Bypass Permissions mode" confirmation dialog in
- * a slice of (ANSI-stripped) PTY screen output. When pikiloop spawns the TUI
+ * a slice of (ANSI-stripped) PTY screen output. When pikiloom spawns the TUI
  * with `--permission-mode bypassPermissions` (the default) on a machine that
  * has not yet accepted bypass mode, Claude paints a blocking prompt:
  *
@@ -1157,7 +1157,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // 2. Temp workspace for hook script + state + settings.
   let workDir: string;
   try {
-    workDir = fs.mkdtempSync(path.join(tmpdir(), 'pikiloop-claude-tui-'));
+    workDir = fs.mkdtempSync(path.join(tmpdir(), 'pikiloom-claude-tui-'));
   } catch (e: any) {
     return makeErrorResult(opts, start, `Failed to create temp dir: ${e?.message || e}`);
   }
@@ -1171,7 +1171,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     fs.writeFileSync(hookPath, HOOK_SCRIPT, { mode: 0o755 });
     fs.writeFileSync(statePath, JSON.stringify({ events: [] }));
     fs.writeFileSync(toolEventsPath, '');
-    // Use the same Node binary that's running pikiloop — `node` may not be on
+    // Use the same Node binary that's running pikiloom — `node` may not be on
     // PATH inside the claude TUI's hook subprocess on every distro.
     const nodeBin = Q(process.execPath);
     const hookCmd = (event: string) => `${nodeBin} ${Q(hookPath)} ${event} ${Q(statePath)} ${Q(toolEventsPath)}`;
@@ -1271,7 +1271,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // A brand-new session uses the id we generated and passed via --session-id, so
   // it is final the instant we spawn. Emit it now: s.sessionId is still unset
   // here, so emitSessionIdUpdate fires the onSessionId callback that promotes the
-  // pending pikiloop record (and its in-memory runtime) to the native id. The
+  // pending pikiloom record (and its in-memory runtime) to the native id. The
   // prior `s.sessionId = activeSessionId` made this a silent no-op (emit dedups on
   // `id === s.sessionId`), so the record stayed `pending_*` for the whole run —
   // and since mergeManagedAndNativeSessions drops pending records, the dashboard
@@ -1404,7 +1404,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   }
   // Strip the session-context markers a parent claude process exports to its
   // subprocesses (CLAUDECODE, CLAUDE_CODE_CHILD_SESSION, …). Inherited e.g.
-  // when an agent restarted the pikiloop daemon from inside a Claude Code
+  // when an agent restarted the pikiloom daemon from inside a Claude Code
   // session, they flip this spawn into child-session mode — the transcript
   // JSONL (our only text source) is then never written locally and the turn
   // streams nothing. See CLAUDE_SESSION_CONTEXT_ENV_KEYS in claude.ts.
@@ -1412,7 +1412,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // Critical: leaving ANTHROPIC_API_KEY set would route TUI through API
   // billing too, defeating the whole point. Strip it unless the user
   // explicitly opts back in.
-  if (process.env.PIKILOOP_CLAUDE_TUI_KEEP_API_KEY !== '1') {
+  if (process.env.PIKILOOM_CLAUDE_TUI_KEEP_API_KEY !== '1') {
     delete spawnEnv.ANTHROPIC_API_KEY;
     delete spawnEnv.ANTHROPIC_AUTH_TOKEN;
   }
@@ -1443,7 +1443,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   }
   agentLog(`[claude-tui] pid=${proc.pid}`);
 
-  const dbg = process.env.PIKILOOP_CLAUDE_TUI_DEBUG === '1';
+  const dbg = process.env.PIKILOOM_CLAUDE_TUI_DEBUG === '1';
   /** Wall-clock of the last raw PTY byte — stall watchdog fast-path signal. */
   let lastPtyDataAt = Date.now();
   // Startup-dialog auto-answer. Claude's TUI can paint a blocking "Bypass
@@ -1824,9 +1824,9 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       looksLikePrompt: true, screenState, action: 'terminate-prompt-unanswered', screenSample: sample,
     });
     s.stopReason = 'prompt_unanswered';
-    if (!s.errors) s.errors = ['Claude paused for a confirmation pikiloop could not auto-approve. Your session is intact — re-send your message (or reply "continue") to proceed.'];
+    if (!s.errors) s.errors = ['Claude paused for a confirmation pikiloom could not auto-approve. Your session is intact — re-send your message (or reply "continue") to proceed.'];
     agentWarn(`[claude-tui] confirm dialog (${screenState}) did not clear after auto-answer — ending turn without auto-resume pid=${proc.pid}`);
-    pushRecentActivity(s.recentActivity, 'Waiting on a confirmation pikiloop could not auto-approve — re-send to continue');
+    pushRecentActivity(s.recentActivity, 'Waiting on a confirmation pikiloom could not auto-approve — re-send to continue');
     s.activity = s.recentActivity.join('\n');
     emit();
     killProc('SIGTERM');

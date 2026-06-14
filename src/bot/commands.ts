@@ -117,7 +117,7 @@ export function getWorkspacesData(bot: Bot, chatId: ChatId): WorkspacesData {
  *   - codex → native `thread/goal/*` RPC (state machine + budget + pause/resume)
  *   - claude → native `/goal <condition>` slash command (Stop hook continuation,
  *              auto-clear on completion, no budget / no pause/resume)
- *   - others → pikiloop's portable goal.json with continuation injection
+ *   - others → pikiloom's portable goal.json with continuation injection
  */
 export async function handleGoalCommand(bot: Bot, chatId: ChatId, rawArgs: string): Promise<string | null> {
   const session = bot.selectedSession(chatId);
@@ -685,7 +685,7 @@ export function resolveSkillPrompt(bot: Bot, chatId: ChatId, cmd: string, args: 
   if (skillFile) {
     prompt = `${workdirHint}Read the skill definition at \`${skillFile}\` and execute the instructions defined there.${suffix}`;
   } else {
-    const fallbackPath = `${wd}/.pikiloop/skills/${skill.name}/SKILL.md`;
+    const fallbackPath = `${wd}/.pikiloom/skills/${skill.name}/SKILL.md`;
     prompt = `${workdirHint}Read the skill definition at \`${fallbackPath}\` and execute the instructions defined there.${suffix}`;
   }
   return { prompt, skillName: skill.name };

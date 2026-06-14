@@ -22,7 +22,7 @@ const PNG_BYTES = Buffer.from(
 describe('attachAgentImage', () => {
   let tmpDir: string;
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-img-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -32,13 +32,13 @@ describe('attachAgentImage', () => {
     // --- inlines small images as data URLs and records imagePath/imageMime ---
     const smallFile = path.join(tmpDir, 'cover.png');
     fs.writeFileSync(smallFile, PNG_BYTES);
-    const inlined = attachAgentImage({ imagePath: smallFile, caption: 'pikiloop cover' });
+    const inlined = attachAgentImage({ imagePath: smallFile, caption: 'pikiloom cover' });
     expect(inlined).not.toBeNull();
     expect(inlined!.type).toBe('image');
     expect(inlined!.content.startsWith('data:image/png;base64,')).toBe(true);
     expect(inlined!.imagePath).toBe(smallFile);
     expect(inlined!.imageMime).toBe('image/png');
-    expect(inlined!.imageCaption).toBe('pikiloop cover');
+    expect(inlined!.imageCaption).toBe('pikiloom cover');
 
     // --- file:// sentinel for images above the inline threshold ---
     const bigFile = path.join(tmpDir, 'big.png');
@@ -56,7 +56,7 @@ describe('attachAgentImage', () => {
 describe('attachInlineImage', () => {
   it('persists when requested, inlines as data URL otherwise, and rejects non-image MIME types', () => {
     // --- persists bytes under the per-session attachments dir when persist is set ---
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-img-test-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
     const homeSnapshot = process.env.HOME;
     process.env.HOME = tmp; // sessionAttachmentsDir resolves under $HOME
     try {
@@ -91,7 +91,7 @@ describe('attachInlineImage', () => {
 describe('materializeImage & rewriteImageBlocksForTransport', () => {
   it('materializes from imagePath/data URL, rejects non-images, and rewrites transport blocks', () => {
     // --- materializeImage prefers imagePath when present ---
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-img-test-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
     const file = path.join(tmp, 'inline.png');
     fs.writeFileSync(file, PNG_BYTES);
     try {
@@ -170,7 +170,7 @@ describe('resolveAllowedAttachmentPath', () => {
     expect(resolveAllowedAttachmentPath('/etc/passwd')).toBeNull();
 
     // --- accepts files under the configured workdir ---
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-img-test-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
     const file = path.join(tmp, 'asset.png');
     fs.writeFileSync(file, PNG_BYTES);
     try {
@@ -183,7 +183,7 @@ describe('resolveAllowedAttachmentPath', () => {
 
     // --- rejects paths outside every allowed root (no workdir) ---
     // /etc/hosts always exists and is outside every default allowlist root
-    // (~/.codex, ~/.claude, ~/.gemini, ~/.pikiloop/attachments, os.tmpdir()).
+    // (~/.codex, ~/.claude, ~/.gemini, ~/.pikiloom/attachments, os.tmpdir()).
     // Verifies the post-realpath allowlist check correctly denies it.
     expect(resolveAllowedAttachmentPath('/etc/hosts')).toBeNull();
 
@@ -197,7 +197,7 @@ describe('resolveAllowedAttachmentPath', () => {
     fs.mkdirSync(scratch, { recursive: true });
     const wsA = fs.mkdtempSync(path.join(scratch, 'img-ws-a-'));
     const wsB = fs.mkdtempSync(path.join(scratch, 'img-ws-b-'));
-    const wsFile = path.join(wsB, '.pikiloop', 'sessions', 'claude', 's1', 'workspace', 'image.png');
+    const wsFile = path.join(wsB, '.pikiloom', 'sessions', 'claude', 's1', 'workspace', 'image.png');
     fs.mkdirSync(path.dirname(wsFile), { recursive: true });
     fs.writeFileSync(wsFile, PNG_BYTES);
     try {

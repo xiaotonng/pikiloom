@@ -67,7 +67,7 @@ export default function Swarm() {
             N agents × N windows × one operator.
           </h2>
           <p className="mt-4 text-neutral-400">
-            Most "AI dev tools" assume one user, one agent, one task. pikiloop assumes the opposite — a swarm of
+            Most "AI dev tools" assume one user, one agent, one task. pikiloom assumes the opposite — a swarm of
             agents at one creator's fingertips, sharing a single unified toolkit.
           </p>
         </div>

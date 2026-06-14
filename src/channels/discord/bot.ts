@@ -153,7 +153,7 @@ export class DiscordBot extends Bot {
           '/sessions [new|#] - List/switch sessions',
           '/skills - List project skills',
           '/stop - Stop current task',
-          '/restart - Restart pikiloop',
+          '/restart - Restart pikiloom',
         ].join('\n'));
         return true;
       case 'new': this.resetConversationForChat(ctx.chatId); await ctx.reply('Started a new session.'); return true;
@@ -175,7 +175,7 @@ export class DiscordBot extends Bot {
 
   private async cmdStart(ctx: DiscordContext) {
     const d = getStartData(this, ctx.chatId);
-    const lines = [`pikiloop v${d.version}`, `Workdir: ${d.workdir}`, '', `Agent: ${d.agent}`];
+    const lines = [`pikiloom v${d.version}`, `Workdir: ${d.workdir}`, '', `Agent: ${d.agent}`];
     for (const a of d.agentDetails) {
       const parts = [`  ${a.agent}: ${a.model}`];
       if (a.effort) parts[0] += ` (effort: ${a.effort})`;
@@ -189,7 +189,7 @@ export class DiscordBot extends Bot {
     const d = await getStatusDataAsync(this, ctx.chatId);
     const gitLine = formatGitStatusLine(d.git);
     const lines = [
-      `pikiloop v${d.version}`,
+      `pikiloom v${d.version}`,
       `Uptime: ${fmtUptime(d.uptime)}`,
       `PID: ${d.pid} | RSS: ${fmtBytes(d.memRss)} | Heap: ${fmtBytes(d.memHeap)}`,
       `Workdir: ${d.workdir}`,
@@ -409,7 +409,7 @@ export class DiscordBot extends Bot {
   }
 
   private async cmdRestart(ctx: DiscordContext) {
-    await ctx.reply('Restarting pikiloop...');
+    await ctx.reply('Restarting pikiloom...');
     void requestProcessRestart({ log: msg => this.log(msg) });
   }
 
@@ -508,7 +508,7 @@ export class DiscordBot extends Bot {
   }
 
   async run() {
-    const tmpDir = path.join(os.tmpdir(), 'pikiloop');
+    const tmpDir = path.join(os.tmpdir(), 'pikiloom');
     fs.mkdirSync(tmpDir, { recursive: true });
 
     this.channel = new DiscordChannel({

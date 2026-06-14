@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   MANAGED_BROWSER_PROFILE_SUBPATH,
-  PIKILOOP_BROWSER_CDP_URL_ENV,
+  PIKILOOM_BROWSER_CDP_URL_ENV,
   PLAYWRIGHT_MCP_PACKAGE_NAME,
   PLAYWRIGHT_MCP_PACKAGE_SPEC,
   PLAYWRIGHT_MCP_BROWSER_ARGS,
@@ -95,17 +95,17 @@ function normalizeBrowserCdpEndpoint(endpoint: string): string {
 }
 
 /**
- * The external CDP endpoint configured via {@link PIKILOOP_BROWSER_CDP_URL_ENV},
+ * The external CDP endpoint configured via {@link PIKILOOM_BROWSER_CDP_URL_ENV},
  * normalized (trailing slashes stripped, blank → null). Single source of truth
  * for the remote-browser override: when this returns a value, every browser
- * codepath attaches to it and pikiloop never launches, probes, or kills a local
+ * codepath attaches to it and pikiloom never launches, probes, or kills a local
  * Chrome. Read from `env` (defaults to `process.env`) so callers can inject it
  * in tests.
  */
 export function getConfiguredRemoteCdpUrl(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  const raw = String(env[PIKILOOP_BROWSER_CDP_URL_ENV] || '').trim();
+  const raw = String(env[PIKILOOM_BROWSER_CDP_URL_ENV] || '').trim();
   if (!raw) return null;
   return normalizeBrowserCdpEndpoint(raw);
 }
@@ -220,7 +220,7 @@ function getPlaywrightMcpConfigPath(outputDir: string): string {
  * arg so Chrome doesn't show its "unsupported command-line flag" infobar.
  * Playwright adds that flag to hide `navigator.webdriver`; removing it makes
  * the managed browser look like a normal session, which is what we want for
- * pikiloop's logged-in automation profile.
+ * pikiloom's logged-in automation profile.
  *
  * Idempotent: rewrites only when the content drifts.
  */
@@ -605,10 +605,10 @@ export function getManagedBrowserStatus(): ManagedBrowserStatus {
     pid: runningState.pid,
     detail: chromeInstalled
       ? runningState.running
-        ? 'Managed browser is open for sign-in. pikiloop will close it automatically before browser automation starts.'
+        ? 'Managed browser is open for sign-in. pikiloom will close it automatically before browser automation starts.'
         : profileCreated
-        ? 'Managed browser profile is ready. Launch it to confirm login state. If it is still open later, pikiloop will close it automatically before browser automation starts.'
-        : 'Chrome is installed. Launch the managed browser once and sign in to the sites you need. If it is still open later, pikiloop will close it automatically before browser automation starts.'
+        ? 'Managed browser profile is ready. Launch it to confirm login state. If it is still open later, pikiloom will close it automatically before browser automation starts.'
+        : 'Chrome is installed. Launch the managed browser once and sign in to the sites you need. If it is still open later, pikiloom will close it automatically before browser automation starts.'
       : 'Chrome is not available on this machine. Install Google Chrome or Chromium to use browser automation.',
     chromeExecutable,
     launchCommand: chromeExecutable ? [chromeExecutable, ...getManagedBrowserLaunchArgs(profileDir)] : [],

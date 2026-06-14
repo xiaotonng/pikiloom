@@ -16,9 +16,9 @@ const positiveIntEnv = (name, fallback) => {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 
-const maxLines = positiveIntEnv('PIKILOOP_LOG_MAX_LINES', 5000);
-const maxAgeMs = positiveIntEnv('PIKILOOP_LOG_MAX_AGE_MS', 24 * 60 * 60 * 1000);
-const trimEveryWrites = positiveIntEnv('PIKILOOP_LOG_TRIM_EVERY_WRITES', 200);
+const maxLines = positiveIntEnv('PIKILOOM_LOG_MAX_LINES', 5000);
+const maxAgeMs = positiveIntEnv('PIKILOOM_LOG_MAX_AGE_MS', 24 * 60 * 60 * 1000);
+const trimEveryWrites = positiveIntEnv('PIKILOOM_LOG_TRIM_EVERY_WRITES', 200);
 
 const trimRetainedLogFile = () => {
   try {

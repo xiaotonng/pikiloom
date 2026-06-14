@@ -81,7 +81,7 @@ export {
 // ── Re-export: session management ───────────────────────────────────────────
 export {
   updateSessionMeta, promoteSessionId, recordFork,
-  listPikiloopSessions, findPikiloopSession, getSessionStoredConfig,
+  listPikiloomSessions, findPikiloomSession, getSessionStoredConfig,
   ensureManagedSession, findManagedThreadSession, stageSessionFiles,
   mergeManagedAndNativeSessions,
   getSessions, getSessionTail, getSessionMessages,

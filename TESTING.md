@@ -1,6 +1,6 @@
 # Testing Guide
 
-`pikiloop` uses Vitest for all automated tests. Live runtime validation goes through `npm run dev`.
+`pikiloom` uses Vitest for all automated tests. Live runtime validation goes through `npm run dev`.
 
 ## Test Commands
 
@@ -14,7 +14,7 @@ npm run test:watch
 # Single file
 npx vitest run test/code-agent.unit.test.ts
 
-# Manual runtime / startup validation (preferred for anything that launches pikiloop)
+# Manual runtime / startup validation (preferred for anything that launches pikiloom)
 npm run dev
 
 # Manual end-to-end interaction verification (real dashboard + bot + human loop)
@@ -25,12 +25,12 @@ There is a single Vitest configuration (`vitest.config.ts`); every `test/*.unit.
 
 ## Startup Rule
 
-If a test or validation step needs to launch `pikiloop` itself, use `npm run dev`.
+If a test or validation step needs to launch `pikiloom` itself, use `npm run dev`.
 
 - `npm run dev` is the local-only startup path
 - It runs with `--no-daemon`, so it stays on the checked-out source tree
-- It rewrites `~/.pikiloop/dev/dev.log` on each launch
-- Do not kill or reuse the long-lived production/self-bootstrap `npx pikiloop@latest` process on this machine as part of dev testing
+- It rewrites `~/.pikiloom/dev/dev.log` on each launch
+- Do not kill or reuse the long-lived production/self-bootstrap `npx pikiloom@latest` process on this machine as part of dev testing
 
 ## Environment Setup
 
@@ -79,7 +79,7 @@ Agent live tests also require the corresponding CLI to be installed and authenti
 |---|---|
 | `test/verify-interaction-e2e.ts` | Spins up a real dashboard + bot, submits a task that triggers human-in-the-loop, and answers via REST — mirrors the dashboard frontend flow. Run with `npx tsx test/verify-interaction-e2e.ts`. |
 
-For any IM-driven manual end-to-end validation, start the local runtime with `npm run dev` and inspect `~/.pikiloop/dev/dev.log`.
+For any IM-driven manual end-to-end validation, start the local runtime with `npm run dev` and inspect `~/.pikiloom/dev/dev.log`.
 
 ## Common Runs
 

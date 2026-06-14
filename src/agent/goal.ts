@@ -1,5 +1,5 @@
 /**
- * Persistent thread goal — pikiloop's portable analog of Codex CLI's `/goal`.
+ * Persistent thread goal — pikiloom's portable analog of Codex CLI's `/goal`.
  *
  * One goal per session, stored alongside session.json. The model can mark it
  * complete; everything else (set / pause / resume / clear / budget) is user or
@@ -51,7 +51,7 @@ export const DEFAULT_MAX_CONTINUATIONS = 50;
 // ---------------------------------------------------------------------------
 
 export function sessionGoalPath(workdir: string, agent: Agent, sessionId: string): string {
-  return path.join(workdir, '.pikiloop', 'sessions', agent, sessionId, GOAL_FILE);
+  return path.join(workdir, '.pikiloom', 'sessions', agent, sessionId, GOAL_FILE);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ export function shouldContinueAfterTurn(
 // ---------------------------------------------------------------------------
 // Prompts — adapted from openai/codex codex-rs/core/templates/goals/*.md
 // (Apache-2.0 / MIT). Tool name swapped from `update_goal` to `goal_update` to
-// match pikiloop's MCP namespace.
+// match pikiloom's MCP namespace.
 // ---------------------------------------------------------------------------
 
 const CONTINUATION_TEMPLATE = `Continue working toward the active thread goal.

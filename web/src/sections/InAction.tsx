@@ -10,7 +10,7 @@ export default function InAction() {
           Ask from your phone. It runs on your machine.
         </h2>
         <p className="mt-4 text-neutral-400">
-          Ask pikiloop to gather and summarize today's AI news — the agent reads, writes, and ships results back
+          Ask pikiloom to gather and summarize today's AI news — the agent reads, writes, and ships results back
           through Telegram, all steered from your phone.
         </p>
       </div>
@@ -29,7 +29,7 @@ export default function InAction() {
         <div className="space-y-3">
           <BrowserFrame
             src={asset('media/promo-dashboard-workspace.png')}
-            alt="pikiloop Web Dashboard multi-pane workspace"
+            alt="pikiloom Web Dashboard multi-pane workspace"
             ratioW={1500}
             ratioH={773}
             cropTop={0.12}

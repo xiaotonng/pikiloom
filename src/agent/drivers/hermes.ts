@@ -1,7 +1,7 @@
 /**
  * Hermes Agent driver — speaks ACP (Agent Client Protocol) to `hermes acp`.
  *
- * Pikiloop owns Provider/Profile credentials in its own vault; this driver
+ * Pikiloom owns Provider/Profile credentials in its own vault; this driver
  * reads the active Profile via the model layer's injector and applies env
  * vars when spawning the Hermes ACP child process. Hermes' own config and
  * `hermes auth` command are not touched.
@@ -25,7 +25,7 @@ import {
   type UsageOpts, type UsageResult, type UsageWindowInfo,
   type TailMessage, type RichMessage, type MessageBlock,
   agentLog, agentWarn, emptyUsage, normalizeErrorMessage,
-  listPikiloopSessions, findPikiloopSession,
+  listPikiloomSessions, findPikiloomSession,
   buildStreamPreviewMeta, applyTurnWindow, pushRecentActivity,
   IMAGE_EXTS, mimeForExt,
 } from '../index.js';
@@ -155,7 +155,7 @@ function makeStreamResult(start: number, partial: Partial<StreamResult> = {}): S
 // Empty / refusal heuristic — used to surface a hint when the model's reply
 // is the canonical OpenAI safety refusal with no content. We don't paper
 // over it (the user should see exactly what the model said), but a short
-// pikiloop note tells them this came from the model itself, not a bug.
+// pikiloom note tells them this came from the model itself, not a bug.
 const REFUSAL_REGEX = /^(?:i'?m sorry|sorry),?[\s\w,'`]*?(?:can(?:not|'t)|unable to)\s+(?:assist|help)[\s\S]{0,40}$/i;
 
 // ---------------------------------------------------------------------------
@@ -193,14 +193,14 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
   let consumeUpdates = true;
 
   // Agent-initiated requests we must respond to (we deny filesystem ops we
-  // don't support; pikiloop has its own sandbox/permission model elsewhere).
+  // don't support; pikiloom has its own sandbox/permission model elsewhere).
   client.on('request', ({ id, method }: any) => {
     if (method === 'session/request_permission') {
       client.respond(id, { outcome: { outcome: 'cancelled' } });
       return;
     }
     if (method === 'fs/read_text_file' || method === 'fs/write_text_file') {
-      client.respondError(id, -32601, 'fs methods not supported by pikiloop client');
+      client.respondError(id, -32601, 'fs methods not supported by pikiloom client');
       return;
     }
     client.respondError(id, -32601, `Method not implemented: ${method}`);
@@ -304,7 +304,7 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
     // Current `hermes acp` accepts the request but only persists the value on
     // the session record (it doesn't influence generation). When Hermes adds a
     // real effort knob to the ACP surface, this call will start taking effect
-    // without any pikiloop change.
+    // without any pikiloom change.
     if (opts.thinkingEffort) {
       await client.tryRequest('session/set_mode', {
         sessionId,
@@ -360,7 +360,7 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
       incomplete: stopReason !== 'end_turn',
       activity: null,
       // When the model itself refuses, mark as incomplete and add a hint so
-      // the user can tell it's the model's choice (not a pikiloop error).
+      // the user can tell it's the model's choice (not a pikiloom error).
       error: isRefusalOnly
         ? `Model returned a safety refusal. Try a different model on the agent card (e.g. claude-haiku-4.5 via OpenRouter), or check ~/.hermes/config.yaml.`
         : null,
@@ -393,10 +393,10 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
 
 async function getHermesSessions(workdir: string, limit?: number): Promise<SessionListResult> {
   // Hermes' own session list lives in a SQLite DB inside ~/.hermes — useful
-  // for the `hermes sessions` CLI but irrelevant to pikiloop, which always
-  // creates its own ACP session per turn and records it under .pikiloop.
+  // for the `hermes sessions` CLI but irrelevant to pikiloom, which always
+  // creates its own ACP session per turn and records it under .pikiloom.
   const resolvedWorkdir = resolvePath(workdir);
-  const records = listPikiloopSessions(resolvedWorkdir, 'hermes');
+  const records = listPikiloomSessions(resolvedWorkdir, 'hermes');
   const sessions = records.map(record => ({
     sessionId: record.sessionId,
     agent: 'hermes' as const,
@@ -424,7 +424,7 @@ async function getHermesSessions(workdir: string, limit?: number): Promise<Sessi
   }));
   sessions.sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
   const sliced = typeof limit === 'number' ? sessions.slice(0, limit) : sessions;
-  agentLog(`[sessions:hermes] workdir=${resolvedWorkdir} pikiloop=${records.length} returned=${sliced.length}`);
+  agentLog(`[sessions:hermes] workdir=${resolvedWorkdir} pikiloom=${records.length} returned=${sliced.length}`);
   return { ok: true, sessions: sliced, error: null };
 }
 
@@ -593,9 +593,9 @@ function getHermesSessionMessagesFromJson(opts: SessionMessagesOpts): SessionMes
 function getHermesSessionMessagesFromRecord(opts: SessionMessagesOpts): SessionMessagesResult {
   // Fallback for sessions that pre-date the JSON store (or that Hermes wrote
   // somewhere we can't see). Synthesizes the most recent turn from the
-  // pikiloop session record so the dashboard still has *something* after the
+  // pikiloom session record so the dashboard still has *something* after the
   // live snapshot expires.
-  const record = findPikiloopSession(opts.workdir, 'hermes', opts.sessionId);
+  const record = findPikiloomSession(opts.workdir, 'hermes', opts.sessionId);
   if (!record || (!record.lastQuestion && !record.lastAnswer && !record.lastThinking)) {
     return { ok: true, messages: [], totalTurns: 0, error: null };
   }
@@ -647,7 +647,7 @@ async function listHermesModels(_opts: ModelListOpts): Promise<ModelListResult> 
   // When Hermes has its own working config (typical case — user ran `hermes auth`
   // and `hermes config`), surface the configured default model so the dashboard
   // and IM /models reflect what Hermes will actually use without forcing the
-  // user to re-configure inside pikiloop.
+  // user to re-configure inside pikiloom.
   const native = readHermesNativeConfig();
   const models: ModelInfo[] = native?.model
     ? [{ id: native.model, alias: `${native.provider} (Hermes config)` }]
@@ -657,18 +657,18 @@ async function listHermesModels(_opts: ModelListOpts): Promise<ModelListResult> 
     models,
     sources: native ? [`~/.hermes/config.yaml · ${native.provider}`] : ['~/.hermes/config.yaml (not configured)'],
     note: native
-      ? `Reading Hermes' own config. Bind a pikiloop Provider on the agent card to override.`
-      : `Run \`hermes config\` to set a default model, or bind a pikiloop Provider on the agent card.`,
+      ? `Reading Hermes' own config. Bind a pikiloom Provider on the agent card to override.`
+      : `Run \`hermes config\` to set a default model, or bind a pikiloom Provider on the agent card.`,
   };
 }
 
 // ---------------------------------------------------------------------------
 // Native config reader
 //
-// Pikiloop never writes to ~/.hermes/config.yaml — that is Hermes' own state.
+// Pikiloom never writes to ~/.hermes/config.yaml — that is Hermes' own state.
 // We just *read* a few fields so the dashboard can show what Hermes will run
 // with when no BYOK Profile is bound, and so the UI doesn't pretend that an
-// already-configured Hermes "needs" to be re-configured inside pikiloop.
+// already-configured Hermes "needs" to be re-configured inside pikiloom.
 //
 // Limited surface: only the top-level `model.*` and `agent.reasoning_effort`
 // keys we care about. Implemented with simple string matching (no YAML
@@ -802,7 +802,7 @@ const HermesDriver: AgentDriver = {
   thinkLabel: 'Reasoning',
   // Hermes locks the model at profile-binding time. The ACP `session/set_model`
   // hook exists but is unreliable across providers in current Hermes builds, so
-  // pikiloop treats the model as fixed for the session and hides the picker.
+  // pikiloom treats the model as fixed for the session and hides the picker.
   capabilities: { fork: false, modelSwitch: false, workflow: false },
   // Hermes is BYOK-only — every Profile kind is fair game.
   acceptedProviderKinds: ['anthropic', 'openai', 'openai-compatible', 'google'],

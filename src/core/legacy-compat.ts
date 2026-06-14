@@ -1,9 +1,11 @@
 /**
- * One-time backward-compat shims for the pikiclaw → pikiloop rename.
+ * One-time backward-compat shims for the project rename.
  *
- * Both run once at process startup — BEFORE any config is read or any lock /
- * PID file is taken — so existing installs keep their settings, credentials,
- * managed browser profile and skills with zero user action.
+ * The orchestrator shipped as `pikiclaw`, briefly as `pikiloop`, and is now
+ * `pikiloom`. Both run once at process startup — BEFORE any config is read or
+ * any lock / PID file is taken — so installs created under either old name keep
+ * their settings, credentials, managed browser profile and skills with zero
+ * user action.
  *
  * Remove this file (and the LEGACY_* constants) a couple of releases after the
  * rename has propagated.
@@ -13,31 +15,35 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   STATE_DIR_NAME,
-  LEGACY_STATE_DIR_NAME,
+  LEGACY_STATE_DIR_NAMES,
   ENV_PREFIX,
-  LEGACY_ENV_PREFIX,
+  LEGACY_ENV_PREFIXES,
 } from './constants.js';
 
 /**
- * Mirror every `PIKICLAW_*` env var onto the matching `PIKILOOP_*` name when the
- * new name is unset. Covers user-set vars (shell profiles, docker-compose,
- * systemd units) AND internal ones a still-old parent process may have set
- * across an upgrade boundary (e.g. PIKICLAW_DAEMON_CHILD, PIKICLAW_FROM_LAUNCHD).
+ * Mirror every legacy-prefixed env var (`PIKILOOP_*`, `PIKICLAW_*`) onto the
+ * matching `PIKILOOM_*` name when the new name is unset. Covers user-set vars
+ * (shell profiles, docker-compose, systemd units) AND internal ones a still-old
+ * parent process may have set across an upgrade boundary. Legacy prefixes are
+ * applied newest-first, so the most recent name wins when both are present.
  */
 export function hydrateLegacyEnv(): void {
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    if (!key.startsWith(LEGACY_ENV_PREFIX)) continue;
-    const mapped = ENV_PREFIX + key.slice(LEGACY_ENV_PREFIX.length);
-    if (process.env[mapped] === undefined) process.env[mapped] = value;
+  for (const legacy of LEGACY_ENV_PREFIXES) {
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined) continue;
+      if (!key.startsWith(legacy)) continue;
+      const mapped = ENV_PREFIX + key.slice(legacy.length);
+      if (process.env[mapped] === undefined) process.env[mapped] = value;
+    }
   }
 }
 
 /**
- * Migrate `~/.pikiclaw` → `~/.pikiloop` exactly once.
+ * Migrate the first existing legacy state dir (`~/.pikiloop`, then
+ * `~/.pikiclaw`) → `~/.pikiloom`, exactly once.
  *
- * No-op when the new dir already exists (migrated or fresh install) or the old
- * one is absent (brand-new user). A same-volume rename is atomic; on a
+ * No-op when the new dir already exists (migrated or fresh install) or no legacy
+ * dir is present (brand-new user). A same-volume rename is atomic; on a
  * cross-device failure we fall back to a recursive copy and deliberately leave
  * the old dir in place so a partial/failed copy can never lose user data.
  */
@@ -45,14 +51,17 @@ export function migrateLegacyStateDir(): void {
   try {
     const home = os.homedir();
     const next = path.join(home, STATE_DIR_NAME);
-    const prev = path.join(home, LEGACY_STATE_DIR_NAME);
     if (fs.existsSync(next)) return;
-    if (!fs.existsSync(prev)) return;
-    try {
-      fs.renameSync(prev, next);
-    } catch {
-      // Cross-device or in-use: copy and keep the original as a safety net.
-      fs.cpSync(prev, next, { recursive: true });
+    for (const legacy of LEGACY_STATE_DIR_NAMES) {
+      const prev = path.join(home, legacy);
+      if (!fs.existsSync(prev)) continue;
+      try {
+        fs.renameSync(prev, next);
+      } catch {
+        // Cross-device or in-use: copy and keep the original as a safety net.
+        fs.cpSync(prev, next, { recursive: true });
+      }
+      return; // migrated from the newest available legacy dir
     }
   } catch {
     // Best-effort only — never block startup on migration.

@@ -14,7 +14,7 @@ import { recordKnownChatId } from '../src/core/config/user-config.ts';
 import { captureEnv, makeTmpDir, restoreEnv } from './support/env.ts';
 
 const ENV_KEYS = [
-  'PIKILOOP_CONFIG', 'PIKILOOP_WORKDIR', 'PIKILOOP_ALLOWED_IDS',
+  'PIKILOOM_CONFIG', 'PIKILOOM_WORKDIR', 'PIKILOOM_ALLOWED_IDS',
   'TELEGRAM_BOT_TOKEN', 'TELEGRAM_ALLOWED_CHAT_IDS',
   'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_ALLOWED_CHAT_IDS',
 ] as const;
@@ -24,13 +24,13 @@ const snapshot = captureEnv(ENV_KEYS);
 beforeEach(() => {
   restoreEnv(snapshot);
   // Isolate setting.json so recordKnownChatId / loadKnownChatIds never touch the
-  // real ~/.pikiloop/setting.json.
-  process.env.PIKILOOP_CONFIG = path.join(makeTmpDir('known-allow-config-'), 'setting.json');
-  process.env.PIKILOOP_WORKDIR = makeTmpDir('known-allow-work-');
+  // real ~/.pikiloom/setting.json.
+  process.env.PIKILOOM_CONFIG = path.join(makeTmpDir('known-allow-config-'), 'setting.json');
+  process.env.PIKILOOM_WORKDIR = makeTmpDir('known-allow-work-');
   process.env.TELEGRAM_BOT_TOKEN = 'test-token';
   process.env.FEISHU_APP_ID = 'test-app';
   process.env.FEISHU_APP_SECRET = 'test-secret';
-  delete process.env.PIKILOOP_ALLOWED_IDS;
+  delete process.env.PIKILOOM_ALLOWED_IDS;
   delete process.env.TELEGRAM_ALLOWED_CHAT_IDS;
   delete process.env.FEISHU_ALLOWED_CHAT_IDS;
 });
@@ -57,7 +57,7 @@ describe('known chats never pollute the allowlist (regression for #22)', () => {
 
   it('Telegram: an explicit allowlist is preserved without absorbing known chats', () => {
     recordKnownChatId('telegram', '12345');
-    process.env.PIKILOOP_ALLOWED_IDS = '999';
+    process.env.PIKILOOM_ALLOWED_IDS = '999';
 
     const bot = new TelegramBot();
     expect([...(bot as any).allowedChatIds]).toEqual([999]);

@@ -1,23 +1,23 @@
 # syntax=docker/dockerfile:1.7
 #
-# Pikiloop — Docker image
+# Pikiloom — Docker image
 #
 # Layered approach:
 #   1. `builder`  full deps, compiles TS + builds Vite dashboard
 #   2. `deps`     production-only node_modules (no devDeps)
 #   3. `runtime`  Node 20 slim + agent CLIs (claude / codex / gemini) baked in,
-#                 non-root user, /workspace and /home/piki/.pikiloop as volumes
+#                 non-root user, /workspace and /home/piki/.pikiloom as volumes
 #
 # Build:
-#   docker build -t pikiloop:local .
+#   docker build -t pikiloom:local .
 #
 # Run (named volumes + Telegram example):
 #   docker run --rm -it -p 3939:3939 \
 #     -e TELEGRAM_BOT_TOKEN=...:... \
 #     -e ANTHROPIC_API_KEY=sk-ant-... \
-#     -v pikiloop-config:/home/piki/.pikiloop \
-#     -v pikiloop-workspace:/workspace \
-#     ghcr.io/xiaotonng/pikiloop:latest
+#     -v pikiloom-config:/home/piki/.pikiloom \
+#     -v pikiloom-workspace:/workspace \
+#     ghcr.io/xiaotonng/pikiloom:latest
 #
 # See docs/DOCKER.md for the full reference.
 
@@ -41,7 +41,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 # Copy only what `npm run build` (tsc + vite) needs. .dockerignore
-# already keeps node_modules, dist/, .pikiloop/, .scratch/, etc. out.
+# already keeps node_modules, dist/, .pikiloom/, .scratch/, etc. out.
 COPY tsconfig.json ./tsconfig.json
 COPY src ./src
 COPY dashboard ./dashboard
@@ -63,7 +63,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --omit=optional --no-audit --no-fund
 
 # ---------------------------------------------------------------------------
-# Stage 3 — runtime: Node + agent CLIs + compiled pikiloop.
+# Stage 3 — runtime: Node + agent CLIs + compiled pikiloom.
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION} AS runtime
 
@@ -133,30 +133,30 @@ COPY --from=builder --chown=piki:piki /build/dist ./dist
 COPY --from=builder --chown=piki:piki /build/dashboard/dist ./dashboard/dist
 
 # Persistent dirs the entrypoint expects to exist.
-RUN mkdir -p /workspace /home/piki/.pikiloop \
+RUN mkdir -p /workspace /home/piki/.pikiloom \
              /home/piki/.claude /home/piki/.codex /home/piki/.gemini \
  && chown -R piki:piki /workspace /home/piki
 
-COPY --chown=root:root docker/entrypoint.sh /usr/local/bin/pikiloop-entrypoint
-RUN chmod +x /usr/local/bin/pikiloop-entrypoint
+COPY --chown=root:root docker/entrypoint.sh /usr/local/bin/pikiloom-entrypoint
+RUN chmod +x /usr/local/bin/pikiloom-entrypoint
 
 USER piki
 
 ENV NODE_ENV=production \
     HOME=/home/piki \
-    PIKILOOP_DOCKER=1 \
-    PIKILOOP_OPEN_BROWSER=0 \
-    PIKILOOP_WORKDIR=/workspace \
+    PIKILOOM_DOCKER=1 \
+    PIKILOOM_OPEN_BROWSER=0 \
+    PIKILOOM_WORKDIR=/workspace \
     PATH=/home/piki/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 
 EXPOSE 3939
 
-VOLUME ["/home/piki/.pikiloop", "/workspace"]
+VOLUME ["/home/piki/.pikiloom", "/workspace"]
 
 # /api/state returns 200 once the bot has settled; before that the dashboard
 # is still bound but the bot may still be coming up.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:3939/api/state >/dev/null || exit 1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pikiloop-entrypoint"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pikiloom-entrypoint"]
 CMD ["--no-daemon", "--workdir", "/workspace"]

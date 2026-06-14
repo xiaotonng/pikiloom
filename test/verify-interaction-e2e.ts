@@ -17,11 +17,11 @@ import type { AgentInteraction, StreamResult } from '../src/agent/index.ts';
 // Setup env before anything else
 // ---------------------------------------------------------------------------
 
-const TMP = '/tmp/pikiloop-e2e-interaction';
+const TMP = '/tmp/pikiloom-e2e-interaction';
 fs.mkdirSync(`${TMP}/workdir`, { recursive: true });
 fs.writeFileSync(`${TMP}/setting.json`, '{}');
-process.env.PIKILOOP_CONFIG = `${TMP}/setting.json`;
-process.env.PIKILOOP_WORKDIR = `${TMP}/workdir`;
+process.env.PIKILOOM_CONFIG = `${TMP}/setting.json`;
+process.env.PIKILOOM_WORKDIR = `${TMP}/workdir`;
 process.env.DEFAULT_AGENT = 'codex';
 
 // ---------------------------------------------------------------------------

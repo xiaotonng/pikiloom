@@ -224,7 +224,7 @@ export class WeixinBot extends Bot {
           '/skills - List & run project skills',
           '/cancel - Cancel an active interactive prompt',
           '/stop - Stop current task',
-          '/restart - Restart pikiloop',
+          '/restart - Restart pikiloom',
         ].join('\n'));
         return true;
       case 'new': {
@@ -278,7 +278,7 @@ export class WeixinBot extends Bot {
 
   private async cmdStart(ctx: WeixinContext) {
     const d = getStartData(this, ctx.chatId);
-    const lines = [`pikiloop v${d.version}`, `Workdir: ${d.workdir}`, '', `Agent: ${d.agent}`];
+    const lines = [`pikiloom v${d.version}`, `Workdir: ${d.workdir}`, '', `Agent: ${d.agent}`];
     for (const a of d.agentDetails) {
       const parts = [`  ${a.agent}: ${a.model}`];
       if (a.effort) parts[0] += ` (effort: ${a.effort})`;
@@ -292,7 +292,7 @@ export class WeixinBot extends Bot {
     const d = await getStatusDataAsync(this, ctx.chatId);
     const gitLine = formatGitStatusLine(d.git);
     const lines = [
-      `pikiloop v${d.version}`,
+      `pikiloom v${d.version}`,
       `Uptime: ${fmtUptime(d.uptime)}`,
       `PID: ${d.pid} | RSS: ${fmtBytes(d.memRss)} | Heap: ${fmtBytes(d.memHeap)}`,
       `Workdir: ${d.workdir}`,
@@ -579,7 +579,7 @@ export class WeixinBot extends Bot {
   }
 
   private async cmdRestart(ctx: WeixinContext) {
-    await ctx.reply('Restarting pikiloop...');
+    await ctx.reply('Restarting pikiloom...');
     void requestProcessRestart({ log: msg => this.log(msg) });
   }
 
@@ -610,7 +610,7 @@ export class WeixinBot extends Bot {
   private formatHumanLoopPromptText(prompt: HumanLoopPromptState): string {
     const question = currentHumanLoopQuestion(prompt);
     const lines: string[] = [];
-    lines.push(`【${prompt.title || 'Pikiloop needs your input'}】`);
+    lines.push(`【${prompt.title || 'Pikiloom needs your input'}】`);
     if (prompt.hint) lines.push(prompt.hint);
     if (prompt.questions.length > 1) {
       lines.push(`(${prompt.currentIndex + 1}/${prompt.questions.length})`);
@@ -1019,7 +1019,7 @@ export class WeixinBot extends Bot {
   }
 
   async run() {
-    const tmpDir = path.join(os.tmpdir(), 'pikiloop');
+    const tmpDir = path.join(os.tmpdir(), 'pikiloom');
     fs.mkdirSync(tmpDir, { recursive: true });
 
     this.channel = new WeixinChannel({

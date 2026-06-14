@@ -106,7 +106,7 @@ function buildMcpDeliveryPrompt(): string {
 
 function buildClaudeAskUserPrompt(): string {
   // Claude is heavily trained on its built-in `AskUserQuestion` tool, so just
-  // registering `mcp__pikiloop__im_ask_user` alongside it isn't enough — the
+  // registering `mcp__pikiloom__im_ask_user` alongside it isn't enough — the
   // model still picks the native one, the CLI rejects it in -p mode with
   // `is_error: true content: "Answer questions?"`, and the turn dies without
   // ever firing the human-loop. This directive redirects calls *if* the model
@@ -114,7 +114,7 @@ function buildClaudeAskUserPrompt(): string {
   // behaviour — only the routing.
   return [
     '[Asking the user]',
-    'The built-in `AskUserQuestion` tool is disabled here and will fail. If you would otherwise call it, call `mcp__pikiloop__im_ask_user` instead — same intent (a question plus optional choices), it blocks until the user replies via the IM/dashboard channel. Default behaviour is unchanged: infer obvious decisions yourself and only ask when you genuinely cannot proceed.',
+    'The built-in `AskUserQuestion` tool is disabled here and will fail. If you would otherwise call it, call `mcp__pikiloom__im_ask_user` instead — same intent (a question plus optional choices), it blocks until the user replies via the IM/dashboard channel. Default behaviour is unchanged: infer obvious decisions yourself and only ask when you genuinely cannot proceed.',
   ].join('\n');
 }
 
@@ -278,7 +278,7 @@ export interface RunningTask {
 
 /**
  * Driver-agnostic goal snapshot consumed by IM renderers + dashboard. The
- * underlying store is one of: pikiloop's goal.json (gemini / hermes / fallback),
+ * underlying store is one of: pikiloom's goal.json (gemini / hermes / fallback),
  * codex's native SQLite (codex), or claude's native session transcript JSONL
  * (claude). Status uses snake_case for all three — codex's camelCase
  * `budgetLimited` is converted to `budget_limited` at the boundary. Claude
@@ -286,7 +286,7 @@ export interface RunningTask {
  * observe a `complete` snapshot — `getSessionGoal` returns null instead).
  */
 export interface SessionGoalView {
-  source: 'pikiloop' | 'codex' | 'claude';
+  source: 'pikiloom' | 'codex' | 'claude';
   objective: string;
   status: GoalStatus;
   tokenBudget: number | null;
@@ -295,9 +295,9 @@ export interface SessionGoalView {
   continuationCount: number | null;
 }
 
-function normalizeFromPikiloop(goal: ThreadGoal): SessionGoalView {
+function normalizeFromPikiloom(goal: ThreadGoal): SessionGoalView {
   return {
-    source: 'pikiloop',
+    source: 'pikiloom',
     objective: goal.objective,
     status: goal.status,
     tokenBudget: goal.tokenBudget,
@@ -842,14 +842,14 @@ export class Bot {
     };
 
     this.defaultAgent = normalizeAgent('codex');
-    this.runTimeout = envInt('PIKILOOP_TIMEOUT', DEFAULT_RUN_TIMEOUT_S);
-    this.allowedChatIds = parseAllowedChatIds(process.env.PIKILOOP_ALLOWED_IDS || '');
+    this.runTimeout = envInt('PIKILOOM_TIMEOUT', DEFAULT_RUN_TIMEOUT_S);
+    this.allowedChatIds = parseAllowedChatIds(process.env.PIKILOOM_ALLOWED_IDS || '');
     this.refreshManagedConfig(getActiveUserConfig(), { initial: true });
     this.userConfigUnsubscribe = onUserConfigChange(config => this.refreshManagedConfig(config));
   }
 
   log(msg: string, level: LogLevel = 'info') {
-    writeScopedLog('pikiloop', msg, { level });
+    writeScopedLog('pikiloom', msg, { level });
   }
 
   debug(msg: string) {
@@ -1838,9 +1838,9 @@ export class Bot {
    *
    * Codex and Claude sessions short-circuit: each runs its own native `/goal`
    * lifecycle (codex's app-server state machine; claude's in-process Stop
-   * hook), so pikiloop stays out to avoid a double loop. See setSessionGoal
+   * hook), so pikiloom stays out to avoid a double loop. See setSessionGoal
    * et al — they bridge to codex's `thread/goal/*` RPC and to claude's
-   * `/goal <condition>` slash command instead of writing pikiloop's goal.json.
+   * `/goal <condition>` slash command instead of writing pikiloom's goal.json.
    */
   private maybeEnqueueGoalContinuation(
     session: SessionRuntime,
@@ -1912,7 +1912,7 @@ export class Bot {
 
   /**
    * Normalized goal view used by IM/dashboard renderers — same shape regardless
-   * of whether the source is pikiloop's goal.json (claude / gemini / …) or
+   * of whether the source is pikiloom's goal.json (claude / gemini / …) or
    * codex's native SQLite state machine.
    */
   // SessionGoalView is exported below the class.
@@ -1933,13 +1933,13 @@ export class Bot {
       return goal ? normalizeFromClaudeNative(goal) : null;
     }
     const goal = readGoal(workdir, agent, sessionId);
-    return goal ? normalizeFromPikiloop(goal) : null;
+    return goal ? normalizeFromPikiloom(goal) : null;
   }
 
   /**
    * Set (or replace) the goal for a session. For codex this routes through
    * codex's native `thread/goal/set` and codex auto-starts a continuation turn
-   * internally. For other drivers, pikiloop writes goal.json and enqueues the
+   * internally. For other drivers, pikiloom writes goal.json and enqueues the
    * first continuation turn so the agent starts working immediately.
    */
   async setSessionGoal(
@@ -1968,7 +1968,7 @@ export class Bot {
       if (!sessionId || isPendingSessionId(sessionId)) {
         throw new Error('claude session must exist before /goal — send a first message to create the transcript');
       }
-      // Native /goal owns its own continuation engine (Stop hook). pikiloop
+      // Native /goal owns its own continuation engine (Stop hook). pikiloom
       // just submits the slash command as the next task; claude internally
       // sets up the goal_status attachment, injects its meta directive, and
       // keeps looping until the Haiku completion check returns met. Token
@@ -2011,7 +2011,7 @@ export class Bot {
         goalContinuation: { kind: 'continuation', goalId: goal.goalId },
       });
     }
-    return normalizeFromPikiloop(goal);
+    return normalizeFromPikiloom(goal);
   }
 
   async pauseSessionGoal(workdir: string, agent: Agent, sessionId: string): Promise<SessionGoalView | null> {
@@ -2028,7 +2028,7 @@ export class Bot {
       throw new Error('Claude native /goal does not support pause/resume — only `/goal clear`. Re-issue `/goal <objective>` to start fresh.');
     }
     const goal = pauseGoal(workdir, agent, sessionId);
-    return goal ? normalizeFromPikiloop(goal) : null;
+    return goal ? normalizeFromPikiloom(goal) : null;
   }
 
   async resumeSessionGoal(
@@ -2048,7 +2048,7 @@ export class Bot {
       throw new Error('Claude native /goal does not support pause/resume — re-issue `/goal <objective>` to start fresh.');
     }
     const goal = resumeGoal(workdir, agent, sessionId);
-    if (!goal || goal.status !== 'active') return goal ? normalizeFromPikiloop(goal) : null;
+    if (!goal || goal.status !== 'active') return goal ? normalizeFromPikiloom(goal) : null;
     if (!isPendingSessionId(sessionId)) {
       const prompt = renderContinuationPrompt(goal);
       this.submitSessionTask({
@@ -2062,7 +2062,7 @@ export class Bot {
         goalContinuation: { kind: 'continuation', goalId: goal.goalId },
       });
     }
-    return normalizeFromPikiloop(goal);
+    return normalizeFromPikiloom(goal);
   }
 
   async clearSessionGoal(workdir: string, agent: Agent, sessionId: string, opts: { chatId?: ChatId; modelId?: string | null; thinkingEffort?: string | null } = {}): Promise<void> {
@@ -2534,7 +2534,7 @@ export class Bot {
     if (opts.persist !== false) {
       setUserWorkdir(resolvedPath, { notify: false });
     } else {
-      process.env.PIKILOOP_WORKDIR = resolvedPath;
+      process.env.PIKILOOM_WORKDIR = resolvedPath;
     }
     this.workdir = resolvedPath;
     for (const [, cs] of this.chats) {
@@ -2571,7 +2571,7 @@ export class Bot {
    *
    * Used by ChannelSupervisor when a channel must be stopped or replaced
    * in-process (channel removal, credential rotation) without restarting
-   * the entire pikiloop runtime.
+   * the entire pikiloom runtime.
    */
   public requestStop(): void {
     this.userConfigUnsubscribe?.();
@@ -2834,7 +2834,7 @@ export class Bot {
       const bin = whichSync('systemd-inhibit');
       if (bin) {
         this.keepAliveProc = spawn('systemd-inhibit', [
-          '--what=idle', '--who=pikiloop', '--why=AI coding agent running', 'sleep', 'infinity',
+          '--what=idle', '--who=pikiloom', '--why=AI coding agent running', 'sleep', 'infinity',
         ], { stdio: 'ignore', detached: true });
         this.keepAliveProc.unref();
         this.log(`keep-alive: systemd-inhibit (PID ${this.keepAliveProc.pid})`);

@@ -1,7 +1,7 @@
-# Deploying the pikiloop landing page
+# Deploying the pikiloom landing page
 
 This is a **standalone static site** (Vite + React 19 + Tailwind 4 + React Bits).
-It lives in `web/` inside the pikiloop repo, builds to `web/dist/`, and is **never
+It lives in `web/` inside the pikiloom repo, builds to `web/dist/`, and is **never
 published to npm** (root `package.json` `files` only ships `dist/` + `dashboard/dist/`).
 
 ```bash
@@ -20,7 +20,7 @@ among the international free hosts (better than Vercel / github.io).
 
 ### 1. Connect the repo (one-time)
 Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git** →
-pick `xiaotonng/pikiloop`.
+pick `xiaotonng/pikiloom`.
 
 ### 2. Build settings
 | Field | Value |

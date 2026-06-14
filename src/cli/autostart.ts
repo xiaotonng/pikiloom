@@ -1,10 +1,10 @@
 /**
- * macOS LaunchAgent integration for `pikiloop --daemon`.
+ * macOS LaunchAgent integration for `pikiloom --daemon`.
  *
- * Every time the user runs pikiloop with an explicit `--daemon` flag on
+ * Every time the user runs pikiloom with an explicit `--daemon` flag on
  * macOS *without* a LaunchAgent already installed, an osascript dialog asks
  * whether to enable login auto-start. Choosing Enable writes
- * `~/Library/LaunchAgents/ai.pikiloop.gateway.plist` and loads it via
+ * `~/Library/LaunchAgents/ai.pikiloom.gateway.plist` and loads it via
  * `launchctl bootstrap`. There is intentionally no CLI to disable: the user
  * toggles it off under System Settings → General → Login Items, which is
  * where macOS surfaces every LaunchAgent installed in
@@ -12,7 +12,7 @@
  *
  * Decision flow (`maybePromptAutostart`):
  *   1. Non-darwin → no-op.
- *   2. Already running under launchd (PIKILOOP_FROM_LAUNCHD set) → no-op.
+ *   2. Already running under launchd (PIKILOOM_FROM_LAUNCHD set) → no-op.
  *   3. plist exists but its ProgramArguments no longer point to a valid
  *      binary (e.g. Homebrew migration moved node) → silently rewrite.
  *   4. plist already valid → no-op.
@@ -33,17 +33,16 @@ import { STATE_DIR_NAME } from '../core/constants.js';
 
 const execFileAsync = promisify(execFile);
 
-const PLIST_LABEL = 'ai.pikiloop.gateway';
+const PLIST_LABEL = 'ai.pikiloom.gateway';
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const PLIST_PATH = path.join(PLIST_DIR, `${PLIST_LABEL}.plist`);
-const PIKILOOP_HOME = path.join(os.homedir(), STATE_DIR_NAME);
-// Pre-rename LaunchAgent — removed on (re)install so an upgraded machine never
-// runs two daemons (old pikiclaw + new pikiloop). Delete post-rename.
-const LEGACY_PLIST_LABEL = 'ai.pikiclaw.gateway';
-const LEGACY_PLIST_PATH = path.join(PLIST_DIR, `${LEGACY_PLIST_LABEL}.plist`);
+const PIKILOOM_HOME = path.join(os.homedir(), STATE_DIR_NAME);
+// Pre-rename LaunchAgents (pikiloop, pikiclaw) — removed on (re)install so an
+// upgraded machine never runs two daemons. Delete a couple releases post-rename.
+const LEGACY_PLIST_LABELS = ['ai.pikiloop.gateway', 'ai.pikiclaw.gateway'];
 const PROMPT_DELAY_MS = 3000;
 
-export const FROM_LAUNCHD_ENV = 'PIKILOOP_FROM_LAUNCHD';
+export const FROM_LAUNCHD_ENV = 'PIKILOOM_FROM_LAUNCHD';
 
 interface InvocationCommand {
   program: string;
@@ -55,9 +54,9 @@ type DialogChoice = 'enable' | 'not_now' | 'closed';
 type LogFn = (msg: string) => void;
 
 /**
- * Resolve the command used to launch pikiloop, so the plist can re-launch it
+ * Resolve the command used to launch pikiloom, so the plist can re-launch it
  * the same way. We distinguish npx (`.../_npx/<hash>/.../main.js`) from a
- * globally installed binary (`pikiloop` on PATH).
+ * globally installed binary (`pikiloom` on PATH).
  */
 function detectInvocation(): InvocationCommand | null {
   const entry = process.argv[1] || '';
@@ -67,11 +66,11 @@ function detectInvocation(): InvocationCommand | null {
   if (entry.includes('/_npx/') || entry.includes('\\_npx\\')) {
     const npxBin = whichSync('npx');
     if (!npxBin) return null;
-    return { program: npxBin, args: ['-y', 'pikiloop@latest', ...userArgs] };
+    return { program: npxBin, args: ['-y', 'pikiloom@latest', ...userArgs] };
   }
 
-  const pikiloopBin = whichSync('pikiloop');
-  if (pikiloopBin) return { program: pikiloopBin, args: userArgs };
+  const pikiloomBin = whichSync('pikiloom');
+  if (pikiloomBin) return { program: pikiloomBin, args: userArgs };
   return null;
 }
 
@@ -95,8 +94,8 @@ function buildPlistXml(invocation: InvocationCommand): string {
   const programArgs = [invocation.program, ...invocation.args]
     .map(arg => `    <string>${escapeXml(arg)}</string>`)
     .join('\n');
-  const stdoutPath = path.join(PIKILOOP_HOME, 'launchd-stdout.log');
-  const stderrPath = path.join(PIKILOOP_HOME, 'launchd-stderr.log');
+  const stdoutPath = path.join(PIKILOOM_HOME, 'launchd-stdout.log');
+  const stderrPath = path.join(PIKILOOM_HOME, 'launchd-stderr.log');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -144,11 +143,11 @@ function plistIsStale(invocation: InvocationCommand): boolean {
 async function showEnableDialog(): Promise<DialogChoice> {
   const script = [
     'display dialog ',
-    '"Start pikiloop automatically when you log in?\\n\\n',
+    '"Start pikiloom automatically when you log in?\\n\\n',
     'You can change this anytime in:\\n',
     'System Settings → General → Login Items" ',
     'buttons {"Not now", "Enable"} default button "Enable" ',
-    'with title "pikiloop" with icon note',
+    'with title "pikiloom" with icon note',
   ].join('');
   try {
     const { stdout } = await execFileAsync('osascript', ['-e', script]);
@@ -179,29 +178,32 @@ async function bootstrapLaunchAgent(log: LogFn): Promise<boolean> {
 }
 
 /**
- * Remove the pre-rename `ai.pikiclaw.gateway` LaunchAgent if present, so an
- * upgraded install never runs two daemons (old pikiclaw + new pikiloop).
- * Best-effort; safe when nothing is loaded. Delete a couple releases post-rename.
+ * Remove pre-rename LaunchAgents (`ai.pikiloop.gateway`, `ai.pikiclaw.gateway`)
+ * if present, so an upgraded install never runs two daemons. Best-effort; safe
+ * when nothing is loaded. Delete a couple releases post-rename.
  */
 async function cleanupLegacyAutostart(log: LogFn): Promise<void> {
-  try {
-    let existed = false;
-    try { existed = fs.statSync(LEGACY_PLIST_PATH).isFile(); } catch {}
-    const uid = process.getuid?.() ?? 0;
-    await new Promise<void>(resolve => {
-      exec(`launchctl bootout gui/${uid}/${LEGACY_PLIST_LABEL}`, () => resolve());
-    });
-    if (existed) {
-      try { fs.unlinkSync(LEGACY_PLIST_PATH); } catch {}
-      log(`autostart: removed legacy LaunchAgent ${LEGACY_PLIST_LABEL}`);
-    }
-  } catch { /* best-effort */ }
+  const uid = process.getuid?.() ?? 0;
+  for (const label of LEGACY_PLIST_LABELS) {
+    try {
+      const plistPath = path.join(PLIST_DIR, `${label}.plist`);
+      let existed = false;
+      try { existed = fs.statSync(plistPath).isFile(); } catch {}
+      await new Promise<void>(resolve => {
+        exec(`launchctl bootout gui/${uid}/${label}`, () => resolve());
+      });
+      if (existed) {
+        try { fs.unlinkSync(plistPath); } catch {}
+        log(`autostart: removed legacy LaunchAgent ${label}`);
+      }
+    } catch { /* best-effort */ }
+  }
 }
 
 async function installAutostart(log: LogFn, invocation: InvocationCommand): Promise<boolean> {
   try {
     fs.mkdirSync(PLIST_DIR, { recursive: true });
-    fs.mkdirSync(PIKILOOP_HOME, { recursive: true });
+    fs.mkdirSync(PIKILOOM_HOME, { recursive: true });
     fs.writeFileSync(PLIST_PATH, buildPlistXml(invocation));
   } catch (err: any) {
     log(`autostart: failed to write plist: ${err?.message || err}`);
@@ -242,7 +244,7 @@ export function maybePromptAutostart(log: LogFn): void {
         if (choice === 'enable') {
           await installAutostart(log, invocation);
         } else {
-          log('autostart: not enabled this run; will ask again next time `pikiloop --daemon` runs');
+          log('autostart: not enabled this run; will ask again next time `pikiloom --daemon` runs');
         }
       } catch (err: any) {
         log(`autostart: prompt failed: ${err?.message || err}`);
@@ -255,8 +257,7 @@ export function maybePromptAutostart(log: LogFn): void {
 export const __test = {
   PLIST_LABEL,
   PLIST_PATH,
-  LEGACY_PLIST_LABEL,
-  LEGACY_PLIST_PATH,
+  LEGACY_PLIST_LABELS,
   detectInvocation,
   buildPlistXml,
   plistIsStale,

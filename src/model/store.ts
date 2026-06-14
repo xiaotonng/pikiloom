@@ -1,6 +1,6 @@
 /**
  * Persistence for Provider / Profile / activeProfileByAgent.
- * Reads and writes the `models` section of ~/.pikiloop/setting.json.
+ * Reads and writes the `models` section of ~/.pikiloom/setting.json.
  */
 
 import { randomUUID } from 'node:crypto';

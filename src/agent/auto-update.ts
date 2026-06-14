@@ -70,7 +70,7 @@ function normalizeBooleanEnv(value: string | undefined): boolean | null {
 }
 
 export function agentAutoUpdateEnabled(config: Partial<UserConfig>): boolean {
-  const env = normalizeBooleanEnv(process.env.PIKILOOP_AGENT_AUTO_UPDATE);
+  const env = normalizeBooleanEnv(process.env.PIKILOOM_AGENT_AUTO_UPDATE);
   if (env != null) return env;
   if (typeof config.agentAutoUpdate === 'boolean') return config.agentAutoUpdate;
   return true;

@@ -9,20 +9,20 @@ import { whichSync as platformWhichSync } from './platform.js';
 export type ChatId = number | string;
 
 /**
- * If `dir` has a .gitignore, ignore managed `.pikiloop` state without hiding
- * `.pikiloop/skills`, which may be committed as project skills.
+ * If `dir` has a .gitignore, ignore managed `.pikiloom` state without hiding
+ * `.pikiloom/skills`, which may be committed as project skills.
  */
 export function ensureGitignore(dir: string) {
   try {
     const gi = path.join(dir, '.gitignore');
     if (!fs.existsSync(gi)) return;
     const managedLines = [
-      '.pikiloop/*',
-      '!.pikiloop/skills/',
-      '!.pikiloop/skills/**',
+      '.pikiloom/*',
+      '!.pikiloom/skills/',
+      '!.pikiloom/skills/**',
     ];
     const legacyLines = new Set([
-      '.pikiloop/',
+      '.pikiloom/',
       '.claude/skills/',
       '.agents/skills/',
     ]);
@@ -75,7 +75,7 @@ export const whichSync = platformWhichSync;
 
 /**
  * Strip ANSI terminal control sequences from a string. Covers the families
- * pikiloop runs into when scraping PTY screens (cursor positioning, SGR
+ * pikiloom runs into when scraping PTY screens (cursor positioning, SGR
  * colour / bold / italic, OSC titles, plus orphaned ESC bytes):
  *
  *   CSI:  ESC [ ...                — colours, cursor moves, line clears

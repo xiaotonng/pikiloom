@@ -16,7 +16,7 @@ export default function BuiltWithItself() {
               The truest test of an orchestrator: can it build itself?
             </h2>
             <p className="mt-5 text-lg leading-relaxed text-neutral-300">
-              pikiloop can. We use pikiloop to develop, test, release, and operate pikiloop —
+              pikiloom can. We use pikiloom to develop, test, release, and operate pikiloom —
               driving every commit and every release.
             </p>
             <p className="mt-4 leading-relaxed text-neutral-400">
@@ -29,7 +29,7 @@ export default function BuiltWithItself() {
               <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
               <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
               <span className="h-3 w-3 rounded-full bg-[#28c840]" />
-              <span className="ml-3 font-mono text-xs text-neutral-500">a typical day inside pikiloop</span>
+              <span className="ml-3 font-mono text-xs text-neutral-500">a typical day inside pikiloom</span>
             </div>
             <div className="grid gap-px overflow-hidden rounded-xl bg-white/5 sm:grid-cols-2">
               {DAY.map((d) => (

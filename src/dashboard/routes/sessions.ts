@@ -13,7 +13,7 @@ import {
   type Agent, type SessionInfo, type SessionMessagesResult, type RichMessage,
 } from '../../agent/index.js';
 import { getSessionStatusForBot } from '../../bot/session-status.js';
-import { findPikiloopSession } from '../../agent/session.js';
+import { findPikiloomSession } from '../../agent/session.js';
 import { readAwaitResume } from '../../agent/await-resume.js';
 import {
   cancelSessionTask,
@@ -141,7 +141,7 @@ async function materializeUploadedFiles(entries: unknown[]): Promise<{ attachmen
     return { attachments: [], cleanup: async () => {} };
   }
 
-  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pikiloop-dashboard-upload-'));
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pikiloom-dashboard-upload-'));
   try {
     const attachments: string[] = [];
     for (const [index, file] of files.entries()) {
@@ -454,7 +454,7 @@ app.post('/api/session-hub/session/delete', async (c) => {
     return c.json({
       ok: true,
       recordRemoved: result.recordRemoved,
-      pikiloopPathsRemoved: result.pikiloopPathsRemoved,
+      pikiloomPathsRemoved: result.pikiloomPathsRemoved,
       nativePathsRemoved: result.nativePathsRemoved,
     });
   } catch (e: any) {
@@ -542,7 +542,7 @@ app.get('/api/sessions/:agent/:id/attachment', async (c) => {
   // session yet.
   const config = loadUserConfig();
   const fallbackWorkdir = runtime.getRequestWorkdir(config);
-  const managed = findPikiloopSession(fallbackWorkdir, agent, sessionId);
+  const managed = findPikiloomSession(fallbackWorkdir, agent, sessionId);
   const workdirs = [
     ...(managed?.workdir ? [managed.workdir] : []),
     fallbackWorkdir,

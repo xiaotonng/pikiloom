@@ -1,18 +1,18 @@
-# Pikiloop on Docker
+# Pikiloom on Docker
 
 > 中文版在文末 ↓ — [中文文档](#中文文档)
 
-Pikiloop ships an official multi-arch image so you can run the bot on a
+Pikiloom ships an official multi-arch image so you can run the bot on a
 Linux server (or any Docker host) without installing Node or the agent CLIs
 on the host itself. The image bakes in `claude-code`, `codex`, and
 `gemini-cli` and exposes the web dashboard on port `3939`.
 
 | Tag                        | When it's pushed                              |
 |----------------------------|-----------------------------------------------|
-| `ghcr.io/xiaotonng/pikiloop:latest`  | newest tagged release                |
-| `ghcr.io/xiaotonng/pikiloop:vX.Y.Z`  | exact version (recommended in production)     |
-| `ghcr.io/xiaotonng/pikiloop:X.Y`     | latest patch on the X.Y line                  |
-| `ghcr.io/xiaotonng/pikiloop:edge`    | rolling build from `main` — for early adopters |
+| `ghcr.io/xiaotonng/pikiloom:latest`  | newest tagged release                |
+| `ghcr.io/xiaotonng/pikiloom:vX.Y.Z`  | exact version (recommended in production)     |
+| `ghcr.io/xiaotonng/pikiloom:X.Y`     | latest patch on the X.Y line                  |
+| `ghcr.io/xiaotonng/pikiloom:edge`    | rolling build from `main` — for early adopters |
 
 Supported platforms: `linux/amd64`, `linux/arm64`.
 
@@ -21,13 +21,13 @@ Supported platforms: `linux/amd64`, `linux/arm64`.
 ## 1. Quick start (docker run)
 
 ```bash
-docker run -d --name pikiloop --restart unless-stopped \
+docker run -d --name pikiloom --restart unless-stopped \
   -p 3939:3939 \
   -e TELEGRAM_BOT_TOKEN=123456:replace_me \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v pikiloop-config:/home/piki/.pikiloop \
-  -v pikiloop-workspace:/workspace \
-  ghcr.io/xiaotonng/pikiloop:latest
+  -v pikiloom-config:/home/piki/.pikiloom \
+  -v pikiloom-workspace:/workspace \
+  ghcr.io/xiaotonng/pikiloom:latest
 ```
 
 Then open `http://<host>:3939` and finish setup from the dashboard.
@@ -46,9 +46,9 @@ docker compose logs -f
 
 The compose file declares two named volumes:
 
-- `pikiloop-config` → `/home/piki/.pikiloop` — `setting.json`, MCP/CLI
+- `pikiloom-config` → `/home/piki/.pikiloom` — `setting.json`, MCP/CLI
   state, sessions, etc. Keep this across upgrades.
-- `pikiloop-workspace` → `/workspace` — the project tree the agent reads
+- `pikiloom-workspace` → `/workspace` — the project tree the agent reads
   and writes. Swap to a host bind mount if you want to edit it from your
   IDE on the host.
 
@@ -97,7 +97,7 @@ layout), each environment keeps its own independent session history.
 >
 > - Do not run the host's Codex desktop app while the docker container is
 >   also running with codex active. Stop one before using the other.
-> - When you `docker pull` a newer pikiloop image, the codex CLI baked into
+> - When you `docker pull` a newer pikiloom image, the codex CLI baked into
 >   the image (see §5) may be newer than the host's. Either pin the
 >   `CODEX_VERSION` build-arg to match the host, or upgrade the host's codex
 >   at the same time.
@@ -127,9 +127,9 @@ For OAuth flows that print a device code, you can run the login command
 interactively without a host browser:
 
 ```bash
-docker exec -it pikiloop claude /login
+docker exec -it pikiloom claude /login
 # or
-docker exec -it pikiloop codex login
+docker exec -it pikiloom codex login
 ```
 
 Tokens land in `/home/piki/.{claude,codex,gemini}` and survive container
@@ -138,24 +138,24 @@ compose).
 
 ## 4. Environment variables
 
-All pikiloop env vars from `pikiloop --help` are honored. The most useful
+All pikiloom env vars from `pikiloom --help` are honored. The most useful
 ones inside Docker:
 
 | Var | Default in image | Purpose |
 |-----|------------------|---------|
-| `PIKILOOP_WORKDIR`   | `/workspace` | Where the agent reads/writes |
-| `PIKILOOP_TIMEOUT`   | `1800`       | Max seconds per agent request |
-| `PIKILOOP_FULL_ACCESS` | `true`     | Codex full-access + Claude bypassPermissions |
-| `PIKILOOP_DOCKER`    | `1`          | Suppresses host-side actions (xdg-open, launchd) |
-| `PIKILOOP_OPEN_BROWSER` | `0`       | Don't try to open a host browser at boot |
-| `PIKILOOP_BROWSER_CDP_URL` | —      | Attach to an external Chrome DevTools Protocol endpoint (e.g. `http://chromium:9223`) instead of launching local Chrome. Also turns browser tooling on. See §6. |
+| `PIKILOOM_WORKDIR`   | `/workspace` | Where the agent reads/writes |
+| `PIKILOOM_TIMEOUT`   | `1800`       | Max seconds per agent request |
+| `PIKILOOM_FULL_ACCESS` | `true`     | Codex full-access + Claude bypassPermissions |
+| `PIKILOOM_DOCKER`    | `1`          | Suppresses host-side actions (xdg-open, launchd) |
+| `PIKILOOM_OPEN_BROWSER` | `0`       | Don't try to open a host browser at boot |
+| `PIKILOOM_BROWSER_CDP_URL` | —      | Attach to an external Chrome DevTools Protocol endpoint (e.g. `http://chromium:9223`) instead of launching local Chrome. Also turns browser tooling on. See §6. |
 | `DEFAULT_AGENT`      | `claude`     | `claude` / `codex` / `gemini` |
 | `CLAUDE_MODEL` / `CODEX_MODEL` / `GEMINI_MODEL` | — | Override default model |
 | `TELEGRAM_BOT_TOKEN` | —            | Telegram channel |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | — | Feishu channel |
 
 You can also configure everything from the web dashboard — settings persist
-to `/home/piki/.pikiloop/setting.json`.
+to `/home/piki/.pikiloom/setting.json`.
 
 ## 5. Pin agent CLI versions
 
@@ -166,46 +166,46 @@ docker build \
   --build-arg CLAUDE_CODE_VERSION=2.4.10 \
   --build-arg CODEX_VERSION=0.135.1 \
   --build-arg GEMINI_CLI_VERSION=0.74.0 \
-  -t pikiloop:pinned .
+  -t pikiloom:pinned .
 ```
 
 This is the path we recommend for production — the floating `latest` tags
-of each agent CLI can introduce breaking changes between pikiloop releases.
+of each agent CLI can introduce breaking changes between pikiloom releases.
 
 Agent CLIs live under `/home/piki/.npm-global` (a per-user npm prefix), so the
 dashboard's auto-updater and `npm install -g <pkg>@latest` from inside the
 container both work without `sudo`. Skills installed via the Extensions tab
-land under `/home/piki/.pikiloop/skills/` (persisted on the `pikiloop-config`
+land under `/home/piki/.pikiloom/skills/` (persisted on the `pikiloom-config`
 volume) so they also survive restarts and upgrades.
 
 The image bundles **`gh`** (GitHub CLI) for agent skills that lean on it
-(release / PR triage, issue automation, …). Run `docker exec -it pikiloop gh
+(release / PR triage, issue automation, …). Run `docker exec -it pikiloom gh
 auth login` once to attach a token, or pass `GH_TOKEN` as a container env var.
 
 ## 6. Browser automation (remote Chrome via CDP)
 
 The base image **does not bundle Chrome** — a headless Chromium + Xvfb + fonts
 would push the image past 1 GB and the browser still wouldn't be useful for
-sites that require an interactive sign-in. Instead, pikiloop attaches to *any*
-external Chrome DevTools Protocol endpoint via `PIKILOOP_BROWSER_CDP_URL`.
+sites that require an interactive sign-in. Instead, pikiloom attaches to *any*
+external Chrome DevTools Protocol endpoint via `PIKILOOM_BROWSER_CDP_URL`.
 Setting that variable alone turns on browser tooling — you do **not** also need
-`PIKILOOP_BROWSER_ENABLED`.
+`PIKILOOM_BROWSER_ENABLED`.
 
 The recommended pattern is a Chromium sidecar (real browser + web-VNC for
 signing in) plus a tiny **socat CDP bridge**:
 
 ```yaml
 services:
-  pikiloop:
-    image: ghcr.io/xiaotonng/pikiloop:latest
+  pikiloom:
+    image: ghcr.io/xiaotonng/pikiloom:latest
     environment:
-      PIKILOOP_BROWSER_CDP_URL: http://chromium:9223
+      PIKILOOM_BROWSER_CDP_URL: http://chromium:9223
     depends_on: [chromium]
-    # …rest of the pikiloop service as before
+    # …rest of the pikiloom service as before
 
   chromium:
     image: lscr.io/linuxserver/chromium:latest
-    container_name: pikiloop-chromium
+    container_name: pikiloom-chromium
     environment:
       PUID: 1000
       PGID: 1000
@@ -220,10 +220,10 @@ services:
     shm_size: 1gb
     restart: unless-stopped
 
-  # Exposes Chrome's localhost-only CDP to pikiloop. See "Why the bridge?" below.
+  # Exposes Chrome's localhost-only CDP to pikiloom. See "Why the bridge?" below.
   chromium-cdp-bridge:
     image: alpine/socat:latest
-    container_name: pikiloop-chromium-cdp-bridge
+    container_name: pikiloom-chromium-cdp-bridge
     network_mode: "service:chromium"
     depends_on: [chromium]
     command: TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222
@@ -240,11 +240,11 @@ How to use it:
    inside the sidecar. Sign in to whichever sites the agent needs
    (Google / GitHub / your internal SSO). The profile is persisted in the
    `chromium-config` named volume, so logins survive restarts.
-3. That's it — `PIKILOOP_BROWSER_CDP_URL` already enabled the tool. (You can
+3. That's it — `PIKILOOM_BROWSER_CDP_URL` already enabled the tool. (You can
    still toggle it from Extensions → Browser in the dashboard; it will show
    "Remote CDP" and the endpoint instead of a local profile.)
 
-Pikiloop will now drive the *same* Chromium session — every `browser_*` MCP
+Pikiloom will now drive the *same* Chromium session — every `browser_*` MCP
 tool call attaches to the running Chromium over CDP, so the agent inherits
 your logged-in state.
 
@@ -256,7 +256,7 @@ with its debug port bound to `127.0.0.1` and **ignore
 `chromium:9222` directly. The `socat` sidecar runs inside the Chromium
 container's network namespace (`network_mode: "service:chromium"`) and forwards
 `0.0.0.0:9223 → 127.0.0.1:9222`. Because socat connects to Chrome from
-`127.0.0.1`, it also satisfies Chrome's host-header check — so pikiloop points
+`127.0.0.1`, it also satisfies Chrome's host-header check — so pikiloom points
 at the bridge port (`http://chromium:9223`).
 
 `--remote-allow-origins=*` is **required**: since Chrome 111, the CDP WebSocket
@@ -267,14 +267,14 @@ Alternative endpoints that need **no** bridge (they already bind `0.0.0.0` and
 allow remote origins):
 
 - **`browserless/chrome`** — purpose-built CDP service, no VNC layer
-  (set `PIKILOOP_BROWSER_CDP_URL=http://browserless:3000`, drop both the
+  (set `PIKILOOM_BROWSER_CDP_URL=http://browserless:3000`, drop both the
   `chromium` and `chromium-cdp-bridge` services).
 - **An existing Chrome on the host** started with
   `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --remote-allow-origins=*` —
-  `PIKILOOP_BROWSER_CDP_URL=http://host.docker.internal:9222`
+  `PIKILOOM_BROWSER_CDP_URL=http://host.docker.internal:9222`
   (Linux: add `extra_hosts: ["host.docker.internal:host-gateway"]`).
 
-When `PIKILOOP_BROWSER_CDP_URL` is set, pikiloop never tries to launch or
+When `PIKILOOM_BROWSER_CDP_URL` is set, pikiloom never tries to launch or
 SIGKILL a local Chrome — the sidecar is treated as a managed external service.
 If the endpoint is momentarily unreachable, the `browser_*` call surfaces a
 connection error instead of silently falling back to a (non-existent) local
@@ -286,7 +286,7 @@ The dashboard speaks plain HTTP. For internet-facing deployments put a TLS
 terminator in front (Caddy, Nginx, Traefik). Example Caddy snippet:
 
 ```caddyfile
-pikiloop.example.com {
+pikiloom.example.com {
   reverse_proxy localhost:3939
 }
 ```
@@ -315,13 +315,13 @@ sessions, and agent auth survive.
 ## 10. Building locally
 
 ```bash
-docker build -t pikiloop:local .
+docker build -t pikiloom:local .
 docker run --rm -it -p 3939:3939 \
-  -v pikiloop-config:/home/piki/.pikiloop \
-  -v pikiloop-workspace:/workspace \
+  -v pikiloom-config:/home/piki/.pikiloom \
+  -v pikiloom-workspace:/workspace \
   -e TELEGRAM_BOT_TOKEN=... \
   -e ANTHROPIC_API_KEY=... \
-  pikiloop:local
+  pikiloom:local
 ```
 
 The Dockerfile is multi-stage; first build is ~3–5 min, incremental builds
@@ -331,19 +331,19 @@ land in seconds thanks to BuildKit layer caching.
 
 ## 中文文档
 
-Pikiloop 官方镜像让你**不必在服务器上装 Node 或 agent CLI** 就能跑起来。
+Pikiloom 官方镜像让你**不必在服务器上装 Node 或 agent CLI** 就能跑起来。
 镜像内置 `claude-code`、`codex`、`gemini-cli`，并通过 3939 端口暴露 Web 控制台。
 
 ### 一键启动
 
 ```bash
-docker run -d --name pikiloop --restart unless-stopped \
+docker run -d --name pikiloom --restart unless-stopped \
   -p 3939:3939 \
   -e TELEGRAM_BOT_TOKEN=123456:replace_me \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v pikiloop-config:/home/piki/.pikiloop \
-  -v pikiloop-workspace:/workspace \
-  ghcr.io/xiaotonng/pikiloop:latest
+  -v pikiloom-config:/home/piki/.pikiloom \
+  -v pikiloom-workspace:/workspace \
+  ghcr.io/xiaotonng/pikiloom:latest
 ```
 
 浏览器打开 `http://<服务器IP>:3939` 完成剩余配置。
@@ -359,8 +359,8 @@ docker compose up -d
 
 挂载点：
 
-- `pikiloop-config` → `/home/piki/.pikiloop`：`setting.json`、会话、MCP/CLI 状态。
-- `pikiloop-workspace` → `/workspace`：agent 读写的项目目录。
+- `pikiloom-config` → `/home/piki/.pikiloom`：`setting.json`、会话、MCP/CLI 状态。
+- `pikiloom-workspace` → `/workspace`：agent 读写的项目目录。
 
 ### Agent 鉴权
 
@@ -406,15 +406,15 @@ volumes:
 
 镜像本身不打包 Chrome（避免镜像膨胀到 1GB+，且容器里没显示器也用不起来）。
 推荐做法是起一个 Chromium 边车容器（带网页 VNC 给你登录用），再加一个 socat
-**CDP 桥接**，pikiloop 通过桥接端口接进去。只要设置了
-`PIKILOOP_BROWSER_CDP_URL`，浏览器工具就会自动打开，**无需**再设
-`PIKILOOP_BROWSER_ENABLED`：
+**CDP 桥接**，pikiloom 通过桥接端口接进去。只要设置了
+`PIKILOOM_BROWSER_CDP_URL`，浏览器工具就会自动打开，**无需**再设
+`PIKILOOM_BROWSER_ENABLED`：
 
 ```yaml
 services:
-  pikiloop:
+  pikiloom:
     environment:
-      PIKILOOP_BROWSER_CDP_URL: http://chromium:9223
+      PIKILOOM_BROWSER_CDP_URL: http://chromium:9223
     depends_on: [chromium]
 
   chromium:
@@ -428,7 +428,7 @@ services:
       - chromium-config:/config
     shm_size: 1gb
 
-  # 把 Chrome 只绑在 127.0.0.1 的调试端口转发成 0.0.0.0:9223，让 pikiloop 能连上。
+  # 把 Chrome 只绑在 127.0.0.1 的调试端口转发成 0.0.0.0:9223，让 pikiloom 能连上。
   chromium-cdp-bridge:
     image: alpine/socat:latest
     network_mode: "service:chromium"
@@ -438,7 +438,7 @@ services:
 
 部署后用浏览器打开 `http://<服务器IP>:3000`，在容器里那个 Chromium 上登录
 Google / GitHub / 公司 SSO 等。登录态会持久化到 `chromium-config` 卷里。
-pikiloop 通过桥接的 9223 端口 attach 同一份 Chromium，agent 自动继承你的登录态。
+pikiloom 通过桥接的 9223 端口 attach 同一份 Chromium，agent 自动继承你的登录态。
 
 **为什么要桥接？** `lscr.io/linuxserver/chromium`（以及大多数桌面版 Chromium）
 会忽略 `--remote-debugging-address=0.0.0.0`，调试端口只绑在 `127.0.0.1`，别的
@@ -449,13 +449,13 @@ host 头校验。
 
 不需要桥接的替代方案（它们本身就绑 `0.0.0.0` 且放开了 origin）：
 - **`browserless/chrome`**：专门的 CDP 服务，无 VNC，直接
-  `PIKILOOP_BROWSER_CDP_URL=http://browserless:3000`，省掉上面两个服务。
+  `PIKILOOM_BROWSER_CDP_URL=http://browserless:3000`，省掉上面两个服务。
 - **宿主机已有的 Chrome**（启动参数带
   `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --remote-allow-origins=*`）：
-  `PIKILOOP_BROWSER_CDP_URL=http://host.docker.internal:9222`
+  `PIKILOOM_BROWSER_CDP_URL=http://host.docker.internal:9222`
   （Linux 宿主需要在 compose 里加 `extra_hosts: ["host.docker.internal:host-gateway"]`）。
 
-设置了 `PIKILOOP_BROWSER_CDP_URL` 之后，pikiloop 不再尝试启动或杀掉本地 Chrome —
+设置了 `PIKILOOM_BROWSER_CDP_URL` 之后，pikiloom 不再尝试启动或杀掉本地 Chrome —
 sidecar 完全由你管；端点临时连不上时，`browser_*` 调用会直接报连接错误，而不会
 偷偷回退去拉本地 Chrome。
 
@@ -474,5 +474,5 @@ docker compose pull && docker compose up -d
 
 ### 反馈
 
-镜像相关问题请在 [issue #16](https://github.com/xiaotonng/pikiloop/issues/16)
+镜像相关问题请在 [issue #16](https://github.com/xiaotonng/pikiloom/issues/16)
 留言，或直接新开 issue。

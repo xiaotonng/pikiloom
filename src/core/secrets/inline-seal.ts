@@ -1,7 +1,7 @@
 /**
  * Machine-bound AES-256-GCM seal for credential values when no OS keychain
  * is available. The derived key mixes hostname + a per-install random salt
- * stored alongside ~/.pikiloop/setting.json, so a sealed blob copied to a
+ * stored alongside ~/.pikiloom/setting.json, so a sealed blob copied to a
  * different machine will not decrypt.
  */
 
@@ -30,7 +30,7 @@ function readOrCreateSalt(): Buffer {
 function deriveKey(): Buffer {
   const salt = readOrCreateSalt();
   const material = Buffer.concat([
-    Buffer.from(os.hostname() || 'pikiloop'),
+    Buffer.from(os.hostname() || 'pikiloom'),
     Buffer.from(os.userInfo().username || ''),
     salt,
   ]);

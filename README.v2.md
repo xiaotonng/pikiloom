@@ -1,19 +1,19 @@
 <div align="center">
 
-# 🐾 pikiloop
+# 🐾 pikiloom
 
 ### Put the world's smartest AI agents in your pocket.
 
 **The open orchestrator for driving a _swarm_ of coding agents — any agent, any model, any tool — from whatever screen is closest: your IM, your browser, your phone.**
 
 ```bash
-npx pikiloop@latest
+npx pikiloom@latest
 ```
 
 <p>
-<a href="https://www.npmjs.com/package/pikiloop"><img src="https://img.shields.io/npm/v/pikiloop?label=npm&color=cb3837" alt="npm"></a>
-<a href="https://www.npmjs.com/package/pikiloop"><img src="https://img.shields.io/npm/dm/pikiloop?label=downloads&color=success" alt="npm downloads"></a>
-<a href="https://github.com/xiaotonng/pikiloop/stargazers"><img src="https://img.shields.io/github/stars/xiaotonng/pikiloop?style=flat&color=yellow" alt="GitHub stars"></a>
+<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/v/pikiloom?label=npm&color=cb3837" alt="npm"></a>
+<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/dm/pikiloom?label=downloads&color=success" alt="npm downloads"></a>
+<a href="https://github.com/xiaotonng/pikiloom/stargazers"><img src="https://img.shields.io/github/stars/xiaotonng/pikiloom?style=flat&color=yellow" alt="GitHub stars"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-green.svg" alt="Node 20+"></a>
 </p>
@@ -22,7 +22,7 @@ npx pikiloop@latest
 <b>English</b> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<img src="docs/promo-orchestrator.png" alt="pikiloop — the open Agent orchestrator" width="820">
+<img src="docs/promo-orchestrator.png" alt="pikiloom — the open Agent orchestrator" width="820">
 
 </div>
 
@@ -34,13 +34,13 @@ npx pikiloop@latest
 
 <p align="center"><img src="docs/promo-demo.gif" alt="Ask from Telegram, agent works locally, result returns to chat" width="780"></p>
 
-pikiloop turns **whatever messenger you already have open** into a control surface for the agents running on your own computer. Kick off a refactor, close the laptop, steer it from a coffee shop. Same agents, same files, streamed to your pocket.
+pikiloom turns **whatever messenger you already have open** into a control surface for the agents running on your own computer. Kick off a refactor, close the laptop, steer it from a coffee shop. Same agents, same files, streamed to your pocket.
 
 ---
 
-## What is pikiloop?
+## What is pikiloom?
 
-The agents themselves are becoming extraordinary — they plan, spawn sub-agents, run their own workflows. **pikiloop doesn't try to out-think them. It sets them free.**
+The agents themselves are becoming extraordinary — they plan, spawn sub-agents, run their own workflows. **pikiloom doesn't try to out-think them. It sets them free.**
 
 It's a deliberately thin layer that wraps best-in-class agents (Claude Code · Codex · Gemini · Hermes · …) and gives them the three things they can't give themselves:
 
@@ -48,9 +48,9 @@ It's a deliberately thin layer that wraps best-in-class agents (Claude Code · C
 - **Freedom** — run them on any model: frontier, Chinese domestic, or fully local.
 - **Parallelism** — a whole swarm at once, each on its own workspace, steered by one operator.
 
-We never rewrite the brain. When an agent ships a new capability — a workflow engine, a sharper planner, a new tool — your pikiloop sessions inherit it **the same day, for free**. Our job is everything *around* the agent: the terminals, the models, the tools, and the orchestration across them. The orchestrator is the product — and it's **built with itself**.
+We never rewrite the brain. When an agent ships a new capability — a workflow engine, a sharper planner, a new tool — your pikiloom sessions inherit it **the same day, for free**. Our job is everything *around* the agent: the terminals, the models, the tools, and the orchestration across them. The orchestrator is the product — and it's **built with itself**.
 
-> **Thin on purpose.** As the frontier agents get smarter, pikiloop gets stronger — for free. We never race the brain; we widen its reach.
+> **Thin on purpose.** As the frontier agents get smarter, pikiloom gets stronger — for free. We never race the brain; we widen its reach.
 
 ```
             ┌─────────────────────────────────────────────┐
@@ -70,7 +70,7 @@ We never rewrite the brain. When an agent ships a new capability — a workflow 
 
 ## Why people use it
 
-🐝 **A swarm of _different_ agents.** A single agent already fans out its own sub-agents inside one task — pikiloop runs _different_ agents across _different_ tasks. Claude in pane 1, Codex in pane 2, Gemini in pane 3, each on its own workspace, one operator steering them all.
+🐝 **A swarm of _different_ agents.** A single agent already fans out its own sub-agents inside one task — pikiloom runs _different_ agents across _different_ tasks. Claude in pane 1, Codex in pane 2, Gemini in pane 3, each on its own workspace, one operator steering them all.
 
 📱 **Walk-away coding.** Start a long task, then watch and steer it from your phone over Telegram/Feishu/Slack. It runs locally and streams back.
 
@@ -90,7 +90,7 @@ We never rewrite the brain. When an agent ships a new capability — a workflow 
 
 ```bash
 cd your-workspace
-npx pikiloop@latest
+npx pikiloom@latest
 ```
 
 That's it — the **Web Dashboard** opens at `http://localhost:3939`. From there you drive sessions, connect IM channels, pick agents and models, and install skills & MCP servers. Everything is one click away.
@@ -99,19 +99,19 @@ That's it — the **Web Dashboard** opens at `http://localhost:3939`. From there
 <summary><b>Prefer the terminal, or running on a server?</b></summary>
 
 ```bash
-npx pikiloop@latest --setup     # interactive terminal setup wizard
-npx pikiloop@latest --doctor    # environment health check
+npx pikiloom@latest --setup     # interactive terminal setup wizard
+npx pikiloom@latest --doctor    # environment health check
 
 # Docker (multi-arch, bakes in claude-code + codex + gemini-cli)
-docker run -d --name pikiloop -p 3939:3939 \
+docker run -d --name pikiloom -p 3939:3939 \
   -e TELEGRAM_BOT_TOKEN=... \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v pikiloop-config:/home/piki/.pikiloop \
-  -v pikiloop-workspace:/workspace \
-  ghcr.io/xiaotonng/pikiloop:latest
+  -v pikiloom-config:/home/piki/.pikiloom \
+  -v pikiloom-workspace:/workspace \
+  ghcr.io/xiaotonng/pikiloom:latest
 ```
 
-On a headless box you can also point the agent at a **remote browser** over CDP (`PIKILOOP_BROWSER_CDP_URL`) instead of a local Chrome. Full reference: [docs/DOCKER.md](docs/DOCKER.md).
+On a headless box you can also point the agent at a **remote browser** over CDP (`PIKILOOM_BROWSER_CDP_URL`) instead of a local Chrome. Full reference: [docs/DOCKER.md](docs/DOCKER.md).
 
 </details>
 
@@ -119,9 +119,9 @@ On a headless box you can also point the agent at a **remote browser** over CDP 
 
 ## How is this different?
 
-A small, healthy ecosystem now connects coding agents to your chat apps — [cc-connect](https://github.com/chenhg5/cc-connect) is the closest peer, and it's genuinely good. We're not here to win a feature-checklist war: most of these tools (pikiloop included) already do multi-agent, multi-channel, parallel sessions, a web dashboard, and model switching. That's table stakes now — and we'd rather be honest about it than invent a column where we win.
+A small, healthy ecosystem now connects coding agents to your chat apps — [cc-connect](https://github.com/chenhg5/cc-connect) is the closest peer, and it's genuinely good. We're not here to win a feature-checklist war: most of these tools (pikiloom included) already do multi-agent, multi-channel, parallel sessions, a web dashboard, and model switching. That's table stakes now — and we'd rather be honest about it than invent a column where we win.
 
-| | **pikiloop** | **cc-connect & peers** |
+| | **pikiloom** | **cc-connect & peers** |
 |---|:---:|:---:|
 | Multiple agents (Claude · Codex · Gemini · …) | ✅ | ✅ |
 | Many IM channels **+** Web Dashboard | ✅ | ✅ |
@@ -133,9 +133,9 @@ A small, healthy ecosystem now connects coding agents to your chat apps — [cc-
 Two things we actually bet on, neither of which a checklist can capture:
 
 - **We hand the agent a body.** Built-in computer-use lets it drive a real browser (Playwright) and the macOS desktop (Peekaboo) — see the screen, click, type, run apps — not just read and write files.
-- **Execution is the moat.** How the swarm *feels* in one cockpit, how cleanly it streams and lets you steer mid-task, how little it makes you think about plumbing. That's why we lead with the demo, not the table — and why pikiloop is built with itself, every commit and release.
+- **Execution is the moat.** How the swarm *feels* in one cockpit, how cleanly it streams and lets you steer mid-task, how little it makes you think about plumbing. That's why we lead with the demo, not the table — and why pikiloom is built with itself, every commit and release.
 
-Everything else, we don't fight for — we inherit it. As the agents and the chat platforms get better, so does pikiloop, for free.
+Everything else, we don't fight for — we inherit it. As the agents and the chat platforms get better, so does pikiloom, for free.
 
 ---
 
@@ -198,15 +198,15 @@ Everything else, we don't fight for — we inherit it. As the agents and the cha
 - **Deep injection** — run Claude Code on DeepSeek, Doubao, or a local model without editing the upstream client's config.
 
 ### Tool Layer
-- **Skills** — project skills in `.pikiloop/skills/*/SKILL.md` (legacy `.claude/commands/*.md` still works); one-click install from any GitHub `owner/repo` or a curated set. Trigger anywhere with `/skills` and `/sk_<name>`.
-- **MCP ecosystem** — browse the MCP Registry; add stdio/HTTP servers; OAuth 2.1 + Dynamic Client Registration; real-handshake health checks. Plus two built-in computer-use servers: `pikiloop-browser` (Chrome via Playwright) and `peekaboo` (macOS GUI).
+- **Skills** — project skills in `.pikiloom/skills/*/SKILL.md` (legacy `.claude/commands/*.md` still works); one-click install from any GitHub `owner/repo` or a curated set. Trigger anywhere with `/skills` and `/sk_<name>`.
+- **MCP ecosystem** — browse the MCP Registry; add stdio/HTTP servers; OAuth 2.1 + Dynamic Client Registration; real-handshake health checks. Plus two built-in computer-use servers: `pikiloom-browser` (Chrome via Playwright) and `peekaboo` (macOS GUI).
 - **CLI tools** — auto-detects versions & auth for gh, brew, npm, uv, …; OAuth-web login routes through the agent's normal tool surface.
 - **Session-scoped bridge** — `im_*`, `goal_*`, and computer-use tools auto-injected into every session.
 - **Three-way merge** — `global < workspace < built-in`, resolved silently per session.
 
 ### Runtime
 - **Dedicated session workspaces** — each session gets an isolated dir; uploads & generated assets land there.
-- **Computer-use (browser)** — `pikiloop-browser` wraps `@playwright/mcp` with a process-level supervisor and a shared, persistent Chrome profile; can also attach to a **remote browser over CDP** for servers/Docker.
+- **Computer-use (browser)** — `pikiloom-browser` wraps `@playwright/mcp` with a process-level supervisor and a shared, persistent Chrome profile; can also attach to a **remote browser over CDP** for servers/Docker.
 - **Computer-use (macOS)** — `peekaboo` exposes `see`/`click`/`type`/`window`/`menu`/`app`/`dock` plus a goal-directed sub-agent (needs Accessibility + Screen Recording).
 - **Hardened for long tasks** — sleep prevention, watchdog, auto-restart, daemon mode, channel supervisor; restart is blocked while tasks run, so a hot reload never kills a marathon job.
 
@@ -237,10 +237,10 @@ Everything else, we don't fight for — we inherit it. As the agents and the cha
 <details>
 <summary><b>⚙️ Configuration</b></summary>
 
-- **Persistent config:** `~/.pikiloop/setting.json` (channels, agents, workspaces, MCP extensions, Profiles). **API keys are not stored here** — they're sealed into the OS keychain when available.
+- **Persistent config:** `~/.pikiloom/setting.json` (channels, agents, workspaces, MCP extensions, Profiles). **API keys are not stored here** — they're sealed into the OS keychain when available.
 - The **Dashboard** is the primary config UI; `--setup` and `--doctor` cover headless/CLI-first users.
 - Global MCP extensions live under `extensions.mcp`; workspace MCP follows `.mcp.json` in the project root.
-- Project skills load from `.pikiloop/skills/*/SKILL.md` (legacy `.claude/commands/*.md` supported).
+- Project skills load from `.pikiloom/skills/*/SKILL.md` (legacy `.claude/commands/*.md` supported).
 - **Computer-use toggles** (Extensions dashboard): `browserEnabled` (managed Chrome), `peekabooEnabled` (macOS desktop — requires Accessibility + Screen Recording).
 
 </details>
@@ -249,19 +249,19 @@ Everything else, we don't fight for — we inherit it. As the agents and the cha
 
 ## Roadmap
 
-**SupporterAgent** — a meta-agent layered on top of the stack that owns a complex objective end-to-end: decompose, schedule the right sub-agents on the right models with the right tools, watch their streams, and step in when one stalls or drifts — so pikiloop can drive long-horizon, multi-agent work without a human babysitting every turn.
+**SupporterAgent** — a meta-agent layered on top of the stack that owns a complex objective end-to-end: decompose, schedule the right sub-agents on the right models with the right tools, watch their streams, and step in when one stalls or drifts — so pikiloom can drive long-horizon, multi-agent work without a human babysitting every turn.
 
 ---
 
 ## Development & Contributing
 
 ```bash
-git clone https://github.com/xiaotonng/pikiloop.git
-cd pikiloop && npm install && npm run build && npm test
-npm run dev    # local dev server (logs to ~/.pikiloop/dev/dev.log)
+git clone https://github.com/xiaotonng/pikiloom.git
+cd pikiloom && npm install && npm run build && npm test
+npm run dev    # local dev server (logs to ~/.pikiloom/dev/dev.log)
 ```
 
-Every layer is built to be extended — a new terminal, agent driver, model wrapper, or MCP tool is a first-class contribution. Start with the **[Contributing Guide](CONTRIBUTING.md)** and the [`good first issue`](https://github.com/xiaotonng/pikiloop/labels/good%20first%20issue) label. Deep dives: [ARCHITECTURE.md](ARCHITECTURE.md) · [INTEGRATION.md](INTEGRATION.md) · [TESTING.md](TESTING.md).
+Every layer is built to be extended — a new terminal, agent driver, model wrapper, or MCP tool is a first-class contribution. Start with the **[Contributing Guide](CONTRIBUTING.md)** and the [`good first issue`](https://github.com/xiaotonng/pikiloom/labels/good%20first%20issue) label. Deep dives: [ARCHITECTURE.md](ARCHITECTURE.md) · [INTEGRATION.md](INTEGRATION.md) · [TESTING.md](TESTING.md).
 
 | Extend | Where |
 |---|---|
@@ -276,8 +276,8 @@ Every layer is built to be extended — a new terminal, agent driver, model wrap
 
 ## Star History
 
-<a href="https://www.star-history.com/#xiaotonng/pikiloop&Date">
-  <img src="https://api.star-history.com/svg?repos=xiaotonng/pikiloop&type=Date" alt="Star History" width="640">
+<a href="https://www.star-history.com/#xiaotonng/pikiloom&Date">
+  <img src="https://api.star-history.com/svg?repos=xiaotonng/pikiloom&type=Date" alt="Star History" width="640">
 </a>
 
 ---

@@ -1,5 +1,5 @@
 /**
- * mcp-session-server.ts — MCP server process for pikiloop session bridge.
+ * mcp-session-server.ts — MCP server process for pikiloom session bridge.
  *
  * Spawned by the agent CLI (claude/codex/gemini) via --mcp-config or codex mcp add.
  * Communicates with the agent over stdio using the MCP protocol (JSON-RPC 2.0).
@@ -11,7 +11,7 @@
  * Context is injected via environment variables:
  *   MCP_WORKSPACE_PATH — absolute path to the session workspace
  *   MCP_STAGED_FILES   — JSON array of staged file relative paths
- *   MCP_CALLBACK_URL   — HTTP URL for the pikiloop callback server
+ *   MCP_CALLBACK_URL   — HTTP URL for the pikiloom callback server
  *
  * Tools are defined in src/tools/ — each module exports definitions + handlers.
  */
@@ -83,7 +83,7 @@ const IS_CODEX = process.env.MCP_AGENT === 'codex';
 const TOOL_MODULES: McpToolModule[] = [
   ...(AVAILABLE.has('workspace') ? [workspaceTools] : []),
   ...(IS_CODEX ? [] : [goalTools]),
-  // Codex parks/resumes via its own native goal machinery; the pikiloop
+  // Codex parks/resumes via its own native goal machinery; the pikiloom
   // awaiting marker is for the `claude -p`-style drivers whose turn process
   // exits at `result`.
   ...(IS_CODEX ? [] : [awaitResumeTools]),
@@ -187,7 +187,7 @@ function handleMessage(msg: any) {
       respond(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'pikiloop-session', version: '1.0.0' },
+        serverInfo: { name: 'pikiloom-session', version: '1.0.0' },
       });
       break;
 

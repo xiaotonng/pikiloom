@@ -79,9 +79,9 @@ interface ProviderTemplate {
  * Quick-connect templates. Two rows × 5:
  *   Row 1 — providers that *expand* the user's reach beyond the native agents
  *           (OpenRouter aggregator + 4 leading Chinese model series). For the
- *           pikiloop audience these are the highest-leverage BYOK paths.
+ *           pikiloom audience these are the highest-leverage BYOK paths.
  *   Row 2 — direct API alternatives for providers that already have a native
- *           agent CLI in pikiloop (Anthropic via Claude Code, Google via
+ *           agent CLI in pikiloom (Anthropic via Claude Code, Google via
  *           Gemini CLI), plus DeepSeek / OpenAI / Custom.
  */
 const TEMPLATES: ProviderTemplate[] = [

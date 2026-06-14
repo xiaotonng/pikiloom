@@ -7,9 +7,9 @@ describe('_detectBrowserMcpFailure', () => {
     const frameLine = '{"type":"user","message":{"content":[{"type":"tool_result","content":"### Error\\nError: browserBackend.callTool: Frame has been detached.\\n"}]}}';
     expect(_detectBrowserMcpFailure(frameLine)).toBe('playwright Frame detached');
 
-    // flags pikiloop-browser MCP stdio close
-    const mcpLine = '{"type":"user","message":{"content":[{"type":"tool_result","content":"mcp__pikiloop-browser__browser_navigate: http://x failed: MCP error -32000: Connection closed"}]}}';
-    expect(_detectBrowserMcpFailure(mcpLine)).toBe('pikiloop-browser MCP stdio closed');
+    // flags pikiloom-browser MCP stdio close
+    const mcpLine = '{"type":"user","message":{"content":[{"type":"tool_result","content":"mcp__pikiloom-browser__browser_navigate: http://x failed: MCP error -32000: Connection closed"}]}}';
+    expect(_detectBrowserMcpFailure(mcpLine)).toBe('pikiloom-browser MCP stdio closed');
 
     // does not fire on Connection closed from unrelated MCP servers
     const unrelatedLine = '{"type":"user","message":{"content":[{"type":"tool_result","content":"mcp__atlassian__search failed: MCP error -32000: Connection closed"}]}}';

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * cli.ts — CLI entry point for pikiloop.
+ * cli.ts — CLI entry point for pikiloom.
  */
 
 // Mark this process as a Claude Code context so nested claude launches are blocked.
@@ -8,9 +8,9 @@
 process.env.CLAUDECODE = '1';
 
 import { hydrateLegacyEnv, migrateLegacyStateDir } from '../core/legacy-compat.js';
-// Backward-compat for the pikiclaw → pikiloop rename. Runs before any config is
-// read or lock taken: mirror PIKICLAW_* → PIKILOOP_* and move ~/.pikiclaw →
-// ~/.pikiloop. Both are idempotent no-ops once an install has migrated.
+// Backward-compat for the pikiclaw → pikiloom rename. Runs before any config is
+// read or lock taken: mirror PIKICLAW_* → PIKILOOM_* and move ~/.pikiclaw →
+// ~/.pikiloom. Both are idempotent no-ops once an install has migrated.
 hydrateLegacyEnv();
 migrateLegacyStateDir();
 
@@ -70,10 +70,10 @@ const DAEMON_STRIP_ARGS = new Set(['--daemon', '--no-daemon']);
 async function runDaemon(userArgs: string[]): Promise<never> {
   // Forward user's CLI args (strip daemon-related flags).
   const forwardedArgs = userArgs.filter(a => !DAEMON_STRIP_ARGS.has(a));
-  const restartCmd = process.env.PIKILOOP_RESTART_CMD;
+  const restartCmd = process.env.PIKILOOM_RESTART_CMD;
   const restartStateFile = createRestartStateFilePath(process.pid);
 
-  // Publish the daemon PID so `pikiloop stop` can find it. Clean up on any
+  // Publish the daemon PID so `pikiloom stop` can find it. Clean up on any
   // exit path so a stale file never points at someone else's PID.
   writeDaemonPidFile(process.pid);
   process.once('exit', clearDaemonPidFile);
@@ -104,8 +104,8 @@ async function runDaemon(userArgs: string[]): Promise<never> {
       env: {
         ...process.env,
         ...extraEnv,
-        PIKILOOP_DAEMON_CHILD: '1',
-        PIKILOOP_RESTART_STATE_FILE: restartStateFile,
+        PIKILOOM_DAEMON_CHILD: '1',
+        PIKILOOM_RESTART_STATE_FILE: restartStateFile,
         npm_config_yes: 'true',
       },
     });
@@ -213,7 +213,7 @@ function parseArgs(argv: string[]) {
 
 function processLog(message: string) {
   const ts = new Date().toTimeString().slice(0, 8);
-  process.stdout.write(`[pikiloop ${ts}] ${message}\n`);
+  process.stdout.write(`[pikiloom ${ts}] ${message}\n`);
 }
 
 const listStartupAgents = () => listAgents().agents;
@@ -233,7 +233,7 @@ async function handleMcpServeMode(): Promise<boolean> {
 /** Print help text and exit. */
 function printHelp(): never {
   process.stdout.write(
-`pikiloop v${VERSION} — Run local coding agents through IM.
+`pikiloom v${VERSION} — Run local coding agents through IM.
 
 Run a bot that forwards IM messages to a local AI coding agent
 (Claude Code or Codex CLI), streams responses in real-time, and manages
@@ -243,12 +243,12 @@ Channels are auto-detected from configured credentials. If multiple
 validated channels are enabled, they launch simultaneously.
 
 Usage:
-  npx pikiloop                              # auto-detect from config/env
-  npx pikiloop -w ~/project                 # set working directory
-  npx pikiloop stop                         # stop the running daemon
+  npx pikiloom                              # auto-detect from config/env
+  npx pikiloom -w ~/project                 # set working directory
+  npx pikiloom stop                         # stop the running daemon
 
 Options:
-  -t, --token <token>       Channel auth token (env: PIKILOOP_TOKEN)
+  -t, --token <token>       Channel auth token (env: PIKILOOM_TOKEN)
   -a, --agent <agent>       AI agent: claude | codex  [default: codex]
   -m, --model <model>       Default model, switchable in chat via /models
   -w, --workdir <dir>       Working directory for the agent  [default: current process cwd]
@@ -265,12 +265,12 @@ Options:
   -h, --help                Print this help
 
 Environment variables (general):
-  PIKILOOP_TOKEN             Channel auth token (same as -t, channel-agnostic)
+  PIKILOOM_TOKEN             Channel auth token (same as -t, channel-agnostic)
   DEFAULT_AGENT              Default agent (same as -a)
-  PIKILOOP_WORKDIR           Working directory (same as -w)
-  PIKILOOP_TIMEOUT           Timeout in seconds (same as --timeout)
-  PIKILOOP_ALLOWED_IDS       Comma-separated chat/user ID whitelist
-  PIKILOOP_FULL_ACCESS       Default full-access behavior (true/false)
+  PIKILOOM_WORKDIR           Working directory (same as -w)
+  PIKILOOM_TIMEOUT           Timeout in seconds (same as --timeout)
+  PIKILOOM_ALLOWED_IDS       Comma-separated chat/user ID whitelist
+  PIKILOOM_FULL_ACCESS       Default full-access behavior (true/false)
 
 Environment variables (Telegram):
   TELEGRAM_BOT_TOKEN         Telegram bot token (from @BotFather)
@@ -312,10 +312,10 @@ Environment variables (Feishu):
 Notes:
   - weixin setup is QR-based in the dashboard and currently supports text-only replies.
   - --safe-mode delegates to the agent's own permission model; it does not add
-    a pikiloop-specific approval workflow.
+    a pikiloom-specific approval workflow.
 
 Prerequisites: Node.js >= 18, and at least one agent CLI installed (claude or codex).
-Docs: https://github.com/xiaotonng/pikiloop
+Docs: https://github.com/xiaotonng/pikiloom
 `);
   process.exit(0);
 }
@@ -330,7 +330,7 @@ Docs: https://github.com/xiaotonng/pikiloop
  * the replacement process.
  */
 function persistWorkdir(args: Record<string, any>, userConfig: Partial<UserConfig>): Partial<UserConfig> {
-  if (process.env.PIKILOOP_DAEMON_CHILD) return userConfig;
+  if (process.env.PIKILOOM_DAEMON_CHILD) return userConfig;
   // launchd launches the process from `/`; without `-w`, that would clobber
   // the user's saved workdir to "/". Skip persistence so the config stays
   // whatever the user previously chose interactively.
@@ -346,13 +346,13 @@ function persistWorkdir(args: Record<string, any>, userConfig: Partial<UserConfi
  * watchdog. This function never returns in daemon mode.
  */
 async function enterDaemonIfNeeded(args: Record<string, any>): Promise<void> {
-  if (args.daemon && !process.env.PIKILOOP_DAEMON_CHILD) {
+  if (args.daemon && !process.env.PIKILOOM_DAEMON_CHILD) {
     await runDaemon(process.argv.slice(2));
   }
   if (!args.daemon) {
     // --no-daemon: clear inherited env so requestProcessRestart uses the
     // direct-spawn path instead of handing off to a non-existent daemon.
-    delete process.env.PIKILOOP_DAEMON_CHILD;
+    delete process.env.PIKILOOM_DAEMON_CHILD;
   }
 }
 
@@ -404,11 +404,11 @@ function installTopLevelShutdownHandler(): void {
 async function handleStopCommand(): Promise<never> {
   const pid = readDaemonPidFile();
   if (!pid) {
-    process.stderr.write('pikiloop stop: no daemon PID file found (is pikiloop running in daemon mode?)\n');
+    process.stderr.write('pikiloom stop: no daemon PID file found (is pikiloom running in daemon mode?)\n');
     process.exit(1);
   }
   if (!isProcessAlive(pid)) {
-    process.stdout.write(`pikiloop stop: daemon (pid ${pid}) is not running, clearing stale PID file\n`);
+    process.stdout.write(`pikiloom stop: daemon (pid ${pid}) is not running, clearing stale PID file\n`);
     clearDaemonPidFile();
     process.exit(0);
   }
@@ -417,28 +417,28 @@ async function handleStopCommand(): Promise<never> {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === 'ESRCH') {
-      process.stdout.write(`pikiloop stop: daemon (pid ${pid}) already exited\n`);
+      process.stdout.write(`pikiloom stop: daemon (pid ${pid}) already exited\n`);
       clearDaemonPidFile();
       process.exit(0);
     }
-    process.stderr.write(`pikiloop stop: failed to signal pid ${pid}: ${err}\n`);
+    process.stderr.write(`pikiloom stop: failed to signal pid ${pid}: ${err}\n`);
     process.exit(1);
   }
-  process.stdout.write(`pikiloop stop: SIGTERM → pid ${pid}\n`);
+  process.stdout.write(`pikiloom stop: SIGTERM → pid ${pid}\n`);
 
   // Poll for up to 8 s; daemon's child needs ~3 s for its force-exit timer.
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
     if (!isProcessAlive(pid)) {
       clearDaemonPidFile();
-      process.stdout.write(`pikiloop stop: daemon (pid ${pid}) stopped\n`);
+      process.stdout.write(`pikiloom stop: daemon (pid ${pid}) stopped\n`);
       process.exit(0);
     }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
 
   // Escalate to SIGKILL.
-  process.stderr.write(`pikiloop stop: daemon (pid ${pid}) still alive after 8s, sending SIGKILL\n`);
+  process.stderr.write(`pikiloom stop: daemon (pid ${pid}) still alive after 8s, sending SIGKILL\n`);
   try { process.kill(pid, 'SIGKILL'); } catch {}
   clearDaemonPidFile();
   process.exit(0);
@@ -471,8 +471,8 @@ async function awaitDashboardConfig(
   ctx: { userConfig: Partial<UserConfig>; configOverrides: Partial<UserConfig>; args: Record<string, any> },
 ): Promise<{ channels: ChannelName[]; channel: ChannelName }> {
   const ts = new Date().toTimeString().slice(0, 8);
-  process.stdout.write(`[pikiloop ${ts}] waiting for configuration via dashboard...\n`);
-  process.stdout.write(`[pikiloop ${ts}] configure at ${dashboard.url}; startup will continue automatically once ready.\n`);
+  process.stdout.write(`[pikiloom ${ts}] waiting for configuration via dashboard...\n`);
+  process.stdout.write(`[pikiloom ${ts}] configure at ${dashboard.url}; startup will continue automatically once ready.\n`);
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -495,7 +495,7 @@ async function awaitDashboardConfig(
     const nextNeedsSetup = !hasReadyAgent(nextSetupState);
     if (!nextNeedsSetup) {
       const resumeTs = new Date().toTimeString().slice(0, 8);
-      process.stdout.write(`[pikiloop ${resumeTs}] configuration detected, starting bot channels...\n`);
+      process.stdout.write(`[pikiloom ${resumeTs}] configuration detected, starting bot channels...\n`);
       return { channels, channel };
     }
   }
@@ -536,11 +536,11 @@ async function runSetupPhase(
   if (useDashboard) {
     // Suppress the browser pop on auto-start when there's no user-facing
     // terminal: launchd-spawned bots, Docker/headless server runs, or when
-    // the user explicitly set PIKILOOP_OPEN_BROWSER=0.
+    // the user explicitly set PIKILOOM_OPEN_BROWSER=0.
     const openBrowser =
       !process.env[FROM_LAUNCHD_ENV]
-      && !envBool('PIKILOOP_DOCKER', false)
-      && envBool('PIKILOOP_OPEN_BROWSER', true);
+      && !envBool('PIKILOOM_DOCKER', false)
+      && envBool('PIKILOOM_OPEN_BROWSER', true);
     dashboard = await startDashboard({
       port: args.dashboardPort || 3939,
       open: openBrowser,
@@ -660,7 +660,7 @@ function applyRuntimeConfig(
     else if (ag === 'gemini') process.env.GEMINI_MODEL = args.model;
     else process.env.CLAUDE_MODEL = args.model;
   }
-  if (args.timeout != null) process.env.PIKILOOP_TIMEOUT = String(args.timeout);
+  if (args.timeout != null) process.env.PIKILOOM_TIMEOUT = String(args.timeout);
 
   // Permission mode: safe vs full-access.
   if (args.safeMode) {
@@ -668,7 +668,7 @@ function applyRuntimeConfig(
     process.env.CLAUDE_PERMISSION_MODE = 'default';
     process.env.GEMINI_APPROVAL_MODE = 'default';
     process.env.GEMINI_SANDBOX = 'true';
-  } else if (args.fullAccess || envBool('PIKILOOP_FULL_ACCESS', true)) {
+  } else if (args.fullAccess || envBool('PIKILOOM_FULL_ACCESS', true)) {
     process.env.CODEX_FULL_ACCESS = 'true';
     process.env.CLAUDE_PERMISSION_MODE = 'bypassPermissions';
     process.env.GEMINI_APPROVAL_MODE = 'yolo';
@@ -708,7 +708,7 @@ function applyRuntimeConfig(
  * Hand off channel lifecycle to ChannelSupervisor and block forever. The
  * supervisor reconciles bots against the user config — adding, removing,
  * or replacing channels in response to dashboard saves without restarting
- * the pikiloop process.
+ * the pikiloom process.
  *
  * Per-bot signal handlers (and the daemon supervisor when present) drive
  * process exit; this promise is just a foreground keep-alive.
@@ -733,7 +733,7 @@ export async function main() {
   const args = parseArgs(process.argv.slice(2));
   let userConfig = loadUserConfig();
 
-  if (args.version) { process.stdout.write(`pikiloop ${VERSION}\n`); process.exit(0); }
+  if (args.version) { process.stdout.write(`pikiloom ${VERSION}\n`); process.exit(0); }
   if (args.help) printHelp();
   if (args.stop) await handleStopCommand();
 

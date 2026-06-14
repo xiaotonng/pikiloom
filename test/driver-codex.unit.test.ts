@@ -13,7 +13,7 @@ describe('Codex session history', () => {
     // --- reconstructs commentary, tools, plan, and persisted thinking for rich history ---
     await withTempHome(async homeDir => {
       const workdir = path.join(homeDir, 'project');
-      const workspacePath = path.join(workdir, '.pikiloop', 'sessions', 'codex', 'sess-rich', 'workspace');
+      const workspacePath = path.join(workdir, '.pikiloom', 'sessions', 'codex', 'sess-rich', 'workspace');
       const rolloutDir = path.join(homeDir, '.codex', 'sessions', '2026', '03', '29');
       fs.mkdirSync(workdir, { recursive: true });
       fs.mkdirSync(workspacePath, { recursive: true });
@@ -98,7 +98,7 @@ describe('Codex session history', () => {
         }),
       ].join('\n'));
 
-      const sessionIndexPath = path.join(workdir, '.pikiloop', 'sessions', 'index.json');
+      const sessionIndexPath = path.join(workdir, '.pikiloom', 'sessions', 'index.json');
       fs.mkdirSync(path.dirname(sessionIndexPath), { recursive: true });
       fs.writeFileSync(sessionIndexPath, JSON.stringify({
         version: 1,
@@ -191,7 +191,7 @@ describe('Codex session history', () => {
     await withTempHome(async homeDir => {
       const sessionId = 'sess-img';
       const workdir = path.join(homeDir, 'project');
-      const workspacePath = path.join(workdir, '.pikiloop', 'sessions', 'codex', sessionId, 'workspace');
+      const workspacePath = path.join(workdir, '.pikiloom', 'sessions', 'codex', sessionId, 'workspace');
       const rolloutDir = path.join(homeDir, '.codex', 'sessions', '2026', '05', '23');
       const imageDir = path.join(homeDir, '.codex', 'generated_images', sessionId);
       const imageId = 'ig_test_image_id';

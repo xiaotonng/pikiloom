@@ -1,9 +1,9 @@
 {
-  "name": "pikiloop-web",
+  "name": "pikiloom-web",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Marketing landing page for pikiloop — built with React Bits.",
+  "description": "Marketing landing page for pikiloom — built with React Bits.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

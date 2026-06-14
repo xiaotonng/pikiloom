@@ -130,7 +130,7 @@ let tmpDir: string;
 let responderPath: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-hermes-test-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-hermes-test-'));
   responderPath = path.join(tmpDir, 'responder.py');
   fs.writeFileSync(responderPath, RESPONDER_HEADER, { mode: 0o755 });
   vi.resetModules();
@@ -224,7 +224,7 @@ describe('Hermes ACP driver', () => {
       expect(result.message).not.toContain('OLD-ASSISTANT');
     }
 
-    // --- flags model safety refusals so the user knows it is the model, not pikiloop ---
+    // --- flags model safety refusals so the user knows it is the model, not pikiloom ---
     {
       const { result } = await runDriver({
         promptChunks: ["I'm sorry, but I cannot assist with that request."],

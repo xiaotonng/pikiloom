@@ -75,7 +75,7 @@ export interface RecommendedMcpServer {
   iconUrl?: string;
   homepage?: string;
   /**
-   * Builtin entries are pikiloop-managed: install/toggle/remove map to a config
+   * Builtin entries are pikiloom-managed: install/toggle/remove map to a config
    * flag rather than `extensions.mcp`, and the runtime injects a custom command
    * (with browser-supervisor lifecycle) instead of running `transport.command`.
    * Surfaced in a dedicated "Built-in" section at the top of the catalog UI.

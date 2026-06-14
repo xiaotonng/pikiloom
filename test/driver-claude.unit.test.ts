@@ -67,7 +67,7 @@ describe('Claude usage resolution', () => {
   beforeEach(() => {
     vi.resetModules();
     execSyncMock.mockReset();
-    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-claude-usage-'));
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-claude-usage-'));
     process.env.HOME = homeDir;
   });
 
@@ -118,7 +118,7 @@ describe('Claude usage resolution', () => {
     // Reset modules and mocks for the next scenario
     vi.resetModules();
     execSyncMock.mockReset();
-    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-claude-usage-'));
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-claude-usage-'));
     process.env.HOME = homeDir;
 
     // --- Age-based labels scenario ---
@@ -194,7 +194,7 @@ describe('Claude context fallback', () => {
     // --- uses 1M fallback for Opus and Sonnet base models ---
     {
     const { doClaudeStream } = await import('../src/agent/index.ts');
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-claude-context-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-claude-context-'));
     const fakeBin = path.join(tmpDir, 'bin');
     fs.mkdirSync(fakeBin, { recursive: true });
     process.env.PATH = `${fakeBin}:${process.env.PATH}`;
@@ -240,7 +240,7 @@ describe('Claude context fallback', () => {
     // --- accumulates turnOutputTokens across per-call message_start resets ---
     {
     const { doClaudeStream } = await import('../src/agent/index.ts');
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-claude-turnout-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-claude-turnout-'));
     const fakeBin = path.join(tmpDir, 'bin');
     fs.mkdirSync(fakeBin, { recursive: true });
     process.env.PATH = `${fakeBin}:${process.env.PATH}`;

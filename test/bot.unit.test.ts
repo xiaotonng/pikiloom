@@ -26,14 +26,14 @@ import { Bot } from '../src/bot/bot.ts';
 import { captureEnv, makeTmpDir, restoreEnv } from './support/env.ts';
 import { makeStreamResult } from './support/stream-result.ts';
 
-const envSnapshot = captureEnv(['PIKILOOP_CONFIG', 'PIKILOOP_WORKDIR', 'DEFAULT_AGENT']);
+const envSnapshot = captureEnv(['PIKILOOM_CONFIG', 'PIKILOOM_WORKDIR', 'DEFAULT_AGENT']);
 
 beforeEach(() => {
   restoreEnv(envSnapshot);
   vi.clearAllMocks();
   const tmpConfig = makeTmpDir('bot-unit-config-');
-  process.env.PIKILOOP_CONFIG = `${tmpConfig}/setting.json`;
-  process.env.PIKILOOP_WORKDIR = makeTmpDir('bot-unit-workdir-');
+  process.env.PIKILOOM_CONFIG = `${tmpConfig}/setting.json`;
+  process.env.PIKILOOM_WORKDIR = makeTmpDir('bot-unit-workdir-');
   process.env.DEFAULT_AGENT = 'codex';
 });
 
@@ -112,7 +112,7 @@ describe('Bot.runStream', () => {
     const doStreamMock = vi.mocked(doStream);
     const bot = new Bot();
     const sessionWorkdir = makeTmpDir('bot-unit-session-workdir-');
-    const workspacePath = path.join(sessionWorkdir, '.pikiloop', 'sessions', 'claude', 'session-1', 'workspace');
+    const workspacePath = path.join(sessionWorkdir, '.pikiloom', 'sessions', 'claude', 'session-1', 'workspace');
     const runtime: any = {
       key: 'claude:session-1',
       workdir: sessionWorkdir,
@@ -148,7 +148,7 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
     const runtime = bot.upsertSessionRuntime({
       agent: 'claude',
       sessionId: 'sess-steer',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       workspacePath: null,
       modelId: null,
     });
@@ -193,7 +193,7 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
     const runtime = bot.upsertSessionRuntime({
       agent: 'claude',
       sessionId: 'sess-stop',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       workspacePath: null,
       modelId: null,
     });
@@ -247,7 +247,7 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
     const runtime = bot.upsertSessionRuntime({
       agent: 'claude',
       sessionId: 'sess-prev',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       workspacePath: null,
       modelId: null,
     });
@@ -290,7 +290,7 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
     const runtime = bot.upsertSessionRuntime({
       agent: 'claude',
       sessionId: 'sess-idle',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       workspacePath: null,
       modelId: null,
     });
@@ -368,7 +368,7 @@ describe('Bot selection switching (model / effort)', () => {
     const runtime = bot.upsertSessionRuntime({
       agent: 'claude',
       sessionId: 'sess-active',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       workspacePath: null,
       modelId: 'old-model',
     });
@@ -437,7 +437,7 @@ describe('Bot selection switching (model / effort)', () => {
 
 describe('Bot thread-aware agent switching', () => {
   it('resumes the existing session for the target agent inside the same thread', () => {
-    const workdir = process.env.PIKILOOP_WORKDIR!;
+    const workdir = process.env.PIKILOOM_WORKDIR!;
     ensureManagedSession({
       agent: 'codex',
       workdir,
@@ -502,7 +502,7 @@ describe('Bot external session control', () => {
     const submitted = bot.submitSessionTask({
       agent: 'codex',
       sessionId: 'sess-dashboard',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       prompt: 'continue',
     });
 
@@ -539,7 +539,7 @@ describe('Bot external session control', () => {
     const submitted = bot.submitSessionTask({
       agent: 'codex',
       sessionId: 'pending_dashboard',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       prompt: 'continue',
     });
 
@@ -572,18 +572,18 @@ describe('Bot external session control', () => {
 });
 
 describe('Bot gitignore management', () => {
-  it('keeps .pikiloop/skills tracked while ignoring managed runtime state', () => {
+  it('keeps .pikiloom/skills tracked while ignoring managed runtime state', () => {
     const workdir = makeTmpDir('bot-unit-gitignore-');
-    fs.writeFileSync(path.join(workdir, '.gitignore'), '.env\n.pikiloop/\n');
-    process.env.PIKILOOP_WORKDIR = workdir;
+    fs.writeFileSync(path.join(workdir, '.gitignore'), '.env\n.pikiloom/\n');
+    process.env.PIKILOOM_WORKDIR = workdir;
 
     new Bot();
 
     expect(fs.readFileSync(path.join(workdir, '.gitignore'), 'utf8')).toBe([
       '.env',
-      '.pikiloop/*',
-      '!.pikiloop/skills/',
-      '!.pikiloop/skills/**',
+      '.pikiloom/*',
+      '!.pikiloom/skills/',
+      '!.pikiloom/skills/**',
       '',
     ].join('\n'));
   });

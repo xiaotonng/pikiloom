@@ -2,11 +2,11 @@
  * Skill installer — wrapper around `npx skills` CLI.
  *
  * Skills are installed via the community-standard `npx skills add` command.
- * Global skills go to ~/.pikiloop/skills/, project skills to <workdir>/.pikiloop/skills/.
+ * Global skills go to ~/.pikiloom/skills/, project skills to <workdir>/.pikiloom/skills/.
  *
- * The upstream CLI doesn't recognize `pikiloop` as an agent, so we install with
- * `--agent claude-code` (the driver pikiloop runs by default) and rely on
- * ~/.claude/skills → ~/.pikiloop/skills being symlinked to the same directory.
+ * The upstream CLI doesn't recognize `pikiloom` as an agent, so we install with
+ * `--agent claude-code` (the driver pikiloom runs by default) and rely on
+ * ~/.claude/skills → ~/.pikiloom/skills being symlinked to the same directory.
  */
 
 import { execFile } from 'node:child_process';
@@ -55,7 +55,7 @@ const REMOVE_TIMEOUT_MS = 10_000;
  * Make sure the global skills directory exists, and that the agent-specific
  * dirs that the upstream skills CLI writes to (`~/.claude/skills`,
  * `~/.agents/skills`) resolve back to it. This is what lets us install with
- * `--agent claude-code` and still read the results from `~/.pikiloop/skills`.
+ * `--agent claude-code` and still read the results from `~/.pikiloom/skills`.
  */
 function ensureGlobalSkillsDir(): void {
   fs.mkdirSync(GLOBAL_SKILLS_DIR, { recursive: true });

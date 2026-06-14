@@ -1,5 +1,5 @@
 /**
- * Persistent user configuration (~/.pikiloop/setting.json) load/save/sync.
+ * Persistent user configuration (~/.pikiloom/setting.json) load/save/sync.
  */
 
 import fs from 'node:fs';
@@ -88,7 +88,7 @@ export interface UserConfig {
    *    the Pro/Max subscription quota (standard cost).
    *  - 'api': headless `claude -p` (print mode) → bills the separate Agent SDK
    *    credit pool (extra cost).
-   * Unset falls back to the `PIKILOOP_CLAUDE_PRINT` / legacy `PIKILOOP_CLAUDE_TUI`
+   * Unset falls back to the `PIKILOOM_CLAUDE_PRINT` / legacy `PIKILOOM_CLAUDE_TUI`
    * env vars, then to 'subscription'. See resolveClaudeAccessMode.
    */
   claudeAccessMode?: 'subscription' | 'api';
@@ -164,8 +164,8 @@ interface SyncUserConfigOptions {
 type UserConfigChangeListener = (config: Partial<UserConfig>, changedKeys: string[]) => void;
 
 const MANAGED_ENV_KEYS = [
-  'PIKILOOP_CHANNEL',
-  'PIKILOOP_WORKDIR',
+  'PIKILOOM_CHANNEL',
+  'PIKILOOM_WORKDIR',
   'DEFAULT_AGENT',
   'TELEGRAM_BOT_TOKEN',
   'TELEGRAM_ALLOWED_CHAT_IDS',
@@ -293,7 +293,7 @@ function normalizeWorkspaces(raw: unknown): WorkspaceEntry[] {
 }
 
 /**
- * Single canonical config path: ~/.pikiloop/setting.json
+ * Single canonical config path: ~/.pikiloom/setting.json
  * Both CLI and dashboard read/write this file exclusively.
  */
 export function getDevUserConfigPath(): string {
@@ -301,7 +301,7 @@ export function getDevUserConfigPath(): string {
 }
 
 export function getUserConfigPath(): string {
-  const custom = (process.env.PIKILOOP_CONFIG || '').trim();
+  const custom = (process.env.PIKILOOM_CONFIG || '').trim();
   if (custom) return path.resolve(custom);
   return path.join(os.homedir(), USER_CONFIG_DIRNAME, USER_CONFIG_FILENAME);
 }
@@ -398,7 +398,7 @@ export function resolveUserWorkdir(opts: {
   const raw = String(
     opts.workdir
     || opts.config?.workdir
-    || process.env.PIKILOOP_WORKDIR
+    || process.env.PIKILOOM_WORKDIR
     || opts.cwd
     || process.cwd(),
   ).trim();
@@ -408,8 +408,8 @@ export function resolveUserWorkdir(opts: {
 function buildManagedEnv(config: Partial<UserConfig>): Record<(typeof MANAGED_ENV_KEYS)[number], string> {
   const configuredWorkdir = config.workdir || '';
   return {
-    PIKILOOP_CHANNEL: String(config.channel || '').trim(),
-    PIKILOOP_WORKDIR: configuredWorkdir ? resolveUserWorkdir({ workdir: configuredWorkdir }) : '',
+    PIKILOOM_CHANNEL: String(config.channel || '').trim(),
+    PIKILOOM_WORKDIR: configuredWorkdir ? resolveUserWorkdir({ workdir: configuredWorkdir }) : '',
     DEFAULT_AGENT: String(config.defaultAgent || '').trim(),
     TELEGRAM_BOT_TOKEN: String(config.telegramBotToken || '').trim(),
     TELEGRAM_ALLOWED_CHAT_IDS: String(config.telegramAllowedChatIds || '').trim(),
@@ -509,7 +509,7 @@ export function setUserWorkdir(workdir: string, options: { notify?: boolean } = 
   const config = normalizeUserConfig({ ...loadUserConfig(), workdir: resolvedWorkdir });
   const configPath = saveUserConfig(config);
   // Don't pin workdir into userConfigSyncOverrides: the periodic sync reads
-  // setting.json fresh each tick, so an external `npx pikiloop@latest` that
+  // setting.json fresh each tick, so an external `npx pikiloom@latest` that
   // updates the file should be honored, not clobbered by an in-memory lock.
   applyUserConfig(config, undefined, { overwrite: true, clearMissing: true, notify: options.notify ?? true });
   return { configPath, workdir: resolvedWorkdir, config };

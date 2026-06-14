@@ -1,7 +1,7 @@
 /**
  * Project-level extensions modal — opened from workspace sidebar.
  * Thin wrapper around WorkspaceExtensionsBody; workspace scope operates
- * directly on .mcp.json and .pikiloop/skills/ in the project directory.
+ * directly on .mcp.json and .pikiloom/skills/ in the project directory.
  */
 
 import { useStore } from '../../store';
@@ -30,8 +30,8 @@ export function WorkspaceExtensionsModal({
         title={L(locale, `${wsName} — 项目扩展`, `${wsName} — Project Extensions`)}
         description={L(
           locale,
-          '仅对当前工作区生效。直接操作项目目录中的 .mcp.json 与 .pikiloop/skills/。',
-          'Project-scoped only. Operates directly on .mcp.json and .pikiloop/skills/ in the workspace directory.',
+          '仅对当前工作区生效。直接操作项目目录中的 .mcp.json 与 .pikiloom/skills/。',
+          'Project-scoped only. Operates directly on .mcp.json and .pikiloom/skills/ in the workspace directory.',
         )}
         onClose={onClose}
       />

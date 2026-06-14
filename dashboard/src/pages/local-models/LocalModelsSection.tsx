@@ -555,7 +555,7 @@ function LocalBackendModal({
             </div>
 
             {/* Auto-attached confirmation when the backend is running — gives a
-                clear answer to "did pikiloop see it?" without making the user
+                clear answer to "did pikiloom see it?" without making the user
                 click anything. */}
             {!unsupported && backend.detected && backend.existingProviderId && (
               <div className="rounded-md border border-emerald-700/20 bg-emerald-700/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-emerald-700 dark:text-emerald-300">

@@ -97,7 +97,7 @@ function buildModelOption(info: ProviderModelInfo): { label: string; description
 }
 
 /**
- * When true the agent's native CLI config is *external* to pikiloop — we
+ * When true the agent's native CLI config is *external* to pikiloom — we
  * read it but cannot write to it (e.g. Hermes' ~/.hermes/config.yaml is
  * managed via `hermes config`). The unified config modal keeps native fields
  * read-only for these.
@@ -319,7 +319,7 @@ function getCopy(locale: Locale): CopyPack {
       saving: '保存中…',
       saved: '已保存',
       configError: '保存失败',
-      externalNativeNote: path => `Hermes 当前从 ${path || '~/.hermes/config.yaml'} 读取这些值；切换为某个 BYOK 供应商可由 pikiloop 接管。`,
+      externalNativeNote: path => `Hermes 当前从 ${path || '~/.hermes/config.yaml'} 读取这些值；切换为某个 BYOK 供应商可由 pikiloom 接管。`,
       configure: '配置',
       configModalTitle: label => `配置 ${label}`,
       rowSummaryNative: '官方认证',
@@ -393,7 +393,7 @@ function getCopy(locale: Locale): CopyPack {
     saving: 'Saving…',
     saved: 'Saved',
     configError: 'Save failed',
-    externalNativeNote: path => `Hermes reads these values from ${path || '~/.hermes/config.yaml'}; pick a BYOK provider to let pikiloop take over.`,
+    externalNativeNote: path => `Hermes reads these values from ${path || '~/.hermes/config.yaml'}; pick a BYOK provider to let pikiloom take over.`,
     configure: 'Configure',
     configModalTitle: label => `Configure ${label}`,
     rowSummaryNative: 'Native auth',
@@ -566,7 +566,7 @@ function AgentInlineConfig({
   // the upstream binding wholesale.
   //
   // External-native agents (Hermes — config lives in ~/.hermes/config.yaml)
-  // skip the native group entirely: pikiloop can't enumerate Hermes' native
+  // skip the native group entirely: pikiloom can't enumerate Hermes' native
   // catalogue, and the backend's `agentStatus.models` for these agents falls
   // back to the currently-bound Profile id, which would surface as a fake
   // "Native" row of the Profile's own modelId.

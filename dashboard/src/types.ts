@@ -35,7 +35,7 @@ export interface UsageResult {
 
 /**
  * Read-only snapshot of an agent's *external* configuration (e.g. Hermes'
- * ~/.hermes/config.yaml). Pikiloop never writes to the source — this is
+ * ~/.hermes/config.yaml). Pikiloom never writes to the source — this is
  * surfaced only so the dashboard can display what an unbound agent will
  * actually run with.
  */
@@ -537,7 +537,7 @@ export type BrowserProfileStatus = 'disabled' | 'ready' | 'needs_setup' | 'chrom
 export interface BrowserStatus {
   status: BrowserProfileStatus;
   enabled: boolean;
-  /** External CDP endpoint (PIKILOOP_BROWSER_CDP_URL) when attaching to a remote Chrome; null for local managed mode. */
+  /** External CDP endpoint (PIKILOOM_BROWSER_CDP_URL) when attaching to a remote Chrome; null for local managed mode. */
   remoteCdpUrl?: string | null;
   headlessMode: 'headless' | 'headed';
   chromeInstalled: boolean;

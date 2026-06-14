@@ -24,7 +24,7 @@ import {
   detectClaudeModelError, claudeModelErrorMessage,
   emitSessionIdUpdate,
   IMAGE_EXTS, mimeForExt,
-  listPikiloopSessions, findPikiloopSession, isPendingSessionId,
+  listPikiloomSessions, findPikiloomSession, isPendingSessionId,
   mergeManagedAndNativeSessions,
   readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
   CLAUDE_AT_MENTION_IMAGE_RE, extractClaudeAtMentionImagePaths, stripClaudeAtMentionImages,
@@ -79,7 +79,7 @@ const CLAUDE_STEER_IDLE_CLOSE_MS = 1200;
  * a real --effort value — translate it to `max` so a stray "ultra" can't reach
  * and break the CLI, and treat it as an implicit workflow opt-in. The Workflow
  * tool ships in the default toolset and triggers on a bare "workflow" keyword;
- * under the bypassPermissions mode pikiloop runs by default that could auto-spawn
+ * under the bypassPermissions mode pikiloom runs by default that could auto-spawn
  * a fleet of sub-agents, so drop it entirely unless orchestration was explicitly
  * enabled (the workflow flag or the "ultra" rung).
  */
@@ -95,9 +95,9 @@ export function claudeEffortAndWorkflowArgs(
 
 /**
  * Env keys the claude CLI exports to its own subprocesses (Bash tool, hooks)
- * to mark them as children of a running session. If pikiloop itself was
+ * to mark them as children of a running session. If pikiloom itself was
  * launched from inside a Claude Code session — agent-driven `npm run dev`
- * restarts, `! npx pikiloop` typed into the TUI, the self-bootstrap path —
+ * restarts, `! npx pikiloom` typed into the TUI, the self-bootstrap path —
  * these leak into the daemon's environment and every claude it spawns
  * inherits them. A claude started with `CLAUDE_CODE_CHILD_SESSION` set runs
  * in child-session mode: it mirrors transcript persistence to its (absent)
@@ -1551,8 +1551,8 @@ function getNativeClaudeSessions(workdir: string, limit?: number): SessionInfo[]
 
 function getClaudeSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
-  // Merge pikiloop-tracked sessions with native Claude sessions
-  const pikiloopSessions = listPikiloopSessions(resolvedWorkdir, 'claude').map(record => ({
+  // Merge pikiloom-tracked sessions with native Claude sessions
+  const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'claude').map(record => ({
     sessionId: record.sessionId,
     agent: 'claude' as const,
     workdir: record.workdir,
@@ -1578,12 +1578,12 @@ function getClaudeSessions(workdir: string, limit?: number): SessionListResult {
     numTurns: record.numTurns ?? null,
   }));
   const nativeSessions = getNativeClaudeSessions(resolvedWorkdir, limit);
-  const merged = mergeManagedAndNativeSessions(pikiloopSessions, nativeSessions);
+  const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;
   const projectDir = path.join(getHome(), '.claude', 'projects', claudeProjectDirName(resolvedWorkdir));
   agentLog(
     `[sessions:claude] workdir=${resolvedWorkdir} projectDir=${projectDir} projectDirExists=${fs.existsSync(projectDir)} ` +
-    `pikiloop=${pikiloopSessions.length} native=${nativeSessions.length} merged=${sessions.length}`
+    `pikiloom=${pikiloomSessions.length} native=${nativeSessions.length} merged=${sessions.length}`
   );
   return { ok: true, sessions, error: null };
 }
@@ -2326,8 +2326,8 @@ function getClaudeUsageFromTelemetry(home: string, model?: string | null): Usage
 // The latest `goal_status` line wins. `met:false` ⇒ active goal; `met:true` ⇒
 // the Stop hook just judged the condition satisfied and cleared the goal.
 //
-// pikiloop treats this as the source of truth for claude sessions (the
-// continuation engine runs inside `claude -p` itself; pikiloop's portable
+// pikiloom treats this as the source of truth for claude sessions (the
+// continuation engine runs inside `claude -p` itself; pikiloom's portable
 // continuation loop must short-circuit so we don't double-loop). Set/clear go
 // through the normal task queue by sending `/goal <objective>` or `/goal clear`
 // as the prompt — claude's slash parser handles it the same way it does in
@@ -2382,7 +2382,7 @@ export function getClaudeNativeGoal(workdir: string, sessionId: string): ClaudeN
     } catch { /* skip */ }
   }
   // After auto-clear (met:true) claude still leaves the goal_status line in the
-  // transcript; pikiloop treats "no active goal" as null so the bridge mirrors
+  // transcript; pikiloom treats "no active goal" as null so the bridge mirrors
   // the codex semantics where `goal_get` returns null after a clear.
   if (latest && latest.met) return null;
   return latest;
@@ -2408,23 +2408,23 @@ export function buildClaudeClearGoalPrompt(): string {
  * mode) bill against the separate Agent SDK credit pool that Anthropic split
  * out on 2026-06-15, so we keep that off the hot path.
  *
- * Opt out to the legacy print path with `PIKILOOP_CLAUDE_PRINT=1` (also
+ * Opt out to the legacy print path with `PIKILOOM_CLAUDE_PRINT=1` (also
  * accepts `=true` / `=yes` / `=on`). For backwards compat the older
- * `PIKILOOP_CLAUDE_TUI=0` / `=false` / `=no` / `=off` is honoured too.
+ * `PIKILOOM_CLAUDE_TUI=0` / `=false` / `=no` / `=off` is honoured too.
  *
  * When TUI startup fails (node-pty missing, prebuilt helper unusable, PTY
  * allocation refused in a sandbox, …) the dispatcher automatically falls
- * through to the print-mode driver so pikiloop still works — at the cost of
+ * through to the print-mode driver so pikiloom still works — at the cost of
  * the calls landing on the Agent SDK credit pool. The fallback is logged so
  * users can investigate.
  */
 export function isClaudePrintModeForced(): boolean {
-  const print = (process.env.PIKILOOP_CLAUDE_PRINT ?? '').trim().toLowerCase();
+  const print = (process.env.PIKILOOM_CLAUDE_PRINT ?? '').trim().toLowerCase();
   if (print === '1' || print === 'true' || print === 'yes' || print === 'on') return true;
-  // Legacy env var: PIKILOOP_CLAUDE_TUI=0 (or false/no/off) explicitly opts
+  // Legacy env var: PIKILOOM_CLAUDE_TUI=0 (or false/no/off) explicitly opts
   // back to print mode. Truthy values are now the default behaviour and a
   // no-op.
-  const tui = (process.env.PIKILOOP_CLAUDE_TUI ?? '').trim().toLowerCase();
+  const tui = (process.env.PIKILOOM_CLAUDE_TUI ?? '').trim().toLowerCase();
   if (tui === '0' || tui === 'false' || tui === 'no' || tui === 'off') return true;
   return false;
 }
@@ -2438,7 +2438,7 @@ export function isClaudePrintModeForced(): boolean {
  * `opts.claudeAccessMode` is authoritative when set — the bot resolves it from
  * the per-agent config so a live dashboard toggle takes effect on the next
  * spawned turn. Env (isClaudePrintModeForced) is only the fallback for callers
- * that don't thread a mode (the `pikiloop run` one-shot path).
+ * that don't thread a mode (the `pikiloom run` one-shot path).
  */
 async function doClaudeStreamOnce(opts: StreamOpts): Promise<StreamResult> {
   const printMode = opts.claudeAccessMode
@@ -2453,7 +2453,7 @@ async function doClaudeStreamOnce(opts: StreamOpts): Promise<StreamResult> {
     return await mod.doClaudeTuiStream(opts);
   } catch (err: any) {
     // TUI prerequisite failed (node-pty missing, PTY allocation refused, etc.).
-    // Fall back to print mode so pikiloop stays functional — with the caveat
+    // Fall back to print mode so pikiloom stays functional — with the caveat
     // that this turn lands on the Agent SDK credit pool.
     agentWarn(`[claude] TUI unavailable (${err?.message || err}); falling back to -p — this turn bills the Agent SDK credit pool`);
     return doClaudeStream(opts);
@@ -2501,7 +2501,7 @@ function makeOverloadFriendlyResult(result: StreamResult, reason: string, attemp
  * explicit "pick up where you left off" instead.
  */
 const CLAUDE_STALL_RESUME_PROMPT =
-  '[pikiloop] The previous agent process stalled mid-turn and was restarted. '
+  '[pikiloom] The previous agent process stalled mid-turn and was restarted. '
   + 'Continue the task from where it left off — do not start over or repeat work that already completed.';
 
 /** At most one automatic resume per turn; a second stall surfaces to the user. */

@@ -1,7 +1,7 @@
 /**
  * session-hub.ts — Unified session management service.
  *
- * THE canonical interface for all session operations across pikiloop.
+ * THE canonical interface for all session operations across pikiloom.
  * Upper-layer code (bot, dashboard, CLI) should import session functions
  * from here, not from code-agent.ts directly.
  *
@@ -21,7 +21,7 @@ import {
   deriveUserStatus as _deriveStatusFromOutcome,
   exportSession as _exportSession,
   importSession as _importSession,
-  findPikiloopSession,
+  findPikiloomSession,
   updateSessionMeta,
   deleteAgentSession as _deleteAgentSession,
   type DeleteAgentSessionOpts, type DeleteAgentSessionResult,
@@ -235,7 +235,7 @@ function imageBlocksFromManagedRecord(record: { workspacePath: string; lastUserA
 }
 
 /**
- * Build a 1-2 message fallback transcript from the pikiloop session record
+ * Build a 1-2 message fallback transcript from the pikiloom session record
  * for runs that crashed before the agent could write its own transcript file
  * (e.g. gemini auth failure, codex spawn failure). Without this the dashboard
  * detail panel would render blank for clearly-failed sessions.
@@ -257,7 +257,7 @@ function tailFallbackFromManagedRecord(opts: SessionTailOpts): SessionTailResult
 }
 
 function managedFallbackContent(opts: SessionTailOpts): ManagedFallback | null {
-  const record = findPikiloopSession(opts.workdir, opts.agent, opts.sessionId);
+  const record = findPikiloomSession(opts.workdir, opts.agent, opts.sessionId);
   if (!record) return null;
   const messages: TailMessage[] = [];
   const richMessages: RichMessage[] = [];

@@ -1,5 +1,5 @@
 /**
- * Pikiloop "Model" layer — Provider/Profile data model.
+ * Pikiloom "Model" layer — Provider/Profile data model.
  *
  *   Provider  = a configured endpoint + credential reference (e.g. "OpenRouter
  *               personal", "Anthropic direct"). Holds baseURL + extra headers.
@@ -67,7 +67,7 @@ export interface ModelLayerConfig {
 }
 
 // ---------------------------------------------------------------------------
-// models.dev cache types — minimal subset; full file at ~/.pikiloop/models-dev.json
+// models.dev cache types — minimal subset; full file at ~/.pikiloom/models-dev.json
 // ---------------------------------------------------------------------------
 
 export interface ModelsDevModel {

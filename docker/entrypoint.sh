@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# pikiloop-entrypoint — container init for the pikiloop image.
+# pikiloom-entrypoint — container init for the pikiloom image.
 #
 # Responsibilities (kept tiny on purpose):
 #   1. Ensure the per-user state dirs exist with the right ownership when the
 #      image is launched with `--user 0:0` or when a bind-mounted host dir came
 #      in owned by a foreign uid.
 #   2. Echo a small banner so the user can see config status at a glance.
-#   3. exec the compiled pikiloop CLI with the user-supplied args.
+#   3. exec the compiled pikiloom CLI with the user-supplied args.
 #
 # We deliberately do NOT:
 #   - Auto-write setting.json: the dashboard does that, and overwriting blindly
@@ -20,26 +20,26 @@
 set -euo pipefail
 
 HOME_DIR="${HOME:-/home/piki}"
-PIKILOOP_DIR="${HOME_DIR}/.pikiloop"
-WORKDIR_DEFAULT="${PIKILOOP_WORKDIR:-/workspace}"
+PIKILOOM_DIR="${HOME_DIR}/.pikiloom"
+WORKDIR_DEFAULT="${PIKILOOM_WORKDIR:-/workspace}"
 
 # Ensure the expected dirs exist. Mounted volumes start as empty dirs owned by
 # root on first creation; mkdir -p is a no-op when they already exist.
-mkdir -p "${PIKILOOP_DIR}" "${WORKDIR_DEFAULT}" \
+mkdir -p "${PIKILOOM_DIR}" "${WORKDIR_DEFAULT}" \
          "${HOME_DIR}/.claude" "${HOME_DIR}/.codex" "${HOME_DIR}/.gemini" 2>/dev/null || true
 
 # Banner — short enough not to spam, useful for `docker logs` triage.
 echo "──────────────────────────────────────────────────────────────"
-echo " pikiloop container starting"
+echo " pikiloom container starting"
 echo "   HOME      : ${HOME_DIR}"
-echo "   config    : ${PIKILOOP_DIR}"
+echo "   config    : ${PIKILOOM_DIR}"
 echo "   workdir   : ${WORKDIR_DEFAULT}"
 echo "   dashboard : http://0.0.0.0:3939   (publish with -p 3939:3939)"
 echo "──────────────────────────────────────────────────────────────"
 
 # If the user did not pass any args, fall back to the same default the image
-# CMD declares. Keeps `docker run pikiloop bash` ergonomic without losing the
-# "just run the bot" default for `docker run pikiloop`.
+# CMD declares. Keeps `docker run pikiloom bash` ergonomic without losing the
+# "just run the bot" default for `docker run pikiloom`.
 if [[ $# -eq 0 ]]; then
   set -- --no-daemon --workdir "${WORKDIR_DEFAULT}"
 fi
@@ -47,7 +47,7 @@ fi
 # Honor `bash`, `sh`, or any explicit binary the user passes (the official
 # Node images use the same pattern).
 case "${1:-}" in
-  bash|sh|node|npm|npx|claude|codex|gemini|pikiloop)
+  bash|sh|node|npm|npx|claude|codex|gemini|pikiloom)
     exec "$@"
     ;;
 esac

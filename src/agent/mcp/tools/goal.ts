@@ -18,7 +18,7 @@ import { toolResult, toolLog } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Tool definitions — descriptions match Codex's analogous `get_goal` / `update_goal`
-// behaviour but use the pikiloop tool name.
+// behaviour but use the pikiloom tool name.
 // ---------------------------------------------------------------------------
 
 const tools: McpToolModule['tools'] = [

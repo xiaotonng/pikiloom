@@ -55,7 +55,7 @@ export function Sidebar({
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M13 2L3 14h8l-1 8 11-13h-8l1-7z"/></svg>
           </div>
           <div className="leading-none">
-            <div className="text-[13px] font-semibold tracking-tight text-fg">Pikiloop</div>
+            <div className="text-[13px] font-semibold tracking-tight text-fg">Pikiloom</div>
           </div>
           <span className="rounded-md border border-[var(--edge-subtle)] bg-transparent px-1.5 py-0.5 text-[10px] font-mono text-fg-5">
             v{version}

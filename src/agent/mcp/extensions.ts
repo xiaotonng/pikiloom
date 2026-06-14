@@ -1,7 +1,7 @@
 /**
  * MCP extension management — CRUD, catalog merge, health check, session merge.
  *
- * Global extensions live in ~/.pikiloop/setting.json under extensions.mcp.
+ * Global extensions live in ~/.pikiloom/setting.json under extensions.mcp.
  * Workspace extensions live in <workdir>/.mcp.json (standard format).
  *
  * getCatalogItems() produces the unified list the dashboard renders:
@@ -81,7 +81,7 @@ export interface McpCatalogItem {
   /** Intended scope from the recommended registry (undefined for custom). */
   recommendedScope?: RecommendedScope;
   /**
-   * Builtin entries surface alongside catalog items but are managed by pikiloop
+   * Builtin entries surface alongside catalog items but are managed by pikiloom
    * (state derived from a config flag, no `extensions.mcp` storage). Rendered
    * in a dedicated "Built-in" section at the top of the catalog UI.
    */
@@ -346,7 +346,7 @@ export function getCatalogItems(opts: {
   // switch when adding a new builtin.
   const userConfig = loadUserConfig();
   const builtinInstalled = (catalogId: string): boolean => {
-    if (catalogId === 'pikiloop-browser') return userConfig.browserEnabled === true;
+    if (catalogId === 'pikiloom-browser') return userConfig.browserEnabled === true;
     if (catalogId === 'peekaboo') return userConfig.peekabooEnabled === true;
     return false;
   };
@@ -703,7 +703,7 @@ export async function checkMcpHealth(config: McpServerConfig, timeoutMs = 10_000
       params: {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'pikiloop-health-check', version: '1.0.0' },
+        clientInfo: { name: 'pikiloom-health-check', version: '1.0.0' },
       },
     });
     const header = `Content-Length: ${Buffer.byteLength(initRequest)}\r\n\r\n`;

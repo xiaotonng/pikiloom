@@ -1,4 +1,4 @@
-# Pikiloop
+# Pikiloom
 
 A layered, open Agent orchestrator. **Not** "an IM bridge for coding agents" — IM is one of several pluggable terminals.
 
@@ -23,7 +23,7 @@ src/
     utils.ts                   Pure utilities
     version.ts                 Package version
     config/
-      user-config.ts           ~/.pikiloop/setting.json load/save/sync
+      user-config.ts           ~/.pikiloom/setting.json load/save/sync
       runtime-config.ts        Runtime agent / model / effort resolution
       validation.ts            Channel credential validation
 
@@ -37,7 +37,7 @@ src/
     drivers/{claude,claude-tui,codex,gemini,hermes}.ts
     session.ts                 Session workspace CRUD, classification
     stream.ts                  CLI spawn framework, stream orchestration
-    skills.ts                  Project skill discovery (.pikiloop/skills)
+    skills.ts                  Project skill discovery (.pikiloom/skills)
     skill-installer.ts         Wrapper around `npx skills add`
     auto-update.ts             Background agent CLI version checking
     cli/                       External CLI tool detection + OAuth-web auth
@@ -111,15 +111,15 @@ cli/  →  dashboard/  →  channels/*  →  bot/  →  agent/  →  catalog/, c
 ## Test Commands
 
 ```bash
-npm run dev                            # local dev (--no-daemon, logs to ~/.pikiloop/dev/dev.log)
+npm run dev                            # local dev (--no-daemon, logs to ~/.pikiloom/dev/dev.log)
 npm test                               # Vitest unit suite
 npx vitest run test/<file>.unit.test.ts
 ```
 
 ## Notes
 
-- Persistent config is `~/.pikiloop/setting.json`
+- Persistent config is `~/.pikiloom/setting.json`
 - The Dashboard is part of the normal runtime, not just a setup helper
-- This machine always has a production / self-bootstrap path via `npx pikiloop@latest`; do not kill, replace, or "clean up" that process when the task only concerns dev mode
-- `npm run dev` rewrites `~/.pikiloop/dev/dev.log` on each launch. When invoked without a TTY (any tool-call / piped invocation) it auto-detaches into the background — no need for `run_in_background:true`. Force foreground with `PIKILOOP_DEV_FOREGROUND=1`, background with `PIKILOOP_DEV_BACKGROUND=1`.
+- This machine always has a production / self-bootstrap path via `npx pikiloom@latest`; do not kill, replace, or "clean up" that process when the task only concerns dev mode
+- `npm run dev` rewrites `~/.pikiloom/dev/dev.log` on each launch. When invoked without a TTY (any tool-call / piped invocation) it auto-detaches into the background — no need for `run_in_background:true`. Force foreground with `PIKILOOM_DEV_FOREGROUND=1`, background with `PIKILOOM_DEV_BACKGROUND=1`.
 - For full architecture / extension / testing guides, see `ARCHITECTURE.md`, `INTEGRATION.md`, `TESTING.md`.

@@ -24,14 +24,14 @@ import { Bot, type StreamEvent, type InteractionSnapshot } from '../src/bot/bot.
 import { captureEnv, makeTmpDir, restoreEnv } from './support/env.ts';
 import { makeStreamResult } from './support/stream-result.ts';
 
-const envSnapshot = captureEnv(['PIKILOOP_CONFIG', 'PIKILOOP_WORKDIR', 'DEFAULT_AGENT']);
+const envSnapshot = captureEnv(['PIKILOOM_CONFIG', 'PIKILOOM_WORKDIR', 'DEFAULT_AGENT']);
 
 beforeEach(() => {
   restoreEnv(envSnapshot);
   vi.clearAllMocks();
   const tmpConfig = makeTmpDir('interaction-unit-config-');
-  process.env.PIKILOOP_CONFIG = `${tmpConfig}/setting.json`;
-  process.env.PIKILOOP_WORKDIR = makeTmpDir('interaction-unit-workdir-');
+  process.env.PIKILOOM_CONFIG = `${tmpConfig}/setting.json`;
+  process.env.PIKILOOM_WORKDIR = makeTmpDir('interaction-unit-workdir-');
   process.env.DEFAULT_AGENT = 'codex';
 });
 
@@ -91,7 +91,7 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
         events.push({ type: 'interaction', taskId: snap.taskId, interaction: snap.interactions[0] });
       }
     });
-    const submitted = bot.submitSessionTask({ agent: 'codex', sessionId: 'sess-interaction', workdir: process.env.PIKILOOP_WORKDIR!, prompt: 'do work' });
+    const submitted = bot.submitSessionTask({ agent: 'codex', sessionId: 'sess-interaction', workdir: process.env.PIKILOOM_WORKDIR!, prompt: 'do work' });
     expect(submitted.ok).toBe(true);
 
     let deadline = Date.now() + 2000;
@@ -135,7 +135,7 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     });
 
     const bot2 = new Bot();
-    bot2.submitSessionTask({ agent: 'codex', sessionId: 'sess-cancel', workdir: process.env.PIKILOOP_WORKDIR!, prompt: 'do work' });
+    bot2.submitSessionTask({ agent: 'codex', sessionId: 'sess-cancel', workdir: process.env.PIKILOOM_WORKDIR!, prompt: 'do work' });
 
     deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -164,7 +164,7 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     });
 
     const bot3 = new Bot();
-    bot3.submitSessionTask({ agent: 'codex', sessionId: 'sess-freeform', workdir: process.env.PIKILOOP_WORKDIR!, prompt: 'do work' });
+    bot3.submitSessionTask({ agent: 'codex', sessionId: 'sess-freeform', workdir: process.env.PIKILOOM_WORKDIR!, prompt: 'do work' });
 
     deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -202,7 +202,7 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     });
 
     const bot4 = new Bot();
-    bot4.submitSessionTask({ agent: 'codex', sessionId: 'sess-other', workdir: process.env.PIKILOOP_WORKDIR!, prompt: 'do work' });
+    bot4.submitSessionTask({ agent: 'codex', sessionId: 'sess-other', workdir: process.env.PIKILOOM_WORKDIR!, prompt: 'do work' });
 
     let deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -229,7 +229,7 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     });
 
     const bot5 = new Bot();
-    bot5.submitSessionTask({ agent: 'codex', sessionId: 'sess-noff', workdir: process.env.PIKILOOP_WORKDIR!, prompt: 'do work' });
+    bot5.submitSessionTask({ agent: 'codex', sessionId: 'sess-noff', workdir: process.env.PIKILOOM_WORKDIR!, prompt: 'do work' });
 
     deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -256,7 +256,7 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     });
 
     const bot6 = new Bot();
-    bot6.submitSessionTask({ agent: 'codex', sessionId: 'sess-skip', workdir: process.env.PIKILOOP_WORKDIR!, prompt: 'do work' });
+    bot6.submitSessionTask({ agent: 'codex', sessionId: 'sess-skip', workdir: process.env.PIKILOOM_WORKDIR!, prompt: 'do work' });
 
     deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -354,7 +354,7 @@ describe('dashboard chats skip IM-side renderInteractionPrompt', () => {
     const submitted = bot.submitSessionTask({
       agent: 'codex',
       sessionId: 'sess-dash-skip',
-      workdir: process.env.PIKILOOP_WORKDIR!,
+      workdir: process.env.PIKILOOM_WORKDIR!,
       prompt: 'do work',
       // No chatId — defaults to the dashboard sentinel.
     });

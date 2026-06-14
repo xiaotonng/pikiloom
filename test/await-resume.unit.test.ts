@@ -13,7 +13,7 @@ const sid = 'session_await_001';
 let workdir: string;
 
 beforeEach(() => {
-  workdir = makeTmpDir('pikiloop-await-');
+  workdir = makeTmpDir('pikiloom-await-');
 });
 
 afterEach(() => {

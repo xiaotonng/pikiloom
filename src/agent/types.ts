@@ -368,7 +368,7 @@ export interface StreamResult {
 // Session management types
 // ---------------------------------------------------------------------------
 
-/** Persistent record for a pikiloop-managed session stored in the session index. */
+/** Persistent record for a pikiloom-managed session stored in the session index. */
 export interface ManagedSessionRecord {
   sessionId: string;
   agent: Agent;

@@ -128,7 +128,7 @@ describe('buildCodexMcpAddArgs', () => {
     // --- stdio argv with --env flags before the trailing command ---
     const stdioArgs = buildCodexMcpAddArgs(
       {
-        name: 'pikiloop',
+        name: 'pikiloom',
         type: 'stdio',
         command: '/usr/bin/node',
         args: ['session-server.js'],
@@ -136,7 +136,7 @@ describe('buildCodexMcpAddArgs', () => {
       },
       {},
     );
-    expect(stdioArgs).toEqual(['mcp', 'add', 'pikiloop', '--env', 'FOO=bar', '--', '/usr/bin/node', 'session-server.js']);
+    expect(stdioArgs).toEqual(['mcp', 'add', 'pikiloom', '--env', 'FOO=bar', '--', '/usr/bin/node', 'session-server.js']);
 
     // --- HTTP argv with --url threading the bearer token into tokenEnv ---
     const bearerEnv: Record<string, string> = {};
@@ -152,9 +152,9 @@ describe('buildCodexMcpAddArgs', () => {
     expect(httpArgs).toEqual([
       'mcp', 'add', 'notion',
       '--url', 'https://mcp.notion.com/mcp',
-      '--bearer-token-env-var', 'PIKILOOP_MCP_BEARER_NOTION',
+      '--bearer-token-env-var', 'PIKILOOM_MCP_BEARER_NOTION',
     ]);
-    expect(bearerEnv).toEqual({ PIKILOOP_MCP_BEARER_NOTION: 'tok-xyz' });
+    expect(bearerEnv).toEqual({ PIKILOOM_MCP_BEARER_NOTION: 'tok-xyz' });
 
     // --- HTTP argv without bearer when no Authorization header is set ---
     const noBearerEnv: Record<string, string> = {};
@@ -180,7 +180,7 @@ describe('buildCodexMcpAddArgs', () => {
       },
       sanitizeEnv,
     );
-    expect(Object.keys(sanitizeEnv)).toEqual(['PIKILOOP_MCP_BEARER_MY_FANCY_SERVER']);
+    expect(Object.keys(sanitizeEnv)).toEqual(['PIKILOOM_MCP_BEARER_MY_FANCY_SERVER']);
   });
 });
 
@@ -195,7 +195,7 @@ describe('buildGeminiMcpConfig', () => {
         headers: { Authorization: 'Bearer tok' },
       },
       {
-        name: 'pikiloop',
+        name: 'pikiloom',
         type: 'stdio',
         command: '/usr/bin/node',
         args: ['session-server.js'],
@@ -210,7 +210,7 @@ describe('buildGeminiMcpConfig', () => {
         headers: { Authorization: 'Bearer tok' },
         trust: true,
       },
-      pikiloop: {
+      pikiloom: {
         command: '/usr/bin/node',
         args: ['session-server.js'],
         env: { FOO: 'bar' },

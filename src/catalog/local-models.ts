@@ -1,6 +1,6 @@
 /**
  * Local model catalog — curated set of coding-friendly open models that
- * pikiloop recommends for self-hosted backends (Ollama / mlx-lm).
+ * pikiloom recommends for self-hosted backends (Ollama / mlx-lm).
  *
  * Per-backend identifier rules:
  *   - `ollamaTag`  — entry exists in Ollama's library

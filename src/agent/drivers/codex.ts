@@ -23,7 +23,7 @@ import {
   firstNonEmptyLine, shortValue, numberOrNull,
   normalizeStreamPreviewPlan,
   IMAGE_EXTS,
-  listPikiloopSessions, findPikiloopSession, isPendingSessionId,
+  listPikiloomSessions, findPikiloomSession, isPendingSessionId,
   mergeManagedAndNativeSessions,
   stripInjectedPrompts, sanitizeSessionUserPreviewText, computeContext, readTailLines, applyTurnWindow,
   roundPercent, toIsoFromEpochSeconds, labelFromWindowMinutes,
@@ -75,7 +75,7 @@ export class CodexAppServer {
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => { this.kill(); resolve(false); }, CODEX_APPSERVER_SPAWN_TIMEOUT_MS);
       const args = ['app-server'];
-      // Always enable codex's native /goal feature so pikiloop can route through
+      // Always enable codex's native /goal feature so pikiloom can route through
       // codex's own `thread/goal/*` RPC + continuation engine. User-supplied -c
       // overrides win.
       const overrides = this.configOverrides.some(entry => /^features\.goals\s*=/.test(entry))
@@ -144,7 +144,7 @@ export class CodexAppServer {
       // gates these RPCs behind that capability — without it, every goal call
       // returns "requires experimentalApi capability".
       this.call('initialize', {
-        clientInfo: { name: 'pikiloop', version: '0.2.0' },
+        clientInfo: { name: 'pikiloom', version: '0.2.0' },
         capabilities: { experimentalApi: true },
       })
         .then(resp => {
@@ -235,7 +235,7 @@ export function shutdownCodexServer(): void {
 
 // ---------------------------------------------------------------------------
 // Native /goal RPC bridge — `thread/goal/*` is exposed by codex app-server
-// when `features.goals=true` (we always set that). pikiloop treats codex's
+// when `features.goals=true` (we always set that). pikiloom treats codex's
 // SQLite + continuation engine as the source of truth for codex sessions.
 //
 // Wire format (camelCase per codex-rs/app-server-protocol/schema/typescript/v2):
@@ -601,7 +601,7 @@ function buildCodexAssistantText(blocks: MessageBlock[]): string {
 }
 
 function overlayCodexManagedPreview(workdir: string, sessionId: string, richMessages: RichMessage[]): RichMessage[] {
-  const managed = findPikiloopSession(workdir, 'codex', sessionId);
+  const managed = findPikiloomSession(workdir, 'codex', sessionId);
   if (!managed) return richMessages;
   const assistantIndex = [...richMessages]
     .map((message, index) => ({ message, index }))
@@ -1697,8 +1697,8 @@ function getCodexSessionTailFromRollout(opts: SessionTailOpts): SessionTailResul
 
 function getCodexSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
-  // Merge pikiloop-tracked sessions with native Codex sessions
-  const pikiloopSessions = listPikiloopSessions(resolvedWorkdir, 'codex').map(record => ({
+  // Merge pikiloom-tracked sessions with native Codex sessions
+  const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'codex').map(record => ({
     sessionId: record.sessionId,
     agent: 'codex' as const,
     workdir: record.workdir,
@@ -1724,12 +1724,12 @@ function getCodexSessions(workdir: string, limit?: number): SessionListResult {
     numTurns: record.numTurns ?? null,
   }));
   const nativeSessions = getNativeCodexSessions(resolvedWorkdir, limit);
-  const merged = mergeManagedAndNativeSessions(pikiloopSessions, nativeSessions);
+  const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;
   const sessionsDir = path.join(getHome(), '.codex', 'sessions');
   agentLog(
     `[sessions:codex] workdir=${resolvedWorkdir} sessionsDir=${sessionsDir} sessionsDirExists=${fs.existsSync(sessionsDir)} ` +
-    `pikiloop=${pikiloopSessions.length} native=${nativeSessions.length} merged=${sessions.length}`
+    `pikiloom=${pikiloomSessions.length} native=${nativeSessions.length} merged=${sessions.length}`
   );
   return { ok: true, sessions, error: null };
 }
@@ -2089,7 +2089,7 @@ function getCodexUsageFromStateDb(home: string): UsageResult | null {
   try {
     const query = "SELECT ts || '|' || message FROM logs WHERE message LIKE '%codex.rate_limits%' ORDER BY ts DESC LIMIT 1;";
     // stdio: 'pipe' keeps sqlite3 stderr ("no such table", "unable to open") out
-    // of pikiloop's own stderr — this probe is best-effort and the catch below
+    // of pikiloom's own stderr — this probe is best-effort and the catch below
     // already swallows failures.
     const out = execSync(`sqlite3 -noheader ${Q(dbPath)} ${Q(query)}`, { encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     if (!out) return null;

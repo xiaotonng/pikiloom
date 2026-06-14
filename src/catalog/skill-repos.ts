@@ -23,8 +23,8 @@
  *
  *   Append a `RecommendedSkillRepo` entry with `source` set to an `owner/repo`
  *   GitHub slug (or full URL). The install flow runs `npx skills add <source>`
- *   and drops the skill into `~/.pikiloop/skills/` for global installs, or
- *   `<workdir>/.pikiloop/skills/` for project installs.
+ *   and drops the skill into `~/.pikiloom/skills/` for global installs, or
+ *   `<workdir>/.pikiloom/skills/` for project installs.
  */
 
 import type { RecommendedSkillRepo } from '../agent/mcp/registry.js';

@@ -15,7 +15,7 @@ export type Theme = 'dark' | 'light';
 
 /* ── sessionStorage cache for instant restore on refresh ── */
 
-const CACHE_KEY = 'pikiloop-store-cache';
+const CACHE_KEY = 'pikiloom-store-cache';
 
 interface CachedSlices {
   state: AppState | null;
@@ -43,7 +43,7 @@ let _toastId = 0;
 
 function getInitialTheme(): Theme {
   try {
-    const stored = localStorage.getItem('pikiloop-theme');
+    const stored = localStorage.getItem('pikiloom-theme');
     if (stored === 'light' || stored === 'dark') return stored;
   } catch {}
   return 'dark';
@@ -51,7 +51,7 @@ function getInitialTheme(): Theme {
 
 function getInitialLocale(): Locale {
   try {
-    const stored = localStorage.getItem('pikiloop-locale');
+    const stored = localStorage.getItem('pikiloom-locale');
     if (stored === 'en' || stored === 'zh-CN') return stored;
   } catch {}
   return 'zh-CN';
@@ -116,13 +116,13 @@ export const useStore = create<StoreState>()((set, get) => ({
   /* ── Theme ── */
   setTheme: (t) => {
     document.documentElement.dataset.theme = t;
-    try { localStorage.setItem('pikiloop-theme', t); } catch {}
+    try { localStorage.setItem('pikiloom-theme', t); } catch {}
     set({ theme: t });
   },
 
   /* ── Locale ── */
   setLocale: (l) => {
-    try { localStorage.setItem('pikiloop-locale', l); } catch {}
+    try { localStorage.setItem('pikiloom-locale', l); } catch {}
     set({ locale: l });
   },
 

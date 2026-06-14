@@ -164,7 +164,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   // Restore workspace layout from sessionStorage (default by screen width)
   const [layoutMode, setLayoutModeRaw] = useState<LayoutMode>(() => {
     try {
-      const v = sessionStorage.getItem('pikiloop-layout-mode');
+      const v = sessionStorage.getItem('pikiloom-layout-mode');
       if (v === '1' || v === '2' || v === '3' || v === '6') return Number(v) as LayoutMode;
     } catch {}
     const w = window.innerWidth;
@@ -172,7 +172,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   });
   const [openSessions, setOpenSessionsRaw] = useState<SessionSlot[]>(() => {
     try {
-      const v = sessionStorage.getItem('pikiloop-open-sessions');
+      const v = sessionStorage.getItem('pikiloom-open-sessions');
       if (v) {
         const parsed = JSON.parse(v);
         if (Array.isArray(parsed)) return parsed.map((s: any) => ({ ...s, mountKey: s.mountKey || nextMountKey() }));
@@ -182,7 +182,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   });
   const [activeSlotIndex, setActiveSlotIndexRaw] = useState(() => {
     try {
-      const v = sessionStorage.getItem('pikiloop-active-slot');
+      const v = sessionStorage.getItem('pikiloom-active-slot');
       if (v != null) { const n = Number(v); if (Number.isFinite(n) && n >= 0) return n; }
     } catch {}
     return 0;
@@ -191,7 +191,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   // Persist wrappers — write to sessionStorage on every change
   const setLayoutMode = useCallback((mode: LayoutMode) => {
     setLayoutModeRaw(mode);
-    try { sessionStorage.setItem('pikiloop-layout-mode', String(mode)); } catch {}
+    try { sessionStorage.setItem('pikiloom-layout-mode', String(mode)); } catch {}
   }, []);
   const setOpenSessions = useCallback((updater: SessionSlot[] | ((prev: SessionSlot[]) => SessionSlot[])) => {
     setOpenSessionsRaw(prev => {
@@ -201,7 +201,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         // live mount of a fresh session, never across a reload (blob image URLs
         // would be dead anyway).
         const persistable = next.map(({ pendingPrompt: _p, pendingImageUrls: _i, ...rest }) => rest);
-        sessionStorage.setItem('pikiloop-open-sessions', JSON.stringify(persistable));
+        sessionStorage.setItem('pikiloom-open-sessions', JSON.stringify(persistable));
       } catch {}
       return next;
     });
@@ -209,7 +209,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   const setActiveSlotIndex = useCallback((updater: number | ((prev: number) => number)) => {
     setActiveSlotIndexRaw(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      try { sessionStorage.setItem('pikiloop-active-slot', String(next)); } catch {}
+      try { sessionStorage.setItem('pikiloom-active-slot', String(next)); } catch {}
       return next;
     });
   }, []);
@@ -1143,7 +1143,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         );
       })()}
 
-      {/* Confirm delete session modal — choose between pikiloop-only and purge-native */}
+      {/* Confirm delete session modal — choose between pikiloom-only and purge-native */}
       <Modal
         open={!!confirmDeleteSession}
         onClose={() => !deletingSession && setConfirmDeleteSession(null)}
@@ -1173,8 +1173,8 @@ export const SessionWorkspace = memo(function SessionWorkspace({
               className="mt-0.5"
             />
             <div className="flex-1">
-              <div className="text-[12px] text-fg-2">{t('session.deletePikiloopOnly')}</div>
-              <div className="text-[11px] text-fg-5 leading-snug mt-0.5">{t('session.deletePikiloopOnlyHint')}</div>
+              <div className="text-[12px] text-fg-2">{t('session.deletePikiloomOnly')}</div>
+              <div className="text-[11px] text-fg-5 leading-snug mt-0.5">{t('session.deletePikiloomOnlyHint')}</div>
             </div>
           </label>
           <label className="flex items-start gap-2 cursor-pointer">

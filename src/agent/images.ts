@@ -80,9 +80,9 @@ export function codexHome(): string {
 }
 
 /** Per-session attachments directory used by MCP bridge / tool buffering.
- *  Lives next to the user's pikiloop config so it survives across workdirs. */
+ *  Lives next to the user's pikiloom config so it survives across workdirs. */
 export function sessionAttachmentsDir(agent: Agent, sessionId: string): string {
-  return path.join(getHome(), '.pikiloop', 'attachments', agent, sessionId);
+  return path.join(getHome(), '.pikiloom', 'attachments', agent, sessionId);
 }
 
 /**
@@ -94,7 +94,7 @@ export function sessionAttachmentsDir(agent: Agent, sessionId: string): string {
  *  - `~/.codex/sessions`         — rollout-adjacent assets (rare but legal).
  *  - `~/.claude/projects`        — Claude attached images written to JSONL.
  *  - `~/.gemini`                 — Gemini CLI managed dirs.
- *  - `~/.pikiloop/attachments`   — MCP-bridge-buffered tool result images.
+ *  - `~/.pikiloom/attachments`   — MCP-bridge-buffered tool result images.
  *  - workspace tree(s)           — files generated under the project workdir.
  *  - OS tmpdir                   — short-lived staging by drivers / skills.
  *
@@ -110,7 +110,7 @@ export function allowedAttachmentRoots(workdir?: string | readonly string[] | nu
     path.join(codexHome(), 'sessions'),
     path.join(home, '.claude', 'projects'),
     path.join(home, '.gemini'),
-    path.join(home, '.pikiloop', 'attachments'),
+    path.join(home, '.pikiloom', 'attachments'),
     os.tmpdir(),
   ];
   const workdirs = typeof workdir === 'string' ? [workdir] : (workdir ?? []);

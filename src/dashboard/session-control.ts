@@ -3,7 +3,7 @@
  */
 
 import path from 'node:path';
-import { getProjectSkillPaths, listSkills, stageSessionFiles, ensureManagedSession, findPikiloopSession, getDriverCapabilities, isPendingSessionId, type Agent, type HandoverRef } from '../agent/index.js';
+import { getProjectSkillPaths, listSkills, stageSessionFiles, ensureManagedSession, findPikiloomSession, getDriverCapabilities, isPendingSessionId, type Agent, type HandoverRef } from '../agent/index.js';
 import { loadUserConfig } from '../core/config/user-config.js';
 import { decomposeEffortSelection } from '../core/config/runtime-config.js';
 import { runtime } from './runtime.js';
@@ -56,7 +56,7 @@ function resolveSkillFromPrompt(workdir: string, prompt: string): { resolvedProm
   const workdirHint = `[Project directory: ${workdir}]\n\n`;
   const paths = getProjectSkillPaths(workdir, skill.name);
   const skillFile = paths.claudeSkillFile || paths.sharedSkillFile || paths.agentsSkillFile;
-  const targetPath = skillFile || `${workdir}/.pikiloop/skills/${skill.name}/SKILL.md`;
+  const targetPath = skillFile || `${workdir}/.pikiloom/skills/${skill.name}/SKILL.md`;
   const resolvedPrompt = `${workdirHint}Read the skill definition at \`${targetPath}\` and execute the instructions defined there.${extra}`;
   return { resolvedPrompt, skillName: skill.name };
 }
@@ -88,7 +88,7 @@ export interface QueueSessionTaskRequest {
 /**
  * Resolve a `handoverFrom` ref from the request's `previousAgent` /
  * `previousSessionId` fields, validating that it points to a real, non-self,
- * different-agent session managed by pikiloop. Returns null when the inputs
+ * different-agent session managed by pikiloom. Returns null when the inputs
  * are absent or invalid — handover is best-effort and silent-skip on bad data.
  */
 function resolveHandoverFrom(request: QueueSessionTaskRequest, targetAgent: Agent): HandoverRef | null {
@@ -98,7 +98,7 @@ function resolveHandoverFrom(request: QueueSessionTaskRequest, targetAgent: Agen
   if (!KNOWN_AGENTS.has(prevAgent as Agent)) return null;
   if (prevAgent === targetAgent) return null;        // same-agent continuation goes via --resume, not handover
   if (isPendingSessionId(prevSessionId)) return null; // no native history yet → nothing to compact
-  const record = findPikiloopSession(request.workdir, prevAgent as Agent, prevSessionId);
+  const record = findPikiloomSession(request.workdir, prevAgent as Agent, prevSessionId);
   if (!record) return null;
   return { agent: prevAgent as Agent, sessionId: prevSessionId };
 }
@@ -270,7 +270,7 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
 
   // Make sure the parent has a managed record so `recordFork` (called after the
   // child stream completes) can write the lineage on both sides. Native-only
-  // sessions (started outside pikiloop) won't have a record yet.
+  // sessions (started outside pikiloom) won't have a record yet.
   ensureManagedSession({
     agent,
     workdir: request.workdir,

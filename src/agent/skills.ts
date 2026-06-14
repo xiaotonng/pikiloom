@@ -1,11 +1,11 @@
 /**
- * Project skill discovery from .pikiloop/skills and .claude/commands.
+ * Project skill discovery from .pikiloom/skills and .claude/commands.
  */
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { STATE_DIR_NAME, LEGACY_STATE_DIR_NAME } from '../core/constants.js';
+import { STATE_DIR_NAME, LEGACY_STATE_DIR_NAMES } from '../core/constants.js';
 
 export type SkillScope = 'global' | 'project';
 
@@ -33,8 +33,8 @@ export interface ProjectSkillPaths {
 
 interface ProjectSkillRoots {
   canonicalRoot: string;
-  /** Pre-rename `<workdir>/.pikiclaw/skills` — read-only fallback for discovery. */
-  legacyRoot: string;
+  /** Pre-rename `<workdir>/.pikiloop|.pikiclaw/skills` — read-only discovery fallback. */
+  legacyRoots: string[];
   claudeRoot: string;
   agentsRoot: string;
 }
@@ -42,7 +42,7 @@ interface ProjectSkillRoots {
 function resolveProjectSkillRoots(workdir: string): ProjectSkillRoots {
   return {
     canonicalRoot: path.join(workdir, STATE_DIR_NAME, 'skills'),
-    legacyRoot: path.join(workdir, LEGACY_STATE_DIR_NAME, 'skills'),
+    legacyRoots: LEGACY_STATE_DIR_NAMES.map(name => path.join(workdir, name, 'skills')),
     claudeRoot: path.join(workdir, '.claude', 'skills'),
     agentsRoot: path.join(workdir, '.agents', 'skills'),
   };
@@ -159,7 +159,7 @@ export function initializeProjectSkills(workdir: string, opts: { log?: (message:
   for (const linkRoot of [claudeRoot, agentsRoot]) {
     ensureDirSymlink(linkRoot, canonicalRoot);
   }
-  opts.log?.(`skills merged into .pikiloop/skills and linked to .claude/.agents workdir=${workdir}`);
+  opts.log?.(`skills merged into .pikiloom/skills and linked to .claude/.agents workdir=${workdir}`);
 }
 
 export function getProjectSkillPaths(workdir: string, skillName: string): ProjectSkillPaths {
@@ -252,18 +252,19 @@ function discoverSkillsFromDir(
 }
 
 /**
- * List all skills — project-scoped (workdir) first, then global (~/.pikiloop/skills/).
+ * List all skills — project-scoped (workdir) first, then global (~/.pikiloom/skills/).
  * Project skills with the same name shadow global ones.
  */
 export function listSkills(workdir: string): SkillListResult {
   const seen = new Set<string>();
-  const { canonicalRoot, legacyRoot } = resolveProjectSkillRoots(workdir);
+  const { canonicalRoot, legacyRoots } = resolveProjectSkillRoots(workdir);
 
-  // Project skills take precedence. Also scan the pre-rename `.pikiclaw/skills`
-  // dir so repos that committed project skills before the rename keep working.
+  // Project skills take precedence. Also scan pre-rename `.pikiloop/skills` and
+  // `.pikiclaw/skills` so repos that committed project skills before the rename
+  // keep working.
   const projectSkills = [
     ...discoverSkillsFromDir(canonicalRoot, 'project', seen),
-    ...discoverSkillsFromDir(legacyRoot, 'project', seen),
+    ...legacyRoots.flatMap(root => discoverSkillsFromDir(root, 'project', seen)),
   ];
   // Global skills fill in the rest
   const globalSkills = discoverSkillsFromDir(GLOBAL_SKILLS_ROOT, 'global', seen);

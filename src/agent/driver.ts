@@ -15,15 +15,15 @@ import type {
 } from './index.js';
 
 /**
- * Optional descriptor of an agent's *external* (non-pikiloop) configuration.
+ * Optional descriptor of an agent's *external* (non-pikiloom) configuration.
  *
  * Some agents (e.g. Hermes) maintain their own provider/model state outside
- * pikiloop — in `~/.hermes/config.yaml` and `~/.hermes/.env`. When that's the
+ * pikiloom — in `~/.hermes/config.yaml` and `~/.hermes/.env`. When that's the
  * case, `getNativeConfig()` returns a read-only snapshot so the dashboard can
  * surface what the agent will actually run with even before the user has
- * configured a pikiloop-managed BYOK Provider.
+ * configured a pikiloom-managed BYOK Provider.
  *
- * Pikiloop never writes back to the source file; users edit native config via
+ * Pikiloom never writes back to the source file; users edit native config via
  * the agent's own CLI (e.g. `hermes config`).
  */
 export interface AgentNativeConfig {

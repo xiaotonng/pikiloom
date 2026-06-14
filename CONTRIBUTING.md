@@ -1,4 +1,4 @@
-# Contributing to pikiloop
+# Contributing to pikiloom
 
 Thanks for your interest in contributing! This guide will help you get started.
 
@@ -13,8 +13,8 @@ Thanks for your interest in contributing! This guide will help you get started.
 ### Setup
 
 ```bash
-git clone https://github.com/xiaotonng/pikiloop.git
-cd pikiloop
+git clone https://github.com/xiaotonng/pikiloom.git
+cd pikiloom
 npm install
 npm run build
 npm test
@@ -23,7 +23,7 @@ npm test
 ### Local development
 
 ```bash
-npm run dev    # starts pikiloop in --no-daemon mode, logs to ~/.pikiloop/dev/dev.log
+npm run dev    # starts pikiloom in --no-daemon mode, logs to ~/.pikiloom/dev/dev.log
 ```
 
 This gives you a live-reloading development server with the dashboard at `http://localhost:3939`.
@@ -99,11 +99,11 @@ PRs are typically reviewed within a few days. For larger changes, consider openi
 
 ### Good first issues
 
-Look for issues labeled [`good first issue`](https://github.com/xiaotonng/pikiloop/labels/good%20first%20issue) — these are scoped to be approachable for newcomers.
+Look for issues labeled [`good first issue`](https://github.com/xiaotonng/pikiloom/labels/good%20first%20issue) — these are scoped to be approachable for newcomers.
 
 ### Help wanted
 
-Issues labeled [`help wanted`](https://github.com/xiaotonng/pikiloop/labels/help%20wanted) are areas where community contributions are especially welcome.
+Issues labeled [`help wanted`](https://github.com/xiaotonng/pikiloom/labels/help%20wanted) are areas where community contributions are especially welcome.
 
 ### Quick reference: where to look
 
@@ -117,7 +117,7 @@ Issues labeled [`help wanted`](https://github.com/xiaotonng/pikiloop/labels/help
 
 ## Reporting Bugs
 
-Use the [bug report template](https://github.com/xiaotonng/pikiloop/issues/new?template=bug_report.yml). Include your OS, pikiloop version, channel, and agent — this helps us reproduce quickly.
+Use the [bug report template](https://github.com/xiaotonng/pikiloom/issues/new?template=bug_report.yml). Include your OS, pikiloom version, channel, and agent — this helps us reproduce quickly.
 
 ## License
 

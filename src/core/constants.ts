@@ -65,14 +65,13 @@ export const STATE_DIR_NAME = '.pikiloom';
 /** Env var prefix for all pikiloom-specific variables. */
 export const ENV_PREFIX = 'PIKILOOM_';
 /**
- * Pre-rename identifiers, newest-first. The project shipped briefly as `pikiloop`
- * and before that `pikiclaw`; both are kept ONLY for the one-time state-dir
+ * Pre-rename identifier (`pikiclaw`). Kept ONLY for the one-time state-dir
  * migration, the env-var fallback (see core/legacy-compat.ts) and project-skill
- * discovery, so installs created under either old name are never orphaned. Safe
- * to drop a couple of releases after the rename has propagated.
+ * discovery, so the real pikiclaw install base is never orphaned. Kept as lists
+ * so a future rename only appends one entry. Drop a couple releases later.
  */
-export const LEGACY_STATE_DIR_NAMES = ['.pikiloop', '.pikiclaw'] as const;
-export const LEGACY_ENV_PREFIXES = ['PIKILOOP_', 'PIKICLAW_'] as const;
+export const LEGACY_STATE_DIR_NAMES = ['.pikiclaw'] as const;
+export const LEGACY_ENV_PREFIXES = ['PIKICLAW_'] as const;
 
 /**
  * Stable relative path for the managed Chrome profile under the home directory.

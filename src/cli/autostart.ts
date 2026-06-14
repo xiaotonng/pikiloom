@@ -37,9 +37,9 @@ const PLIST_LABEL = 'ai.pikiloom.gateway';
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const PLIST_PATH = path.join(PLIST_DIR, `${PLIST_LABEL}.plist`);
 const PIKILOOM_HOME = path.join(os.homedir(), STATE_DIR_NAME);
-// Pre-rename LaunchAgents (pikiloop, pikiclaw) — removed on (re)install so an
-// upgraded machine never runs two daemons. Delete a couple releases post-rename.
-const LEGACY_PLIST_LABELS = ['ai.pikiloop.gateway', 'ai.pikiclaw.gateway'];
+// Pre-rename LaunchAgent (pikiclaw) — removed on (re)install so an upgraded
+// machine never runs two daemons. Delete a couple releases post-rename.
+const LEGACY_PLIST_LABELS = ['ai.pikiclaw.gateway'];
 const PROMPT_DELAY_MS = 3000;
 
 export const FROM_LAUNCHD_ENV = 'PIKILOOM_FROM_LAUNCHD';
@@ -178,9 +178,9 @@ async function bootstrapLaunchAgent(log: LogFn): Promise<boolean> {
 }
 
 /**
- * Remove pre-rename LaunchAgents (`ai.pikiloop.gateway`, `ai.pikiclaw.gateway`)
- * if present, so an upgraded install never runs two daemons. Best-effort; safe
- * when nothing is loaded. Delete a couple releases post-rename.
+ * Remove the pre-rename LaunchAgent (`ai.pikiclaw.gateway`) if present, so an
+ * upgraded install never runs two daemons. Best-effort; safe when nothing is
+ * loaded. Delete a couple releases post-rename.
  */
 async function cleanupLegacyAutostart(log: LogFn): Promise<void> {
   const uid = process.getuid?.() ?? 0;

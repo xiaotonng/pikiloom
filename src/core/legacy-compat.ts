@@ -1,11 +1,10 @@
 /**
  * One-time backward-compat shims for the project rename.
  *
- * The orchestrator shipped as `pikiclaw`, briefly as `pikiloop`, and is now
- * `pikiloom`. Both run once at process startup — BEFORE any config is read or
- * any lock / PID file is taken — so installs created under either old name keep
- * their settings, credentials, managed browser profile and skills with zero
- * user action.
+ * The orchestrator shipped as `pikiclaw` and is now `pikiloom`. Both run once at
+ * process startup — BEFORE any config is read or any lock / PID file is taken —
+ * so existing `pikiclaw` installs keep their settings, credentials, managed
+ * browser profile and skills with zero user action.
  *
  * Remove this file (and the LEGACY_* constants) a couple of releases after the
  * rename has propagated.
@@ -21,11 +20,10 @@ import {
 } from './constants.js';
 
 /**
- * Mirror every legacy-prefixed env var (`PIKILOOP_*`, `PIKICLAW_*`) onto the
- * matching `PIKILOOM_*` name when the new name is unset. Covers user-set vars
- * (shell profiles, docker-compose, systemd units) AND internal ones a still-old
- * parent process may have set across an upgrade boundary. Legacy prefixes are
- * applied newest-first, so the most recent name wins when both are present.
+ * Mirror every legacy-prefixed env var (`PIKICLAW_*`) onto the matching
+ * `PIKILOOM_*` name when the new name is unset. Covers user-set vars (shell
+ * profiles, docker-compose, systemd units) AND internal ones a still-old parent
+ * process may have set across an upgrade boundary.
  */
 export function hydrateLegacyEnv(): void {
   for (const legacy of LEGACY_ENV_PREFIXES) {
@@ -39,8 +37,7 @@ export function hydrateLegacyEnv(): void {
 }
 
 /**
- * Migrate the first existing legacy state dir (`~/.pikiloop`, then
- * `~/.pikiclaw`) → `~/.pikiloom`, exactly once.
+ * Migrate the legacy state dir (`~/.pikiclaw`) → `~/.pikiloom`, exactly once.
  *
  * No-op when the new dir already exists (migrated or fresh install) or no legacy
  * dir is present (brand-new user). A same-volume rename is atomic; on a

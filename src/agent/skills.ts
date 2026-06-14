@@ -33,7 +33,7 @@ export interface ProjectSkillPaths {
 
 interface ProjectSkillRoots {
   canonicalRoot: string;
-  /** Pre-rename `<workdir>/.pikiloop|.pikiclaw/skills` — read-only discovery fallback. */
+  /** Pre-rename `<workdir>/.pikiclaw/skills` — read-only discovery fallback. */
   legacyRoots: string[];
   claudeRoot: string;
   agentsRoot: string;
@@ -259,9 +259,8 @@ export function listSkills(workdir: string): SkillListResult {
   const seen = new Set<string>();
   const { canonicalRoot, legacyRoots } = resolveProjectSkillRoots(workdir);
 
-  // Project skills take precedence. Also scan pre-rename `.pikiloop/skills` and
-  // `.pikiclaw/skills` so repos that committed project skills before the rename
-  // keep working.
+  // Project skills take precedence. Also scan the pre-rename `.pikiclaw/skills`
+  // dir so repos that committed project skills before the rename keep working.
   const projectSkills = [
     ...discoverSkillsFromDir(canonicalRoot, 'project', seen),
     ...legacyRoots.flatMap(root => discoverSkillsFromDir(root, 'project', seen)),

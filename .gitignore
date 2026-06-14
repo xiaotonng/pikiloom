@@ -16,13 +16,12 @@ dashboard-*.png
 **/.playwright-mcp/
 replied_issues.txt
 .scratch/
-# Legacy state dirs (pre-rename) — never track in the pikiloom repo.
+# Legacy state dir (pre-rename) — never track in the pikiloom repo.
 .pikiclaw/
-.pikiloop/
 # Canonical state dir: ignore runtime state, keep committed project skills.
-.pikiloom/*
-!.pikiloom/skills/
-!.pikiloom/skills/**
 # Never commit Python bytecode caches, even under skills/.
 **/__pycache__/
 *.pyc
+.pikiloom/*
+!.pikiloom/skills/
+!.pikiloom/skills/**

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * run.ts — Standalone CLI commands for pikiclaw.
+ * run.ts — Standalone CLI commands for pikiloop.
  *
  * Usage:
  *   npm run command -- status
@@ -43,13 +43,13 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
-const HELP = `pikiclaw run — standalone commands
+const HELP = `pikiloop run — standalone commands
 
 Usage:
   npm run command -- <command> [options]
 
 Commands:
-  skills          List project-defined custom skills (.pikiclaw/skills)
+  skills          List project-defined custom skills (.pikiloop/skills)
   claude-run      Run a single Claude prompt and print the result
   codex-run       Run a single Codex prompt and print the result
   claude-status   Show Claude agent info and API usage
@@ -97,7 +97,7 @@ async function main() {
     case 'skills': {
       const result = listSkills(workdir);
       if (!result.skills.length) {
-        process.stdout.write(`No custom skills found in ${workdir} (.pikiclaw/skills)\n`);
+        process.stdout.write(`No custom skills found in ${workdir} (.pikiloop/skills)\n`);
         break;
       }
       process.stdout.write(`Project skills (${result.skills.length}):\n\n`);

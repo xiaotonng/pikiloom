@@ -23,7 +23,7 @@ export default function Stats() {
   useEffect(() => {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 6000);
-    fetch('https://api.npmjs.org/downloads/point/last-month/pikiclaw', { signal: ac.signal })
+    fetch('https://api.npmjs.org/downloads/point/last-month/pikiloop', { signal: ac.signal })
       .then((r) => r.json())
       .then((d) => setDownloads(typeof d?.downloads === 'number' ? d.downloads : FALLBACK_DOWNLOADS))
       .catch(() => setDownloads(FALLBACK_DOWNLOADS))

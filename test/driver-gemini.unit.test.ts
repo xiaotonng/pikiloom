@@ -25,7 +25,7 @@ describe('Gemini usage resolution', () => {
     vi.setSystemTime(new Date('2026-03-16T00:00:00Z'));
 
     execSyncMock.mockReset();
-    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-usage-'));
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-gemini-usage-'));
     process.env.HOME = homeDir;
     fs.mkdirSync(path.join(homeDir, '.gemini'), { recursive: true });
     fs.writeFileSync(path.join(homeDir, '.gemini', 'oauth_creds.json'), JSON.stringify({
@@ -114,7 +114,7 @@ describe('Gemini session tail', () => {
 
   beforeEach(() => {
     vi.resetModules();
-    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-tail-'));
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-gemini-tail-'));
   });
 
   afterEach(() => {
@@ -123,14 +123,14 @@ describe('Gemini session tail', () => {
   });
 
   it('reads prior Gemini conversation turns from native session files', async () => {
-    const workdir = '/tmp/pikiclaw';
+    const workdir = '/tmp/pikiloop';
     const geminiDir = path.join(process.env.HOME!, '.gemini');
     fs.mkdirSync(geminiDir, { recursive: true });
     fs.writeFileSync(path.join(geminiDir, 'projects.json'), JSON.stringify({
-      projects: { [workdir]: 'pikiclaw' },
+      projects: { [workdir]: 'pikiloop' },
     }));
 
-    const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw', 'chats');
+    const chatsDir = path.join(geminiDir, 'tmp', 'pikiloop', 'chats');
     fs.mkdirSync(chatsDir, { recursive: true });
     fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-abc.json'), JSON.stringify({
       sessionId: 'gemini-session-1',
@@ -191,7 +191,7 @@ describe('Gemini session listing', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-16T00:02:00Z'));
     execSyncMock.mockReset();
-    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-sessions-'));
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-gemini-sessions-'));
   });
 
   afterEach(() => {
@@ -202,16 +202,16 @@ describe('Gemini session listing', () => {
 
   it('reads native session titles, hides stub files, and returns empty when chats are missing', async () => {
     const { getSessions } = await import('../src/agent/index.ts');
-    const workdir = '/tmp/pikiclaw';
+    const workdir = '/tmp/pikiloop';
 
     // Each scenario gets its own HOME so chats directories never bleed across
     // segments (the original sibling cases each relied on a fresh beforeEach HOME).
     const freshHome = () => {
-      process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-sessions-'));
+      process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-gemini-sessions-'));
       const geminiDir = path.join(process.env.HOME!, '.gemini');
       fs.mkdirSync(geminiDir, { recursive: true });
       fs.writeFileSync(path.join(geminiDir, 'projects.json'), JSON.stringify({
-        projects: { [workdir]: 'pikiclaw' },
+        projects: { [workdir]: 'pikiloop' },
       }));
       return geminiDir;
     };
@@ -219,7 +219,7 @@ describe('Gemini session listing', () => {
     // --- reads session titles directly from native Gemini session files ---
     {
       const geminiDir = freshHome();
-      const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw', 'chats');
+      const chatsDir = path.join(geminiDir, 'tmp', 'pikiloop', 'chats');
       fs.mkdirSync(chatsDir, { recursive: true });
       fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-abc.json'), JSON.stringify({
         sessionId: 'gemini-session-1',
@@ -246,7 +246,7 @@ describe('Gemini session listing', () => {
     // --- hides Gemini CLI stub session files (no messages, e.g. a2a-server) ---
     {
       const geminiDir = freshHome();
-      const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw', 'chats');
+      const chatsDir = path.join(geminiDir, 'tmp', 'pikiloop', 'chats');
       fs.mkdirSync(chatsDir, { recursive: true });
       // a2a-server stub Gemini CLI writes for its internal bookkeeping.
       fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-a2a-serv.jsonl'),
@@ -309,8 +309,8 @@ describe('Gemini session messages content cleanup', () => {
 
   beforeEach(() => {
     vi.resetModules();
-    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-msgs-'));
-    workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-msgs-work-'));
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-gemini-msgs-'));
+    workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-gemini-msgs-work-'));
   });
 
   afterEach(() => {
@@ -322,9 +322,9 @@ describe('Gemini session messages content cleanup', () => {
     const geminiDir = path.join(process.env.HOME!, '.gemini');
     fs.mkdirSync(geminiDir, { recursive: true });
     fs.writeFileSync(path.join(geminiDir, 'projects.json'), JSON.stringify({
-      projects: { [workdir]: 'pikiclaw-msgs' },
+      projects: { [workdir]: 'pikiloop-msgs' },
     }));
-    const chatsDir = path.join(geminiDir, 'tmp', 'pikiclaw-msgs', 'chats');
+    const chatsDir = path.join(geminiDir, 'tmp', 'pikiloop-msgs', 'chats');
     fs.mkdirSync(chatsDir, { recursive: true });
     fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-abc.json'), JSON.stringify({
       sessionId: 'gemini-session-clean',
@@ -373,7 +373,7 @@ describe('Gemini session messages content cleanup', () => {
 
     // --- promotes staged @<path> image refs into image blocks alongside the user text ---
     {
-      const imageDir = path.join(workdir, '.pikiclaw', 'sessions', 'gemini', 'pending_abc', 'workspace');
+      const imageDir = path.join(workdir, '.pikiloop', 'sessions', 'gemini', 'pending_abc', 'workspace');
       fs.mkdirSync(imageDir, { recursive: true });
       fs.writeFileSync(path.join(imageDir, 'image.png'), PNG_BYTES);
 
@@ -381,7 +381,7 @@ describe('Gemini session messages content cleanup', () => {
         '[Browser Automation]',
         'noise line',
         '',
-        '@.pikiclaw/sessions/gemini/pending_abc/workspace/image.png',
+        '@.pikiloop/sessions/gemini/pending_abc/workspace/image.png',
         '',
         'what is in this image?',
         '',

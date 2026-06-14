@@ -175,7 +175,7 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
   };
 
   try {
-    io.write(title(`pikiclaw v${options.version} setup`));
+    io.write(title(`pikiloop v${options.version} setup`));
 
     if (options.channel !== 'telegram') {
       io.write(buildSetupGuide(state, options.version));
@@ -206,7 +206,7 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
       io.write(`${selectedState?.label || selectedAgent} is not installed.\n`);
       const installNow = await askYesNo(io, `Install ${selectedAgent === 'claude' ? 'Claude Code' : 'Codex'} now?`, true);
       if (!installNow) {
-        io.write('Setup cancelled. Install the agent first, then run `npx pikiclaw@latest` again.\n');
+        io.write('Setup cancelled. Install the agent first, then run `npx pikiloop@latest` again.\n');
         return { completed: false, token, agent: selectedAgent, configPath: null, tokenCheck: null };
       }
 
@@ -274,7 +274,7 @@ export async function runSetupWizard(options: SetupWizardOptions): Promise<Setup
     io.write(title('Ready'));
     io.write(`Agent: ${selectedAgent}\n`);
     io.write(`Telegram bot: @${tokenCheck?.bot?.username || 'unknown_bot'}\n`);
-    io.write('Starting pikiclaw now...\n');
+    io.write('Starting pikiloop now...\n');
 
     return {
       completed: true,

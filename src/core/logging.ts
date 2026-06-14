@@ -36,9 +36,9 @@ function positiveIntEnv(name: string, fallback: number): number {
 
 function resolveRetention(options: RetainedLogOptions = {}) {
   return {
-    maxLines: options.maxLines ?? positiveIntEnv('PIKICLAW_LOG_MAX_LINES', DEFAULT_LOG_MAX_LINES),
-    maxAgeMs: options.maxAgeMs ?? positiveIntEnv('PIKICLAW_LOG_MAX_AGE_MS', DEFAULT_LOG_MAX_AGE_MS),
-    trimEveryWrites: options.trimEveryWrites ?? positiveIntEnv('PIKICLAW_LOG_TRIM_EVERY_WRITES', DEFAULT_LOG_TRIM_EVERY_WRITES),
+    maxLines: options.maxLines ?? positiveIntEnv('PIKILOOP_LOG_MAX_LINES', DEFAULT_LOG_MAX_LINES),
+    maxAgeMs: options.maxAgeMs ?? positiveIntEnv('PIKILOOP_LOG_MAX_AGE_MS', DEFAULT_LOG_MAX_AGE_MS),
+    trimEveryWrites: options.trimEveryWrites ?? positiveIntEnv('PIKILOOP_LOG_TRIM_EVERY_WRITES', DEFAULT_LOG_TRIM_EVERY_WRITES),
   };
 }
 
@@ -51,7 +51,7 @@ export function normalizeLogLevel(value: unknown, fallback: LogLevel = DEFAULT_L
 }
 
 export function getConfiguredLogLevel(): LogLevel {
-  return normalizeLogLevel(process.env.PIKICLAW_LOG_LEVEL, DEFAULT_LOG_LEVEL);
+  return normalizeLogLevel(process.env.PIKILOOP_LOG_LEVEL, DEFAULT_LOG_LEVEL);
 }
 
 export function shouldLog(level: LogLevel, configuredLevel = getConfiguredLogLevel()): boolean {

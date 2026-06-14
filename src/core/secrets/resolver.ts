@@ -2,7 +2,7 @@
  * Resolve a CredentialRef to a plaintext secret.
  *
  * Resolved values are returned to the caller and immediately consumed (e.g.
- * injected into a child process env at spawn time). Pikiclaw never persists
+ * injected into a child process env at spawn time). Pikiloop never persists
  * the resolved plaintext in long-lived state.
  */
 

@@ -194,14 +194,14 @@ describe('browser-supervisor', () => {
     await Promise.all([ra, rb, rc]);
     expect(forceCloseMock).toHaveBeenCalledTimes(1);
 
-    // PIKICLAW_BROWSER_CDP_URL: bypasses local launch and attaches to remote endpoint
+    // PIKILOOP_BROWSER_CDP_URL: bypasses local launch and attaches to remote endpoint
     supervisor._resetManagedBrowserSupervisor();
     prepareMock.mockReset();
     forceCloseMock.mockReset();
     forceCloseMock.mockResolvedValue([]);
     vi.unstubAllGlobals();
 
-    process.env.PIKICLAW_BROWSER_CDP_URL = 'http://chromium:9222/';
+    process.env.PIKILOOP_BROWSER_CDP_URL = 'http://chromium:9222/';
     try {
       vi.stubGlobal('fetch', vi.fn(async (input: any) => {
         const url = typeof input === 'string' ? input : input.url;
@@ -223,15 +223,15 @@ describe('browser-supervisor', () => {
       expect(forceCloseMock).not.toHaveBeenCalled();
       expect(supervisor.getCachedManagedBrowserEndpoint()).toBeNull();
     } finally {
-      delete process.env.PIKICLAW_BROWSER_CDP_URL;
+      delete process.env.PIKILOOP_BROWSER_CDP_URL;
     }
 
-    // PIKICLAW_BROWSER_CDP_URL: reports unavailable when remote endpoint is unreachable
+    // PIKILOOP_BROWSER_CDP_URL: reports unavailable when remote endpoint is unreachable
     supervisor._resetManagedBrowserSupervisor();
     prepareMock.mockReset();
     vi.unstubAllGlobals();
 
-    process.env.PIKICLAW_BROWSER_CDP_URL = 'http://chromium:9222';
+    process.env.PIKILOOP_BROWSER_CDP_URL = 'http://chromium:9222';
     try {
       vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })));
       const unreachableSnap = await supervisor.ensureManagedBrowser();
@@ -239,7 +239,7 @@ describe('browser-supervisor', () => {
       expect(unreachableSnap.cdpEndpoint).toBeNull();
       expect(prepareMock).not.toHaveBeenCalled();
     } finally {
-      delete process.env.PIKICLAW_BROWSER_CDP_URL;
+      delete process.env.PIKILOOP_BROWSER_CDP_URL;
     }
   });
 });

@@ -103,7 +103,7 @@ export function resolveAgentEffort(config: Partial<UserConfig> | Record<string, 
 // advertises `capabilities.workflow` honor it (claude today). Default OFF —
 // the claude driver hard-disables the Workflow tool unless this is true, so a
 // bare "workflow" keyword can never auto-spawn a fleet of sub-agents under the
-// bypassPermissions mode pikiclaw runs by default.
+// bypassPermissions mode pikiloop runs by default.
 // ---------------------------------------------------------------------------
 
 export function agentWorkflowEnv(agent: Agent, env: Record<string, string | undefined> = process.env): string {
@@ -136,10 +136,10 @@ export function setAgentWorkflowEnv(agent: Agent, value: boolean, env: NodeJS.Pr
 // (Agent SDK credit pool). The single per-agent knob the dashboard surfaces as
 // "接入模式 / Access mode"; it decides which billing pool a turn lands on.
 // Persisted like model/effort (authoritative when set); the legacy
-// PIKICLAW_CLAUDE_PRINT / PIKICLAW_CLAUDE_TUI env vars remain the fallback
+// PIKILOOP_CLAUDE_PRINT / PIKILOOP_CLAUDE_TUI env vars remain the fallback
 // default so existing deployments keep their behaviour. The claude driver
 // reads the resolved value off StreamOpts; env is only consulted when no
-// explicit mode was threaded (e.g. the `pikiclaw run` one-shot path).
+// explicit mode was threaded (e.g. the `pikiloop run` one-shot path).
 // ---------------------------------------------------------------------------
 
 export type ClaudeAccessMode = 'subscription' | 'api';
@@ -148,14 +148,14 @@ export const DEFAULT_CLAUDE_ACCESS_MODE: ClaudeAccessMode = 'subscription';
 
 /**
  * Access mode implied by env, or null when neither var has an opinion.
- * PIKICLAW_CLAUDE_PRINT takes precedence over the legacy PIKICLAW_CLAUDE_TUI so
+ * PIKILOOP_CLAUDE_PRINT takes precedence over the legacy PIKILOOP_CLAUDE_TUI so
  * a freshly-written print var resolves a stale tui var (setClaudeAccessModeEnv
  * relies on this). Mirrors isClaudePrintModeForced() in the claude driver.
  */
 export function claudeAccessModeEnv(env: Record<string, string | undefined> = process.env): ClaudeAccessMode | null {
-  const print = parseBoolish(trimmed(env.PIKICLAW_CLAUDE_PRINT));
+  const print = parseBoolish(trimmed(env.PIKILOOP_CLAUDE_PRINT));
   if (print != null) return print ? 'api' : 'subscription';
-  const tui = parseBoolish(trimmed(env.PIKICLAW_CLAUDE_TUI));
+  const tui = parseBoolish(trimmed(env.PIKILOOP_CLAUDE_TUI));
   if (tui != null) return tui ? 'subscription' : 'api';
   return null;
 }
@@ -166,10 +166,10 @@ export function resolveClaudeAccessMode(config: Partial<UserConfig> | Record<str
   return claudeAccessModeEnv() ?? DEFAULT_CLAUDE_ACCESS_MODE;
 }
 
-/** Mirror the choice into PIKICLAW_CLAUDE_PRINT so any env-only fallback path
+/** Mirror the choice into PIKILOOP_CLAUDE_PRINT so any env-only fallback path
  *  (and tooling that inspects the env) agrees with the persisted config. */
 export function setClaudeAccessModeEnv(value: ClaudeAccessMode, env: NodeJS.ProcessEnv = process.env): void {
-  env.PIKICLAW_CLAUDE_PRINT = value === 'api' ? '1' : '0';
+  env.PIKILOOP_CLAUDE_PRINT = value === 'api' ? '1' : '0';
 }
 
 export function setAgentModelEnv(agent: Agent, value: string, env: NodeJS.ProcessEnv = process.env): void {

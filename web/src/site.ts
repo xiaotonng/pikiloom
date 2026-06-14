@@ -2,13 +2,13 @@
 // Copy is drawn from the project README / CLAUDE.md positioning.
 
 export const LINKS = {
-  github: 'https://github.com/xiaotonng/pikiclaw',
-  npm: 'https://www.npmjs.com/package/pikiclaw',
-  stars: 'https://github.com/xiaotonng/pikiclaw/stargazers',
+  github: 'https://github.com/xiaotonng/pikiloop',
+  npm: 'https://www.npmjs.com/package/pikiloop',
+  stars: 'https://github.com/xiaotonng/pikiloop/stargazers',
   reactBits: 'https://reactbits.dev/',
 } as const;
 
-export const INSTALL_CMD = 'npx pikiclaw@latest';
+export const INSTALL_CMD = 'npx pikiloop@latest';
 
 export const HEADLINE = "Put the world's smartest AI agents in your pocket.";
 

@@ -3,7 +3,7 @@
  *
  * When the user switches agent mid-thread (Claude → Gemini, Codex → Claude, …)
  * the new session has no shared state with the source. Rather than maintain a
- * parallel "thread transcript" inside pikiclaw — which would force us to track
+ * parallel "thread transcript" inside pikiloop — which would force us to track
  * every agent's evolving session format — we let each agent own its session
  * file and bridge across the gap with a one-shot compaction at the switch.
  *

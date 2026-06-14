@@ -19,3 +19,6 @@ replied_issues.txt
 .pikiclaw/*
 !.pikiclaw/skills/
 !.pikiclaw/skills/**
+.pikiloop/*
+!.pikiloop/skills/
+!.pikiloop/skills/**

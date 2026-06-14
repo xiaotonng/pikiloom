@@ -1,4 +1,4 @@
-# Pikiclaw — docker-compose example
+# Pikiloop — docker-compose example
 #
 # Quick start:
 #   1. cp .env.example .env   (then edit credentials — at minimum one IM token
@@ -6,7 +6,7 @@
 #   2. docker compose up -d
 #   3. open http://localhost:3939
 #
-# This file ships an opinionated default: a single `pikiclaw` service, two
+# This file ships an opinionated default: a single `pikiloop` service, two
 # named volumes (config + workspace), no host bind-mounts (so it Just Works on
 # any host OS). For first-party agent OAuth (browser-based login), uncomment
 # the bind mounts that copy `~/.claude`, `~/.codex`, `~/.gemini` from your host.
@@ -14,14 +14,14 @@
 # See docs/DOCKER.md for the full reference.
 
 services:
-  pikiclaw:
-    image: ghcr.io/xiaotonng/pikiclaw:latest
+  pikiloop:
+    image: ghcr.io/xiaotonng/pikiloop:latest
     # To build from a checkout instead of pulling, comment `image:` above and
     # uncomment the block below.
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    container_name: pikiclaw
+    container_name: pikiloop
     restart: unless-stopped
     ports:
       # Web dashboard. Bind to 127.0.0.1 if you don't want it reachable from
@@ -46,12 +46,12 @@ services:
       DINGTALK_CLIENT_ID: ${DINGTALK_CLIENT_ID:-}
       DINGTALK_CLIENT_SECRET: ${DINGTALK_CLIENT_SECRET:-}
 
-      # ─── General pikiclaw behavior ─────────────────────────────────────────
+      # ─── General pikiloop behavior ─────────────────────────────────────────
       DEFAULT_AGENT: ${DEFAULT_AGENT:-claude}
-      PIKICLAW_WORKDIR: /workspace
-      PIKICLAW_TIMEOUT: ${PIKICLAW_TIMEOUT:-1800}
-      PIKICLAW_FULL_ACCESS: ${PIKICLAW_FULL_ACCESS:-true}
-      PIKICLAW_ALLOWED_IDS: ${PIKICLAW_ALLOWED_IDS:-}
+      PIKILOOP_WORKDIR: /workspace
+      PIKILOOP_TIMEOUT: ${PIKILOOP_TIMEOUT:-1800}
+      PIKILOOP_FULL_ACCESS: ${PIKILOOP_FULL_ACCESS:-true}
+      PIKILOOP_ALLOWED_IDS: ${PIKILOOP_ALLOWED_IDS:-}
 
       # ─── Per-agent tuning (optional) ──────────────────────────────────────
       CLAUDE_MODEL: ${CLAUDE_MODEL:-}
@@ -63,18 +63,18 @@ services:
 
       # ─── Browser automation (optional) ─────────────────────────────────────
       # The base image does NOT bundle Chrome. To give the agent a real browser
-      # in Docker, run the Chromium sidecar + CDP bridge below and point pikiclaw
-      # at the bridge endpoint. Setting PIKICLAW_BROWSER_CDP_URL alone turns on
-      # browser tooling — no separate PIKICLAW_BROWSER_ENABLED needed.
-      # PIKICLAW_BROWSER_CDP_URL: http://chromium:9223
+      # in Docker, run the Chromium sidecar + CDP bridge below and point pikiloop
+      # at the bridge endpoint. Setting PIKILOOP_BROWSER_CDP_URL alone turns on
+      # browser tooling — no separate PIKILOOP_BROWSER_ENABLED needed.
+      # PIKILOOP_BROWSER_CDP_URL: http://chromium:9223
 
     volumes:
       # setting.json, sessions, MCP/CLI state, etc.
-      - pikiclaw-config:/home/piki/.pikiclaw
+      - pikiloop-config:/home/piki/.pikiloop
       # Projects the agent can read/write. Either a named volume or a host
       # bind mount — the latter is what you want if your code lives on the
       # host and you intend to edit it from the IDE as well.
-      - pikiclaw-workspace:/workspace
+      - pikiloop-workspace:/workspace
       # Uncomment to reuse a host-side OAuth login for an agent CLI. The host
       # path's uid must match PUID (default 1000) or the agent CLI will refuse
       # to read the token file.
@@ -97,14 +97,14 @@ services:
       retries: 3
 
   # ─── Optional: Chromium sidecar + CDP bridge for browser automation ─────────
-  # Uncomment both services below (and the PIKICLAW_BROWSER_CDP_URL env above) to
+  # Uncomment both services below (and the PIKILOOP_BROWSER_CDP_URL env above) to
   # let the agent drive a real browser. Open http://<host>:3000 in your own
   # browser to sign in to sites — the profile persists in `chromium-config`, and
-  # pikiclaw attaches over CDP. See docs/DOCKER.md §6 for the full rationale.
+  # pikiloop attaches over CDP. See docs/DOCKER.md §6 for the full rationale.
   #
   # chromium:
   #   image: lscr.io/linuxserver/chromium:latest
-  #   container_name: pikiclaw-chromium
+  #   container_name: pikiloop-chromium
   #   restart: unless-stopped
   #   environment:
   #     PUID: 1000
@@ -113,7 +113,7 @@ services:
   #     # --remote-allow-origins=* is REQUIRED — without it Chrome 111+ rejects
   #     # the cross-host CDP handshake with "403 Forbidden". Note this image
   #     # ignores --remote-debugging-address, so CDP only ever binds to
-  #     # 127.0.0.1; the socat bridge below is what exposes it to pikiclaw.
+  #     # 127.0.0.1; the socat bridge below is what exposes it to pikiloop.
   #     CHROME_CLI: "--remote-debugging-port=9222 --remote-allow-origins=*"
   #   ports:
   #     - "3000:3000"   # web UI (KasmVNC) — open this to sign in
@@ -123,18 +123,18 @@ services:
   #   shm_size: 1gb
   #
   # # Bridges Chrome's localhost-only CDP (127.0.0.1:9222) to 0.0.0.0:9223 inside
-  # # the chromium container's network namespace, so pikiclaw reaches it at
+  # # the chromium container's network namespace, so pikiloop reaches it at
   # # http://chromium:9223. socat connects from 127.0.0.1, which also satisfies
   # # Chrome's host-header check.
   # chromium-cdp-bridge:
   #   image: alpine/socat:latest
-  #   container_name: pikiclaw-chromium-cdp-bridge
+  #   container_name: pikiloop-chromium-cdp-bridge
   #   restart: unless-stopped
   #   network_mode: "service:chromium"
   #   depends_on: [chromium]
   #   command: TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222
 
 volumes:
-  pikiclaw-config:
-  pikiclaw-workspace:
+  pikiloop-config:
+  pikiloop-workspace:
   # chromium-config:

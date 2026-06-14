@@ -651,7 +651,7 @@ function CustomSkillDialog({
 
 function openOAuthPopup(authUrl: string, expectedState: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const popup = window.open(authUrl, 'pikiclaw_mcp_oauth', 'width=640,height=780,noopener=no');
+    const popup = window.open(authUrl, 'pikiloop_mcp_oauth', 'width=640,height=780,noopener=no');
     if (!popup) { resolve(false); return; }
 
     let done = false;
@@ -967,7 +967,7 @@ function SkillAvailableCard({
 
 // ---------------------------------------------------------------------------
 // Local skill card — an installed skill that no catalog repo claims
-// (hand-authored under ~/.pikiclaw/skills or installed from an unlisted
+// (hand-authored under ~/.pikiloop/skills or installed from an unlisted
 // source). Removal is destructive (`rm -rf` of the skill dir, no reinstall
 // path for hand-written ones), so the remove button is a two-step arm/confirm.
 // ---------------------------------------------------------------------------
@@ -1009,8 +1009,8 @@ function LocalSkillCard({
       <div className="relative mt-auto pt-3 flex items-center justify-between text-[10.5px] text-fg-5">
         <span>
           {skill.scope === 'global'
-            ? L(locale, '全局 · ~/.pikiclaw/skills', 'Global · ~/.pikiclaw/skills')
-            : L(locale, '项目 · .pikiclaw/skills', 'Project · .pikiclaw/skills')}
+            ? L(locale, '全局 · ~/.pikiloop/skills', 'Global · ~/.pikiloop/skills')
+            : L(locale, '项目 · .pikiloop/skills', 'Project · .pikiloop/skills')}
         </span>
         <Button
           variant="ghost"
@@ -1379,7 +1379,7 @@ function McpCatalogSection({
   onOpenBrowserSetup?: () => void;
 }) {
   const toast = useStore(s => s.toast);
-  const cacheKey = `pikiclaw.mcp.catalog.${scope}.${workdir || ''}`;
+  const cacheKey = `pikiloop.mcp.catalog.${scope}.${workdir || ''}`;
   const { data, loading, refresh } = useCachedResource<McpCatalogItem[]>(
     cacheKey,
     async () => (await api.getMcpCatalog(workdir, scope)).items || [],
@@ -1544,12 +1544,12 @@ function McpCatalogSection({
         <div className="flex items-center justify-center py-10"><Spinner /></div>
       ) : (
         <div className="space-y-5">
-          {/* Built-in (pikiclaw-managed) */}
+          {/* Built-in (pikiloop-managed) */}
           {builtinItems.length > 0 && (
             <div>
               <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-fg-5">
                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--th-accent,#7c3aed)]"></span>
-                {L(locale, '内置（pikiclaw 优化）', 'Built-in (optimized by pikiclaw)')}
+                {L(locale, '内置（pikiloop 优化）', 'Built-in (optimized by pikiloop)')}
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {builtinItems.map((item, i) => (
@@ -1561,7 +1561,7 @@ function McpCatalogSection({
                       busy={busy === item.id}
                       index={i}
                       onPrimary={() => handleConnectedPrimary(item)}
-                      onReconfigure={item.id === 'pikiclaw-browser' ? onOpenBrowserSetup : undefined}
+                      onReconfigure={item.id === 'pikiloop-browser' ? onOpenBrowserSetup : undefined}
                     />
                   ) : (
                     <AvailableCard
@@ -1708,7 +1708,7 @@ function SkillsCatalogSection({
   workdir?: string;
   locale: string;
 }) {
-  const cacheKey = `pikiclaw.skills.catalog.${scope}.${workdir || ''}`;
+  const cacheKey = `pikiloop.skills.catalog.${scope}.${workdir || ''}`;
   const { data, loading, refresh } = useCachedResource<{ items: SkillCatalogItem[]; installed: SkillInfo[] }>(
     cacheKey,
     async () => {
@@ -2651,7 +2651,7 @@ function CliCatalogSection({
   scope: 'global' | 'workspace';
 }) {
   const { data, loading, refresh } = useCachedResource<CliCatalogItem[]>(
-    `pikiclaw:cli:catalog`,
+    `pikiloop:cli:catalog`,
     async () => {
       const r = await api.getCliCatalog();
       if (!r.ok) throw new Error(r.error || 'failed');
@@ -2860,13 +2860,13 @@ export function ExtensionsTab({
   const workdir = state?.config?.workdir || '';
   const [tab, setTab] = useState<ExtensionTab>(() => {
     try {
-      const saved = localStorage.getItem('pikiclaw:extensions:tab');
+      const saved = localStorage.getItem('pikiloop:extensions:tab');
       return (saved === 'mcp' || saved === 'cli' || saved === 'skill') ? saved : 'mcp';
     } catch { return 'mcp'; }
   });
   const switchTab = useCallback((next: ExtensionTab) => {
     setTab(next);
-    try { localStorage.setItem('pikiclaw:extensions:tab', next); } catch { /* quota */ }
+    try { localStorage.setItem('pikiloop:extensions:tab', next); } catch { /* quota */ }
   }, []);
 
   return (
@@ -2903,13 +2903,13 @@ export function WorkspaceExtensionsBody({ workdir }: { workdir: string }) {
   const locale = useStore(s => s.locale);
   const [tab, setTab] = useState<ExtensionTab>(() => {
     try {
-      const saved = localStorage.getItem('pikiclaw:extensions-ws:tab');
+      const saved = localStorage.getItem('pikiloop:extensions-ws:tab');
       return (saved === 'mcp' || saved === 'cli' || saved === 'skill') ? saved : 'mcp';
     } catch { return 'mcp'; }
   });
   const switchTab = useCallback((next: ExtensionTab) => {
     setTab(next);
-    try { localStorage.setItem('pikiclaw:extensions-ws:tab', next); } catch { /* quota */ }
+    try { localStorage.setItem('pikiloop:extensions-ws:tab', next); } catch { /* quota */ }
   }, []);
   return (
     <div className="space-y-6">

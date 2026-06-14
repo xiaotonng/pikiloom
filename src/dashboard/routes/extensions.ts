@@ -36,7 +36,7 @@ import fs from 'node:fs';
  * registering a new builtin.
  */
 function setBuiltinEnabled(catalogId: string, enabled: boolean): boolean {
-  if (catalogId === 'pikiclaw-browser') {
+  if (catalogId === 'pikiloop-browser') {
     saveUserConfig({ ...loadUserConfig(), browserEnabled: enabled });
     return true;
   }
@@ -315,7 +315,7 @@ app.post('/api/extensions/mcp/oauth/start', async (c) => {
       auth: rec.auth,
       resourceUrl: rec.transport.url,
       redirectUri,
-      clientName: 'Pikiclaw',
+      clientName: 'Pikiloop',
     });
     return c.json({ ok: true, authUrl, state });
   } catch (e: any) {
@@ -381,7 +381,7 @@ app.get('/api/extensions/mcp/oauth/callback', async (c) => {
     return render({
       ok: true,
       title: 'Authorized successfully',
-      detail: `Pikiclaw can now connect to ${result.serverId}. You can close this window and return to the dashboard.`,
+      detail: `Pikiloop can now connect to ${result.serverId}. You can close this window and return to the dashboard.`,
     });
   } catch (e: any) {
     return render({
@@ -492,7 +492,7 @@ const remoteSkillsInflight = new Map<string, Promise<RemoteSkillsResult | null>>
 /**
  * Resolve a GitHub API token without making the user export anything. Order:
  *   1. `GITHUB_TOKEN` env var (explicit override wins).
- *   2. `gh auth token` — pikiclaw recommends `gh` in its CLI catalog, so any
+ *   2. `gh auth token` — pikiloop recommends `gh` in its CLI catalog, so any
  *      user who's set up the CLI extensions has a token already. Cached for
  *      10 minutes since tokens rarely rotate; on rotation the next refresh
  *      picks it up automatically.
@@ -552,7 +552,7 @@ async function fetchGithubContents(owner: string, repo: string, path: string): P
   const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURI(path)}`;
   try {
     const headers: Record<string, string> = {
-      'User-Agent': 'pikiclaw-dashboard',
+      'User-Agent': 'pikiloop-dashboard',
       'Accept': 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
     };
@@ -649,7 +649,7 @@ async function fetchOneRepoMeta(source: string): Promise<RepoMeta | null> {
       signal: controller.signal,
       headers: {
         'Accept': 'application/vnd.github+json',
-        'User-Agent': 'pikiclaw-dashboard',
+        'User-Agent': 'pikiloop-dashboard',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     });

@@ -255,7 +255,7 @@ function ProfileModal({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   // Escape hatch when a provider's /v1/models returns something incomplete and
-  // the user knows a model id pikiclaw can't see.
+  // the user knows a model id pikiloop can't see.
   const [manualEntry, setManualEntry] = useState(false);
 
   useEffect(() => {

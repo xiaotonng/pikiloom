@@ -1,9 +1,9 @@
 /**
  * mcp-bridge.ts — MCP session bridge orchestrator.
  *
- * Runs inside the main pikiclaw process. For each agent stream:
+ * Runs inside the main pikiloop process. For each agent stream:
  *   1. Starts a tiny HTTP callback server on localhost (random port).
- *   2. Writes an MCP config JSON pointing to `pikiclaw --mcp-serve`.
+ *   2. Writes an MCP config JSON pointing to `pikiloop --mcp-serve`.
  *   3. The agent CLI loads that config via its MCP registration mechanism.
  *   4. When the agent calls `send_file`, the MCP server POSTs to our callback.
  *   5. We forward the request to the IM channel and respond with success/failure.
@@ -160,13 +160,13 @@ export function resolveMcpServerCommand(runtime: McpServerRuntimeInfo = {
   if (fs.existsSync(serverScript)) {
     return { command: 'node', args: [serverScript] };
   }
-  // Fallback: use pikiclaw CLI with --mcp-serve flag
+  // Fallback: use pikiloop CLI with --mcp-serve flag
   const cliScript = path.resolve(thisDir, '../../cli/main.js');
   if (fs.existsSync(cliScript)) {
     return { command: 'node', args: [cliScript, '--mcp-serve'] };
   }
-  // Last resort: assume pikiclaw is in PATH
-  return { command: 'pikiclaw', args: ['--mcp-serve'] };
+  // Last resort: assume pikiloop is in PATH
+  return { command: 'pikiloop', args: ['--mcp-serve'] };
 }
 
 function parseOptionalBool(value: unknown): boolean | null {
@@ -191,24 +191,24 @@ export function resolveGuiIntegrationConfig(
   env: Record<string, string | undefined> = process.env,
 ): GuiIntegrationConfig {
   // A configured remote CDP endpoint implies the user wants browser automation,
-  // so it flips the *default* on. An explicit PIKICLAW_BROWSER_ENABLED / config
+  // so it flips the *default* on. An explicit PIKILOOP_BROWSER_ENABLED / config
   // value still wins (so `=false` can disable even with a CDP URL set). This
-  // removes the footgun where setting only PIKICLAW_BROWSER_CDP_URL silently
+  // removes the footgun where setting only PIKILOOP_BROWSER_CDP_URL silently
   // injected no browser server at all.
   const browserEnabled = boolFromConfigEnv(
     typeof config.browserEnabled === 'boolean' ? config.browserEnabled : (config as Record<string, unknown>).browserUseProfile,
-    env.PIKICLAW_BROWSER_ENABLED ?? env.PIKICLAW_BROWSER_USE_PROFILE,
+    env.PIKILOOP_BROWSER_ENABLED ?? env.PIKILOOP_BROWSER_USE_PROFILE,
     !!getConfiguredRemoteCdpUrl(env),
   );
   const peekabooEnabled = boolFromConfigEnv(
     config.peekabooEnabled,
-    env.PIKICLAW_PEEKABOO_ENABLED,
+    env.PIKILOOP_PEEKABOO_ENABLED,
     false,
   );
   return {
     browserEnabled,
     browserProfileDir: getManagedBrowserProfileDir(),
-    browserHeadless: boolFromConfigEnv(config.browserHeadless, env.PIKICLAW_BROWSER_HEADLESS, false),
+    browserHeadless: boolFromConfigEnv(config.browserHeadless, env.PIKILOOP_BROWSER_HEADLESS, false),
     peekabooEnabled,
   };
 }
@@ -237,7 +237,7 @@ export function buildSupplementalMcpServers(
       cdpEndpoint,
     });
     servers.push({
-      name: 'pikiclaw-browser',
+      name: 'pikiloop-browser',
       command: browserServer.command,
       args: browserServer.args,
     });
@@ -258,7 +258,7 @@ export function buildGuiSetupHints(gui: GuiIntegrationConfig = resolveGuiIntegra
   const hints: string[] = [];
   if (gui.browserEnabled) {
     hints.push(
-      `managed browser profile mode enabled; runtime sessions reuse ${gui.browserProfileDir || getManagedBrowserProfileDir()}; configured MCP browser mode=${gui.browserHeadless ? 'headless' : 'headed'}. This mode keeps automation isolated from your everyday browser. If the managed browser is already open, pikiclaw will try to attach to it first. When using browser_tabs, use action="new" to open a tab, not "create".`,
+      `managed browser profile mode enabled; runtime sessions reuse ${gui.browserProfileDir || getManagedBrowserProfileDir()}; configured MCP browser mode=${gui.browserHeadless ? 'headless' : 'headed'}. This mode keeps automation isolated from your everyday browser. If the managed browser is already open, pikiloop will try to attach to it first. When using browser_tabs, use action="new" to open a tab, not "create".`,
     );
   }
   if (gui.peekabooEnabled && process.platform === 'darwin') {
@@ -325,12 +325,12 @@ function extractBearerToken(headers?: Record<string, string>): string | null {
 
 function codexBearerEnvName(serverName: string): string {
   const safe = serverName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  return `PIKICLAW_MCP_BEARER_${safe || 'UNNAMED'}`;
+  return `PIKILOOP_MCP_BEARER_${safe || 'UNNAMED'}`;
 }
 
 export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
   return {
-    // Session attachments live under .pikiclaw/... and should remain readable to
+    // Session attachments live under .pikiloop/... and should remain readable to
     // Gemini's built-in file tools even when the project ignores that directory.
     fileFiltering: {
       respectGitIgnore: false,
@@ -367,11 +367,11 @@ export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
 
 /**
  * Find and SIGTERM playwright-mcp processes that attach to the same managed
- * Chrome CDP endpoint but are NOT descendants of the current pikiclaw process.
+ * Chrome CDP endpoint but are NOT descendants of the current pikiloop process.
  *
  * Background: playwright-mcp is spawned by the agent CLI (e.g. claude) as a
  * child via the mcp-config we write. When the agent CLI is killed ungracefully
- * — or worse, gets reparented to launchd/init and survives across pikiclaw
+ * — or worse, gets reparented to launchd/init and survives across pikiloop
  * restarts — its playwright-mcp child stays alive too. Multiple playwright-mcp
  * instances attached to the same `--cdp-endpoint` cause backend state
  * confusion (microsoft/playwright-mcp#1299, #893) and manifest as
@@ -381,8 +381,8 @@ export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
  * runs at the start of every new bridge.
  *
  * Safety: a candidate is only reaped if its `ppid` chain — walked entirely in
- * memory from a single `ps` snapshot — does NOT include the current pikiclaw
- * process. In-flight playwright-mcp children of THIS pikiclaw (sibling
+ * memory from a single `ps` snapshot — does NOT include the current pikiloop
+ * process. In-flight playwright-mcp children of THIS pikiloop (sibling
  * streams) are always spared.
  */
 /**
@@ -390,7 +390,7 @@ export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
  * playwright-mcp process attached to the same CDP endpoint as ours.
  *
  * Accepts both invocation forms we have seen in the wild:
- *   - `node <path>/@playwright/mcp/cli.js …`   (direct, pikiclaw's preferred)
+ *   - `node <path>/@playwright/mcp/cli.js …`   (direct, pikiloop's preferred)
  *   - `node <path>/node_modules/.bin/playwright-mcp …`   (npm bin symlink,
  *     used by `npx @playwright/mcp` and any agent CLI that resolves via PATH)
  *
@@ -486,9 +486,9 @@ export interface BridgeBrowserEndpoint {
 /**
  * Decide which CDP endpoint the per-session playwright/mcp should attach to.
  *
- * When `PIKICLAW_BROWSER_CDP_URL` is set we return it UNCONDITIONALLY (mode
+ * When `PIKILOOP_BROWSER_CDP_URL` is set we return it UNCONDITIONALLY (mode
  * `remote`) — without probing it for reachability. This is deliberate: the
- * documented contract is that pikiclaw never launches, probes, or kills a local
+ * documented contract is that pikiloop never launches, probes, or kills a local
  * Chrome in remote mode (e.g. inside a headless container that has no Chrome at
  * all). Gating on a reachability ping would let a momentarily-unreachable
  * sidecar fall through to the local-launch branch and silently spawn a browser
@@ -637,7 +637,7 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     browserCdpEndpoint = endpoint;
     if (endpoint) {
       opts.onLog?.(mode === 'remote'
-        ? `attaching to remote CDP endpoint ${endpoint} (PIKICLAW_BROWSER_CDP_URL); local Chrome launch disabled.`
+        ? `attaching to remote CDP endpoint ${endpoint} (PIKILOOP_BROWSER_CDP_URL); local Chrome launch disabled.`
         : `attaching to existing managed browser at ${endpoint}.`);
       // Clear stale playwright-mcp children still bound to this endpoint (one
       // playwright-mcp per browser, per microsoft/playwright-mcp#1299). Safe for
@@ -743,7 +743,7 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
             const interaction: AgentInteraction = {
               kind: 'user-input',
               id: requestId,
-              title: header || 'Pikiclaw needs your input',
+              title: header || 'Pikiloop needs your input',
               hint: hint || null,
               questions: [interactionQuestion],
               resolveWith: (answers) => {
@@ -850,7 +850,7 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
   const supplementalServers = buildSupplementalMcpServers(gui, { cdpEndpoint: browserCdpEndpoint });
   const servers: RegisteredMcpServer[] = [...supplementalServers];
 
-  // Register the pikiclaw stdio MCP server when any in-process tool needs the
+  // Register the pikiloop stdio MCP server when any in-process tool needs the
   // callback channel. `MCP_TOOLS_AVAILABLE` tells the server which tool
   // families to advertise.
   if (port && (sendFile || onInteraction)) {
@@ -868,7 +868,7 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
       MCP_LOG_URL: `http://127.0.0.1:${port}/log`,
       MCP_TOOLS_AVAILABLE: enabledTools.join(','),
     };
-    servers.unshift({ name: 'pikiclaw', command, args, env: envVars });
+    servers.unshift({ name: 'pikiloop', command, args, env: envVars });
   }
 
   // Nothing to register — skip bridge entirely

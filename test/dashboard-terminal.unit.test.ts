@@ -16,7 +16,7 @@ const CHANNEL_ENV_KEYS = [
   'DINGTALK_CLIENT_ID', 'DINGTALK_CLIENT_SECRET', 'WECOM_BOT_ID', 'WECOM_BOT_SECRET',
 ] as const;
 
-const ISOLATION_ENV_KEYS = ['PIKICLAW_CONFIG', 'PIKICLAW_WORKDIR', 'DEFAULT_AGENT', ...CHANNEL_ENV_KEYS] as const;
+const ISOLATION_ENV_KEYS = ['PIKILOOP_CONFIG', 'PIKILOOP_WORKDIR', 'DEFAULT_AGENT', ...CHANNEL_ENV_KEYS] as const;
 
 /** Point config at an isolated, channel-less setting.json (and strip channel
  *  env vars) so the supervisor resolves zero channels and never loads the
@@ -25,8 +25,8 @@ function isolatedChannellessConfig(): void {
   for (const key of CHANNEL_ENV_KEYS) delete process.env[key];
   const path = `${makeTmpDir('dash-terminal-config-')}/setting.json`;
   fs.writeFileSync(path, JSON.stringify({ version: 1 }));
-  process.env.PIKICLAW_CONFIG = path;
-  process.env.PIKICLAW_WORKDIR = makeTmpDir('dash-terminal-workdir-');
+  process.env.PIKILOOP_CONFIG = path;
+  process.env.PIKILOOP_WORKDIR = makeTmpDir('dash-terminal-workdir-');
 }
 
 function agent(id: AgentInfo['agent'], installed: boolean): AgentInfo {

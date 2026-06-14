@@ -51,14 +51,14 @@ function trimSessionText(value: unknown, max = 24_000): string | null {
  * supervisor can force-restart Chrome before the next turn. Both patterns are
  * narrow on purpose: `Frame has been detached` is playwright-specific; the
  * `Connection closed` MCP error only triggers when the same line names the
- * `pikiclaw-browser` server, so failures on other MCP servers do not nuke the
+ * `pikiloop-browser` server, so failures on other MCP servers do not nuke the
  * managed browser. The supervisor itself debounces, so this can fire freely.
  */
 export function _detectBrowserMcpFailure(rawLine: string): string | null {
   if (!rawLine) return null;
   if (rawLine.includes('Frame has been detached')) return 'playwright Frame detached';
-  if (rawLine.includes('pikiclaw-browser') && rawLine.includes('Connection closed')) {
-    return 'pikiclaw-browser MCP stdio closed';
+  if (rawLine.includes('pikiloop-browser') && rawLine.includes('Connection closed')) {
+    return 'pikiloop-browser MCP stdio closed';
   }
   return null;
 }
@@ -741,7 +741,7 @@ export function getUsage(opts: UsageOpts): UsageResult {
  * If the user has a BYOK Profile bound to `agent`, return its raw modelId
  * (e.g. "deepseek/deepseek-v4-flash"). Returns null when no profile is bound.
  * Used by display paths that need to show the profile's model rather than the
- * pikiclaw user-config model (which may be stale or unrelated to the active profile).
+ * pikiloop user-config model (which may be stale or unrelated to the active profile).
  */
 export function getAgentBoundModelId(agent: Agent): string | null {
   const profile = getActiveProfile(agent);

@@ -2,17 +2,17 @@
 
 set -euo pipefail
 
-DEV_DIR="${HOME}/.pikiclaw/dev"
+DEV_DIR="${HOME}/.pikiloop/dev"
 LOG_FILE="${DEV_DIR}/dev.log"
 
 # Dev mode must stay on the local source tree.
-# Do not hop into the production/self-bootstrap `npx pikiclaw@latest` chain.
+# Do not hop into the production/self-bootstrap `npx pikiloop@latest` chain.
 mkdir -p "${DEV_DIR}"
 
 # Decide whether to detach early.
 #
 # Why this happens FIRST, before any kill / build:
-# dev.sh restarts the running pikiclaw runtime, and when invoked from inside an
+# dev.sh restarts the running pikiloop runtime, and when invoked from inside an
 # agent session (Codex app-server, Claude `-p`, …) that runtime IS the host
 # process for the agent. If we kill the runtime while still living in the
 # agent's bash subtree, the agent's stdio breaks mid-script: Codex cancels the
@@ -21,17 +21,17 @@ mkdir -p "${DEV_DIR}"
 # from that subtree so the subsequent kill is safe.
 #
 # Priority:
-#   already detached (PIKICLAW_DEV_DETACHED=1)   -> no, we ARE the worker
-#   PIKICLAW_DEV_BACKGROUND=1                    -> yes
-#   PIKICLAW_DEV_FOREGROUND=1                    -> no
+#   already detached (PIKILOOP_DEV_DETACHED=1)   -> no, we ARE the worker
+#   PIKILOOP_DEV_BACKGROUND=1                    -> yes
+#   PIKILOOP_DEV_FOREGROUND=1                    -> no
 #   no controlling TTY (agent Bash tool, piped)  -> yes
 #   otherwise                                    -> no (interactive terminal)
 _should_detach=0
-if [[ "${PIKICLAW_DEV_DETACHED:-0}" == "1" ]]; then
+if [[ "${PIKILOOP_DEV_DETACHED:-0}" == "1" ]]; then
   _should_detach=0
-elif [[ "${PIKICLAW_DEV_BACKGROUND:-0}" == "1" ]]; then
+elif [[ "${PIKILOOP_DEV_BACKGROUND:-0}" == "1" ]]; then
   _should_detach=1
-elif [[ "${PIKICLAW_DEV_FOREGROUND:-0}" == "1" ]]; then
+elif [[ "${PIKILOOP_DEV_FOREGROUND:-0}" == "1" ]]; then
   _should_detach=0
 elif [[ ! -t 1 ]]; then
   _should_detach=1
@@ -43,21 +43,21 @@ if (( _should_detach )); then
   # from the job table so the calling agent's bash doesn't track it.
   # setsid isn't portable to macOS, but nohup + redirect + disown is enough
   # because the worker is reparented to init once we exit immediately below.
-  nohup env PIKICLAW_DEV_DETACHED=1 bash "$0" "$@" </dev/null >>"${LOG_FILE}" 2>&1 &
+  nohup env PIKILOOP_DEV_DETACHED=1 bash "$0" "$@" </dev/null >>"${LOG_FILE}" 2>&1 &
   _bg_pid=$!
   disown "$_bg_pid" 2>/dev/null || true
   cat <<EOF
 [dev.sh] detached worker spawned (pid=${_bg_pid}); restart proceeds outside caller's process tree
 [dev.sh]   log:  ${LOG_FILE}     (tail -f to follow)
 [dev.sh]   stop: pkill -f 'tsx src/cli/main.ts --no-daemon'
-[dev.sh]   force foreground next time: PIKICLAW_DEV_FOREGROUND=1 npm run dev
+[dev.sh]   force foreground next time: PIKILOOP_DEV_FOREGROUND=1 npm run dev
 EOF
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
 # Below runs either as the TTY foreground process, or as the detached worker.
-# Both are now safe to kill the running pikiclaw runtime — neither shares a
+# Both are now safe to kill the running pikiloop runtime — neither shares a
 # stdio/process-group dependency with the agent that invoked us.
 # ---------------------------------------------------------------------------
 
@@ -80,34 +80,34 @@ fi
 rm -f "${DEV_DIR}/dev.pid"
 
 # Remember whether this invocation is the detached worker, BEFORE the env
-# scrub below wipes PIKICLAW_DEV_DETACHED along with the rest of PIKICLAW_*.
+# scrub below wipes PIKILOOP_DEV_DETACHED along with the rest of PIKILOOP_*.
 # The flag controls whether we truncate the log (the worker must not — its
 # parent already did, and the worker's own stdout/stderr is being appended
 # to that file).
 _is_detached_worker=0
-[[ "${PIKICLAW_DEV_DETACHED:-0}" == "1" ]] && _is_detached_worker=1
+[[ "${PIKILOOP_DEV_DETACHED:-0}" == "1" ]] && _is_detached_worker=1
 
 # Dev isolates setting.json only. The managed browser profile intentionally
-# stays at ~/.pikiclaw/browser/chrome-profile so dev and the main runtime reuse
+# stays at ~/.pikiloop/browser/chrome-profile so dev and the main runtime reuse
 # the same browser login state.
 #
-# Clean inherited env vars that leak when launched from inside a running pikiclaw
+# Clean inherited env vars that leak when launched from inside a running pikiloop
 # or Claude Code session. Without this, the dev process inherits agent permissions,
 # channel credentials, daemon flags, workdir overrides, etc. from the parent.
 # Use pattern-based unset to catch everything rather than maintaining an explicit list.
 #
 # Whitelist: user-set runtime switches for the Claude driver must survive the
-# scrub so the child runtime can see them. `PIKICLAW_CLAUDE_PRINT=1` forces
-# print mode (the new opt-out, since TUI is the default), `PIKICLAW_CLAUDE_TUI*`
+# scrub so the child runtime can see them. `PIKILOOP_CLAUDE_PRINT=1` forces
+# print mode (the new opt-out, since TUI is the default), `PIKILOOP_CLAUDE_TUI*`
 # covers the legacy on/off plus the `_DEBUG` / `_KEEP_API_KEY` sub-flags.
 while IFS= read -r _var; do
   unset "$_var"
-done < <(env | grep -oE '^(PIKICLAW_|CLAUDECODE|CLAUDE_CODE_|CLAUDE_MODEL|CLAUDE_PERMISSION_|CODEX_|GEMINI_|DEFAULT_AGENT|FEISHU_|TELEGRAM_|WEIXIN_)[^=]*' \
-  | grep -vE '^PIKICLAW_CLAUDE_(TUI|PRINT)' || true)
+done < <(env | grep -oE '^(PIKILOOP_|CLAUDECODE|CLAUDE_CODE_|CLAUDE_MODEL|CLAUDE_PERMISSION_|CODEX_|GEMINI_|DEFAULT_AGENT|FEISHU_|TELEGRAM_|WEIXIN_)[^=]*' \
+  | grep -vE '^PIKILOOP_CLAUDE_(TUI|PRINT)' || true)
 
 # Set dev-specific env AFTER the cleanup so they are not wiped.
-export PIKICLAW_CONFIG="${DEV_DIR}/setting.json"
-export PIKICLAW_LOG_LEVEL="${PIKICLAW_LOG_LEVEL:-debug}"
+export PIKILOOP_CONFIG="${DEV_DIR}/setting.json"
+export PIKILOOP_LOG_LEVEL="${PIKILOOP_LOG_LEVEL:-debug}"
 
 echo $$ > "${DEV_DIR}/dev.pid"
 trap 'rm -f "${DEV_DIR}/dev.pid"' EXIT

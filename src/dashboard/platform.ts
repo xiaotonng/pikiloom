@@ -52,7 +52,7 @@ function runJxa(script: string, timeout = DASHBOARD_PERMISSION_TIMEOUTS.jxaDefau
 }
 
 function checkScreenRecordingPermission(): boolean | null {
-  const screenshotPath = path.join(os.tmpdir(), `.pikiclaw_perm_test_${process.pid}_${Date.now()}.png`);
+  const screenshotPath = path.join(os.tmpdir(), `.pikiloop_perm_test_${process.pid}_${Date.now()}.png`);
   try {
     execFileSync('screencapture', ['-x', screenshotPath], { stdio: 'ignore', timeout: DASHBOARD_PERMISSION_TIMEOUTS.screenRecordingProbe });
     return true;
@@ -193,7 +193,7 @@ export function isValidPermissionKey(value: string): value is DashboardPermissio
 // Terminal detection
 // ---------------------------------------------------------------------------
 
-/** Walk the process tree upward to find the host terminal / IDE that launched pikiclaw. Works on macOS and Linux. */
+/** Walk the process tree upward to find the host terminal / IDE that launched pikiloop. Works on macOS and Linux. */
 export function detectHostTerminalApp(): string | null {
   if (process.platform !== 'darwin' && process.platform !== 'linux') return null;
   try {

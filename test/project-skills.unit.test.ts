@@ -6,7 +6,7 @@ import { collapseSkillPrompt, getProjectSkillPaths, initializeProjectSkills } fr
 import { resolveSkillPrompt } from '../src/bot/commands.ts';
 import { captureEnv, makeTmpDir, restoreEnv } from './support/env.ts';
 
-const envSnapshot = captureEnv(['PIKICLAW_CONFIG', 'PIKICLAW_WORKDIR']);
+const envSnapshot = captureEnv(['PIKILOOP_CONFIG', 'PIKILOOP_WORKDIR']);
 
 function writeFile(filePath: string, content: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -19,7 +19,7 @@ function writeSkill(root: string, name: string, body: string) {
 
 beforeEach(() => {
   restoreEnv(envSnapshot);
-  process.env.PIKICLAW_CONFIG = path.join(makeTmpDir('pikiclaw-config-'), 'setting.json');
+  process.env.PIKILOOP_CONFIG = path.join(makeTmpDir('pikiloop-config-'), 'setting.json');
 });
 
 afterEach(() => {
@@ -30,8 +30,8 @@ describe('project skills', () => {
   it('resolves skill paths, routes per-agent, merges legacy roots, and collapses shorthand', () => {
     // resolves claude skills with canonical project paths and injects context
     {
-      const workdir = makeTmpDir('pikiclaw-claude-skill-');
-      writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'install', '---\nlabel: Install\ndescription: shared\n---\n');
+      const workdir = makeTmpDir('pikiloop-claude-skill-');
+      writeSkill(path.join(workdir, '.pikiloop', 'skills'), 'install', '---\nlabel: Install\ndescription: shared\n---\n');
       writeSkill(path.join(workdir, '.claude', 'skills'), 'install', '---\nlabel: Install\ndescription: claude\n---\n');
 
       const bot = new Bot();
@@ -39,7 +39,7 @@ describe('project skills', () => {
       bot.chat(1).agent = 'claude';
 
       expect(getProjectSkillPaths(workdir, 'install')).toEqual({
-        sharedSkillFile: path.join(workdir, '.pikiclaw', 'skills', 'install', 'SKILL.md'),
+        sharedSkillFile: path.join(workdir, '.pikiloop', 'skills', 'install', 'SKILL.md'),
         claudeSkillFile: path.join(workdir, '.claude', 'skills', 'install', 'SKILL.md'),
         agentsSkillFile: path.join(workdir, '.agents', 'skills', 'install', 'SKILL.md'),
       });
@@ -54,8 +54,8 @@ describe('project skills', () => {
 
     // routes codex skills to project skill files instead of hard-coding .claude paths
     {
-      const workdir = makeTmpDir('pikiclaw-codex-skill-');
-      writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'fixup', '---\nlabel: Fixup\ndescription: shared\n---\n');
+      const workdir = makeTmpDir('pikiloop-codex-skill-');
+      writeSkill(path.join(workdir, '.pikiloop', 'skills'), 'fixup', '---\nlabel: Fixup\ndescription: shared\n---\n');
       writeSkill(path.join(workdir, '.agents', 'skills'), 'fixup', '---\nlabel: Fixup\ndescription: agents\n---\n');
 
       const bot = new Bot();
@@ -69,35 +69,35 @@ describe('project skills', () => {
       expect(resolved!.prompt).toContain('.claude/skills/fixup/SKILL.md');
     }
 
-    // merges legacy skill roots into .pikiclaw/skills and links .claude/.agents back to canonical
+    // merges legacy skill roots into .pikiloop/skills and links .claude/.agents back to canonical
     {
-      const workdir = makeTmpDir('pikiclaw-migrate-skill-');
-      writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'ship', '---\nlabel: Ship\ndescription: shared\n---\n');
-      writeFile(path.join(workdir, '.pikiclaw', 'skills', 'ship', 'references', 'shared.txt'), 'shared\n');
+      const workdir = makeTmpDir('pikiloop-migrate-skill-');
+      writeSkill(path.join(workdir, '.pikiloop', 'skills'), 'ship', '---\nlabel: Ship\ndescription: shared\n---\n');
+      writeFile(path.join(workdir, '.pikiloop', 'skills', 'ship', 'references', 'shared.txt'), 'shared\n');
       writeSkill(path.join(workdir, '.claude', 'skills'), 'ship', '---\nlabel: Ship\ndescription: claude\n---\n');
       writeFile(path.join(workdir, '.claude', 'skills', 'ship', 'references', 'claude.txt'), 'preserved\n');
       writeSkill(path.join(workdir, '.agents', 'skills'), 'package', '---\nlabel: Package\ndescription: agents\n---\n');
 
       initializeProjectSkills(workdir);
 
-      // .pikiclaw/skills becomes the canonical real directory
-      expect(fs.lstatSync(path.join(workdir, '.pikiclaw', 'skills')).isSymbolicLink()).toBe(false);
+      // .pikiloop/skills becomes the canonical real directory
+      expect(fs.lstatSync(path.join(workdir, '.pikiloop', 'skills')).isSymbolicLink()).toBe(false);
       // Canonical content keeps existing shared files and merges in legacy ones
-      expect(fs.readFileSync(path.join(workdir, '.pikiclaw', 'skills', 'ship', 'SKILL.md'), 'utf8')).toContain('description: shared');
-      expect(fs.existsSync(path.join(workdir, '.pikiclaw', 'skills', 'ship', 'references', 'shared.txt'))).toBe(true);
-      expect(fs.existsSync(path.join(workdir, '.pikiclaw', 'skills', 'ship', 'references', 'claude.txt'))).toBe(true);
-      expect(fs.existsSync(path.join(workdir, '.pikiclaw', 'skills', 'package', 'SKILL.md'))).toBe(true);
+      expect(fs.readFileSync(path.join(workdir, '.pikiloop', 'skills', 'ship', 'SKILL.md'), 'utf8')).toContain('description: shared');
+      expect(fs.existsSync(path.join(workdir, '.pikiloop', 'skills', 'ship', 'references', 'shared.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(workdir, '.pikiloop', 'skills', 'ship', 'references', 'claude.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(workdir, '.pikiloop', 'skills', 'package', 'SKILL.md'))).toBe(true);
       // .claude and .agents both become symlinks to canonical
       expect(fs.lstatSync(path.join(workdir, '.claude', 'skills')).isSymbolicLink()).toBe(true);
       expect(fs.lstatSync(path.join(workdir, '.agents', 'skills')).isSymbolicLink()).toBe(true);
-      expect(fs.realpathSync(path.join(workdir, '.claude', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiclaw', 'skills')));
-      expect(fs.realpathSync(path.join(workdir, '.agents', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiclaw', 'skills')));
+      expect(fs.realpathSync(path.join(workdir, '.claude', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiloop', 'skills')));
+      expect(fs.realpathSync(path.join(workdir, '.agents', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiloop', 'skills')));
     }
 
     // collapses canonical skill expansions back to the slash command shorthand
     {
-      const workdir = makeTmpDir('pikiclaw-collapse-skill-');
-      writeSkill(path.join(workdir, '.pikiclaw', 'skills'), 'install', '---\nlabel: Install\n---\n');
+      const workdir = makeTmpDir('pikiloop-collapse-skill-');
+      writeSkill(path.join(workdir, '.pikiloop', 'skills'), 'install', '---\nlabel: Install\n---\n');
       const bot = new Bot();
       bot.switchWorkdir(workdir, { persist: false });
       bot.chat(7).agent = 'claude';

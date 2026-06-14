@@ -156,7 +156,7 @@ export class DingtalkBot extends Bot {
           '/sessions [new|#] - List/switch sessions',
           '/skills - List project skills',
           '/stop - Stop current task',
-          '/restart - Restart pikiclaw',
+          '/restart - Restart pikiloop',
         ].join('\n'));
         return true;
       case 'new': this.resetConversationForChat(ctx.chatId); await ctx.reply('Started a new session.'); return true;
@@ -178,7 +178,7 @@ export class DingtalkBot extends Bot {
 
   private async cmdStart(ctx: DingtalkContext) {
     const d = getStartData(this, ctx.chatId);
-    const lines = [`pikiclaw v${d.version}`, `Workdir: ${d.workdir}`, '', `Agent: ${d.agent}`];
+    const lines = [`pikiloop v${d.version}`, `Workdir: ${d.workdir}`, '', `Agent: ${d.agent}`];
     for (const a of d.agentDetails) {
       const parts = [`  ${a.agent}: ${a.model}`];
       if (a.effort) parts[0] += ` (effort: ${a.effort})`;
@@ -192,7 +192,7 @@ export class DingtalkBot extends Bot {
     const d = await getStatusDataAsync(this, ctx.chatId);
     const gitLine = formatGitStatusLine(d.git);
     const lines = [
-      `pikiclaw v${d.version}`,
+      `pikiloop v${d.version}`,
       `Uptime: ${fmtUptime(d.uptime)}`,
       `PID: ${d.pid} | RSS: ${fmtBytes(d.memRss)} | Heap: ${fmtBytes(d.memHeap)}`,
       `Workdir: ${d.workdir}`,
@@ -412,7 +412,7 @@ export class DingtalkBot extends Bot {
   }
 
   private async cmdRestart(ctx: DingtalkContext) {
-    await ctx.reply('Restarting pikiclaw...');
+    await ctx.reply('Restarting pikiloop...');
     void requestProcessRestart({ log: msg => this.log(msg) });
   }
 
@@ -503,7 +503,7 @@ export class DingtalkBot extends Bot {
   }
 
   async run() {
-    const tmpDir = path.join(os.tmpdir(), 'pikiclaw');
+    const tmpDir = path.join(os.tmpdir(), 'pikiloop');
     fs.mkdirSync(tmpDir, { recursive: true });
 
     this.channel = new DingtalkChannel({

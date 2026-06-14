@@ -1,11 +1,11 @@
 /**
- * Pikiclaw "Model" layer — barrel export.
+ * Pikiloop "Model" layer — barrel export.
  *
- * The Model layer is one of the four physical layers in pikiclaw's
+ * The Model layer is one of the four physical layers in pikiloop's
  * architecture (Terminal / Agent / **Model** / Tool). It centralises:
  *   - Provider/Profile data model (types.ts)
  *   - Read-only catalog of providers/models from models.dev (catalog.ts)
- *   - Persistence (store.ts) over ~/.pikiclaw/setting.json
+ *   - Persistence (store.ts) over ~/.pikiloop/setting.json
  *   - Feishu-style credential validation (validation.ts)
  *   - Per-agent credential injection at spawn time (injector.ts)
  *

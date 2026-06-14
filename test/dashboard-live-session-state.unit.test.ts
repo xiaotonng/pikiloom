@@ -100,7 +100,7 @@ describe('dashboard live session state helpers', () => {
       running: false,
       runUpdatedAt: null,
       runDetail: null,
-      awaiting: { reason: 'rebuilding pikiclaw, will confirm after restart', since: '2026-06-01T00:00:00.000Z' },
+      awaiting: { reason: 'rebuilding pikiloop, will confirm after restart', since: '2026-06-01T00:00:00.000Z' },
     };
     expect(sessionDisplayState(parked)).toBe('waiting');
     expect(sessionDisplayState({ ...parked, running: true })).toBe('running');

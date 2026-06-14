@@ -6,8 +6,8 @@ import tailwindcss from '@tailwindcss/vite';
 // Standalone marketing site. Physically isolated from the runtime dashboard
 // (dashboard/) and never published to npm (see root package.json "files").
 export default defineConfig({
-  // '/' for local dev & custom domains; '/pikiclaw/' for the GitHub Pages
-  // project site (set VITE_BASE=/pikiclaw/ in the deploy build).
+  // '/' for local dev & custom domains; '/pikiloop/' for the GitHub Pages
+  // project site (set VITE_BASE=/pikiloop/ in the deploy build).
   base: process.env.VITE_BASE || '/',
   plugins: [react(), tailwindcss()],
   resolve: {

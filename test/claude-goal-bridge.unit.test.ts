@@ -1,7 +1,7 @@
 /**
  * Tests the native /goal bridge for the claude driver: reading goal_status
  * attachments out of a session transcript JSONL exactly as Claude Code v2.x
- * writes them, and the helpers that build the slash-command prompts pikiclaw
+ * writes them, and the helpers that build the slash-command prompts pikiloop
  * sends through the task queue.
  *
  * Fixture transcripts mirror the on-disk shape from a real claude -p run:
@@ -42,8 +42,8 @@ function writeTranscript(lines: string[]): void {
 
 beforeEach(() => {
   envSnap = captureEnv(HOME_KEYS);
-  tmpHome = makeTmpDir('pikiclaw-claude-goal-home-');
-  tmpWorkdir = makeTmpDir('pikiclaw-claude-goal-wd-');
+  tmpHome = makeTmpDir('pikiloop-claude-goal-home-');
+  tmpWorkdir = makeTmpDir('pikiloop-claude-goal-wd-');
   process.env.HOME = tmpHome;
   process.env.USERPROFILE = tmpHome;
 });

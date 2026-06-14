@@ -51,7 +51,7 @@ import { writeScopedLog } from '../../core/logging.js';
 
 export async function buildBrowserStatusResponse(config = loadUserConfig(), browserState = getManagedBrowserStatus()) {
   const gui = resolveGuiIntegrationConfig(config);
-  // In remote mode the local Chrome state is irrelevant — pikiclaw attaches to
+  // In remote mode the local Chrome state is irrelevant — pikiloop attaches to
   // the external CDP endpoint and never launches/manages a local browser. Report
   // the endpoint so the dashboard shows the truth instead of "Chrome missing".
   const remoteCdpUrl = gui.browserEnabled ? getConfiguredRemoteCdpUrl() : null;
@@ -69,7 +69,7 @@ export async function buildBrowserStatusResponse(config = loadUserConfig(), brow
       detail: !gui.browserEnabled
         ? 'Browser automation is disabled. No browser MCP server will be injected into agent sessions. On macOS, operate your main browser directly with open, osascript, and screencapture when needed.'
         : remoteCdpUrl
-          ? `Attached to an external Chrome over CDP at ${remoteCdpUrl} (PIKICLAW_BROWSER_CDP_URL). pikiclaw does not launch or manage a local browser in this mode — sign in to sites from the Chrome that owns this endpoint (e.g. your sidecar's web VNC).`
+          ? `Attached to an external Chrome over CDP at ${remoteCdpUrl} (PIKILOOP_BROWSER_CDP_URL). pikiloop does not launch or manage a local browser in this mode — sign in to sites from the Chrome that owns this endpoint (e.g. your sidecar's web VNC).`
           : browserState.detail,
     },
   };
@@ -212,10 +212,10 @@ app.get('/api/permissions', (c) => {
   return c.json(data);
 });
 
-// Save config (to ~/.pikiclaw/setting.json). Channel reconciliation is
+// Save config (to ~/.pikiloop/setting.json). Channel reconciliation is
 // handled by ChannelSupervisor via the onUserConfigChange listener — adding,
 // removing, or swapping credentials of an IM channel takes effect in-process
-// without restarting pikiclaw.
+// without restarting pikiloop.
 app.post('/api/config', async (c) => {
   const body = await c.req.json();
   const merged = { ...loadUserConfig(), ...body };
@@ -411,14 +411,14 @@ app.post('/api/browser/setup', async (c) => {
     if (!gui.browserEnabled) {
       return c.json({
         ok: false,
-        error: 'Browser automation is disabled. Enable it first if you want pikiclaw to launch the managed browser profile.',
+        error: 'Browser automation is disabled. Enable it first if you want pikiloop to launch the managed browser profile.',
       }, 400);
     }
-    // Remote mode: pikiclaw attaches to an external CDP endpoint and owns no
+    // Remote mode: pikiloop attaches to an external CDP endpoint and owns no
     // local Chrome. There is nothing to launch — return the (enabled) status as
     // a clean no-op instead of failing with "Chrome is not available".
     if (getConfiguredRemoteCdpUrl()) {
-      runtime.log('[browser] setup skipped: PIKICLAW_BROWSER_CDP_URL configured (external CDP, no local browser to launch)');
+      runtime.log('[browser] setup skipped: PIKILOOP_BROWSER_CDP_URL configured (external CDP, no local browser to launch)');
       return c.json({ ok: true, ...(await buildBrowserStatusResponse(config)) });
     }
     const launch = launchManagedBrowserSetup();
@@ -429,7 +429,7 @@ app.post('/api/browser/setup', async (c) => {
       browser: {
         ...payload.browser,
         detail: launch.running
-          ? 'Managed browser is open. Sign in to the sites you want pikiclaw to reuse. If it is still open later, pikiclaw will close it automatically before browser automation starts.'
+          ? 'Managed browser is open. Sign in to the sites you want pikiloop to reuse. If it is still open later, pikiloop will close it automatically before browser automation starts.'
           : payload.browser.detail,
       },
     });
@@ -546,7 +546,7 @@ app.post('/api/open-diff', async (c) => {
       return c.json({ ok: true });
     }
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-diff-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-diff-'));
     const origPath = path.join(tmpDir, `${relFile}.orig`);
     fs.writeFileSync(origPath, origResult.stdout);
 

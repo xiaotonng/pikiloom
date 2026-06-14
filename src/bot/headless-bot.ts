@@ -1,7 +1,7 @@
 /**
  * HeadlessBot — the Web Dashboard acting as a first-class terminal.
  *
- * pikiclaw's terminals (IM channels and the Dashboard) are equal, pluggable
+ * pikiloop's terminals (IM channels and the Dashboard) are equal, pluggable
  * entry points. The IM channels each have a Bot subclass that connects a chat
  * transport; the Dashboard needs no transport — it drives the bot directly via
  * `runtime.getBotRef()`. HeadlessBot fills that gap: it satisfies the Bot

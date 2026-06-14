@@ -2,7 +2,7 @@
  * Process-level singleton supervisor for the managed browser.
  *
  * Owns the lifecycle decisions for the managed Chrome instance so that all
- * agent streams in this pikiclaw process share one browser. Replaces the old
+ * agent streams in this pikiloop process share one browser. Replaces the old
  * per-stream `prepareManagedBrowserForAutomation` call inside the MCP bridge,
  * which was relaunching Chrome at the start of every task.
  *
@@ -22,7 +22,7 @@ import {
   getManagedBrowserProfileDir,
   prepareManagedBrowserForAutomation,
 } from './browser-profile.js';
-import { PIKICLAW_BROWSER_CDP_URL_ENV } from './core/constants.js';
+import { PIKILOOP_BROWSER_CDP_URL_ENV } from './core/constants.js';
 import { writeScopedLog } from './core/logging.js';
 
 export type ManagedBrowserConnectionMode = 'attach' | 'launch' | 'unavailable';
@@ -55,7 +55,7 @@ function log(message: string, level: 'debug' | 'info' | 'warn' | 'error' = 'debu
 }
 
 /**
- * The user-configured remote endpoint from {@link PIKICLAW_BROWSER_CDP_URL_ENV}.
+ * The user-configured remote endpoint from {@link PIKILOOP_BROWSER_CDP_URL_ENV}.
  * When set, every supervisor codepath bypasses local Chrome launching. Aliased
  * to the shared `getConfiguredRemoteCdpUrl` so the bridge and supervisor read
  * the same normalized value.
@@ -78,7 +78,7 @@ async function snapshotRemote(remoteUrl: string, now: number): Promise<ManagedBr
     return { cdpEndpoint: null, connectionMode: 'unavailable' };
   }
   cached = { cdpEndpoint: remoteUrl, connectionMode: 'attach', validatedAt: now };
-  log(`using remote CDP endpoint ${remoteUrl} (from ${PIKICLAW_BROWSER_CDP_URL_ENV})`);
+  log(`using remote CDP endpoint ${remoteUrl} (from ${PIKILOOP_BROWSER_CDP_URL_ENV})`);
   return snapshotFromCache(cached);
 }
 
@@ -156,7 +156,7 @@ export async function probeManagedBrowser(): Promise<ManagedBrowserSnapshot> {
  * when no reachable managed instance is available. Concurrent callers share
  * one in-flight preparation promise (singleflight).
  *
- * When {@link PIKICLAW_BROWSER_CDP_URL_ENV} is set we skip the local-launch
+ * When {@link PIKILOOP_BROWSER_CDP_URL_ENV} is set we skip the local-launch
  * branch entirely and just verify the remote endpoint — no `findChromeExecutable`
  * lookup, no SIGKILL of detected pids on restart.
  */

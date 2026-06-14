@@ -1,10 +1,10 @@
 /**
- * macOS LaunchAgent integration for `pikiclaw --daemon`.
+ * macOS LaunchAgent integration for `pikiloop --daemon`.
  *
- * Every time the user runs pikiclaw with an explicit `--daemon` flag on
+ * Every time the user runs pikiloop with an explicit `--daemon` flag on
  * macOS *without* a LaunchAgent already installed, an osascript dialog asks
  * whether to enable login auto-start. Choosing Enable writes
- * `~/Library/LaunchAgents/ai.pikiclaw.gateway.plist` and loads it via
+ * `~/Library/LaunchAgents/ai.pikiloop.gateway.plist` and loads it via
  * `launchctl bootstrap`. There is intentionally no CLI to disable: the user
  * toggles it off under System Settings → General → Login Items, which is
  * where macOS surfaces every LaunchAgent installed in
@@ -12,7 +12,7 @@
  *
  * Decision flow (`maybePromptAutostart`):
  *   1. Non-darwin → no-op.
- *   2. Already running under launchd (PIKICLAW_FROM_LAUNCHD set) → no-op.
+ *   2. Already running under launchd (PIKILOOP_FROM_LAUNCHD set) → no-op.
  *   3. plist exists but its ProgramArguments no longer point to a valid
  *      binary (e.g. Homebrew migration moved node) → silently rewrite.
  *   4. plist already valid → no-op.
@@ -29,16 +29,21 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { whichSync } from '../core/platform.js';
+import { STATE_DIR_NAME } from '../core/constants.js';
 
 const execFileAsync = promisify(execFile);
 
-const PLIST_LABEL = 'ai.pikiclaw.gateway';
+const PLIST_LABEL = 'ai.pikiloop.gateway';
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const PLIST_PATH = path.join(PLIST_DIR, `${PLIST_LABEL}.plist`);
-const PIKICLAW_HOME = path.join(os.homedir(), '.pikiclaw');
+const PIKILOOP_HOME = path.join(os.homedir(), STATE_DIR_NAME);
+// Pre-rename LaunchAgent — removed on (re)install so an upgraded machine never
+// runs two daemons (old pikiclaw + new pikiloop). Delete post-rename.
+const LEGACY_PLIST_LABEL = 'ai.pikiclaw.gateway';
+const LEGACY_PLIST_PATH = path.join(PLIST_DIR, `${LEGACY_PLIST_LABEL}.plist`);
 const PROMPT_DELAY_MS = 3000;
 
-export const FROM_LAUNCHD_ENV = 'PIKICLAW_FROM_LAUNCHD';
+export const FROM_LAUNCHD_ENV = 'PIKILOOP_FROM_LAUNCHD';
 
 interface InvocationCommand {
   program: string;
@@ -50,9 +55,9 @@ type DialogChoice = 'enable' | 'not_now' | 'closed';
 type LogFn = (msg: string) => void;
 
 /**
- * Resolve the command used to launch pikiclaw, so the plist can re-launch it
+ * Resolve the command used to launch pikiloop, so the plist can re-launch it
  * the same way. We distinguish npx (`.../_npx/<hash>/.../main.js`) from a
- * globally installed binary (`pikiclaw` on PATH).
+ * globally installed binary (`pikiloop` on PATH).
  */
 function detectInvocation(): InvocationCommand | null {
   const entry = process.argv[1] || '';
@@ -62,11 +67,11 @@ function detectInvocation(): InvocationCommand | null {
   if (entry.includes('/_npx/') || entry.includes('\\_npx\\')) {
     const npxBin = whichSync('npx');
     if (!npxBin) return null;
-    return { program: npxBin, args: ['-y', 'pikiclaw@latest', ...userArgs] };
+    return { program: npxBin, args: ['-y', 'pikiloop@latest', ...userArgs] };
   }
 
-  const pikiclawBin = whichSync('pikiclaw');
-  if (pikiclawBin) return { program: pikiclawBin, args: userArgs };
+  const pikiloopBin = whichSync('pikiloop');
+  if (pikiloopBin) return { program: pikiloopBin, args: userArgs };
   return null;
 }
 
@@ -90,8 +95,8 @@ function buildPlistXml(invocation: InvocationCommand): string {
   const programArgs = [invocation.program, ...invocation.args]
     .map(arg => `    <string>${escapeXml(arg)}</string>`)
     .join('\n');
-  const stdoutPath = path.join(PIKICLAW_HOME, 'launchd-stdout.log');
-  const stderrPath = path.join(PIKICLAW_HOME, 'launchd-stderr.log');
+  const stdoutPath = path.join(PIKILOOP_HOME, 'launchd-stdout.log');
+  const stderrPath = path.join(PIKILOOP_HOME, 'launchd-stderr.log');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -139,11 +144,11 @@ function plistIsStale(invocation: InvocationCommand): boolean {
 async function showEnableDialog(): Promise<DialogChoice> {
   const script = [
     'display dialog ',
-    '"Start pikiclaw automatically when you log in?\\n\\n',
+    '"Start pikiloop automatically when you log in?\\n\\n',
     'You can change this anytime in:\\n',
     'System Settings → General → Login Items" ',
     'buttons {"Not now", "Enable"} default button "Enable" ',
-    'with title "pikiclaw" with icon note',
+    'with title "pikiloop" with icon note',
   ].join('');
   try {
     const { stdout } = await execFileAsync('osascript', ['-e', script]);
@@ -173,17 +178,40 @@ async function bootstrapLaunchAgent(log: LogFn): Promise<boolean> {
   }
 }
 
+/**
+ * Remove the pre-rename `ai.pikiclaw.gateway` LaunchAgent if present, so an
+ * upgraded install never runs two daemons (old pikiclaw + new pikiloop).
+ * Best-effort; safe when nothing is loaded. Delete a couple releases post-rename.
+ */
+async function cleanupLegacyAutostart(log: LogFn): Promise<void> {
+  try {
+    let existed = false;
+    try { existed = fs.statSync(LEGACY_PLIST_PATH).isFile(); } catch {}
+    const uid = process.getuid?.() ?? 0;
+    await new Promise<void>(resolve => {
+      exec(`launchctl bootout gui/${uid}/${LEGACY_PLIST_LABEL}`, () => resolve());
+    });
+    if (existed) {
+      try { fs.unlinkSync(LEGACY_PLIST_PATH); } catch {}
+      log(`autostart: removed legacy LaunchAgent ${LEGACY_PLIST_LABEL}`);
+    }
+  } catch { /* best-effort */ }
+}
+
 async function installAutostart(log: LogFn, invocation: InvocationCommand): Promise<boolean> {
   try {
     fs.mkdirSync(PLIST_DIR, { recursive: true });
-    fs.mkdirSync(PIKICLAW_HOME, { recursive: true });
+    fs.mkdirSync(PIKILOOP_HOME, { recursive: true });
     fs.writeFileSync(PLIST_PATH, buildPlistXml(invocation));
   } catch (err: any) {
     log(`autostart: failed to write plist: ${err?.message || err}`);
     return false;
   }
   const loaded = await bootstrapLaunchAgent(log);
-  if (loaded) log(`autostart: installed LaunchAgent at ${PLIST_PATH}`);
+  if (loaded) {
+    log(`autostart: installed LaunchAgent at ${PLIST_PATH}`);
+    await cleanupLegacyAutostart(log);
+  }
   return loaded;
 }
 
@@ -214,7 +242,7 @@ export function maybePromptAutostart(log: LogFn): void {
         if (choice === 'enable') {
           await installAutostart(log, invocation);
         } else {
-          log('autostart: not enabled this run; will ask again next time `pikiclaw --daemon` runs');
+          log('autostart: not enabled this run; will ask again next time `pikiloop --daemon` runs');
         }
       } catch (err: any) {
         log(`autostart: prompt failed: ${err?.message || err}`);
@@ -227,8 +255,11 @@ export function maybePromptAutostart(log: LogFn): void {
 export const __test = {
   PLIST_LABEL,
   PLIST_PATH,
+  LEGACY_PLIST_LABEL,
+  LEGACY_PLIST_PATH,
   detectInvocation,
   buildPlistXml,
   plistIsStale,
   escapeXml,
+  cleanupLegacyAutostart,
 };

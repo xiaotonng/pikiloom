@@ -21,7 +21,7 @@ import {
   run, agentLog, buildStreamPreviewMeta,
   appendSystemPrompt, pushRecentActivity, firstNonEmptyLine, shortValue, normalizeErrorMessage,
   sanitizeSessionUserPreviewText, emitSessionIdUpdate,
-  listPikiclawSessions, findPikiclawSession, isPendingSessionId,
+  listPikiloopSessions, findPikiloopSession, isPendingSessionId,
   mergeManagedAndNativeSessions, applyTurnWindow,
   stripInjectedPrompts, attachAgentImage,
   roundPercent, emptyUsage, Q,
@@ -352,7 +352,7 @@ interface GeminiHomeOverlay {
 interface GeminiOverlayOpts {
   effort: string | null | undefined;
   /**
-   * Pikiclaw stages IM/dashboard attachments under `.pikiclaw/sessions/<id>/workspace/`,
+   * Pikiloop stages IM/dashboard attachments under `.pikiloop/sessions/<id>/workspace/`,
    * which is gitignored in this and most consumer repos. gemini-cli's default
    * `context.fileFiltering.respectGitIgnore: true` silently drops gitignored
    * `@<path>` references AND blocks the `read_file` tool, so the model never
@@ -375,7 +375,7 @@ function prepareGeminiHomeOverlay(opts: GeminiOverlayOpts): GeminiHomeOverlay | 
 
   let overlayHome: string;
   try {
-    overlayHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-gemini-'));
+    overlayHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-gemini-'));
   } catch {
     return null;
   }
@@ -503,7 +503,7 @@ function extractGeminiText(content: any): string {
   return parts.join('\n').trim();
 }
 
-// Gemini's -p mode is text-only, so pikiclaw concatenates its system-prompt
+// Gemini's -p mode is text-only, so pikiloop concatenates its system-prompt
 // blocks ([Browser Automation], [Artifact Return], …) onto the user's prompt
 // before invoking the CLI. That means the JSONL "user" message we read back
 // later contains those orchestrator-injected blocks AND the gemini-CLI-emitted
@@ -766,8 +766,8 @@ function getNativeGeminiSessions(workdir: string): SessionInfo[] {
 
 function getGeminiSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
-  // Merge pikiclaw-tracked sessions with native Gemini sessions
-  const pikiclawSessions = listPikiclawSessions(resolvedWorkdir, 'gemini').map(record => ({
+  // Merge pikiloop-tracked sessions with native Gemini sessions
+  const pikiloopSessions = listPikiloopSessions(resolvedWorkdir, 'gemini').map(record => ({
     sessionId: record.sessionId,
     agent: 'gemini' as const,
     workdir: record.workdir,
@@ -793,13 +793,13 @@ function getGeminiSessions(workdir: string, limit?: number): SessionListResult {
     numTurns: record.numTurns ?? null,
   }));
   const nativeSessions = getNativeGeminiSessions(resolvedWorkdir);
-  const merged = mergeManagedAndNativeSessions(pikiclawSessions, nativeSessions);
+  const merged = mergeManagedAndNativeSessions(pikiloopSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;
   const projectName = geminiProjectName(resolvedWorkdir);
   const chatsDir = projectName ? geminiChatsDir(resolvedWorkdir) || '' : '';
   agentLog(
     `[sessions:gemini] workdir=${resolvedWorkdir} projectName=${projectName || '(none)'} chatsDir=${chatsDir || '(none)'} ` +
-    `chatsDirExists=${chatsDir ? fs.existsSync(chatsDir) : false} pikiclaw=${pikiclawSessions.length} native=${nativeSessions.length} merged=${sessions.length}`
+    `chatsDirExists=${chatsDir ? fs.existsSync(chatsDir) : false} pikiloop=${pikiloopSessions.length} native=${nativeSessions.length} merged=${sessions.length}`
   );
   return { ok: true, sessions, error: null };
 }

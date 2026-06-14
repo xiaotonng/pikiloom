@@ -55,20 +55,20 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const envSnapshot = captureEnv(['PIKICLAW_CONFIG', 'PIKICLAW_WORKDIR', 'TELEGRAM_BOT_TOKEN', 'DEFAULT_AGENT', 'PIKICLAW_RESTART_CMD', 'npm_config_yes']);
+const envSnapshot = captureEnv(['PIKILOOP_CONFIG', 'PIKILOOP_WORKDIR', 'TELEGRAM_BOT_TOKEN', 'DEFAULT_AGENT', 'PIKILOOP_RESTART_CMD', 'npm_config_yes']);
 
 beforeEach(() => {
   restoreEnv(envSnapshot);
   vi.clearAllMocks();
   const tmpDir = makeTmpDir('bot-tg-unit-');
   // Isolate setting.json so switchWorkdir / setUserWorkdir can never touch the real
-  // ~/.pikiclaw/setting.json. Without this, any test that calls switchWorkdir
+  // ~/.pikiloop/setting.json. Without this, any test that calls switchWorkdir
   // without { persist: false } will pollute the user's production config.
-  process.env.PIKICLAW_CONFIG = `${makeTmpDir('bot-tg-config-')}/setting.json`;
+  process.env.PIKILOOP_CONFIG = `${makeTmpDir('bot-tg-config-')}/setting.json`;
   process.env.TELEGRAM_BOT_TOKEN = 'test-token';
-  process.env.PIKICLAW_WORKDIR = tmpDir;
+  process.env.PIKILOOP_WORKDIR = tmpDir;
   process.env.DEFAULT_AGENT = 'claude';
-  delete process.env.PIKICLAW_RESTART_CMD;
+  delete process.env.PIKILOOP_RESTART_CMD;
   delete process.env.npm_config_yes;
 });
 
@@ -146,8 +146,8 @@ describe('TelegramBot', () => {
 
       const connectSpy = vi.spyOn(TelegramChannel.prototype, 'connect').mockResolvedValue({
         id: 1,
-        username: 'pikiclaw_test_bot',
-        displayName: 'Pikiclaw Test Bot',
+        username: 'pikiloop_test_bot',
+        displayName: 'Pikiloop Test Bot',
       });
       const skipPendingSpy = vi.spyOn(TelegramChannel.prototype, 'skipPendingUpdatesOnNextListen').mockImplementation(() => {});
       const listenSpy = vi.spyOn(TelegramChannel.prototype, 'listen').mockImplementation(async () => {
@@ -222,7 +222,7 @@ describe('TelegramBot', () => {
     {
       const spawnMock = vi.mocked(spawn);
       const oldArgv = process.argv;
-      process.argv = ['node', 'pikiclaw', '-c', 'telegram'];
+      process.argv = ['node', 'pikiloop', '-c', 'telegram'];
       const shutdownSpy = vi.spyOn(agentDriver, 'shutdownAllDrivers').mockImplementation(() => {});
 
       const defaultBot = createBot().bot;
@@ -236,7 +236,7 @@ describe('TelegramBot', () => {
         expect(shutdownSpy).toHaveBeenCalledTimes(1);
         expect(spawnMock).toHaveBeenCalledWith(
           'npx',
-          ['--yes', 'pikiclaw@latest', '-c', 'telegram'],
+          ['--yes', 'pikiloop@latest', '-c', 'telegram'],
           expect.objectContaining({
             stdio: 'inherit',
             detached: true,
@@ -244,7 +244,7 @@ describe('TelegramBot', () => {
           }),
         );
 
-        process.env.PIKICLAW_RESTART_CMD = 'npx tsx src/cli.ts';
+        process.env.PIKILOOP_RESTART_CMD = 'npx tsx src/cli.ts';
         const customBot = createBot().bot;
         const customExitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as any);
         const customStopKeepAliveSpy = vi.spyOn(customBot as any, 'stopKeepAlive').mockImplementation(() => {});
@@ -368,8 +368,8 @@ describe('TelegramBot', () => {
         sessions: [{
           sessionId,
           agent: 'claude',
-          workdir: process.env.PIKICLAW_WORKDIR!,
-          workspacePath: path.join(process.env.PIKICLAW_WORKDIR!, '.pikiclaw', 'sessions', 'claude', sessionId, 'workspace'),
+          workdir: process.env.PIKILOOP_WORKDIR!,
+          workspacePath: path.join(process.env.PIKILOOP_WORKDIR!, '.pikiloop', 'sessions', 'claude', sessionId, 'workspace'),
           model: 'claude-opus-4-7',
           createdAt: new Date().toISOString(),
           title: 'history preview',
@@ -429,7 +429,7 @@ describe('TelegramBot', () => {
     // --- Sub-scenario 5: reports when switching agents resumes an existing thread binding ---
     {
       const { bot, ctx, sends } = createBot();
-      const workdir = process.env.PIKICLAW_WORKDIR!;
+      const workdir = process.env.PIKILOOP_WORKDIR!;
       ensureManagedSession({
         agent: 'claude',
         workdir,

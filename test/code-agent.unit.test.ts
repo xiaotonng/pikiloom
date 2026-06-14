@@ -18,7 +18,7 @@ import {
   getSessionTail,
   getUsage,
   labelFromWindowMinutes,
-  listPikiclawSessions,
+  listPikiloopSessions,
   listModels,
   mergeManagedAndNativeSessions,
   promoteSessionId,
@@ -37,7 +37,7 @@ import {
 } from '../src/agent/drivers/claude.ts';
 import { makeTmpDir, withTempHome } from './support/env.ts';
 
-const tmpDir = path.join(os.tmpdir(), 'pikiclaw-test-' + process.pid);
+const tmpDir = path.join(os.tmpdir(), 'pikiloop-test-' + process.pid);
 const fakeBin = path.join(tmpDir, 'bin');
 
 function writeFakeScript(name: string, jsonLines: object[]) {
@@ -69,12 +69,12 @@ beforeEach(() => {
   // expects a real interactive `claude` writing a JSONL transcript file plus
   // hook lifecycle events. Force print mode so the existing fixtures keep
   // exercising the path they were written for.
-  process.env.PIKICLAW_CLAUDE_PRINT = '1';
+  process.env.PIKILOOP_CLAUDE_PRINT = '1';
   shutdownCodexServer();
 });
 
 afterEach(() => {
-  delete process.env.PIKICLAW_CLAUDE_PRINT;
+  delete process.env.PIKILOOP_CLAUDE_PRINT;
 });
 
 describe('buildCodexTurnInput and usage helpers', () => {
@@ -104,19 +104,19 @@ describe('buildCodexTurnInput and usage helpers', () => {
     // Claude TUI's `@/abs/path/file.ext` image mentions should not leak into
     // session-list previews — they're an ingestion mechanism for the TUI, not
     // user-authored text.
-    expect(sanitizeSessionUserPreviewText('@/Users/me/.pikiclaw/sessions/claude/x/workspace/image.png\n\n看一下截图')).toBe('看一下截图');
+    expect(sanitizeSessionUserPreviewText('@/Users/me/.pikiloop/sessions/claude/x/workspace/image.png\n\n看一下截图')).toBe('看一下截图');
     expect(sanitizeSessionUserPreviewText('@/tmp/a.jpg @/tmp/b.webp prompt')).toBe('prompt');
     // Leaves unmatched bare @ tokens alone (not an image extension).
     expect(sanitizeSessionUserPreviewText('@user mentions are not paths')).toBe('@user mentions are not paths');
 
-    // --- prefers native session metadata while keeping pikiclaw workspace and run state ---
+    // --- prefers native session metadata while keeping pikiloop workspace and run state ---
     {
     const merged = mergeManagedAndNativeSessions([
       {
         sessionId: 'sess-1',
         agent: 'codex',
         workdir: tmpDir,
-        workspacePath: '/tmp/pikiclaw/workspace',
+        workspacePath: '/tmp/pikiloop/workspace',
         model: 'local-model',
         createdAt: '2026-03-16T00:00:00.000Z',
         title: 'local title',
@@ -153,7 +153,7 @@ describe('buildCodexTurnInput and usage helpers', () => {
       title: 'native title',
       model: 'native-model',
       createdAt: '2026-03-16T00:01:00.000Z',
-      workspacePath: '/tmp/pikiclaw/workspace',
+      workspacePath: '/tmp/pikiloop/workspace',
       running: true,
       runState: 'incomplete',
       runDetail: 'local detail',
@@ -171,7 +171,7 @@ describe('buildCodexTurnInput and usage helpers', () => {
         sessionId: 'sess-2',
         agent: 'claude',
         workdir: tmpDir,
-        workspacePath: '/tmp/pikiclaw/workspace',
+        workspacePath: '/tmp/pikiloop/workspace',
         model: 'claude-opus-4-7',
         createdAt: '2026-03-16T00:00:00.000Z',
         title: 'stale title',
@@ -205,7 +205,7 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({
       sessionId: 'sess-2',
-      workspacePath: '/tmp/pikiclaw/workspace',
+      workspacePath: '/tmp/pikiloop/workspace',
       runUpdatedAt: '2026-03-16T00:05:00.000Z',
       lastQuestion: 'new question',
       lastAnswer: 'new answer',
@@ -220,7 +220,7 @@ describe('buildCodexTurnInput and usage helpers', () => {
         sessionId: 'sess-preview-1',
         agent: 'codex',
         workdir: tmpDir,
-        workspacePath: '/tmp/pikiclaw/workspace',
+        workspacePath: '/tmp/pikiloop/workspace',
         model: 'o3',
         createdAt: '2026-03-20T10:00:00.000Z',
         title: 'managed title',
@@ -269,7 +269,7 @@ describe('buildCodexTurnInput and usage helpers', () => {
         sessionId: 'sess-preview-2',
         agent: 'codex',
         workdir: tmpDir,
-        workspacePath: '/tmp/pikiclaw/workspace',
+        workspacePath: '/tmp/pikiloop/workspace',
         model: 'o3',
         createdAt: '2026-03-20T10:00:00.000Z',
         title: 'managed title',
@@ -310,13 +310,13 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(s.lastAnswer).toBe('native answer (latest)');
     expect(s.lastMessageText).toBe('native answer (latest)');
     // but managed workspace is preserved
-    expect(s.workspacePath).toBe('/tmp/pikiclaw/workspace');
+    expect(s.workspacePath).toBe('/tmp/pikiloop/workspace');
     }
 
     // --- filters codex subagent native sessions from session listings ---
     await withTempHome(async (homeDir) => {
-      const workdir = makeTmpDir('pikiclaw-workdir-');
-      const otherWorkdir = makeTmpDir('pikiclaw-other-workdir-');
+      const workdir = makeTmpDir('pikiloop-workdir-');
+      const otherWorkdir = makeTmpDir('pikiloop-other-workdir-');
       const sessionsDir = path.join(homeDir, '.codex', 'sessions', '2026', '03', '28');
       fs.mkdirSync(sessionsDir, { recursive: true });
 
@@ -331,13 +331,13 @@ describe('buildCodexTurnInput and usage helpers', () => {
         id: 'sess-parent',
         timestamp: '2026-03-28T00:12:31.000Z',
         cwd: workdir,
-        originator: 'pikiclaw',
+        originator: 'pikiloop',
       });
       writeRollout('rollout-child.jsonl', {
         id: 'sess-child',
         timestamp: '2026-03-28T00:13:16.000Z',
         cwd: workdir,
-        originator: 'pikiclaw',
+        originator: 'pikiloop',
         source: {
           subagent: {
             thread_spawn: {
@@ -353,7 +353,7 @@ describe('buildCodexTurnInput and usage helpers', () => {
         id: 'sess-other',
         timestamp: '2026-03-28T00:14:00.000Z',
         cwd: otherWorkdir,
-        originator: 'pikiclaw',
+        originator: 'pikiloop',
       });
 
       const result = await getSessions({ agent: 'codex', workdir });
@@ -368,7 +368,7 @@ describe('stageSessionFiles', () => {
   it('stages/migrates uploads, sets titles, promotes pending sessions, and keeps per-agent records distinct', () => {
     // --- stores uploads in managed workspaces and migrates legacy sessions ---
     {
-    const uploadDir = makeTmpDir('pikiclaw-upload-');
+    const uploadDir = makeTmpDir('pikiloop-upload-');
     const uploadPath = path.join(uploadDir, 'report.txt');
     fs.writeFileSync(uploadPath, 'hello');
 
@@ -378,21 +378,21 @@ describe('stageSessionFiles', () => {
       files: [uploadPath],
     });
 
-    const stagedDir = path.join(tmpDir, '.pikiclaw', 'sessions', 'claude', staged.sessionId);
+    const stagedDir = path.join(tmpDir, '.pikiloop', 'sessions', 'claude', staged.sessionId);
     expect(staged.workspacePath).toBe(path.join(stagedDir, 'workspace'));
     expect(fs.existsSync(path.join(staged.workspacePath, 'report.txt'))).toBe(true);
     expect(fs.existsSync(path.join(stagedDir, 'session.json'))).toBe(true);
 
     const legacySessionId = 'sess_legacy_layout';
-    const legacyWorkspacePath = path.join(tmpDir, '.pikiclaw', 'workspaces', 'claude', legacySessionId);
-    const legacyMetaDir = path.join(legacyWorkspacePath, '.pikiclaw');
+    const legacyWorkspacePath = path.join(tmpDir, '.pikiloop', 'workspaces', 'claude', legacySessionId);
+    const legacyMetaDir = path.join(legacyWorkspacePath, '.pikiloop');
     fs.mkdirSync(legacyMetaDir, { recursive: true });
     fs.writeFileSync(path.join(legacyWorkspacePath, 'legacy.txt'), 'legacy');
     fs.writeFileSync(path.join(legacyMetaDir, 'return.json'), JSON.stringify({
       files: [{ path: 'legacy.txt', kind: 'document' }],
     }));
-    fs.mkdirSync(path.join(tmpDir, '.pikiclaw', 'sessions'), { recursive: true });
-    fs.writeFileSync(path.join(tmpDir, '.pikiclaw', 'sessions', 'index.json'), JSON.stringify({
+    fs.mkdirSync(path.join(tmpDir, '.pikiloop', 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.pikiloop', 'sessions', 'index.json'), JSON.stringify({
       version: 1,
       sessions: [{
         sessionId: legacySessionId,
@@ -414,7 +414,7 @@ describe('stageSessionFiles', () => {
       sessionId: legacySessionId,
     });
 
-    const migratedDir = path.join(tmpDir, '.pikiclaw', 'sessions', 'claude', legacySessionId);
+    const migratedDir = path.join(tmpDir, '.pikiloop', 'sessions', 'claude', legacySessionId);
     expect(migrated.workspacePath).toBe(path.join(migratedDir, 'workspace'));
     expect(fs.existsSync(path.join(migrated.workspacePath, 'legacy.txt'))).toBe(true);
     expect(fs.existsSync(path.join(migratedDir, 'session.json'))).toBe(true);
@@ -430,14 +430,14 @@ describe('stageSessionFiles', () => {
       title: '第一行问题前缀\n第二行补充说明\n第三行细节',
     });
 
-    const record = listPikiclawSessions(tmpDir, 'claude').find(entry => entry.sessionId === staged.sessionId);
+    const record = listPikiloopSessions(tmpDir, 'claude').find(entry => entry.sessionId === staged.sessionId);
     expect(record?.title).toBe('第一行问题前缀');
     }
 
     // --- promotes pending sessions without leaving stale pending records or breaking old workspace paths ---
     {
-    const workdir = makeTmpDir('pikiclaw-promote-');
-    const uploadDir = makeTmpDir('pikiclaw-image-');
+    const workdir = makeTmpDir('pikiloop-promote-');
+    const uploadDir = makeTmpDir('pikiloop-image-');
     const uploadPath = path.join(uploadDir, 'shot.jpg');
     fs.writeFileSync(uploadPath, 'image-bytes');
 
@@ -453,11 +453,11 @@ describe('stageSessionFiles', () => {
 
     promoteSessionId(workdir, 'codex', staged.sessionId, 'thread-native');
 
-    const nativeWorkspace = path.join(workdir, '.pikiclaw', 'sessions', 'codex', 'thread-native', 'workspace');
+    const nativeWorkspace = path.join(workdir, '.pikiloop', 'sessions', 'codex', 'thread-native', 'workspace');
     expect(fs.existsSync(path.join(nativeWorkspace, 'shot.jpg'))).toBe(true);
     expect(fs.existsSync(oldFilePath)).toBe(true);
 
-    const records = listPikiclawSessions(workdir, 'codex');
+    const records = listPikiloopSessions(workdir, 'codex');
     expect(records.map(entry => entry.sessionId)).toContain('thread-native');
     expect(records.map(entry => entry.sessionId)).not.toContain(staged.sessionId);
     }
@@ -479,8 +479,8 @@ describe('stageSessionFiles', () => {
       threadId: 'thread-shared',
     });
 
-    const claudeRecord = listPikiclawSessions(tmpDir, 'claude').find(entry => entry.sessionId === 'shared-session');
-    const codexRecord = listPikiclawSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'shared-session');
+    const claudeRecord = listPikiloopSessions(tmpDir, 'claude').find(entry => entry.sessionId === 'shared-session');
+    const codexRecord = listPikiloopSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'shared-session');
     const codexBinding = findManagedThreadSession(tmpDir, 'thread-shared', 'codex');
 
     expect(claudeRecord?.agent).toBe('claude');
@@ -976,9 +976,9 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
       respectGitIgnore: false,
       respectGeminiIgnore: false,
     });
-    expect(settings.mcpServers?.pikiclaw?.command).toBeTruthy();
-    expect(settings.mcpServers?.pikiclaw?.env?.MCP_CALLBACK_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    expect(settings.mcpServers?.pikiclaw?.trust).toBe(true);
+    expect(settings.mcpServers?.pikiloop?.command).toBeTruthy();
+    expect(settings.mcpServers?.pikiloop?.env?.MCP_CALLBACK_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(settings.mcpServers?.pikiloop?.trust).toBe(true);
     }
 
     // --- does not duplicate Gemini approval or sandbox flags when extra args already override them ---
@@ -1974,11 +1974,11 @@ rl.on('line', (line) => {
     const result = await doStream(baseOpts('codex', { prompt: '给我讲故事' }));
     expect(result.ok).toBe(true);
     expect(result.sessionId).toBe('thread-native');
-    expect(result.workspacePath).toBe(path.join(tmpDir, '.pikiclaw', 'sessions', 'codex', 'thread-native', 'workspace'));
+    expect(result.workspacePath).toBe(path.join(tmpDir, '.pikiloop', 'sessions', 'codex', 'thread-native', 'workspace'));
 
-    const record = listPikiclawSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'thread-native');
+    const record = listPikiloopSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'thread-native');
     expect(record?.title).toBe('给我讲故事');
-    expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiclaw', 'sessions', 'codex', 'thread-native', 'workspace'));
+    expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiloop', 'sessions', 'codex', 'thread-native', 'workspace'));
     }
 
     // Reset codex app-server singleton before the next codex scenario.
@@ -2050,8 +2050,8 @@ rl.on('line', (line) => {
     expect(result.ok).toBe(true);
     expect(result.sessionId).toBe('thread-forwarded');
 
-    const record = listPikiclawSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'thread-forwarded');
-    expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiclaw', 'sessions', 'codex', 'thread-forwarded', 'workspace'));
+    const record = listPikiloopSessions(tmpDir, 'codex').find(entry => entry.sessionId === 'thread-forwarded');
+    expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiloop', 'sessions', 'codex', 'thread-forwarded', 'workspace'));
     }
 
     // Done with codex scenarios; reset the singleton before the claude cases.
@@ -2068,7 +2068,7 @@ rl.on('line', (line) => {
     const completed = await doStream(baseOpts('claude', { prompt: 'first pass' }));
     expect(completed.ok).toBe(true);
 
-    let record = listPikiclawSessions(tmpDir, 'claude').find(entry => entry.sessionId === 'sess-status');
+    let record = listPikiloopSessions(tmpDir, 'claude').find(entry => entry.sessionId === 'sess-status');
     expect(record?.runState).toBe('completed');
     expect(record?.runDetail).toBeNull();
 
@@ -2082,7 +2082,7 @@ exit 1`;
     const incomplete = await doStream(baseOpts('claude', { sessionId: 'sess-status', prompt: 'second pass' }));
     expect(incomplete.ok).toBe(false);
 
-    record = listPikiclawSessions(tmpDir, 'claude').find(entry => entry.sessionId === 'sess-status');
+    record = listPikiloopSessions(tmpDir, 'claude').find(entry => entry.sessionId === 'sess-status');
     expect(record?.runState).toBe('incomplete');
     expect(record?.runDetail).toContain('quota exceeded');
     }
@@ -2100,7 +2100,7 @@ exit 1`;
       workdir: tmpDir,
       files: [],
     });
-    const manifestPath = path.join(tmpDir, '.pikiclaw', 'sessions', 'claude', staged.sessionId, 'return.json');
+    const manifestPath = path.join(tmpDir, '.pikiloop', 'sessions', 'claude', staged.sessionId, 'return.json');
     fs.writeFileSync(manifestPath, JSON.stringify({
       files: [{ path: 'README.md', kind: 'document', caption: 'stale artifact' }],
     }, null, 2));
@@ -2303,7 +2303,7 @@ exit 0`;
       expect(claudeUsage.windows[0].resetAfterSeconds).toBe(39 * 3600);
 
       // --- getSessionTail: falls back to codex rollout files ---
-      const emptyBin = makeTmpDir('pikiclaw-empty-bin-');
+      const emptyBin = makeTmpDir('pikiloop-empty-bin-');
       const oldPath = process.env.PATH;
       process.env.PATH = emptyBin;
       try {

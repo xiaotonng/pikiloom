@@ -125,7 +125,7 @@ export function InteractionPromptModal({ snapshot }: Props) {
   return (
     <Modal open onClose={handleCancel} wide={hasOptions && (question?.options?.length || 0) > 3}>
       <ModalHeader
-        title={snapshot.title || 'Pikiclaw needs your input'}
+        title={snapshot.title || 'Pikiloop needs your input'}
         description={description}
         onClose={handleCancel}
       />

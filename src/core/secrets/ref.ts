@@ -16,7 +16,7 @@ export type CredentialRef =
   | { source: 'inline';   sealed: string };
 
 /** Stable service name used when writing to the OS keychain. */
-export const KEYCHAIN_SERVICE = 'pikiclaw';
+export const KEYCHAIN_SERVICE = 'pikiloop';
 
 export function isCredentialRef(value: unknown): value is CredentialRef {
   if (!value || typeof value !== 'object') return false;

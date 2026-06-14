@@ -1,21 +1,21 @@
 <div align="center">
 
-# pikiclaw
+<img src="docs/logo-wordmark.png" alt="pikiloop" width="440">
 
 ## 把全世界最聪明的 AI Agent 装进你的口袋。
 
 ##### *面向「创作者不再需要看代码」时代的开放式 Agent 编排器。*
 
-*接入任何 Agent（Claude · Codex · Gemini · Hermes · …），任何模型（Claude · GPT · Gemini · DeepSeek · 豆包 · MiMo · MiniMax · OpenRouter · 甚至是任意第三方代理），以及任何工具（Skills · MCP · CLI）。通过你最顺手的终端（IM、Web 或未来形态）来驱动它们。pikiclaw 本身就是用 pikiclaw 构建的。*
+*接入任何 Agent（Claude · Codex · Gemini · Hermes · …），任何模型（Claude · GPT · Gemini · DeepSeek · 豆包 · MiMo · MiniMax · OpenRouter · 甚至是任意第三方代理），以及任何工具（Skills · MCP · CLI）。通过你最顺手的终端（IM、Web 或未来形态）来驱动它们。pikiloop 本身就是用 pikiloop 构建的。*
 
 ```bash
-npx pikiclaw@latest
+npx pikiloop@latest
 ```
 
 <p>
-<a href="https://www.npmjs.com/package/pikiclaw"><img src="https://img.shields.io/npm/v/pikiclaw?label=npm&color=cb3837" alt="npm"></a>
-<a href="https://www.npmjs.com/package/pikiclaw"><img src="https://img.shields.io/npm/dm/pikiclaw?label=downloads&color=success" alt="npm downloads"></a>
-<a href="https://github.com/xiaotonng/pikiclaw/stargazers"><img src="https://img.shields.io/github/stars/xiaotonng/pikiclaw?style=flat&color=yellow" alt="GitHub stars"></a>
+<a href="https://www.npmjs.com/package/pikiloop"><img src="https://img.shields.io/npm/v/pikiloop?label=npm&color=cb3837" alt="npm"></a>
+<a href="https://www.npmjs.com/package/pikiloop"><img src="https://img.shields.io/npm/dm/pikiloop?label=downloads&color=success" alt="npm downloads"></a>
+<a href="https://github.com/xiaotonng/pikiloop/stargazers"><img src="https://img.shields.io/github/stars/xiaotonng/pikiloop?style=flat&color=yellow" alt="GitHub stars"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-green.svg" alt="Node 20+"></a>
 </p>
@@ -24,17 +24,17 @@ npx pikiclaw@latest
 <a href="README.md">English</a> | <b>简体中文</b>
 </p>
 
-<img src="docs/promo-orchestrator.png" alt="Pikiclaw —— AI-Native Agent 编排器" width="820">
+<img src="docs/promo-orchestrator.png" alt="Pikiloop —— AI-Native Agent 编排器" width="820">
 
 </div>
 
 ---
 
-## pikiclaw 是什么？
+## pikiloop 是什么？
 
-**大多数「AI 开发工具」往往只做局部的创新 —— 绑定一款 IDE、单一 Agent 或某家模型厂商，然后便止步于此。** pikiclaw 则建立在一个截然不同的判断之上：下一代「创造」的过程，不会局限在某个单一的编辑器内部。它会发生在一个**编排器 (Orchestrator)** 中。在这里，创作者可以并发出一个 Agent **集群 (Swarm)**，让它们跑在当前最强大的模型上，并通过手边最方便的终端来掌控全局——而且，你甚至不需要打开任何代码文件。
+**大多数「AI 开发工具」往往只做局部的创新 —— 绑定一款 IDE、单一 Agent 或某家模型厂商，然后便止步于此。** pikiloop 则建立在一个截然不同的判断之上：下一代「创造」的过程，不会局限在某个单一的编辑器内部。它会发生在一个**编排器 (Orchestrator)** 中。在这里，创作者可以并发出一个 Agent **集群 (Swarm)**，让它们跑在当前最强大的模型上，并通过手边最方便的终端来掌控全局——而且，你甚至不需要打开任何代码文件。
 
-核心产品就是这个编排器，其它所有组件都可拔插。**更酷的是，这个编排器是由它自己构建出来的** —— pikiclaw 就是我们用来开发 pikiclaw 的工具。
+核心产品就是这个编排器，其它所有组件都可拔插。**更酷的是，这个编排器是由它自己构建出来的** —— pikiloop 就是我们用来开发 pikiloop 的工具。
 
 上面这张架构图勾勒出我们缝合在一起的四层结构：
 
@@ -43,15 +43,15 @@ npx pikiclaw@latest
 - **模型路由 (Model Routing)** —— 前沿系列（Claude · GPT · Gemini）、国产矩阵（DeepSeek · 豆包 · MiMo · MiniMax · Qwen）、本地推理（Ollama，以及 Apple Silicon 上的 mlx-lm）、OpenRouter，以及任意 OpenAI 兼容代理。Providers + Profiles 作为一等公民的凭据保险箱，自带只读的 `models.dev` 目录与启动时的逐 Agent 环境变量注入。
 - **工具网 (Tool Mesh)** —— Skills、MCP 服务器、CLI 工具、Web Search、桌面自动化等，会在「全局 × 工作区」两个维度智能合并，并悄悄注入到每一次会话之中。
 
-这一切的正中央，是 **Pikiclaw Orchestration Core** —— 由它来统一管理路由、记忆、可观测性和 Bot 生命周期，从而保证任何终端都能借助任意工具，让任意 Agent 跑在任意模型上。
+这一切的正中央，是 **Pikiloop Orchestration Core** —— 由它来统一管理路由、记忆、可观测性和 Bot 生命周期，从而保证任何终端都能借助任意工具，让任意 Agent 跑在任意模型上。
 
 ---
 
 ## 自举：用自己构建自己
 
-> 检验一个 Agent 编排器是否靠谱，最硬核的标准就是看它能不能自举（构建自己）。pikiclaw 做到了。我们日常使用 pikiclaw 来开发、测试、发布和运维 pikiclaw —— 覆盖了每一次 Commit 和每一次版本发布。
+> 检验一个 Agent 编排器是否靠谱，最硬核的标准就是看它能不能自举（构建自己）。pikiloop 做到了。我们日常使用 pikiloop 来开发、测试、发布和运维 pikiloop —— 覆盖了每一次 Commit 和每一次版本发布。
 
-在 pikiclaw 里的典型开发日常是这样的：
+在 pikiloop 里的典型开发日常是这样的：
 
 - 窗口 1 里的 Claude Code 会话正在实现一个全新的 dashboard 路由。
 - 窗口 2 里的 Codex 会话正在为它编写配套的单元测试，并在同一个工作区下运行。
@@ -65,7 +65,7 @@ npx pikiclaw@latest
 
 ## 默认并发集群 (Swarm)
 
-大多数「AI 开发工具」的基本假设是：一个用户，一次只让一个 Agent 做一件事。pikiclaw 的假设则完全相反：**N 个 Agent，N 个窗口，一位指挥官，一套工具箱。**
+大多数「AI 开发工具」的基本假设是：一个用户，一次只让一个 Agent 做一件事。pikiloop 的假设则完全相反：**N 个 Agent，N 个窗口，一位指挥官，一套工具箱。**
 
 - **N 路并行会话** —— Dashboard 上的每一个面板都是一条独立的 Agent 流，对应着一个独立的会话工作区；如果接入 IM，还能随时开辟出更多的工作线程。
 - **Agent 随意混搭** —— 面板 1 跑 Claude Code，面板 2 跑 Codex，面板 3 跑 Gemini，它们可以在不同的代码仓库和工作区中各司其职。
@@ -79,7 +79,7 @@ npx pikiclaw@latest
 
 ## 实际演示
 
-> **真实任务** —— 让 pikiclaw 收集并总结今天的 AI 新闻；Agent 自动阅读、撰写，最后通过 Telegram 将结果推送到你的手机上。
+> **真实任务** —— 让 pikiloop 收集并总结今天的 AI 新闻；Agent 自动阅读、撰写，最后通过 Telegram 将结果推送到你的手机上。
 
 <p align="center"><img src="docs/promo-demo.gif" alt="演示：从 Telegram 发起任务，Agent 在本地执行，结果回到聊天" width="780"></p>
 
@@ -133,7 +133,7 @@ npx pikiclaw@latest
 
 ```bash
 cd your-workspace
-npx pikiclaw@latest
+npx pikiloop@latest
 ```
 
 这条命令会在 `http://localhost:3939` 自动唤起 **Web Dashboard**。随后，你就可以在浏览器里驱动任何会话、接入需要的 IM 渠道、灵活配置 Agent 和模型、快速安装 MCP 服务器与技能 (Skills)，并统筹所有的系统权限。其他一切功能，尽在一键之遥。
@@ -142,8 +142,8 @@ npx pikiclaw@latest
 <summary><b>更喜欢传统的纯命令行配置？我们准备了专用的配置向导。</b></summary>
 
 ```bash
-npx pikiclaw@latest --setup    # 开启交互式终端配置向导
-npx pikiclaw@latest --doctor   # 仅检查并诊断当前环境
+npx pikiloop@latest --setup    # 开启交互式终端配置向导
+npx pikiloop@latest --doctor   # 仅检查并诊断当前环境
 ```
 
 </details>
@@ -152,12 +152,12 @@ npx pikiclaw@latest --doctor   # 仅检查并诊断当前环境
 <summary><b>想跑在服务器上？官方支持 Docker。</b></summary>
 
 ```bash
-docker run -d --name pikiclaw -p 3939:3939 \
+docker run -d --name pikiloop -p 3939:3939 \
   -e TELEGRAM_BOT_TOKEN=... \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v pikiclaw-config:/home/piki/.pikiclaw \
-  -v pikiclaw-workspace:/workspace \
-  ghcr.io/xiaotonng/pikiclaw:latest
+  -v pikiloop-config:/home/piki/.pikiloop \
+  -v pikiloop-workspace:/workspace \
+  ghcr.io/xiaotonng/pikiloop:latest
 ```
 
 官方多架构镜像（`linux/amd64` + `linux/arm64`）已内置 `claude-code`、
@@ -172,11 +172,11 @@ docker run -d --name pikiclaw -p 3939:3939 \
 ## 典型的应用场景
 
 - **并发运行集群** —— 在 Dashboard 里打开 N 个面板（或者开辟 N 个 IM 线程），每个面板运行不同的 Agent 负责不同的工作区，完全并行运作。一个人，多个 Agent，同一个全局驾驶舱。你可以随时强力介入任何一个工作流。
-- **自包含的闭环开发** —— pikiclaw 就是用 pikiclaw 自己开发出来的。这套开发流本身就是这款产品最原始的面貌：甚至可以在外用手机操作编排器，让 Agent 写代码、发布版本并不断迭代。
+- **自包含的闭环开发** —— pikiloop 就是用 pikiloop 自己开发出来的。这套开发流本身就是这款产品最原始的面貌：甚至可以在外用手机操作编排器，让 Agent 写代码、发布版本并不断迭代。
 - **挂机式编程 (Walk-away coding)** —— 发起一个耗时极长的大型重构任务，合上笔记本，外出时直接用手机通过 Telegram 进行监控和控制。Agent 始终在本地机器上运行，结果则会流式实时推回聊天界面中。
 - **同工作区多 Agent 接力** —— 先让 Claude Code 写一版功能草稿，无缝切给 Codex 去做深度 Review，最后再交给 Gemini 提供截然不同视角的优化建议。所有这些操作都在同一份代码目录和相同的历史会话中完成。
 - **灵活的国产 / 本地模型路由** —— 当你的任务对延迟、成本或合规有硬性要求时，通过模型注入层，可以让 Claude Code 直接跑在 DeepSeek、豆包、Qwen，甚至完全离线的 Ollama / mlx-lm 上。
-- **群聊协作级 Agent** —— 把 pikiclaw 拉入飞书 / Slack / Discord / 企业微信群聊内；整个团队可以共享这同一个编排器、统一的项目工作区和一系列团队专属技能。
+- **群聊协作级 Agent** —— 把 pikiloop 拉入飞书 / Slack / Discord / 企业微信群聊内；整个团队可以共享这同一个编排器、统一的项目工作区和一系列团队专属技能。
 - **随手让 Codex 生图** —— 让 Codex 出张海报、出个示意图、画个 UI 草图，结果会作为真正的图片附件流回到聊天里，并附带一个可展开的「生图 Prompt」让你随时查看模型实际收到的指令。下一次迭代只需要继续聊，而不必再切回浏览器。
 - **完全受控的 Computer-use 能力** —— 开启内置的 Chrome 浏览器托管（基于 Playwright）和 macOS 桌面环境托管（基于 Peekaboo，通过辅助功能和 ScreenCaptureKit）。Agent 瞬间获得「视力」(`see`)、可以自由点击、打字，并管理窗口、菜单栏和 Dock，而你依然可以通过手机远程精准操控它。无论是帮你预定一场会议、抓取某个数据面板信息、跑一通端到端自动测试，还是驱动任何原生的 macOS 本地应用，全都不在话下。
 - **基于 Skill 体系的自动化工作流** —— 一次性安装好社区提供的常用技能（例如 `promote`、`snipe`、`review`、`security-review` 等），往后只需在任何连接的终端里输入 `/sk_<name>` 即可实现一键触发。
@@ -200,21 +200,21 @@ docker run -d --name pikiclaw -p 3939:3939 \
 - **会话级 Agent 切换** —— 不需要离开当前工作区，就能在会话中途给 AI 换一颗「大脑」，历史上下文继续生效。
 - **接管与干预 (Steer)** —— 随时中断正在执行的重任务，让排队的紧急消息插到最前；或者一键停掉整个会话。
 - **Codex 人机协同 (Human-in-the-loop)** —— Codex 需要确认操作时，提示会被自动转发到你的活跃终端（IM 或 Dashboard）。在原地回一句话，被暂停的任务就会继续。
-- **持久化目标系统，按 Agent 路由** —— `/goal <objective>` 会让会话持续工作直到 Agent 自审满足条件。Codex 走原生 `thread/goal/*` RPC，可选 `budget=N` Token 预算并支持暂停 / 恢复；Claude 走原生 Stop hook + Haiku 评审，目标完成后自动清除；其它 Agent 走 pikiclaw 自带的可移植 continuation。
+- **持久化目标系统，按 Agent 路由** —— `/goal <objective>` 会让会话持续工作直到 Agent 自审满足条件。Codex 走原生 `thread/goal/*` RPC，可选 `budget=N` Token 预算并支持暂停 / 恢复；Claude 走原生 Stop hook + Haiku 评审，目标完成后自动清除；其它 Agent 走 pikiloop 自带的可移植 continuation。
 - **图片生成全链路接管** —— Codex 内置的 `image_gen`（以及 Claude MCP / Gemini Imagen）产出的图，会以真实的图片附件落到聊天里 —— 不再是一坨 base64。Agent 实际发给图模型的 `revised_prompt` 会作为可点开展开的「**生图 Prompt**」挂在图片旁；图片生成中时还会有「Generating image…」chip 在助手回复下闪烁，告诉你这一轮为什么慢。
 
 ### 模型层
 
 - **前沿 + 国产 + 本地 + 各类代理** —— 前沿系列（Claude · GPT-5 / Codex · Gemini）、国产矩阵（DeepSeek · 豆包 · MiMo · MiniMax · Qwen）、本地推理（Ollama，以及 Apple Silicon 上的 mlx-lm）、OpenRouter，以及任意 OpenAI 兼容代理。
-- **Providers & Profiles 凭据保险箱** —— API 凭据隔离存放在 `~/.pikiclaw/setting.json` 中。在只读的 `models.dev` 目录里浏览模型、通过真实的 Provider 探针验证密钥，再把 Profile 与某个 Agent 绑定，启动时自动注入对应环境变量。
+- **Providers & Profiles 凭据保险箱** —— API 凭据隔离存放在 `~/.pikiloop/setting.json` 中。在只读的 `models.dev` 目录里浏览模型、通过真实的 Provider 探针验证密钥，再把 Profile 与某个 Agent 绑定，启动时自动注入对应环境变量。
 - **本地模型零配置接入** —— 探测到 Ollama 或 mlx-lm 后端时会自动挂载为 Provider，不需要额外配置。Dashboard 上的卡片会展示状态、`brew/pipx` 安装命令、对应的 `ollama pull` / `mlx_lm.server` 拉模型命令，以及对照本机内存的 RAM 余量提示。
 - **会话级模型 / 推理强度切换** —— 在 Dashboard、`/models` 或 `/mode` 中实时切换。推理强度按 Agent 提供（Claude：low → max；Codex：low → very high；Hermes：minimal → very high）。
 - **Agent 级深度环境注入** —— `resolveAgentInjection(agentId)` 在启动时强制写入绑定 Profile 的环境变量。这意味着你可以让 Claude Code 全程跑在 DeepSeek、豆包，甚至本地 Ollama 上，而完全不动上游 CLI 的配置。
 
 ### 工具层
 
-- **强大的技能系统 (Skills)** —— 项目专属技能存放在 `.pikiclaw/skills/*/SKILL.md` 中（也兼容旧的 `.claude/commands/*.md` 格式）。可以从 GitHub（`owner/repo`）一键安装社区包，或挑选我们精选的官方包（Anthropic Official、Vercel Agent Skills 等）。在任何终端里发 `/skills` 浏览，`/sk_<name>` 一键触发。
-- **海量 MCP 生态加持** —— 浏览 [MCP Registry](https://registry.modelcontextprotocol.io)、手工增加 stdio / HTTP 服务、强制真实握手健康探测、支持带动态客户端注册的 OAuth 2.1。精选目录涵盖 GitHub、Atlassian、Notion、Linear、Sentry、Cloudflare、Slack、飞书/Lark、Stripe、Hugging Face、Gamma、Brave Search、Perplexity、Filesystem、SQLite 与 PostgreSQL —— 加上我们自带的两个 computer-use 服务：`pikiclaw-browser`（Playwright 驱动的 Chrome）与 `peekaboo`（Peekaboo 驱动的 macOS GUI）。
+- **强大的技能系统 (Skills)** —— 项目专属技能存放在 `.pikiloop/skills/*/SKILL.md` 中（也兼容旧的 `.claude/commands/*.md` 格式）。可以从 GitHub（`owner/repo`）一键安装社区包，或挑选我们精选的官方包（Anthropic Official、Vercel Agent Skills 等）。在任何终端里发 `/skills` 浏览，`/sk_<name>` 一键触发。
+- **海量 MCP 生态加持** —— 浏览 [MCP Registry](https://registry.modelcontextprotocol.io)、手工增加 stdio / HTTP 服务、强制真实握手健康探测、支持带动态客户端注册的 OAuth 2.1。精选目录涵盖 GitHub、Atlassian、Notion、Linear、Sentry、Cloudflare、Slack、飞书/Lark、Stripe、Hugging Face、Gamma、Brave Search、Perplexity、Filesystem、SQLite 与 PostgreSQL —— 加上我们自带的两个 computer-use 服务：`pikiloop-browser`（Playwright 驱动的 Chrome）与 `peekaboo`（Peekaboo 驱动的 macOS GUI）。
 - **无缝接入主流 CLI 工具** —— 自动探测版本与登录态（gh、brew、npm、uv 等），OAuth-web 浏览器授权流程在 Agent 调用面上无缝衔接。
 - **会话级 MCP 桥接** —— `im_list_files`、`im_send_file`、`im_ask_user`、`goal_get`、`goal_update` 等基础工具，加上启用后的浏览器与 macOS 桌面工具，会被自动注入到每一场会话里。
 - **三层合并规则** —— 工具作用域永远遵循：`全局 (global) < 当前工作区 (workspace) < 内建 (built-in)`。引擎自动合并后无感生效。
@@ -224,7 +224,7 @@ docker run -d --name pikiclaw -p 3939:3939 \
 - **独立的会话工作区** —— 每一次会话都有专属的隔离目录；上传的文件以及 Agent 生成的产物（含图片）都会落在那里。
 - **可恢复 / 可切换 / 自动分类** —— 多轮会话随意恢复与切换，自动按语义分类（answer / proposal / implementation / blocked），工作区会话列表按最近活动时间排序，覆盖所有已安装 Agent。
 - **基础工具自动注入** —— `im_*`（列文件 / 发文件 / 问用户）与 `goal_*` 在每一条流里都默认可用 —— Agent 不需要任何配置就能把文件回推到你的 IM、或者卡在中途反过来问你一句。
-- **Computer-use（浏览器层）** —— 内置的 `pikiclaw-browser` MCP 把 `@playwright/mcp` 包装上进程级 Supervisor 和一个共享的、隔离的 Chrome Profile。常用站点登录一次，所有后续任务都直接复用登录态。
+- **Computer-use（浏览器层）** —— 内置的 `pikiloop-browser` MCP 把 `@playwright/mcp` 包装上进程级 Supervisor 和一个共享的、隔离的 Chrome Profile。常用站点登录一次，所有后续任务都直接复用登录态。
 - **Computer-use（macOS 桌面层）** —— 启用 `peekaboo` MCP（仅 macOS），即可调用 [Peekaboo](https://peekaboo.sh/) 提供的整套桌面控制工具：`see`、`click`、`type`、`scroll`、`window`、`menu`、`app`、`dock`，以及面向目标自主控制的 `agent` 子代理。需要在系统设置中授予终端「辅助功能」与「屏幕录制」权限。
 - **为长任务硬化的运行时** —— 防休眠、看门狗、自动重启、守护进程模式、渠道 Supervisor 一应俱全；当还有任务在跑时主动阻止重启，保证你的马拉松作业不会被一次热加载弄崩。
 
@@ -232,7 +232,7 @@ docker run -d --name pikiclaw -p 3939:3939 \
 
 ## 到底有什么不同？
 
-| | pikiclaw | IDE 级智能助手<br>(Cursor / Windsurf / Aider) | 云端 Agent<br>(Devin / 网页版 Claude) | 单体 IM 机器人 |
+| | pikiloop | IDE 级智能助手<br>(Cursor / Windsurf / Aider) | 云端 Agent<br>(Devin / 网页版 Claude) | 单体 IM 机器人 |
 |---|---|---|---|---|
 | **操作终端** | 7 大 IM + Web + 持续扩展 | 仅限 IDE 内部 | 局限在专属网页端 | 死绑在单个 IM 内的单个 Bot |
 | **Agent 运行地** | 完全在你自己的本地机器上 | 你的本地机器 | 厂商分配的云端沙盒里 | 往往在厂商服务器端 |
@@ -274,40 +274,40 @@ docker run -d --name pikiclaw -p 3939:3939 \
 
 ## 配置管理
 
-- 核心持久化配置文件：`~/.pikiclaw/setting.json` —— 负责存储渠道、Agent、Providers/Profiles、工作区历史及 MCP 扩展等信息。
+- 核心持久化配置文件：`~/.pikiloop/setting.json` —— 负责存储渠道、Agent、Providers/Profiles、工作区历史及 MCP 扩展等信息。
 - Dashboard 是主要的配置入口；交互式的终端向导 (`--setup`) 与体检脚本 (`--doctor`) 主要为无 UI (headless) 环境准备。
 - 全局 MCP 扩展配置存放于 `setting.json` 的 `extensions.mcp` 字段下。
 - 工作区 MCP 扩展：遵循标准约定，存放于项目根目录的 `.mcp.json` 中。
-- 项目专属技能：统一保存在 `.pikiclaw/skills/*/SKILL.md` 中（同时也兼容和加载 `.claude/commands/*.md` 格式）。
+- 项目专属技能：统一保存在 `.pikiloop/skills/*/SKILL.md` 中（同时也兼容和加载 `.claude/commands/*.md` 格式）。
 
 **Computer-use 的权限开关**需要在扩展面板独立控制：
 
-- `browserEnabled` —— 开启后启用托管 Chrome（Playwright）。当 Agent 首次调用 Chrome 时，pikiclaw 会在 `~/.pikiclaw` 下生成专属配置文件，供后续会话跨任务复用。只需登录一次常用站点，今后即可免扫码直连。
-- `peekabooEnabled` —— 开启后启用 macOS 桌面控制（Peekaboo）。该功能仅支持 macOS，开启后 pikiclaw 会拉起 `@steipete/peekaboo` 的 `peekaboo-mcp` 进程并挂载相关工具。*开启前，请务必前往 macOS 的「系统设置 → 隐私与安全性」，为启动 pikiclaw 的终端授予**辅助功能**和**屏幕录制**权限。*
+- `browserEnabled` —— 开启后启用托管 Chrome（Playwright）。当 Agent 首次调用 Chrome 时，pikiloop 会在 `~/.pikiloop` 下生成专属配置文件，供后续会话跨任务复用。只需登录一次常用站点，今后即可免扫码直连。
+- `peekabooEnabled` —— 开启后启用 macOS 桌面控制（Peekaboo）。该功能仅支持 macOS，开启后 pikiloop 会拉起 `@steipete/peekaboo` 的 `peekaboo-mcp` 进程并挂载相关工具。*开启前，请务必前往 macOS 的「系统设置 → 隐私与安全性」，为启动 pikiloop 的终端授予**辅助功能**和**屏幕录制**权限。*
 
 ---
 
 ## 产品路线图 (Roadmap)
 
-- **SupporterAgent** —— 在现有「终端 × Agent × 模型 × 工具」编排栈之上再加一层 high-level 元代理，统一管理整个复杂任务的生命周期：从拆解与规划，到把合适的子 Agent 调度到合适的模型与工具上，再到全程盯着各路 stream，发现子 Agent 卡壳、走偏或与计划冲突时主动介入校正。目标是把 pikiclaw 在长时序、多 Agent 协作上的稳定性拉到新一档，让人不再需要逐轮盯着每个子任务。
+- **SupporterAgent** —— 在现有「终端 × Agent × 模型 × 工具」编排栈之上再加一层 high-level 元代理，统一管理整个复杂任务的生命周期：从拆解与规划，到把合适的子 Agent 调度到合适的模型与工具上，再到全程盯着各路 stream，发现子 Agent 卡壳、走偏或与计划冲突时主动介入校正。目标是把 pikiloop 在长时序、多 Agent 协作上的稳定性拉到新一档，让人不再需要逐轮盯着每个子任务。
 
 ---
 
 ## 本地开发
 
 ```bash
-git clone https://github.com/xiaotonng/pikiclaw.git
-cd pikiclaw
+git clone https://github.com/xiaotonng/pikiloop.git
+cd pikiloop
 npm install
 npm run build
 npm test
 ```
 
 ```bash
-npm run dev                       # 启动本地开发服务（--no-daemon，实时日志输出到 ~/.pikiclaw/dev/dev.log）
+npm run dev                       # 启动本地开发服务（--no-daemon，实时日志输出到 ~/.pikiloop/dev/dev.log）
 npm run build                     # 生产环境编译（Dashboard 构建 + tsc）
 npm test                          # 运行 Vitest 测试套件
-npx pikiclaw@latest --doctor      # 检测本机环境健康度
+npx pikiloop@latest --doctor      # 检测本机环境健康度
 ```
 
 想要深度了解架构与集成细节，请参阅：[ARCHITECTURE.md](ARCHITECTURE.md) · [INTEGRATION.md](INTEGRATION.md) · [TESTING.md](TESTING.md)。
@@ -319,7 +319,7 @@ npx pikiclaw@latest --doctor      # 检测本机环境健康度
 这个项目架构中的每一个分层，生来就是为了被**扩展**的。接入一个新终端、编写一个新 Agent、打造一款模型 Wrapper 或是增加实用的 MCP 工具 —— 这些全都是一等公民级别的贡献。
 
 - 请先阅读 **[贡献指南](CONTRIBUTING.md)** 开始你的第一步。
-- 欢迎关注贴有 [`good first issue`](https://github.com/xiaotonng/pikiclaw/labels/good%20first%20issue) 和 [`help wanted`](https://github.com/xiaotonng/pikiclaw/labels/help%20wanted) 标签的任务。
+- 欢迎关注贴有 [`good first issue`](https://github.com/xiaotonng/pikiloop/labels/good%20first%20issue) 和 [`help wanted`](https://github.com/xiaotonng/pikiloop/labels/help%20wanted) 标签的任务。
 - 如果打算进行较大幅度的修改，请先提交 Issue 以便大家确认技术方案。
 
 | 模块位置 | 你能拓展什么 |
@@ -335,14 +335,14 @@ npx pikiclaw@latest --doctor      # 检测本机环境健康度
 
 ## 交流与联系
 
-有任何问题、建议，或想一起聊聊 Agent 编排，欢迎加作者微信：**18317014390**（添加时请备注 `pikiclaw`）。
+有任何问题、建议，或想一起聊聊 Agent 编排，欢迎加作者微信：**18317014390**（添加时请备注 `pikiloop`）。
 
 ---
 
 ## Star 历史趋势
 
-<a href="https://www.star-history.com/#xiaotonng/pikiclaw&Date">
-  <img src="https://api.star-history.com/svg?repos=xiaotonng/pikiclaw&type=Date" alt="Star 历史" width="640">
+<a href="https://www.star-history.com/#xiaotonng/pikiloop&Date">
+  <img src="https://api.star-history.com/svg?repos=xiaotonng/pikiloop&type=Date" alt="Star 历史" width="640">
 </a>
 
 ---

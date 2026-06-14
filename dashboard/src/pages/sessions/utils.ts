@@ -106,7 +106,7 @@ const CONTINUATION_MARKERS = [
 /** Detect continuation/summary messages and system-injected events that Claude
  *  stores as role=user but never originated from the human. Detection is based
  *  on explicit tag/marker signatures only — never length — so legitimately long
- *  user content (pasted logs, code, pikiclaw's `<handover>` seed) still renders. */
+ *  user content (pasted logs, code, pikiloop's `<handover>` seed) still renders. */
 export function isContinuationSummary(text: string): boolean {
   const trimmed = text.trim();
   const leading = trimmed.match(/^<([a-z][a-z0-9_-]*)\b/i);

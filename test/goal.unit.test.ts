@@ -15,7 +15,7 @@ let workdir: string;
 const sid = 'session_test_001';
 
 beforeEach(() => {
-  workdir = makeTmpDir('pikiclaw-goal-');
+  workdir = makeTmpDir('pikiloop-goal-');
 });
 
 afterEach(() => {

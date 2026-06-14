@@ -537,7 +537,7 @@ export class FeishuBot extends Bot {
   }
 
   private async cmdRestart(ctx: FeishuContext) {
-    await ctx.reply('**Restarting pikiclaw...**\n\nPulling latest version. The bot will be back shortly.');
+    await ctx.reply('**Restarting pikiloop...**\n\nPulling latest version. The bot will be back shortly.');
     void requestProcessRestart({ log: msg => this.log(msg) });
   }
 
@@ -1280,7 +1280,7 @@ export class FeishuBot extends Bot {
   // ---- lifecycle ------------------------------------------------------------
 
   async run() {
-    const tmpDir = path.join(os.tmpdir(), 'pikiclaw');
+    const tmpDir = path.join(os.tmpdir(), 'pikiloop');
     fs.mkdirSync(tmpDir, { recursive: true });
 
     this.channel = new FeishuChannel({

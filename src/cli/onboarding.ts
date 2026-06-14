@@ -183,11 +183,11 @@ export function buildSetupGuide(state: SetupState, version: string, options?: { 
                 ? 'WeChat Work'
                 : 'your chat app';
   const lines: string[] = [
-    `pikiclaw v${version}`,
+    `pikiloop v${version}`,
     '',
     doctor ? 'Setup check' : 'First-time setup',
     '',
-    `pikiclaw connects ${channelLabel} to a local coding agent running on your machine.`,
+    `pikiloop connects ${channelLabel} to a local coding agent running on your machine.`,
     'Before the bot can start, make sure these basics are ready:',
     '1. Claude Code, Codex, or Gemini CLI installed locally',
     isTelegram
@@ -208,52 +208,52 @@ export function buildSetupGuide(state: SetupState, version: string, options?: { 
     lines.push('OK       A Telegram token was provided.');
   } else if (isTelegram) {
     lines.push(
-      'MISSING  No Telegram token configured in ~/.pikiclaw/setting.json',
-      '         Run `pikiclaw` to open the dashboard and configure, or:',
+      'MISSING  No Telegram token configured in ~/.pikiloop/setting.json',
+      '         Run `pikiloop` to open the dashboard and configure, or:',
       '         1. Open Telegram and search for @BotFather',
       '         2. Send /newbot and copy the token',
-      '         3. Add to ~/.pikiclaw/setting.json: { "telegramBotToken": "..." }',
+      '         3. Add to ~/.pikiloop/setting.json: { "telegramBotToken": "..." }',
     );
   } else if (state.channel === 'feishu' && state.tokenProvided) {
     lines.push('OK       Feishu credentials provided (FEISHU_APP_ID + FEISHU_APP_SECRET).');
   } else if (state.channel === 'feishu') {
     lines.push(
-      'MISSING  No Feishu credentials configured in ~/.pikiclaw/setting.json',
-      '         Run `pikiclaw` to open the dashboard and configure, or add feishuAppId/feishuAppSecret to setting.json.',
+      'MISSING  No Feishu credentials configured in ~/.pikiloop/setting.json',
+      '         Run `pikiloop` to open the dashboard and configure, or add feishuAppId/feishuAppSecret to setting.json.',
     );
   } else if (state.channel === 'weixin' && state.tokenProvided) {
     lines.push('OK       Weixin credentials provided (weixinBaseUrl + weixinBotToken + weixinAccountId).');
   } else if (state.channel === 'weixin') {
     lines.push(
-      'MISSING  No Weixin credentials configured in ~/.pikiclaw/setting.json',
-      '         Run `pikiclaw` to open the dashboard, scan the QR code, and validate the channel before enabling it.',
+      'MISSING  No Weixin credentials configured in ~/.pikiloop/setting.json',
+      '         Run `pikiloop` to open the dashboard, scan the QR code, and validate the channel before enabling it.',
     );
   } else if (state.channel === 'slack' && state.tokenProvided) {
     lines.push('OK       Slack credentials provided (slackBotToken + slackAppToken).');
   } else if (state.channel === 'slack') {
     lines.push(
-      'MISSING  No Slack credentials configured in ~/.pikiclaw/setting.json',
+      'MISSING  No Slack credentials configured in ~/.pikiloop/setting.json',
       '         Add slackBotToken (xoxb-…) and slackAppToken (xapp-…) from your Slack App Dashboard.',
     );
   } else if (state.channel === 'discord' && state.tokenProvided) {
     lines.push('OK       Discord bot token provided (discordBotToken).');
   } else if (state.channel === 'discord') {
     lines.push(
-      'MISSING  No Discord credentials configured in ~/.pikiclaw/setting.json',
+      'MISSING  No Discord credentials configured in ~/.pikiloop/setting.json',
       '         Add discordBotToken from the Discord Developer Portal (Bot page) — and enable Message Content Intent.',
     );
   } else if (state.channel === 'dingtalk' && state.tokenProvided) {
     lines.push('OK       DingTalk credentials provided (dingtalkClientId + dingtalkClientSecret).');
   } else if (state.channel === 'dingtalk') {
     lines.push(
-      'MISSING  No DingTalk credentials configured in ~/.pikiclaw/setting.json',
+      'MISSING  No DingTalk credentials configured in ~/.pikiloop/setting.json',
       '         Add dingtalkClientId (AppKey) and dingtalkClientSecret (AppSecret) from the DingTalk developer console.',
     );
   } else if (state.channel === 'wecom' && state.tokenProvided) {
     lines.push('OK       WeChat Work credentials provided (wecomBotId + wecomBotSecret).');
   } else if (state.channel === 'wecom') {
     lines.push(
-      'MISSING  No WeChat Work credentials configured in ~/.pikiclaw/setting.json',
+      'MISSING  No WeChat Work credentials configured in ~/.pikiloop/setting.json',
       '         Create a 智能机器人 in 企业微信, then add wecomBotId and wecomBotSecret to setting.json.',
     );
   } else if (state.tokenProvided) {
@@ -265,20 +265,20 @@ export function buildSetupGuide(state: SetupState, version: string, options?: { 
   lines.push('');
   if (state.tokenProvided) {
     lines.push('Start command:');
-    lines.push('  npx pikiclaw@latest');
+    lines.push('  npx pikiloop@latest');
   } else if (!isTelegram) {
     lines.push('Start command:');
-    lines.push('  npx pikiclaw@latest --channel telegram -t <YOUR_BOT_TOKEN>');
+    lines.push('  npx pikiloop@latest --channel telegram -t <YOUR_BOT_TOKEN>');
   } else {
     lines.push('Start command after you have the token:');
-    lines.push('  npx pikiclaw@latest -t <YOUR_BOT_TOKEN>');
+    lines.push('  npx pikiloop@latest -t <YOUR_BOT_TOKEN>');
   }
 
   lines.push(
     '',
     'Tips:',
-    '  - Run `npx pikiclaw@latest --doctor` any time to re-check your setup.',
-    '  - Run `npx pikiclaw@latest --help` for the full CLI reference.',
+    '  - Run `npx pikiloop@latest --doctor` any time to re-check your setup.',
+    '  - Run `npx pikiloop@latest --help` for the full CLI reference.',
   );
 
   if (!doctor && !hasInstalledAgent(state)) {

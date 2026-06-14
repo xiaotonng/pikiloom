@@ -240,7 +240,7 @@ export function detectClaudeModelError(text: string | null | undefined): boolean
 /** User-facing message for an unavailable / no-access model (see {@link detectClaudeModelError}). */
 export function claudeModelErrorMessage(model: string | null | undefined): string {
   const id = (model || '').trim();
-  return `The selected model${id ? ` (${id})` : ''} is unavailable — it may not exist, or this account doesn't have access to it. Switch to a different model in pikiclaw settings.`;
+  return `The selected model${id ? ` (${id})` : ''} is unavailable — it may not exist, or this account doesn't have access to it. Switch to a different model in pikiloop settings.`;
 }
 
 export function appendSystemPrompt(base: string | undefined, extra: string): string {
@@ -411,7 +411,7 @@ export function summarizeClaudeToolUse(name: string, input: any): string {
       return c ? `Run shell: ${c}` : 'Run shell command';
     }
     default: {
-      // MCP tools come through as `mcp__<server>__<tool>` — unwrap common pikiclaw tools
+      // MCP tools come through as `mcp__<server>__<tool>` — unwrap common pikiloop tools
       const mcpMatch = tool.match(/^mcp__[^_]+__(.+)$/);
       const bare = mcpMatch ? mcpMatch[1] : tool;
       if (bare === 'im_send_file') {

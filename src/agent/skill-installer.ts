@@ -2,17 +2,18 @@
  * Skill installer — wrapper around `npx skills` CLI.
  *
  * Skills are installed via the community-standard `npx skills add` command.
- * Global skills go to ~/.pikiclaw/skills/, project skills to <workdir>/.pikiclaw/skills/.
+ * Global skills go to ~/.pikiloop/skills/, project skills to <workdir>/.pikiloop/skills/.
  *
- * The upstream CLI doesn't recognize `pikiclaw` as an agent, so we install with
- * `--agent claude-code` (the driver pikiclaw runs by default) and rely on
- * ~/.claude/skills → ~/.pikiclaw/skills being symlinked to the same directory.
+ * The upstream CLI doesn't recognize `pikiloop` as an agent, so we install with
+ * `--agent claude-code` (the driver pikiloop runs by default) and rely on
+ * ~/.claude/skills → ~/.pikiloop/skills being symlinked to the same directory.
  */
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { STATE_DIR_NAME } from '../core/constants.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,7 +43,7 @@ export interface SkillRemoveResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const GLOBAL_SKILLS_DIR = path.join(os.homedir(), '.pikiclaw', 'skills');
+const GLOBAL_SKILLS_DIR = path.join(os.homedir(), STATE_DIR_NAME, 'skills');
 const INSTALL_TIMEOUT_MS = 60_000;
 const REMOVE_TIMEOUT_MS = 10_000;
 
@@ -54,7 +55,7 @@ const REMOVE_TIMEOUT_MS = 10_000;
  * Make sure the global skills directory exists, and that the agent-specific
  * dirs that the upstream skills CLI writes to (`~/.claude/skills`,
  * `~/.agents/skills`) resolve back to it. This is what lets us install with
- * `--agent claude-code` and still read the results from `~/.pikiclaw/skills`.
+ * `--agent claude-code` and still read the results from `~/.pikiloop/skills`.
  */
 function ensureGlobalSkillsDir(): void {
   fs.mkdirSync(GLOBAL_SKILLS_DIR, { recursive: true });
@@ -159,7 +160,7 @@ export function removeSkill(skillName: string, opts: { global?: boolean; workdir
 
   const parentDir = isGlobal
     ? GLOBAL_SKILLS_DIR
-    : path.join(workdir!, '.pikiclaw', 'skills');
+    : path.join(workdir!, STATE_DIR_NAME, 'skills');
   const skillDir = path.join(parentDir, sanitized);
 
   // Double-check the resolved path is inside the expected parent

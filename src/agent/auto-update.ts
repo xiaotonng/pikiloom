@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import type { AgentInfo } from './index.js';
 import { getAgentLabel, getAgentPackage, getAgentBrewCask } from './npm.js';
 import type { UserConfig } from '../core/config/user-config.js';
-import { AGENT_UPDATE_TIMEOUTS } from '../core/constants.js';
+import { AGENT_UPDATE_TIMEOUTS, STATE_DIR_NAME } from '../core/constants.js';
 
 const AGENT_UPDATE_LOCK_STALE_MS = AGENT_UPDATE_TIMEOUTS.lockStale;
 const AGENT_UPDATE_COMMAND_TIMEOUT_MS = AGENT_UPDATE_TIMEOUTS.commandTimeout;
@@ -58,7 +58,7 @@ export function getAllAgentUpdateStates(): Record<string, AgentUpdateState> {
 }
 
 function updaterLockPath(): string {
-  return path.join(os.homedir(), '.pikiclaw', 'agent-auto-update.lock');
+  return path.join(os.homedir(), STATE_DIR_NAME, 'agent-auto-update.lock');
 }
 
 function normalizeBooleanEnv(value: string | undefined): boolean | null {
@@ -70,7 +70,7 @@ function normalizeBooleanEnv(value: string | undefined): boolean | null {
 }
 
 export function agentAutoUpdateEnabled(config: Partial<UserConfig>): boolean {
-  const env = normalizeBooleanEnv(process.env.PIKICLAW_AGENT_AUTO_UPDATE);
+  const env = normalizeBooleanEnv(process.env.PIKILOOP_AGENT_AUTO_UPDATE);
   if (env != null) return env;
   if (typeof config.agentAutoUpdate === 'boolean') return config.agentAutoUpdate;
   return true;

@@ -61,13 +61,13 @@ describe('WeComChannel frame parsing and send', () => {
           chattype: 'group',
           from: { userid: 'alice' },
           msgtype: 'text',
-          text: { content: '@aibot-1 hi pikiclaw' },
+          text: { content: '@aibot-1 hi pikiloop' },
         },
       });
 
       // Allow the async dispatchInbound to flush.
       await new Promise(r => setImmediate(r));
-      expect(seen).toEqual([{ text: 'hi pikiclaw', chatId: 'group-99', reqId: 'srv-1' }]);
+      expect(seen).toEqual([{ text: 'hi pikiloop', chatId: 'group-99', reqId: 'srv-1' }]);
     }
 
     // dedups duplicate msgids

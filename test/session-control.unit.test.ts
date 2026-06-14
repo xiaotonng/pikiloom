@@ -31,7 +31,7 @@ describe('session-control', () => {
 
       const { queueDashboardSessionTask } = await import('../src/dashboard/session-control.ts');
       const result = await queueDashboardSessionTask({
-        workdir: '/tmp/pikiclaw',
+        workdir: '/tmp/pikiloop',
         agent: 'codex',
         sessionId: 'sess-1',
         prompt: 'check',
@@ -39,7 +39,7 @@ describe('session-control', () => {
       });
 
       expect(submitSessionTask).toHaveBeenCalledWith({
-        workdir: '/tmp/pikiclaw',
+        workdir: '/tmp/pikiloop',
         agent: 'codex',
         sessionId: 'sess-1',
         prompt: 'check',

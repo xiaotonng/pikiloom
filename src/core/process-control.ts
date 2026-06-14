@@ -7,15 +7,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { pathContainsSegment } from './platform.js';
+import { STATE_DIR_NAME } from './constants.js';
 
 export const PROCESS_RESTART_EXIT_CODE = 75;
-export const PROCESS_RESTART_STATE_FILE_ENV = 'PIKICLAW_RESTART_STATE_FILE';
+export const PROCESS_RESTART_STATE_FILE_ENV = 'PIKILOOP_RESTART_STATE_FILE';
 
-const DAEMON_PID_FILENAME = 'pikiclaw.pid';
+const DAEMON_PID_FILENAME = 'pikiloop.pid';
 
-/** Path to the daemon PID file used by `pikiclaw stop`. */
+/** Path to the daemon PID file used by `pikiloop stop`. */
 export function getDaemonPidFilePath(): string {
-  return path.join(os.homedir(), '.pikiclaw', DAEMON_PID_FILENAME);
+  return path.join(os.homedir(), STATE_DIR_NAME, DAEMON_PID_FILENAME);
 }
 
 export function writeDaemonPidFile(pid: number = process.pid): void {
@@ -128,15 +129,15 @@ export function getDefaultRestartCmd(): string {
     return parts.map(arg => arg.includes(' ') ? `"${arg}"` : arg).join(' ');
   }
   // Running from an installed package (e.g. npm install -g) — reuse the same entry point
-  if (argv1.endsWith('.js') && (argv1.includes('pikiclaw') || argv1.includes('pikiclaw'))) {
+  if (argv1.endsWith('.js') && (argv1.includes('pikiloop') || argv1.includes('pikiloop'))) {
     const nodeBin = argv0.includes(' ') ? `"${argv0}"` : argv0;
     const entry = argv1.includes(' ') ? `"${argv1}"` : argv1;
     return `${nodeBin} ${entry}`;
   }
-  return 'npx --yes pikiclaw@latest';
+  return 'npx --yes pikiloop@latest';
 }
 
-export function buildRestartCommand(argv: string[], restartCmd = process.env.PIKICLAW_RESTART_CMD || getDefaultRestartCmd()) {
+export function buildRestartCommand(argv: string[], restartCmd = process.env.PIKILOOP_RESTART_CMD || getDefaultRestartCmd()) {
   const [bin, ...rawArgs] = shellSplit(restartCmd);
   return {
     bin,
@@ -165,7 +166,7 @@ export function getActiveTaskCount(): number {
 }
 
 export function createRestartStateFilePath(ownerPid = process.pid): string {
-  const dir = path.join(os.tmpdir(), 'pikiclaw');
+  const dir = path.join(os.tmpdir(), 'pikiloop');
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, `restart-${ownerPid}.json`);
 }
@@ -242,7 +243,7 @@ function buildRestartEnvForSpawn(extraEnv: Record<string, string>) {
     ...extraEnv,
     npm_config_yes: process.env.npm_config_yes || 'true',
   } as Record<string, string>;
-  delete env.PIKICLAW_DAEMON_CHILD;
+  delete env.PIKILOOP_DAEMON_CHILD;
   delete env[PROCESS_RESTART_STATE_FILE_ENV];
   return env;
 }
@@ -290,7 +291,7 @@ export async function requestProcessRestart(opts: ProcessRestartOptions = {}): P
     const extraEnv = collectRestartEnv();
     await prepareRuntimesForRestart(log);
 
-    if (process.env.PIKICLAW_DAEMON_CHILD === '1') {
+    if (process.env.PIKILOOP_DAEMON_CHILD === '1') {
       const restartStateFile = process.env[PROCESS_RESTART_STATE_FILE_ENV];
       if (restartStateFile) {
         if (Object.keys(extraEnv).length) writeRestartStateFile(restartStateFile, extraEnv);

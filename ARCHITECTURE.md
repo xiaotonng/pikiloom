@@ -1,6 +1,6 @@
 # Architecture
 
-`pikiclaw` is a layered, open Agent orchestrator. Four conceptual layers — terminals, agents, models, tools — sit on top of cross-cutting infrastructure. This document covers the design principles and extension recipes; the full source tree is in [CLAUDE.md](CLAUDE.md).
+`pikiloop` is a layered, open Agent orchestrator. Four conceptual layers — terminals, agents, models, tools — sit on top of cross-cutting infrastructure. This document covers the design principles and extension recipes; the full source tree is in [CLAUDE.md](CLAUDE.md).
 
 ## Layered Architecture
 
@@ -26,7 +26,7 @@ Imports flow strictly downward. `core/` and `catalog/` import from nothing insid
 
 - **Channels:** Telegram, Feishu, WeChat, Slack, Discord, DingTalk, WeCom
 - **Agent drivers:** Claude Code (`claude`, `claude-tui`), Codex, Gemini, Hermes (via ACP)
-- **Project skills:** `.pikiclaw/skills/*/SKILL.md` plus legacy `.claude/commands/*.md` compatibility
+- **Project skills:** `.pikiloop/skills/*/SKILL.md` plus legacy `.claude/commands/*.md` compatibility
 - **Session-scoped MCP tools:** `im_list_files`, `im_send_file`, `im_ask_user`
 - **Browser automation:** managed Chromium via `@playwright/mcp`, supervised by `browser-supervisor.ts`
 - **macOS desktop automation:** built-in Peekaboo MCP — Accessibility API + ScreenCaptureKit
@@ -67,7 +67,7 @@ Channels differ only in transport, rendering format, callback payloads, and capa
 
 ### 3. Session workspaces are first-class
 
-Each conversation runs against a pikiclaw-managed session workspace used for staged attachments, session metadata, project skill discovery, and MCP tool visibility. This is why file return, skills, and per-session tools behave consistently across agents.
+Each conversation runs against a pikiloop-managed session workspace used for staged attachments, session metadata, project skill discovery, and MCP tool visibility. This is why file return, skills, and per-session tools behave consistently across agents.
 
 ### 4. MCP is injected per stream
 
@@ -91,7 +91,7 @@ Each conversation runs against a pikiclaw-managed session workspace used for sta
 
 ### 8. Dashboard is config + runtime surface
 
-The dashboard is not just a setup page — it is the main local control plane for channel validation, agent detection, model discovery, session browsing, workdir switching, extension management, and macOS permission checks. All persistent config lives in `~/.pikiclaw/setting.json`.
+The dashboard is not just a setup page — it is the main local control plane for channel validation, agent detection, model discovery, session browsing, workdir switching, extension management, and macOS permission checks. All persistent config lives in `~/.pikiloop/setting.json`.
 
 ## MCP Tool Surface
 
@@ -103,7 +103,7 @@ Registered by `agent/mcp/session-server.ts`:
 
 Built-in MCP servers togglable from the Extensions tab:
 
-- **`pikiclaw-browser`** — `@playwright/mcp` against a pikiclaw-managed persistent Chrome profile. Toggled by `browserEnabled`.
+- **`pikiloop-browser`** — `@playwright/mcp` against a pikiloop-managed persistent Chrome profile. Toggled by `browserEnabled`.
 - **`peekaboo`** — Peekaboo MCP for native macOS GUI automation. Toggled by `peekabooEnabled`; macOS only; requires Screen Recording + Accessibility permissions.
 
 ## Extension Recipes

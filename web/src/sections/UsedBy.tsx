@@ -3,7 +3,7 @@ import { ByteDance, Tencent, Alibaba, Meta, Google, Moonshot, Minimax, Stepfun }
 import { LogoLoop, type LogoItem } from '@/components/LogoLoop';
 
 // Social proof. Honest framing: individual engineers from these teams use
-// pikiclaw — not corporate endorsements. Real, official brand marks (LobeHub).
+// pikiloop — not corporate endorsements. Real, official brand marks (LobeHub).
 type ColoredIcon = ComponentType<{ size?: number }>;
 function brand(Icon: unknown, size = 22): ReactNode {
   const I = Icon as ColoredIcon & { Color?: ColoredIcon; Mono?: ColoredIcon };
@@ -35,7 +35,7 @@ export default function UsedBy() {
   return (
     <section className="relative mx-auto max-w-6xl px-6 py-16">
       <p className="text-center text-xs uppercase tracking-[0.22em] text-neutral-600">
-        Engineers from these teams build with pikiclaw
+        Engineers from these teams build with pikiloop
       </p>
       <div className="mt-9">
         <LogoLoop
@@ -47,7 +47,7 @@ export default function UsedBy() {
           scaleOnHover
           fadeOut
           fadeOutColor="#05060a"
-          ariaLabel="Companies whose engineers use pikiclaw"
+          ariaLabel="Companies whose engineers use pikiloop"
         />
       </div>
     </section>

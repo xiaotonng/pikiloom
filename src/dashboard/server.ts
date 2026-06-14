@@ -176,7 +176,7 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
       const html = fs.readFileSync(indexPath, 'utf-8');
       // The HTML shell references content-hashed asset filenames, so it must
       // never be cached: otherwise an open tab keeps loading stale JS after the
-      // server self-updates (npx pikiclaw@latest) until a manual hard refresh.
+      // server self-updates (npx pikiloop@latest) until a manual hard refresh.
       c.header('Cache-Control', 'no-cache');
       return c.html(html);
     } catch {
@@ -231,7 +231,7 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
           const actualPort = typeof addr === 'object' && addr ? addr.port : port;
           const dashUrl = `http://localhost:${actualPort}`;
           const ts = new Date().toTimeString().slice(0, 8);
-          process.stdout.write(`[pikiclaw ${ts}] dashboard: ${dashUrl}\n`);
+          process.stdout.write(`[pikiloop ${ts}] dashboard: ${dashUrl}\n`);
 
           // Preload agent status cache so the first dashboard page load is instant
           preloadAgentStatus();

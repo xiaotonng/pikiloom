@@ -35,7 +35,7 @@ interface CacheEntry {
 // and `peekProviderModelList` from `dashboard/routes/agents.ts` would be
 // writing/reading two different Map instances and the peek would
 // perpetually miss.
-const GLOBAL_KEY = Symbol.for('pikiclaw.providerModelsCache');
+const GLOBAL_KEY = Symbol.for('pikiloop.providerModelsCache');
 const _existing = (globalThis as any)[GLOBAL_KEY] as Map<string, CacheEntry> | undefined;
 const cache: Map<string, CacheEntry> = _existing || new Map<string, CacheEntry>();
 if (!_existing) (globalThis as any)[GLOBAL_KEY] = cache;

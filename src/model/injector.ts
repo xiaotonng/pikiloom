@@ -2,7 +2,7 @@
  * Credential injector — turn an active Profile into the env vars and
  * additional argv that should be applied when spawning a specific agent.
  *
- * This is the single point where pikiclaw's Profile abstraction is
+ * This is the single point where pikiloop's Profile abstraction is
  * translated into per-agent quirks. Adding a new agent (e.g. OpenCode)
  * = adding one entry to AGENT_INJECT_TABLE.
  */

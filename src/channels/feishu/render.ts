@@ -464,7 +464,7 @@ export function renderModelsList(d: ModelsListData): string {
 export function renderSkillsList(d: SkillsListData): string {
   const lines = [`**Project Skills** (${d.skills.length})`, '', `**Agent:** ${d.agent}`, `**Workdir:** \`${d.workdir}\``];
   if (!d.skills.length) {
-    lines.push('', '*No project skills found in `.pikiclaw/skills/` or `.claude/commands/`.*');
+    lines.push('', '*No project skills found in `.pikiloop/skills/` or `.claude/commands/`.*');
     return lines.join('\n');
   }
 
@@ -531,7 +531,7 @@ export function renderSkillsCard(d: SkillsListData): FeishuCardView {
 export function renderStatus(d: StatusData): string {
   const gitLine = formatGitStatusLine(d.git);
   const lines = [
-    `**pikiclaw** v${d.version}`,
+    `**pikiloop** v${d.version}`,
     '',
     `**Uptime:** ${fmtUptime(d.uptime)}`,
     `**Memory:** ${(d.memRss / 1024 / 1024).toFixed(0)}MB RSS / ${(d.memHeap / 1024 / 1024).toFixed(0)}MB heap`,

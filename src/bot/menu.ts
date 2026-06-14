@@ -15,7 +15,7 @@ export interface WelcomeIntro {
 
 export function buildWelcomeIntro(version: string): WelcomeIntro {
   return {
-    title: "Hi, I'm pikiclaw",
+    title: "Hi, I'm pikiloop",
     subtitle: 'Send me a message to get started.',
     version,
   };

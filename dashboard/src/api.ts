@@ -374,7 +374,7 @@ export const api = {
     post<{
       ok: boolean;
       recordRemoved?: boolean;
-      pikiclawPathsRemoved?: string[];
+      pikiloopPathsRemoved?: string[];
       nativePathsRemoved?: string[];
       error?: string;
     }>(

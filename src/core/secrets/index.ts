@@ -1,7 +1,7 @@
 /**
- * Barrel for the pikiclaw credential vault.
+ * Barrel for the pikiloop credential vault.
  *
- * Pikiclaw owns its own credential layer rather than delegating to per-agent
+ * Pikiloop owns its own credential layer rather than delegating to per-agent
  * config files: when an agent is spawned, the active Profile's credentials
  * are resolved on the fly and injected as env vars / generated config files.
  * This means setting.json never holds a raw secret in the default flow, and

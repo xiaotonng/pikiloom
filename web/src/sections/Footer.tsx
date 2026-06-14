@@ -23,7 +23,7 @@ export default function Footer() {
         </div>
 
         <div className="mt-10 flex flex-col items-center justify-between gap-4 text-sm text-neutral-500 sm:flex-row">
-          <span>© {new Date().getFullYear()} pikiclaw · MIT License</span>
+          <span>© {new Date().getFullYear()} pikiloop · MIT License</span>
           <span>
             Landing page crafted with{' '}
             <a href={LINKS.reactBits} target="_blank" rel="noreferrer" className="text-neutral-400 underline-offset-4 hover:text-white hover:underline">

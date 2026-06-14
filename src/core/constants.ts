@@ -56,12 +56,29 @@ export const DASHBOARD_TIMEOUTS = {
 // Browser automation
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Brand / state-dir / env identifiers — single source of truth
+// ---------------------------------------------------------------------------
+
+/** Home state directory name: `~/.pikiloop`. */
+export const STATE_DIR_NAME = '.pikiloop';
+/** Env var prefix for all pikiloop-specific variables. */
+export const ENV_PREFIX = 'PIKILOOP_';
+/**
+ * Pre-rename (pikiclaw) identifiers. Kept ONLY for the one-time state-dir
+ * migration, the env-var fallback (see core/legacy-compat.ts) and project-skill
+ * discovery, so installs created before the rename are never orphaned. Safe to
+ * delete a couple of releases after the rename has propagated.
+ */
+export const LEGACY_STATE_DIR_NAME = '.pikiclaw';
+export const LEGACY_ENV_PREFIX = 'PIKICLAW_';
+
 /**
  * Stable relative path for the managed Chrome profile under the home directory.
  * Keep this outside config-specific directories so `npm run dev` and the main
  * runtime share the same browser login state.
  */
-export const MANAGED_BROWSER_PROFILE_SUBPATH = path.join('.pikiclaw', 'browser', 'chrome-profile');
+export const MANAGED_BROWSER_PROFILE_SUBPATH = path.join(STATE_DIR_NAME, 'browser', 'chrome-profile');
 
 /** Base Playwright MCP args for the managed browser integration. */
 export const PLAYWRIGHT_MCP_PACKAGE_NAME = '@playwright/mcp';
@@ -70,7 +87,7 @@ export const PLAYWRIGHT_MCP_PACKAGE_SPEC = `${PLAYWRIGHT_MCP_PACKAGE_NAME}@${PLA
 export const PLAYWRIGHT_MCP_BROWSER_ARGS = ['--browser', 'chrome', '--viewport-size', '1920x1080'] as const;
 
 /**
- * Env var name for pointing pikiclaw at an external Chrome DevTools Protocol
+ * Env var name for pointing pikiloop at an external Chrome DevTools Protocol
  * endpoint (e.g. `http://chromium:9222`) instead of launching a local Chrome.
  * Primary use cases: Docker deployments that run a sidecar like
  * `lscr.io/linuxserver/chromium`, or attaching to a remote browser the user
@@ -78,7 +95,7 @@ export const PLAYWRIGHT_MCP_BROWSER_ARGS = ['--browser', 'chrome', '--viewport-s
  * codepath (no Chrome detection, no pid SIGKILL on restart) and pipes the URL
  * through to Playwright MCP's `--cdp-endpoint`.
  */
-export const PIKICLAW_BROWSER_CDP_URL_ENV = 'PIKICLAW_BROWSER_CDP_URL';
+export const PIKILOOP_BROWSER_CDP_URL_ENV = 'PIKILOOP_BROWSER_CDP_URL';
 
 /** Dashboard session pagination limits. */
 export const DASHBOARD_PAGINATION = {

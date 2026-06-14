@@ -23,29 +23,29 @@ describe('isClaudePrintModeForced — TUI is now the default; only opt-out flips
 
   it('default false / PRINT truthy true / legacy TUI off true / legacy TUI=1 no-op', async () => {
     // returns false by default (TUI mode wins)
-    await withEnv({ PIKICLAW_CLAUDE_PRINT: undefined, PIKICLAW_CLAUDE_TUI: undefined }, () => {
+    await withEnv({ PIKILOOP_CLAUDE_PRINT: undefined, PIKILOOP_CLAUDE_TUI: undefined }, () => {
       expect(module.isClaudePrintModeForced()).toBe(false);
     });
-    await withEnv({ PIKICLAW_CLAUDE_PRINT: '', PIKICLAW_CLAUDE_TUI: '' }, () => {
+    await withEnv({ PIKILOOP_CLAUDE_PRINT: '', PIKILOOP_CLAUDE_TUI: '' }, () => {
       expect(module.isClaudePrintModeForced()).toBe(false);
     });
 
-    // returns true when PIKICLAW_CLAUDE_PRINT is truthy
+    // returns true when PIKILOOP_CLAUDE_PRINT is truthy
     for (const v of ['1', 'true', 'yes', 'on', 'TRUE', 'Yes', ' 1 ']) {
-      await withEnv({ PIKICLAW_CLAUDE_PRINT: v, PIKICLAW_CLAUDE_TUI: undefined }, () => {
+      await withEnv({ PIKILOOP_CLAUDE_PRINT: v, PIKILOOP_CLAUDE_TUI: undefined }, () => {
         expect(module.isClaudePrintModeForced()).toBe(true);
       });
     }
 
-    // returns true when legacy PIKICLAW_CLAUDE_TUI is explicitly off
+    // returns true when legacy PIKILOOP_CLAUDE_TUI is explicitly off
     for (const v of ['0', 'false', 'no', 'off', 'FALSE', 'No', ' off ']) {
-      await withEnv({ PIKICLAW_CLAUDE_PRINT: undefined, PIKICLAW_CLAUDE_TUI: v }, () => {
+      await withEnv({ PIKILOOP_CLAUDE_PRINT: undefined, PIKILOOP_CLAUDE_TUI: v }, () => {
         expect(module.isClaudePrintModeForced()).toBe(true);
       });
     }
 
-    // treats legacy PIKICLAW_CLAUDE_TUI=1 as a no-op (matches default)
-    await withEnv({ PIKICLAW_CLAUDE_PRINT: undefined, PIKICLAW_CLAUDE_TUI: '1' }, () => {
+    // treats legacy PIKILOOP_CLAUDE_TUI=1 as a no-op (matches default)
+    await withEnv({ PIKILOOP_CLAUDE_PRINT: undefined, PIKILOOP_CLAUDE_TUI: '1' }, () => {
       expect(module.isClaudePrintModeForced()).toBe(false);
     });
   });
@@ -57,7 +57,7 @@ describe('Claude TUI driver — startup-failure fallback contract', () => {
 
   beforeEach(() => {
     onText.mockReset();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-claude-tui-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-claude-tui-test-'));
   });
 
   afterEach(() => {
@@ -70,7 +70,7 @@ describe('Claude TUI driver — startup-failure fallback contract', () => {
     // fails with ENOENT. Contract: the TUI driver THROWS for startup
     // failures so the dispatcher in claude.ts catches it and falls back to
     // the print-mode path instead of leaving the user with a broken turn.
-    const isolatedPath = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-no-claude-'));
+    const isolatedPath = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-no-claude-'));
     const { doClaudeTuiStream } = await import('../src/agent/drivers/claude-tui.ts');
     try {
       let thrown: any = null;
@@ -114,7 +114,7 @@ describe('Claude TUI driver — startup-failure fallback contract', () => {
 
 describe('Claude TUI driver — upfront session-id promotion', () => {
   // Regression: a brand-new TUI session must fire opts.onSessionId with the
-  // generated --session-id BEFORE the turn runs, so the pending pikiclaw record
+  // generated --session-id BEFORE the turn runs, so the pending pikiloop record
   // is promoted to its native id immediately. Previously the driver pre-assigned
   // s.sessionId, which made emitSessionIdUpdate dedup and silently swallow the
   // callback — leaving the record `pending_*` for the whole run. Since
@@ -128,14 +128,14 @@ describe('Claude TUI driver — upfront session-id promotion', () => {
 
   beforeEach(() => {
     onText.mockReset();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-tui-promote-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-tui-promote-'));
   });
   afterEach(() => {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 
   async function runWithBrokenSpawn(sessionId: string | null, onSessionId: (id: string) => void) {
-    const isolatedPath = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-no-claude-'));
+    const isolatedPath = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-no-claude-'));
     const { doClaudeTuiStream } = await import('../src/agent/drivers/claude-tui.ts');
     try {
       await Promise.race([
@@ -317,7 +317,7 @@ describe('Claude TUI driver — mid-turn permission prompt auto-answer', () => {
       await import('../src/agent/drivers/claude-tui.ts');
 
     // Real (spaceless, cursor-positioned) git-tag confirmation frame — mirrors
-    // the bytes captured live in ~/.pikiclaw/diagnostics/claude-tui-stall.jsonl.
+    // the bytes captured live in ~/.pikiloop/diagnostics/claude-tui-stall.jsonl.
     const realScreen =
       '\x1b[2J\x1b[H\x1b[36mPermissionruleBash(gittag:*)requiresconfirmationforthiscommand.\r\n' +
       '/permissionstoupdaterules\r\n\r\nDoyouwanttoproceed?\r\n' +
@@ -587,7 +587,7 @@ describe('Claude TUI driver — hook script', () => {
   let statePath: string;
 
   beforeEach(async () => {
-    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-hook-test-'));
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-hook-test-'));
     hookPath = path.join(workDir, 'hook.cjs');
     statePath = path.join(workDir, 'state.json');
     // Reproduce the same constant the driver writes (kept as a duplicate
@@ -683,7 +683,7 @@ describe('Claude TUI driver — readJsonlIncrement', () => {
   let tmpFile: string;
 
   beforeEach(() => {
-    tmpFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pikiclaw-jsonl-')), 'session.jsonl');
+    tmpFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloop-jsonl-')), 'session.jsonl');
   });
 
   afterEach(() => {

@@ -75,10 +75,10 @@ function trimSessionText(value: unknown, max = 24_000): string | null {
 // Constants
 // ---------------------------------------------------------------------------
 
-const PIKICLAW_DIR = '.pikiclaw';
-const PIKICLAW_SESSIONS_DIR = path.join(PIKICLAW_DIR, 'sessions');
-const PIKICLAW_SESSION_INDEX = path.join(PIKICLAW_SESSIONS_DIR, 'index.json');
-const PIKICLAW_LEGACY_WORKSPACES_DIR = path.join(PIKICLAW_DIR, 'workspaces');
+const PIKILOOP_DIR = '.pikiloop';
+const PIKILOOP_SESSIONS_DIR = path.join(PIKILOOP_DIR, 'sessions');
+const PIKILOOP_SESSION_INDEX = path.join(PIKILOOP_SESSIONS_DIR, 'index.json');
+const PIKILOOP_LEGACY_WORKSPACES_DIR = path.join(PIKILOOP_DIR, 'workspaces');
 const SESSION_WORKSPACE_DIR = 'workspace';
 const SESSION_META_FILE = 'session.json';
 // return.json and artifact constants removed — file return is now handled by MCP bridge
@@ -87,16 +87,16 @@ const SESSION_META_FILE = 'session.json';
 // Path helpers
 // ---------------------------------------------------------------------------
 
-function sessionIndexPath(workdir: string): string { return path.join(workdir, PIKICLAW_SESSION_INDEX); }
-function sessionDirPath(workdir: string, agent: Agent, sessionId: string): string { return path.join(workdir, PIKICLAW_SESSIONS_DIR, agent, sessionId); }
-function legacySessionWorkspacePath(workdir: string, agent: Agent, sessionId: string): string { return path.join(workdir, PIKICLAW_LEGACY_WORKSPACES_DIR, agent, sessionId); }
+function sessionIndexPath(workdir: string): string { return path.join(workdir, PIKILOOP_SESSION_INDEX); }
+function sessionDirPath(workdir: string, agent: Agent, sessionId: string): string { return path.join(workdir, PIKILOOP_SESSIONS_DIR, agent, sessionId); }
+function legacySessionWorkspacePath(workdir: string, agent: Agent, sessionId: string): string { return path.join(workdir, PIKILOOP_LEGACY_WORKSPACES_DIR, agent, sessionId); }
 function sessionWorkspacePath(workdir: string, agent: Agent, sessionId: string): string { return path.join(sessionDirPath(workdir, agent, sessionId), SESSION_WORKSPACE_DIR); }
 function sessionRootFromWorkspacePath(workspacePath: string): string {
   const resolved = path.resolve(workspacePath);
   return path.basename(resolved) === SESSION_WORKSPACE_DIR ? path.dirname(resolved) : resolved;
 }
 function sessionMetaPath(workspacePath: string): string { return path.join(sessionRootFromWorkspacePath(workspacePath), SESSION_META_FILE); }
-function legacySessionMetaPath(workspacePath: string): string { return path.join(workspacePath, PIKICLAW_DIR, SESSION_META_FILE); }
+function legacySessionMetaPath(workspacePath: string): string { return path.join(workspacePath, PIKILOOP_DIR, SESSION_META_FILE); }
 
 // ---------------------------------------------------------------------------
 // ID helpers
@@ -414,7 +414,7 @@ function migrateSessionLayout(workdir: string, record: ManagedSessionRecord): Ma
     if (sourceWorkspacePath === targetWorkspacePath || !fs.existsSync(sourceWorkspacePath)) continue;
     if (!fs.statSync(sourceWorkspacePath).isDirectory()) continue;
     for (const entry of fs.readdirSync(sourceWorkspacePath)) {
-      if (entry === PIKICLAW_DIR) continue;
+      if (entry === PIKILOOP_DIR) continue;
       copyPath(path.join(sourceWorkspacePath, entry), path.join(targetWorkspacePath, entry));
     }
     if (sourceWorkspacePath === legacyWp) fs.rmSync(sourceWorkspacePath, { recursive: true, force: true });
@@ -445,7 +445,7 @@ export function saveSessionRecord(workdir: string, record: ManagedSessionRecord)
 
 /**
  * Update mutable session metadata (classification, userStatus, userNote, links, migration)
- * for an existing pikiclaw-managed session. Returns true if the record was found and updated.
+ * for an existing pikiloop-managed session. Returns true if the record was found and updated.
  */
 export function updateSessionMeta(
   workdir: string,
@@ -513,7 +513,7 @@ export function promoteSessionId(workdir: string, agent: Agent, pendingId: strin
 // ---------------------------------------------------------------------------
 
 /**
- * Record a fork relationship between two pikiclaw-managed sessions.
+ * Record a fork relationship between two pikiloop-managed sessions.
  *
  * Sets `migratedFrom` (with kind='fork' + forkedAtTurn) on the child and
  * appends the reverse link on the parent's `linkedSessions`. Both sides also
@@ -717,15 +717,15 @@ function managedRecordToSessionInfo(record: ManagedSessionRecord): SessionInfo {
 // ---------------------------------------------------------------------------
 
 // Exported for drivers
-export function listPikiclawSessions(workdir: string, agent: Agent, limit?: number): ManagedSessionRecord[] {
+export function listPikiloopSessions(workdir: string, agent: Agent, limit?: number): ManagedSessionRecord[] {
   const records = sortByUpdatedAtDesc(
     loadSessionIndex(path.resolve(workdir)).sessions.filter(entry => entry.agent === agent),
   );
   return typeof limit === 'number' ? records.slice(0, limit) : records;
 }
 
-export function findPikiclawSession(workdir: string, agent: Agent, sessionId: string): ManagedSessionRecord | null {
-  return listPikiclawSessions(workdir, agent).find(entry => entry.sessionId === sessionId) || null;
+export function findPikiloopSession(workdir: string, agent: Agent, sessionId: string): ManagedSessionRecord | null {
+  return listPikiloopSessions(workdir, agent).find(entry => entry.sessionId === sessionId) || null;
 }
 
 export interface DeleteAgentSessionOpts {
@@ -734,9 +734,9 @@ export interface DeleteAgentSessionOpts {
   sessionId: string;
   /**
    * Also delete the agent's native session file (Claude jsonl / Codex rollout /
-   * Gemini chat). Defaults to false — by default we only clean pikiclaw's own
+   * Gemini chat). Defaults to false — by default we only clean pikiloop's own
    * index and per-session directory so the agent CLI can still resume the
-   * conversation outside pikiclaw.
+   * conversation outside pikiloop.
    */
   purgeNative?: boolean;
 }
@@ -745,8 +745,8 @@ export interface DeleteAgentSessionResult {
   ok: boolean;
   /** True if a managed session record was removed from the index. */
   recordRemoved: boolean;
-  /** Absolute paths of pikiclaw-owned directories that were removed. */
-  pikiclawPathsRemoved: string[];
+  /** Absolute paths of pikiloop-owned directories that were removed. */
+  pikiloopPathsRemoved: string[];
   /** Absolute paths of native agent files removed when purgeNative was set. */
   nativePathsRemoved: string[];
   /**
@@ -758,11 +758,11 @@ export interface DeleteAgentSessionResult {
 }
 
 /**
- * Delete a pikiclaw-managed session. Two scopes:
+ * Delete a pikiloop-managed session. Two scopes:
  *   - default: drop the index entry + recursively delete the per-session dir
- *     under `<workdir>/.pikiclaw/sessions/<agent>/<sessionId>/` (and the legacy
+ *     under `<workdir>/.pikiloop/sessions/<agent>/<sessionId>/` (and the legacy
  *     `workspaces/` path). Native agent transcript is left in place so the
- *     user can still resume the conversation outside pikiclaw.
+ *     user can still resume the conversation outside pikiloop.
  *   - `purgeNative: true`: also call the driver's `deleteNativeSession` to
  *     remove the underlying jsonl/rollout file.
  *
@@ -770,7 +770,7 @@ export interface DeleteAgentSessionResult {
  * not stale (active process or recent mtime) — caller should stop the
  * stream first.
  *
- * Sessions that exist only in the agent's native store (no pikiclaw record)
+ * Sessions that exist only in the agent's native store (no pikiloop record)
  * are still purgeable when `purgeNative` is set.
  */
 export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<DeleteAgentSessionResult> {
@@ -779,7 +779,7 @@ export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<
   const result: DeleteAgentSessionResult = {
     ok: false,
     recordRemoved: false,
-    pikiclawPathsRemoved: [],
+    pikiloopPathsRemoved: [],
     nativePathsRemoved: [],
     refusedReason: null,
   };
@@ -803,7 +803,7 @@ export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<
     if (!fs.existsSync(dir)) continue;
     try {
       fs.rmSync(dir, { recursive: true, force: true });
-      result.pikiclawPathsRemoved.push(dir);
+      result.pikiloopPathsRemoved.push(dir);
     } catch (err) {
       agentLog(`[sessions] failed to remove ${dir}: ${(err as Error).message}`);
     }
@@ -831,7 +831,7 @@ export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<
  * fields are not set.
  */
 export function getSessionStoredConfig(workdir: string, agent: Agent, sessionId: string): { model: string | null; thinkingEffort: string | null; profileId: string | null } {
-  const record = findPikiclawSession(workdir, agent, sessionId);
+  const record = findPikiloopSession(workdir, agent, sessionId);
   return {
     model: record?.model ?? null,
     thinkingEffort: record?.thinkingEffort ?? null,

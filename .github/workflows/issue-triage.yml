@@ -29,7 +29,7 @@ jobs:
       github.event.issue.author_association != 'COLLABORATOR' &&
       github.event.issue.author_association != 'CONTRIBUTOR'
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;

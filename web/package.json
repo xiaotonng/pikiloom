@@ -1,0 +1,36 @@
+{
+  "name": "pikiclaw-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Marketing landing page for pikiclaw — built with React Bits.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lobehub/icons": "^5.10.0",
+    "clsx": "^2.1.1",
+    "gsap": "^3.15.0",
+    "motion": "^12.40.0",
+    "ogl": "^1.0.11",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-icons": "^5.6.0",
+    "tailwind-merge": "^3.3.1",
+    "three": "^0.167.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "simple-icons": "^16.23.0",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.7.3",
+    "vite": "^7.0.0"
+  }
+}

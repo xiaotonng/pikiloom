@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #05060a;
+  color: #e8eaf0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Thin custom scrollbar to match the dark canvas. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Orchestrator diagram animations ───────────────────────────── */
+
+/* A glowing segment that sweeps along a connector line = data in flight. */
+@keyframes piki-sweep {
+  from {
+    background-position: -45% 0;
+  }
+  to {
+    background-position: 145% 0;
+  }
+}
+.piki-flow {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--flow, #7cff67) 50%,
+    transparent 100%
+  );
+  background-size: 45% 100%;
+  background-repeat: no-repeat;
+  animation: piki-sweep 2.4s linear infinite;
+}
+.piki-flow-v {
+  background-image: linear-gradient(
+    180deg,
+    transparent 0%,
+    var(--flow, #7cff67) 50%,
+    transparent 100%
+  );
+  background-size: 100% 45%;
+  background-repeat: no-repeat;
+  animation: piki-sweep-v 2.4s linear infinite;
+}
+@keyframes piki-sweep-v {
+  from {
+    background-position: 0 -45%;
+  }
+  to {
+    background-position: 0 145%;
+  }
+}
+
+/* The orchestration core: a soft pulsing glow. */
+@keyframes piki-core-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.06);
+  }
+}
+@keyframes piki-spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes piki-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .piki-flow,
+  .piki-flow-v {
+    animation: none;
+  }
+}

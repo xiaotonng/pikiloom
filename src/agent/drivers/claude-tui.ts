@@ -486,50 +486,128 @@ export function detectClaudeBypassPrompt(screen: any): boolean {
  * dialog), so the turn hangs until the stall watchdog SIGTERMs it and mislabels
  * the block as a "CLI freeze". We detect it on the wire and select "1. Yes" —
  * restoring the bypass intent turn-by-turn without mutating the user's settings
- * (option 2 "don't ask again" would). Require three distinctive fragments so
- * ordinary assistant prose can't trigger it: the proceed question, the literal
- * "1. Yes" affirmative (also keeps it disjoint from the bypass dialog, whose
- * option 1 is "No, exit"), and the Ink confirm-dialog footer "Esc to cancel".
+ * (option 2 "don't ask again" would).
+ *
+ * Thin wrapper over {@link classifyClaudeScreen} (state === 'confirm-prompt') so the in-flight
+ * auto-answer and the stall watchdog share ONE verdict. The earlier standalone implementation
+ * required the literal footer "esctocancel", which truncates at the 200-col screen edge
+ * ("sctocancel") and silently missed real prompts — the structural classifier does not.
  */
 export function detectClaudeProceedPrompt(screen: any): boolean {
-  if (typeof screen !== 'string' || !screen) return false;
-  // Same despacing rationale as detectClaudeBypassPrompt: the live PTY lays
-  // words out with cursor-move escapes, so the on-screen text runs together.
-  const t = stripAnsiEscapes(screen).replace(/\s+/g, '').toLowerCase();
-  const asksToProceed = t.includes('doyouwanttoproceed') || t.includes('wouldyouliketoproceed');
-  return asksToProceed
-    && t.includes('1.yes')      // affirmative is option 1 (not the bypass "1. No, exit")
-    && t.includes('esctocancel'); // Ink dialog footer — absent from plain prose
+  return classifyClaudeScreen(screen).state === 'confirm-prompt';
+}
+
+export type ClaudeScreenState =
+  /** Mid-turn ask-rule / "Do you want to proceed?" confirm — answerable via affirmativeKey. */
+  | 'confirm-prompt'
+  /** ExitPlanMode / Ultraplan "ready to execute. Would you like to proceed?" — NOT auto-answered
+   *  (policy: option 1 grants standing session bypass; that's a permission-posture change, not a
+   *  hang fix). The chokepoint terminates cleanly and asks the user to re-send instead. */
+  | 'plan-approval'
+  /** Startup "Bypass Permissions mode" dialog — affirmative is option 2 ("Yes, I accept"). */
+  | 'bypass-startup'
+  /** Claude finished and is sitting at the input prompt — the turn ended, this is not a freeze. */
+  | 'idle-repl'
+  /** Selected model unavailable banner (TUI paints it to screen only — no JSONL, no Stop hook). */
+  | 'model-error'
+  /** Spinner / streaming / blank — no determinate state. The only state the stall watchdog may
+   *  still SIGTERM-as-'stalled' (the self-healing freeze path). */
+  | 'unknown';
+
+export interface ClaudeScreenInfo {
+  state: ClaudeScreenState;
+  /** Digit/char to press to take the affirmative action, or null when none applies / must not
+   *  auto-answer. Centralises the auto-answer policy in one place (kills the wrong-digit bug:
+   *  bypass-startup's affirmative is "2", not "1"). */
+  affirmativeKey: string | null;
+  /** ANSI-stripped, whitespace-collapsed last-400-char tail — for diagnostics. */
+  sample: string;
 }
 
 /**
- * Capture-only classifier for the stall watchdog. When the turn goes quiet we
- * cannot tell from timing alone whether the TUI is (a) frozen mid-turn (the
- * known CLI bug — PTY dead), (b) just thinking for a long time (PTY repaints a
- * spinner), or (c) blocked on an interactive prompt that bypass mode does NOT
- * suppress and that's waiting for input it will never get (trust-a-new-folder,
- * a "Do you want to proceed?" confirmation, an expired-login prompt, …). The
- * raw PTY screen is the only thing that disambiguates them, and we don't
- * otherwise persist it — so on a stall we record a compact stripped sample plus
- * a conservative "looks like an interactive prompt" flag. Changes no control
- * flow; it exists purely to make the next stall diagnosable from data.
+ * Read what determinate state Claude's TUI is in from a slice of (ANSI-stripped) PTY screen
+ * output. This is the single source of truth consumed by BOTH the in-flight auto-answer (onData)
+ * and the stall watchdog: when a turn goes quiet we cannot tell from timing alone whether the TUI
+ * is (a) frozen mid-turn (the known CLI freeze — PTY dead), (b) thinking for a long time (PTY
+ * repaints a spinner), (c) blocked on an interactive confirm bypass mode does NOT suppress
+ * (ask-rule "Do you want to proceed?", trust-a-new-folder), (d) sitting back at the idle REPL
+ * (turn finished but the Stop hook was missed/held), or (e) showing a model-unavailable banner.
+ *
+ * Keys on STRUCTURAL invariants, not exact footers — Claude lays words out with cursor-move
+ * escapes so the despaced screen runs together ("doyouwanttoproceed"), and footers TRUNCATE at the
+ * 200-col edge ("Esc to cancel" → "sctocancel"). So the footer is corroborating, never required;
+ * the load-bearing signals are the cursor'd numbered select (`❯`+`1.`) plus the proceed/confirm
+ * question, and the persistent idle mode-line. Robust to claude version churn for the same reason.
+ *
+ * Default-deny: anything not high-confidence returns 'unknown', because mislabelling a real freeze
+ * as a clearable/idle state would convert a self-healing stall (auto-resume) into a silently
+ * dropped turn — ambiguity must bias to the freeze path.
  */
-export function classifyStallScreen(screen: any): { looksLikePrompt: boolean; sample: string } {
-  if (typeof screen !== 'string' || !screen) return { looksLikePrompt: false, sample: '' };
+export function classifyClaudeScreen(screen: any): ClaudeScreenInfo {
+  if (typeof screen !== 'string' || !screen) return { state: 'unknown', affirmativeKey: null, sample: '' };
   const stripped = stripAnsiEscapes(screen);
   const sample = stripped.replace(/\s+/g, ' ').trim().slice(-400);
-  // Claude positions words with cursor moves, so the live screen is spaceless;
-  // match against the despaced form (see detectClaudeBypassPrompt).
+  // Claude positions words with cursor moves, so the live screen is spaceless; match against the
+  // despaced form (see detectClaudeBypassPrompt).
   const ds = stripped.replace(/\s+/g, '').toLowerCase();
-  const looksLikePrompt =
-    ds.includes('esctocancel')        // claude's confirm-dialog footer ("Enter to confirm · Esc to cancel")
-    || ds.includes('doyouwant')
-    || ds.includes('wouldyoulike')
-    || ds.includes('trustthisfolder')
-    || ds.includes('yes,iaccept')
-    || ds.includes('(y/n)')
-    || (ds.includes('❯') && ds.includes('1.') && ds.includes('2.'));  // numbered select with cursor
-  return { looksLikePrompt, sample };
+
+  // 1. Startup bypass-permissions dialog (option 1 is "No, exit" — affirmative is option 2).
+  //    Require all three distinctive fragments so ordinary "bypass" prose can't trigger it
+  //    (mirrors detectClaudeBypassPrompt). Checked first: it overlaps the numbered-select shape.
+  if (ds.includes('bypasspermissionsmode') && ds.includes('yes,iaccept') && ds.includes('no,exit')) {
+    return { state: 'bypass-startup', affirmativeKey: '2', sample };
+  }
+
+  // 2. Selected-model-unavailable banner. Distinctive phrasing; reuse the shared detector so the
+  //    -p and TUI paths stay in lockstep.
+  if (detectClaudeModelError(ds)) return { state: 'model-error', affirmativeKey: null, sample };
+
+  const asksProceed = ds.includes('doyouwanttoproceed') || ds.includes('wouldyouliketoproceed');
+  const hasCursorSelect = ds.includes('❯') && ds.includes('1.');  // a real Ink select, not prose
+
+  // 3. Plan-approval dialog (ExitPlanMode / Ultraplan). Distinctive option text. NOT auto-answered:
+  //    affirmativeKey stays null so the chokepoint terminates cleanly and asks the user to re-send
+  //    rather than pressing "Yes, and bypass permissions" (standing session bypass).
+  if ((asksProceed || ds.includes('readytoexecute'))
+      && (ds.includes('manuallyapproveedits') || ds.includes('yes,andbypasspermissions'))) {
+    return { state: 'plan-approval', affirmativeKey: null, sample };
+  }
+
+  // 4. Mid-turn confirm/select. A proceed/confirm question + a cursor'd numbered select. Bypass and
+  //    plan dialogs are already handled above, so by here option 1 is the "Yes" affirmative.
+  if ((asksProceed || ds.includes('requiresconfirmation')) && hasCursorSelect) {
+    return { state: 'confirm-prompt', affirmativeKey: '1', sample };
+  }
+  // 4b. Standalone interactive prompts distinctive enough to need no numbered select: the
+  //     trust-a-new-folder dialog, and explicit (y/n) confirmations.
+  if (ds.includes('trustthisfolder')) return { state: 'confirm-prompt', affirmativeKey: '1', sample };
+  if ((asksProceed || ds.includes('doyouwant')) && ds.includes('(y/n)')) {
+    return { state: 'confirm-prompt', affirmativeKey: 'y', sample };
+  }
+
+  // 5. Idle REPL — claude finished and is back at the input line. Key on the PERSISTENT mode-line
+  //    (real idle screens carry typed-ahead like "/install", so an empty `❯` is unreliable) and
+  //    require the absence of the active "esc to interrupt" hint so a frozen spinner frame that
+  //    happens to still show the mode-line is NOT mistaken for idle.
+  if (ds.includes('bypasspermissionson')
+      && (ds.includes('shift+tabtocycle') || ds.includes('foragents') || ds.includes('tomanage'))
+      && !ds.includes('esctointerrupt')) {
+    return { state: 'idle-repl', affirmativeKey: null, sample };
+  }
+
+  return { state: 'unknown', affirmativeKey: null, sample };
+}
+
+/**
+ * Backward-compatible capture-only wrapper retained for the stall-diagnostics heartbeat. A "prompt"
+ * is any blocking dialog state (confirm / plan / startup-bypass). Derives from
+ * {@link classifyClaudeScreen} so there is one classifier, not two.
+ */
+export function classifyStallScreen(screen: any): { looksLikePrompt: boolean; sample: string } {
+  const info = classifyClaudeScreen(screen);
+  const looksLikePrompt = info.state === 'confirm-prompt'
+    || info.state === 'plan-approval' || info.state === 'bypass-startup';
+  return { looksLikePrompt, sample: info.sample };
 }
 
 /**
@@ -1003,6 +1081,47 @@ export function decideClaudeTuiStall(input: {
   return input.now - input.lastProgressAt > threshold ? 'stall' : 'wait';
 }
 
+export type ClaudeStallAction =
+  | 'answer-retry'                // an answerable dialog is up — send the affirmative key once more
+  | 'terminate-clean'             // turn finished (idle REPL, no pending bg) — end without resuming
+  | 'terminate-prompt-unanswered' // a dialog we couldn't auto-clear — end, surface, do NOT resume
+  | 'model-error'                 // selected model unavailable — end with the real reason (non-retryable)
+  | 'terminate-stalled';          // genuine freeze candidate — SIGTERM-as-'stalled' (auto-resumes once)
+
+/**
+ * Map the screen state at the moment the stall watchdog would fire to what we should actually do.
+ * This is the chokepoint the diagnostics proved was missing: today the screen is classified at kill
+ * time but the verdict only changes the error STRING, never the action — so confirm-dialog /
+ * idle-REPL / model-error turns get SIGTERMed as 'stalled' and auto-resumed into the same wall.
+ *
+ * Safety (default-deny): a non-'unknown' state may only DOWNGRADE to a still-terminating, non-
+ * resuming outcome — it never cancels termination and never waits beyond one bounded retry. Anything
+ * ambiguous falls through to 'terminate-stalled' (today's self-healing path), because mislabelling a
+ * real freeze as clearable/idle would convert an auto-resumable stall into a silently dropped turn.
+ */
+export function decideStallAction(input: {
+  state: ClaudeScreenState;
+  affirmativeKey: string | null;
+  pendingBgAgents: number;
+  alreadyTriedAnswer: boolean;
+}): ClaudeStallAction {
+  if (input.state === 'model-error') return 'model-error';
+  // Answerable dialogs (ask-rule confirm / startup bypass). Plan-approval reaches here too but
+  // carries affirmativeKey=null under the current policy → falls straight to unanswered.
+  if (input.state === 'confirm-prompt' || input.state === 'plan-approval' || input.state === 'bypass-startup') {
+    if (input.affirmativeKey && !input.alreadyTriedAnswer) return 'answer-retry';
+    return 'terminate-prompt-unanswered';
+  }
+  if (input.state === 'idle-repl') {
+    // Back at the prompt = the turn ended (Stop hook missed/held). Terminate cleanly ONLY when no
+    // background work is outstanding: a bg agent/bash lives inside the claude process and bg-Bash
+    // is silent by nature, so killing an idle-looking screen with pending bg would abort live work
+    // ("进程退出把子代理打断"). Leave those to the existing Stop-hold / TTL machinery.
+    return input.pendingBgAgents > 0 ? 'terminate-stalled' : 'terminate-clean';
+  }
+  return 'terminate-stalled';
+}
+
 // ---------------------------------------------------------------------------
 // Main entry
 // ---------------------------------------------------------------------------
@@ -1183,6 +1302,24 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     setTimeout(() => {
       if (!processExited) { try { proc.kill('SIGKILL'); } catch {} }
     }, after);
+  };
+
+  // Answer a confirm/select dialog: settle (Ink drops input on the dialog's first frames) → the
+  // affirmative key → a split-out Enter (a combined "1\r" gets swallowed — only the digit lands)
+  // → drop the answered frame from screenTail so re-detection only fires on a genuine repaint, not
+  // the stale text we just answered. Shared by the in-flight onData path and the stall-chokepoint
+  // retry so the keystroke discipline lives in one place.
+  const sendConfirmAnswer = (key: string, settleMs: number, confirmDelayMs: number, onConfirmed?: () => void): void => {
+    setTimeout(() => {
+      if (processExited) return;
+      try { proc.write(key); } catch {}
+      setTimeout(() => {
+        if (processExited) return;
+        try { proc.write('\r'); } catch {}
+        screenTail = '';
+        onConfirmed?.();
+      }, confirmDelayMs);
+    }, settleMs);
   };
 
   // Record-only: a limit banner is EVIDENCE, not a verdict. Some banners are
@@ -1397,33 +1534,23 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         }, BYPASS_SETTLE_MS);
       }
     }
-    // Auto-answer a *mid-turn* permission confirmation. `else if` so the startup
-    // bypass dialog (handled above) never falls through here — its option 1 is
-    // "No, exit", so a stray "1" would quit. detectClaudeProceedPrompt only
-    // matches when option 1 is literally "Yes". These recur (one per ask-gated
-    // command), so we re-arm after each answer rather than cap total attempts.
-    else if (detectClaudeProceedPrompt(screenTail)) {
-      if (proceedPhase === 'idle' && proceedAnswerCount < PROCEED_ANSWER_MAX) {
+    // Auto-answer a *mid-turn* permission confirmation. `else if` so the startup bypass dialog
+    // (handled above) never falls through here. The affirmative key comes from the classifier, not
+    // a hard-coded "1": confirm-prompt → "1. Yes", (y/n) → "y". (plan-approval carries no key under
+    // the current policy, so it is not auto-answered here.) These recur (one per ask-gated command),
+    // so we re-arm after each answer rather than cap total attempts.
+    else {
+      const screenInfo = classifyClaudeScreen(screenTail);
+      if (screenInfo.state === 'confirm-prompt' && screenInfo.affirmativeKey
+          && proceedPhase === 'idle' && proceedAnswerCount < PROCEED_ANSWER_MAX) {
         proceedAnswerCount++;
         proceedPhase = 'armed';
-        agentLog(`[claude-tui] mid-turn permission prompt — auto-selecting "1. Yes" (answer ${proceedAnswerCount}/${PROCEED_ANSWER_MAX})`);
-        // settle → "1" (jump to "Yes"; idempotent — the highlight already sits
-        // there) → split-out Enter (a combined "1\r" gets swallowed like the
-        // bypass dialog's "2\r"). Then drop the answered frame and re-arm.
-        setTimeout(() => {
-          if (processExited) return;
-          try { proc.write('1'); } catch {}
-          setTimeout(() => {
-            if (processExited) return;
-            try { proc.write('\r'); } catch {}
-            agentLog('[claude-tui] permission prompt — confirm Enter sent');
-            // Clear the buffered dialog text so the re-arm below only sees
-            // output that arrives *after* the confirm — never the stale frame
-            // we just answered (same hazard the bypass path guards against).
-            screenTail = '';
-            setTimeout(() => { if (!processExited) proceedPhase = 'idle'; }, PROCEED_REARM_MS);
-          }, PROCEED_CONFIRM_DELAY_MS);
-        }, PROCEED_SETTLE_MS);
+        const key = screenInfo.affirmativeKey;
+        agentLog(`[claude-tui] mid-turn permission prompt — auto-selecting "${key}" (answer ${proceedAnswerCount}/${PROCEED_ANSWER_MAX})`);
+        sendConfirmAnswer(key, PROCEED_SETTLE_MS, PROCEED_CONFIRM_DELAY_MS, () => {
+          agentLog('[claude-tui] permission prompt — confirm Enter sent');
+          setTimeout(() => { if (!processExited) proceedPhase = 'idle'; }, PROCEED_REARM_MS);
+        });
       }
     }
     // Capture stderr-ish bytes (TUI startup errors, "claude: command not
@@ -1479,6 +1606,11 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // carriage return into the PTY in case the prompt is sitting on the input
   // line waiting for it.
   const PROMPT_SUBMIT_NUDGE_MS = 1500;
+  // After the stall chokepoint fires its affirmative keystroke at a stuck dialog, give the dialog
+  // this long to clear before deciding it's unanswerable. Generous enough to also cover the
+  // in-flight onData answer cycle (settle + confirm + re-arm) so a chained next-prompt isn't
+  // mistaken for a failed answer; short enough that we never re-wait the full 3-min quiet window.
+  const CHOKEPOINT_ANSWER_GRACE_MS = 5000;
   let promptNudged = false;
   let pollHandle: NodeJS.Timeout | null = null;
   let drainScheduled = false;
@@ -1500,6 +1632,14 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // last-prompt, …) that land right after submit and prove nothing.
   let lastAssistantEventAt = 0;
   let stallKilled = false;
+  // Chokepoint answer-retry: when the watchdog is about to fire on a confirm dialog, send the
+  // affirmative key ONCE against the now-stable (3-min-quiet, fully-painted) screen — the in-flight
+  // onData answer only fires while bytes arrive, so a dialog that paints once then goes silent never
+  // gets a second attempt (the diagnostics showed full-match prompts killed with answer-count 1).
+  // `stallAnswerSentAt` arms a bounded grace check: if the dialog hasn't cleared by then, terminate
+  // without auto-resuming (re-running would just re-paint the same dialog).
+  let stallAnswerTried = false;
+  let stallAnswerSentAt = 0;
   // Stall diagnostics (capture-only) — see writeStallDiag.
   let observedClaudeVersion = '';
   let lastMainJsonlType = '';
@@ -1516,7 +1656,8 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // Used by both the 200ms poll tick and the post-exit final drain. Returns
   // true when any line was consumed so callers can emit().
   const drainMainJsonl = (): boolean => {
-    if (!fs.existsSync(activeJsonlPath)) return false;
+    // No existsSync guard: readJsonlIncrement returns no lines (offset unchanged)
+    // for a missing file, so the guard was a redundant extra syscall every tick.
     const inc = readJsonlIncrement(activeJsonlPath, jsonlReadOffset);
     jsonlReadOffset = inc.offset;
     let touched = false;
@@ -1565,7 +1706,6 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // wins, the other dedups via seenClaudeToolIds / seenClaudeToolResultIds.
   let toolEventsReadOffset = 0;
   const drainToolEvents = (): boolean => {
-    if (!fs.existsSync(toolEventsPath)) return false;
     const inc = readJsonlIncrement(toolEventsPath, toolEventsReadOffset);
     toolEventsReadOffset = inc.offset;
     let any = false;
@@ -1648,7 +1788,6 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   const pumpSubAgentSidecars = (): boolean => {
     let any = false;
     for (const tail of trackedSubAgents.values()) {
-      if (!fs.existsSync(tail.sidecarPath)) continue;
       const inc = readJsonlIncrement(tail.sidecarPath, tail.offset);
       tail.offset = inc.offset;
       for (const line of inc.lines) {
@@ -1668,6 +1807,29 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
     // parent thread is quietly waiting on them.
     if (any) lastSidecarEventAt = Date.now();
     return any;
+  };
+
+  // End a turn that is blocked on a confirm/select dialog the auto-answer could not clear. Unlike a
+  // 'stalled' kill this does NOT auto-resume — re-running the prompt just re-paints the same dialog
+  // (the loop the user kept seeing). The session is intact; the user re-sends to continue.
+  const terminatePromptUnanswered = (screenState: ClaudeScreenState, sample: string): void => {
+    stallKilled = true;
+    const nowMs = Date.now();
+    const progressAt = Math.max(start, lastMainJsonlEventAt, lastToolEventAt, lastSidecarEventAt);
+    writeStallDiag({
+      kind: 'stall', sessionId: activeSessionId, version: observedClaudeVersion, model: s.model || null,
+      elapsedTurnMs: nowMs - start, quietMs: nowMs - progressAt, ptyQuietMs: nowMs - lastPtyDataAt,
+      ptyAliveWhileQuiet: stallDiagPtyAliveWhileQuiet, lastJsonlType: lastMainJsonlType,
+      pendingHookTools: pendingHookToolIds.size, pendingBgAgents: pendingClaudeBackgroundAgentCount(s),
+      looksLikePrompt: true, screenState, action: 'terminate-prompt-unanswered', screenSample: sample,
+    });
+    s.stopReason = 'prompt_unanswered';
+    if (!s.errors) s.errors = ['Claude paused for a confirmation pikiclaw could not auto-approve. Your session is intact — re-send your message (or reply "continue") to proceed.'];
+    agentWarn(`[claude-tui] confirm dialog (${screenState}) did not clear after auto-answer — ending turn without auto-resume pid=${proc.pid}`);
+    pushRecentActivity(s.recentActivity, 'Waiting on a confirmation pikiclaw could not auto-approve — re-send to continue');
+    s.activity = s.recentActivity.join('\n');
+    emit();
+    killProc('SIGTERM');
   };
 
   const tick = () => {
@@ -1731,8 +1893,12 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
 
     // Sub-agent sidecar discovery + pump. Order matters: discovery first so a
     // newly-spawned sub-agent gets registered for tailing this same tick if
-    // its events have already been written.
-    tryDiscoverSubAgents();
+    // its events have already been written. Skip the readdir + per-meta reads
+    // until a Task tool_use is actually registered — discovery can't succeed
+    // before then anyway (it requires the parent in s.subAgents), so the common
+    // no-subagent turn would otherwise readdir the sidecar dir every 200ms for
+    // nothing.
+    if (s.subAgents.size > 0) tryDiscoverSubAgents();
     if (pumpSubAgentSidecars()) emit();
 
     // Stop hook handling. A Stop is NOT automatically the end of the turn:
@@ -1819,9 +1985,26 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         state.promptSubmittedAt || 0,
       );
       const inPostStopHold = !!state.stoppedAt && state.stoppedAt >= nonStopProgressAt;
+      // Chokepoint answer-retry grace. We sent the affirmative key at a stuck dialog; give it time
+      // to clear. If the screen is no longer a blocking dialog, the answer took — disarm and re-arm
+      // so a later prompt in the same turn can also get a chokepoint retry. If it is STILL a dialog
+      // (and the in-flight onData answer didn't clear it either), it is genuinely unanswerable —
+      // end without auto-resume.
+      if (stallAnswerSentAt > 0 && Date.now() - stallAnswerSentAt > CHOKEPOINT_ANSWER_GRACE_MS) {
+        const after = classifyClaudeScreen(screenTail);
+        const stillBlocking = after.state === 'confirm-prompt'
+          || after.state === 'plan-approval' || after.state === 'bypass-startup';
+        if (stillBlocking) {
+          terminatePromptUnanswered(after.state, after.sample);
+        } else {
+          agentLog(`[claude-tui] chokepoint answer cleared the dialog (now ${after.state}) — turn continues`);
+          stallAnswerSentAt = 0;
+          stallAnswerTried = false;
+        }
+      }
       // Stall diagnostics: sample the quiet lead-up so the watchdog can later be
       // tuned from data. Capture-only — changes no control flow.
-      {
+      if (!stallKilled) {
         const nowMs = Date.now();
         const quietMs = nowMs - lastProgressAt;
         if (quietMs >= STALL_DIAG_QUIET_THRESHOLD_MS && !inPostStopHold) {
@@ -1833,9 +2016,12 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           if (ptyQuietMs < CLAUDE_TUI_STALL_PTY_DEAD_MS) stallDiagPtyAliveWhileQuiet = true;
           if (nowMs - lastStallDiagHeartbeatAt >= STALL_DIAG_HEARTBEAT_INTERVAL_MS) {
             lastStallDiagHeartbeatAt = nowMs;
-            // Snapshot the screen so a quiet stretch can later be classified as
-            // a frozen stream vs a long think vs a blocking interactive prompt.
-            const screenInfo = classifyStallScreen(screenTail);
+            // Snapshot the screen so a quiet stretch can later be classified as a frozen stream vs
+            // a long think vs a blocking dialog vs an idle hold. Record the full screenState (not
+            // just looksLikePrompt) so the lead-up to a kill is measurable as claude versions churn.
+            const screenInfo = classifyClaudeScreen(screenTail);
+            const looksLikePrompt = screenInfo.state === 'confirm-prompt'
+              || screenInfo.state === 'plan-approval' || screenInfo.state === 'bypass-startup';
             writeStallDiag({
               kind: 'quiet',
               sessionId: activeSessionId,
@@ -1851,87 +2037,115 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
               pendingHookTools: pendingHookToolIds.size,
               pendingBgAgents: pendingBgForStall,
               pendingBgBash: pendingClaudeBackgroundBashCount(s),
-              looksLikePrompt: screenInfo.looksLikePrompt,
+              looksLikePrompt,
+              screenState: screenInfo.state,
               screenSample: screenInfo.sample,
             });
           }
         }
       }
-      const stallDecision = decideClaudeTuiStall({
-        now: Date.now(),
-        lastProgressAt,
-        pendingToolCount: pendingHookToolIds.size + pendingBgForStall,
-        lastPtyDataAt: inPostStopHold ? 0 : lastPtyDataAt,
-      });
-      if (stallDecision === 'stall') {
-        stallKilled = true;
-        const quietMin = Math.round((Date.now() - lastProgressAt) / 60_000);
-        const ptyQuietS = Math.round((Date.now() - lastPtyDataAt) / 1000);
-        s.stopReason = 'stalled';
-        const stallScreen = classifyStallScreen(screenTail);
-        writeStallDiag({
-          kind: 'stall',
-          sessionId: activeSessionId,
-          version: observedClaudeVersion,
-          model: s.model || null,
-          elapsedTurnMs: Date.now() - start,
-          quietMs: Date.now() - lastProgressAt,
-          ptyQuietMs: Date.now() - lastPtyDataAt,
-          // True ⇒ the freeze kept the PTY painting, so this stall came via the
-          // slow quiet threshold, not the 3-min PTY-dead fast path.
-          ptyAliveWhileQuiet: stallDiagPtyAliveWhileQuiet,
-          lastJsonlType: lastMainJsonlType,
-          pendingHookTools: pendingHookToolIds.size,
-          pendingBgAgents: pendingBgForStall,
-          // looksLikePrompt=true here is the signal that the "stall" was really
-          // a blocking interactive prompt waiting for input bypass can't skip —
-          // the mid-turn dialog-hang hypothesis, confirmable from screenSample.
-          looksLikePrompt: stallScreen.looksLikePrompt,
-          screenSample: stallScreen.sample,
+      if (!stallKilled) {
+        const stallDecision = decideClaudeTuiStall({
+          now: Date.now(),
+          lastProgressAt,
+          pendingToolCount: pendingHookToolIds.size + pendingBgForStall,
+          lastPtyDataAt: inPostStopHold ? 0 : lastPtyDataAt,
         });
-        if (!s.errors) {
-          if (terminalModelError && !s.text.trim()) {
-            // Model-unavailable arbitration first: if the stall watchdog beat the
-            // settle-timer (noteTerminalModelError) to the kill, the turn didn't
-            // freeze — the selected model is disabled / no-access. Surface the real
-            // reason; stopReason 'model_error' is non-retryable so doClaudeWithRetry
-            // won't auto-resume into the same dead model.
+        if (stallDecision === 'stall') {
+          const quietMin = Math.round((Date.now() - lastProgressAt) / 60_000);
+          const ptyQuietS = Math.round((Date.now() - lastPtyDataAt) / 1000);
+          // The screen is ground truth. Classify it, then map to an action — the chokepoint the
+          // diagnostics proved was missing (the verdict used to change only the error string).
+          const screen = classifyClaudeScreen(screenTail);
+          const action = decideStallAction({
+            state: screen.state,
+            affirmativeKey: screen.affirmativeKey,
+            pendingBgAgents: pendingBgForStall,
+            alreadyTriedAnswer: stallAnswerTried,
+          });
+          const looksLikePrompt = screen.state === 'confirm-prompt'
+            || screen.state === 'plan-approval' || screen.state === 'bypass-startup';
+          // Diagnostics oracle: record the screen state + chosen action on every kill-point so the
+          // false-positive rate stays measurable as claude versions churn.
+          const writeStallRecord = () => writeStallDiag({
+            kind: 'stall', sessionId: activeSessionId, version: observedClaudeVersion, model: s.model || null,
+            elapsedTurnMs: Date.now() - start, quietMs: Date.now() - lastProgressAt, ptyQuietMs: Date.now() - lastPtyDataAt,
+            ptyAliveWhileQuiet: stallDiagPtyAliveWhileQuiet, lastJsonlType: lastMainJsonlType,
+            pendingHookTools: pendingHookToolIds.size, pendingBgAgents: pendingBgForStall,
+            looksLikePrompt, screenState: screen.state, action, screenSample: screen.sample,
+          });
+
+          if (action === 'answer-retry' && screen.affirmativeKey) {
+            // #1 fix: the in-flight onData answer only fires while bytes arrive, so a dialog that
+            // painted once then went byte-silent never got a retry (full-match prompts were killed
+            // with answer-count 1). Send the affirmative key now against the stable, fully-painted
+            // screen (no settle — quiet 3 min) and let the grace check decide the outcome. No kill.
+            stallAnswerTried = true;
+            stallAnswerSentAt = Date.now();
+            agentWarn(`[claude-tui] watchdog hit a ${screen.state} after ${quietMin}m quiet — auto-answering "${screen.affirmativeKey}" against the stable dialog (no kill yet) pid=${proc.pid}`);
+            sendConfirmAnswer(screen.affirmativeKey, 0, PROCEED_CONFIRM_DELAY_MS);
+          } else if (action === 'terminate-clean') {
+            // Idle REPL, nothing pending — the turn finished and we merely missed/held its Stop hook.
+            // Hand off to the normal post-Stop drain: clean end, no 'stalled', no auto-resume.
+            writeStallRecord();
+            stopHookFired = true;
+            stopHookSeenAt = Date.now();
+            agentLog(`[claude-tui] watchdog saw an idle REPL with no pending work after ${quietMin}m — treating as a finished turn (clean end, no resume) pid=${proc.pid}`);
+          } else if (action === 'terminate-prompt-unanswered') {
+            writeStallRecord();
+            terminatePromptUnanswered(screen.state, screen.sample);
+          } else if (action === 'model-error') {
+            // Selected model unavailable (banner painted to screen only — no JSONL, no Stop hook).
+            // Surface the real reason; 'model_error' is non-retryable so we never resume into it.
+            stallKilled = true;
+            if (!terminalModelError) terminalModelError = claudeModelErrorMessage(s.model || opts.claudeModel || null);
+            writeStallRecord();
             s.stopReason = 'model_error';
-            s.errors = [terminalModelError];
+            if (!s.errors) s.errors = [terminalModelError];
+            agentWarn(`[claude-tui] watchdog hit a model-unavailable banner after ${quietMin}m — ending turn (model_error, no resume) pid=${proc.pid}`);
+            pushRecentActivity(s.recentActivity, 'Selected model unavailable — stopping');
+            s.activity = s.recentActivity.join('\n');
+            emit();
+            killProc('SIGTERM');
           } else {
-            // Limit-notice arbitration: a turn that showed a limit banner and then
-            // produced nothing substantive didn't freeze — the limit ate it. Label
-            // it rate_limit with the banner's own text (which carries the reset
-            // time) so the user gets the real reason, and so doClaudeWithRetry
-            // doesn't auto-resume into the same wall.
-            const limitOutcome = resolveClaudeTuiLimitOutcome({
-              noticeText: terminalLimitNotice,
-              noticeAt: terminalLimitNoticeAt,
-              lastSubstantiveEventAt: Math.max(lastAssistantEventAt, lastToolEventAt, lastSidecarEventAt),
-              hasOutputText: !!s.text.trim(),
-            });
-            if (limitOutcome === 'fatal') {
-              s.stopReason = 'rate_limit';
-              s.errors = [terminalLimitNotice!];
-            } else {
-              // Be honest about which kind of stall this is. looksLikePrompt here
-              // means the auto-answer (detectClaudeProceedPrompt) did NOT clear an
-              // interactive prompt — so it's a blocking dialog, not the CLI freeze.
-              s.errors = [stallScreen.looksLikePrompt
-                ? `Claude blocked mid-turn on an interactive prompt (PTY quiet ${ptyQuietS}s) that auto-answer couldn't clear. Terminated for auto-resume.`
-                : `Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
+            // terminate-stalled: a genuine freeze candidate (state 'unknown') OR an idle hold with
+            // pending background work we must not interrupt. Keep the self-healing SIGTERM-as-
+            // 'stalled' path (auto-resumes once) with the existing model / limit arbitration.
+            stallKilled = true;
+            s.stopReason = 'stalled';
+            writeStallRecord();
+            if (!s.errors) {
+              if (terminalModelError && !s.text.trim()) {
+                s.stopReason = 'model_error';
+                s.errors = [terminalModelError];
+              } else {
+                const limitOutcome = resolveClaudeTuiLimitOutcome({
+                  noticeText: terminalLimitNotice,
+                  noticeAt: terminalLimitNoticeAt,
+                  lastSubstantiveEventAt: Math.max(lastAssistantEventAt, lastToolEventAt, lastSidecarEventAt),
+                  hasOutputText: !!s.text.trim(),
+                });
+                if (limitOutcome === 'fatal') {
+                  s.stopReason = 'rate_limit';
+                  s.errors = [terminalLimitNotice!];
+                } else {
+                  s.errors = [`Claude process went silent mid-turn for ${quietMin}m (no JSONL, hook, or sub-agent events; PTY quiet ${ptyQuietS}s) — known claude CLI freeze. Terminated for auto-resume.`];
+                }
+              }
             }
+            agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (state=${screen.state}, pendingTools=${pendingHookToolIds.size}, pendingBg=${pendingBgForStall}, ptyQuiet=${ptyQuietS}s) — terminating TUI pid=${proc.pid}${s.stopReason === 'rate_limit' ? ' (usage limit)' : s.stopReason === 'model_error' ? ' (model unavailable)' : ' for auto-resume'}`);
+            pushRecentActivity(s.recentActivity, s.stopReason === 'rate_limit'
+              ? 'Usage limit blocked the turn — stopping'
+              : s.stopReason === 'model_error'
+                ? 'Selected model unavailable — stopping'
+                : `Agent stalled (${quietMin}m silent) — restarting turn`);
+            s.activity = s.recentActivity.join('\n');
+            emit();
+            killProc('SIGTERM');
           }
+          // Keep polling: onExit resolves the wait and the final drains pick up
+          // whatever the dying process flushes.
         }
-        agentWarn(`[claude-tui] stall detected: no progress for ${quietMin}m (pendingTools=${pendingHookToolIds.size}, ptyQuiet=${ptyQuietS}s) — terminating TUI pid=${proc.pid}${s.stopReason === 'rate_limit' ? ' (usage limit)' : ' for auto-resume'}`);
-        pushRecentActivity(s.recentActivity, s.stopReason === 'rate_limit'
-          ? 'Usage limit blocked the turn — stopping'
-          : `Agent stalled (${quietMin}m silent) — restarting turn`);
-        s.activity = s.recentActivity.join('\n');
-        emit();
-        killProc('SIGTERM');
-        // Keep polling: onExit resolves the wait and the final drains pick up
-        // whatever the dying process flushes.
       }
     }
 
@@ -1963,7 +2177,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   // may have landed after our last poll tick; mirror the main JSONL drain to
   // make sure sub.tools / sub.status carry the complete picture into the
   // final result.
-  tryDiscoverSubAgents();
+  if (s.subAgents.size > 0) tryDiscoverSubAgents();
   if (pumpSubAgentSidecars()) emit();
   // Process has exited and final drain is done — promote whatever is left in
   // the stream buffer into `s.text` so the final result message carries the

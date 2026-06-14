@@ -231,6 +231,15 @@ export interface StreamOpts {
    * and a standing opt-in directive is injected via the system prompt.
    */
   claudeWorkflowEnabled?: boolean;
+  /**
+   * How this Claude turn is spawned (and thus billed):
+   *  - 'subscription': interactive TUI under a PTY → Pro/Max quota.
+   *  - 'api': headless `claude -p` → Agent SDK credit pool.
+   * When unset the dispatcher falls back to the env-var default
+   * (isClaudePrintModeForced). The bot always threads the resolved value for
+   * claude turns; one-shot callers (cli/run.ts) may leave it undefined.
+   */
+  claudeAccessMode?: 'subscription' | 'api';
   // gemini
   geminiModel?: string;
   geminiApprovalMode?: string;

@@ -309,20 +309,48 @@ function normalizeSessionRecord(raw: any, workdir: string): ManagedSessionRecord
 // Index persistence
 // ---------------------------------------------------------------------------
 
+/**
+ * Parsed-index cache keyed by index-file identity (mtime + size). loadSessionIndex
+ * sits on the per-turn read path (getSessionStoredConfig), every dashboard session
+ * read, and is hit several times within a single save flow — each call otherwise
+ * does readFileSync + JSON.parse + a per-record normalize pass. A cache hit costs
+ * one statSync. writeSessionIndex invalidates the entry, so a write is always
+ * re-read fresh; every writer mutates records then writes, so the shared cache is
+ * never left serving a half-mutated record.
+ */
+const sessionIndexCache = new Map<string, { mtimeMs: number; size: number; data: SessionIndexData }>();
+
+/** Sort session records newest-first, parsing each `updatedAt` only once. */
+function sortByUpdatedAtDesc<T extends { updatedAt: string }>(records: T[]): T[] {
+  const at = new Map<T, number>(records.map(r => [r, Date.parse(r.updatedAt) || 0]));
+  return records.sort((a, b) => at.get(b)! - at.get(a)!);
+}
+
 function loadSessionIndex(workdir: string): SessionIndexData {
-  const parsed = readJsonFile<any>(sessionIndexPath(workdir), { version: 1, sessions: [] });
+  const filePath = sessionIndexPath(workdir);
+  let stat: fs.Stats | null = null;
+  try { stat = fs.statSync(filePath); } catch {}
+  if (stat) {
+    const cached = sessionIndexCache.get(filePath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.data;
+  }
+  const parsed = readJsonFile<any>(filePath, { version: 1, sessions: [] });
   const sessions = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
-  return {
+  const data: SessionIndexData = {
     version: 1,
     sessions: sessions
       .map((entry: any) => normalizeSessionRecord(entry, workdir))
       .filter((entry: ManagedSessionRecord | null): entry is ManagedSessionRecord => !!entry)
       .filter((entry: ManagedSessionRecord) => !isPendingSessionId(entry.sessionId) || fs.existsSync(sessionRootFromWorkspacePath(entry.workspacePath))),
   };
+  if (stat) sessionIndexCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, data });
+  return data;
 }
 
 function writeSessionIndex(workdir: string, sessions: ManagedSessionRecord[]) {
-  writeJsonFile(sessionIndexPath(workdir), { version: 1, sessions });
+  const filePath = sessionIndexPath(workdir);
+  writeJsonFile(filePath, { version: 1, sessions });
+  sessionIndexCache.delete(filePath);
 }
 
 function writeSessionMeta(record: ManagedSessionRecord) {
@@ -409,7 +437,7 @@ export function saveSessionRecord(workdir: string, record: ManagedSessionRecord)
   const pos = index.sessions.findIndex(entry => entry.agent === record.agent && entry.sessionId === record.sessionId);
   if (pos >= 0) index.sessions[pos] = record;
   else index.sessions.unshift(record);
-  index.sessions.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  sortByUpdatedAtDesc(index.sessions);
   writeSessionIndex(workdir, index.sessions);
   writeSessionMeta(record);
   return record;
@@ -690,9 +718,9 @@ function managedRecordToSessionInfo(record: ManagedSessionRecord): SessionInfo {
 
 // Exported for drivers
 export function listPikiclawSessions(workdir: string, agent: Agent, limit?: number): ManagedSessionRecord[] {
-  const records = loadSessionIndex(path.resolve(workdir)).sessions
-    .filter(entry => entry.agent === agent)
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const records = sortByUpdatedAtDesc(
+    loadSessionIndex(path.resolve(workdir)).sessions.filter(entry => entry.agent === agent),
+  );
   return typeof limit === 'number' ? records.slice(0, limit) : records;
 }
 
@@ -832,9 +860,9 @@ export function ensureManagedSession(opts: EnsureManagedSessionOpts): SessionInf
 }
 
 export function findManagedThreadSession(workdir: string, threadId: string, agent: Agent): SessionInfo | null {
-  const record = loadSessionIndex(path.resolve(workdir)).sessions
-    .filter(entry => entry.threadId === threadId && entry.agent === agent)
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] || null;
+  const record = sortByUpdatedAtDesc(
+    loadSessionIndex(path.resolve(workdir)).sessions.filter(entry => entry.threadId === threadId && entry.agent === agent),
+  )[0] || null;
   return record ? managedRecordToSessionInfo(record) : null;
 }
 

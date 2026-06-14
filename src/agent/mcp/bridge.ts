@@ -15,7 +15,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
   ensurePlaywrightMcpConfigFile,
@@ -413,6 +414,16 @@ export function _matchPlaywrightMcpProcessCommand(
   return true;
 }
 
+// Promisified spawn for codex MCP registration — keeps the per-server add/remove
+// off the event loop (was execFileSync, which blocked per spawn at stream start).
+const execFileAsync = promisify(execFile);
+
+// Reaping shells out to a full `ps` table scan + per-line regex and only guards
+// against playwright-mcp orphans left by a previous run, so it need not run on
+// every browser-enabled stream start. Throttle it per CDP endpoint.
+const REAP_THROTTLE_MS = 30_000;
+const lastReapAt = new Map<string, number>();
+
 function reapStalePlaywrightMcpProcesses(
   cdpEndpoint: string,
 ): { reaped: number[]; spared: number[] } {
@@ -420,12 +431,15 @@ function reapStalePlaywrightMcpProcesses(
   const spared: number[] = [];
   if (process.platform === 'win32' || !cdpEndpoint) return { reaped, spared };
 
+  const normalized = cdpEndpoint.replace(/\/+$/, '');
+  if (Date.now() - (lastReapAt.get(normalized) ?? 0) < REAP_THROTTLE_MS) return { reaped, spared };
+  lastReapAt.set(normalized, Date.now());
+
   const result = spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
   if (result.status !== 0) return { reaped, spared };
 
   const ppidByPid = new Map<number, number>();
   const candidates: number[] = [];
-  const normalized = cdpEndpoint.replace(/\/+$/, '');
   const lines = String(result.stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
   for (const line of lines) {
@@ -877,15 +891,17 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     // via extraEnv — codex's `--bearer-token-env-var` only accepts an env name,
     // never a literal token, so the value MUST land in the child env.
     const codexBearerEnv: Record<string, string> = {};
+    // Sequential (codex serializes its own config writes) but async, so the
+    // per-server spawns don't block the event loop at stream start.
     for (const server of allServers) {
       const codexArgs = buildCodexMcpAddArgs(server, codexBearerEnv);
       if (!codexArgs) continue;
       try {
-        execFileSync('codex', codexArgs, { stdio: 'pipe', timeout: MCP_TIMEOUTS.codexMcpAdd });
+        await execFileAsync('codex', codexArgs, { timeout: MCP_TIMEOUTS.codexMcpAdd });
         codexRegisteredNames.push(server.name);
       } catch {
-        try { execFileSync('codex', ['mcp', 'remove', server.name], { stdio: 'pipe', timeout: MCP_TIMEOUTS.codexMcpRemove }); } catch {}
-        execFileSync('codex', codexArgs, { stdio: 'pipe', timeout: MCP_TIMEOUTS.codexMcpAdd });
+        try { await execFileAsync('codex', ['mcp', 'remove', server.name], { timeout: MCP_TIMEOUTS.codexMcpRemove }); } catch {}
+        await execFileAsync('codex', codexArgs, { timeout: MCP_TIMEOUTS.codexMcpAdd });
         codexRegisteredNames.push(server.name);
       }
     }
@@ -925,7 +941,7 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     stop: async () => {
       if (callbackServer) await new Promise<void>(resolve => callbackServer!.close(() => resolve()));
       for (const name of [...codexRegisteredNames].reverse()) {
-        try { execFileSync('codex', ['mcp', 'remove', name], { stdio: 'pipe', timeout: MCP_TIMEOUTS.codexMcpRemove }); } catch {}
+        try { await execFileAsync('codex', ['mcp', 'remove', name], { timeout: MCP_TIMEOUTS.codexMcpRemove }); } catch {}
       }
       if (configPath) {
         try { fs.rmSync(configPath, { force: true }); } catch {}

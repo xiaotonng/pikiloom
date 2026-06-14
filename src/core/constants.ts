@@ -102,6 +102,16 @@ export const DASHBOARD_PERMISSION_TIMEOUTS = {
   detectTerminal: 3_000,
 };
 
+/**
+ * TTL for cached dashboard permission / host-terminal probes. `/api/state` is
+ * polled (~1.5s while a channel validates) and each probe spawns subprocesses
+ * (screencapture, an `ls` shell, a `ps` process-tree walk), so the raw checks
+ * must not run per request. The host terminal is immutable per process;
+ * permission grants change rarely and `requestPermission` invalidates the cache
+ * on user action, so a short TTL surfaces grants without per-request spawns.
+ */
+export const DASHBOARD_PERMISSION_CACHE_TTL_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // CLI / Daemon
 // ---------------------------------------------------------------------------

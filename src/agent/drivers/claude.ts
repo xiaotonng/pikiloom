@@ -1381,119 +1381,170 @@ function extractClaudeTailQA(filePath: string): { lastQuestion: string | null; l
   return { lastQuestion, lastAnswer, lastMessageText };
 }
 
-function getNativeClaudeSessions(workdir: string): SessionInfo[] {
+/** Content-derived native-session fields — everything except time-relative state. */
+interface NativeClaudeContent {
+  title: string | null;
+  model: string | null;
+  numTurns: number | null;
+  createdAt: string;
+  lastQuestion: string | null;
+  lastAnswer: string | null;
+  lastMessageText: string | null;
+}
+
+// Per-file cache of the expensive content-derived fields. getNativeClaudeSessions
+// runs per dashboard session-list request AND per workspace×agent in the overview
+// fan-out; without this each call re-read + JSON-parsed every transcript in the
+// project dir. Keyed by (mtime,size) so any append/edit re-reads just that file.
+// `running`/`runState` are NOT cached — they depend on Date.now() - mtime, so they
+// are recomputed per call below.
+const nativeClaudeContentCache = new Map<string, { mtimeMs: number; size: number; content: NativeClaudeContent }>();
+
+function readNativeClaudeContent(filePath: string, stat: fs.Stats): NativeClaudeContent | null {
+  try {
+    // Read enough bytes to get past the system_prompt line (can be 20KB+) and
+    // reach the first user/assistant events for title and model extraction.
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(65536);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    const head = buf.toString('utf8', 0, bytesRead);
+    const lines = head.split('\n');
+
+    let title: string | null = null;
+    let model: string | null = null;
+    for (const line of lines) {
+      if (!line || line[0] !== '{') continue;
+      try {
+        const ev = JSON.parse(line);
+        if (!title && ev.type === 'user' && ev.isMeta !== true) {
+          const text = sanitizeSessionUserPreviewText(extractClaudeText(ev.message?.content, true));
+          if (text) {
+            const display = collapseSkillPrompt(text) ?? text;
+            title = display.length <= 120 ? display : `${display.slice(0, 117).trimEnd()}...`;
+          }
+        }
+        if (!model && ev.type === 'assistant' && ev.message?.model && ev.message.model !== '<synthetic>') {
+          model = ev.message.model;
+        }
+        if (title && model) break;
+      } catch { /* skip */ }
+    }
+    // Fallback: if the first user message line is too large (e.g. contains
+    // base64 images) JSON.parse above will fail.  Read a bigger chunk and
+    // regex-extract text blocks to find the actual user question.
+    if (!title) {
+      let scanStr = head;
+      if (stat.size > 65536) {
+        try {
+          const fd2 = fs.openSync(filePath, 'r');
+          const bigBuf = Buffer.alloc(Math.min(10 * 1024 * 1024, stat.size));
+          const bigRead = fs.readSync(fd2, bigBuf, 0, bigBuf.length, 0);
+          fs.closeSync(fd2);
+          scanStr = bigBuf.toString('utf8', 0, bigRead);
+        } catch { /* keep using head */ }
+      }
+      const re = /"type":"text","text":"((?:[^"\\]|\\.)*)"/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(scanStr)) !== null) {
+        let raw = m[1]
+          .replace(/\\n/g, ' ').replace(/\\t/g, ' ')
+          .replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+          .replace(/\s+/g, ' ').trim();
+        if (!raw || raw.startsWith('<') || raw.startsWith('[Image:')) continue;
+        raw = stripInjectedPrompts(raw);
+        if (!raw) continue;
+        const display = collapseSkillPrompt(raw) ?? raw;
+        title = display.length <= 120 ? display : `${display.slice(0, 117).trimEnd()}...`;
+        break;
+      }
+    }
+
+    // Quick turn count: count real user messages (exclude tool_result and
+    // system-injected isMeta events — Skill outputs, resume prompts, etc.).
+    let numTurns = 0;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const rawLines = raw.split('\n');
+      for (const rl of rawLines) {
+        if (rl.length <= 2 || !rl.includes('"type":"user"')) continue;
+        if (rl.includes('"tool_result"') || rl.includes('"isMeta":true')) continue;
+        numTurns++;
+      }
+    } catch { /* ignore count errors */ }
+
+    const tailQA = extractClaudeTailQA(filePath);
+    return {
+      title,
+      model,
+      numTurns: numTurns || null,
+      createdAt: stat.birthtime.toISOString(),
+      lastQuestion: tailQA.lastQuestion,
+      lastAnswer: tailQA.lastAnswer,
+      lastMessageText: tailQA.lastMessageText,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getNativeClaudeSessions(workdir: string, limit?: number): SessionInfo[] {
   const home = getHome();
   if (!home) return [];
   const projectDir = path.join(home, '.claude', 'projects', claudeProjectDirName(workdir));
-  if (!fs.existsSync(projectDir)) return [];
-
-  const sessions: SessionInfo[] = [];
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(projectDir, { withFileTypes: true }); } catch { return []; }
 
+  // Stat first (cheap), sort newest-first, then read bodies only for as many as
+  // can surface: `limit` is applied to a recency-sorted merge downstream, so a
+  // transcript older than the top-`limit` can never appear in that view. Unchanged
+  // files come straight from the per-file content cache, so repeated list calls
+  // (dashboard polls, workspace×agent overview fan-out) don't re-parse the dir.
+  const files: { sessionId: string; filePath: string; stat: fs.Stats }[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
-    const sessionId = entry.name.slice(0, -6); // strip .jsonl
     const filePath = path.join(projectDir, entry.name);
-    try {
-      const stat = fs.statSync(filePath);
-      // Read enough bytes to get past the system_prompt line (can be 20KB+) and
-      // reach the first user/assistant events for title and model extraction.
-      const fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(65536);
-      const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
-      fs.closeSync(fd);
-      const head = buf.toString('utf8', 0, bytesRead);
-      const lines = head.split('\n');
+    try { files.push({ sessionId: entry.name.slice(0, -6), filePath, stat: fs.statSync(filePath) }); } catch { /* skip */ }
+  }
+  files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  const selected = typeof limit === 'number' ? files.slice(0, Math.max(0, limit)) : files;
 
-      let title: string | null = null;
-      let model: string | null = null;
-      for (const line of lines) {
-        if (!line || line[0] !== '{') continue;
-        try {
-          const ev = JSON.parse(line);
-          if (!title && ev.type === 'user' && ev.isMeta !== true) {
-            const text = sanitizeSessionUserPreviewText(extractClaudeText(ev.message?.content, true));
-            if (text) {
-              const display = collapseSkillPrompt(text) ?? text;
-              title = display.length <= 120 ? display : `${display.slice(0, 117).trimEnd()}...`;
-            }
-          }
-          if (!model && ev.type === 'assistant' && ev.message?.model && ev.message.model !== '<synthetic>') {
-            model = ev.message.model;
-          }
-          if (title && model) break;
-        } catch { /* skip */ }
-      }
-      // Fallback: if the first user message line is too large (e.g. contains
-      // base64 images) JSON.parse above will fail.  Read a bigger chunk and
-      // regex-extract text blocks to find the actual user question.
-      if (!title) {
-        let scanStr = head;
-        if (stat.size > 65536) {
-          try {
-            const fd2 = fs.openSync(filePath, 'r');
-            const bigBuf = Buffer.alloc(Math.min(10 * 1024 * 1024, stat.size));
-            const bigRead = fs.readSync(fd2, bigBuf, 0, bigBuf.length, 0);
-            fs.closeSync(fd2);
-            scanStr = bigBuf.toString('utf8', 0, bigRead);
-          } catch { /* keep using head */ }
-        }
-        const re = /"type":"text","text":"((?:[^"\\]|\\.)*)"/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(scanStr)) !== null) {
-          let raw = m[1]
-            .replace(/\\n/g, ' ').replace(/\\t/g, ' ')
-            .replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-            .replace(/\s+/g, ' ').trim();
-          if (!raw || raw.startsWith('<') || raw.startsWith('[Image:')) continue;
-          raw = stripInjectedPrompts(raw);
-          if (!raw) continue;
-          const display = collapseSkillPrompt(raw) ?? raw;
-          title = display.length <= 120 ? display : `${display.slice(0, 117).trimEnd()}...`;
-          break;
-        }
-      }
-
-      // Quick turn count: count real user messages (exclude tool_result and
-      // system-injected isMeta events — Skill outputs, resume prompts, etc.).
-      let numTurns = 0;
-      try {
-        const raw = fs.readFileSync(filePath, 'utf8');
-        const rawLines = raw.split('\n');
-        for (const rl of rawLines) {
-          if (rl.length <= 2 || !rl.includes('"type":"user"')) continue;
-          if (rl.includes('"tool_result"') || rl.includes('"isMeta":true')) continue;
-          numTurns++;
-        }
-      } catch { /* ignore count errors */ }
-
-      const tailQA = extractClaudeTailQA(filePath);
-      const isRunning = isClaudeNativeSessionRunning(filePath, stat.mtimeMs);
-      sessions.push({
-        sessionId,
-        agent: 'claude',
-        workdir,
-        workspacePath: null,
-        model,
-        createdAt: stat.birthtime.toISOString(),
-        title,
-        running: isRunning,
-        runState: isRunning ? 'running' : 'completed',
-        runDetail: null,
-        runUpdatedAt: stat.mtime.toISOString(),
-        classification: null,
-        userStatus: null,
-        userNote: null,
-        lastQuestion: tailQA.lastQuestion,
-        lastAnswer: tailQA.lastAnswer,
-        lastMessageText: tailQA.lastMessageText,
-        migratedFrom: null,
-        migratedTo: null,
-        linkedSessions: [],
-        numTurns: numTurns || null,
-      });
-    } catch { /* skip unreadable files */ }
+  const sessions: SessionInfo[] = [];
+  for (const { sessionId, filePath, stat } of selected) {
+    const cached = nativeClaudeContentCache.get(filePath);
+    let content: NativeClaudeContent;
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      content = cached.content;
+    } else {
+      const parsed = readNativeClaudeContent(filePath, stat);
+      if (!parsed) continue;
+      content = parsed;
+      nativeClaudeContentCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, content });
+    }
+    const isRunning = isClaudeNativeSessionRunning(filePath, stat.mtimeMs);
+    sessions.push({
+      sessionId,
+      agent: 'claude',
+      workdir,
+      workspacePath: null,
+      model: content.model,
+      createdAt: content.createdAt,
+      title: content.title,
+      running: isRunning,
+      runState: isRunning ? 'running' : 'completed',
+      runDetail: null,
+      runUpdatedAt: stat.mtime.toISOString(),
+      classification: null,
+      userStatus: null,
+      userNote: null,
+      lastQuestion: content.lastQuestion,
+      lastAnswer: content.lastAnswer,
+      lastMessageText: content.lastMessageText,
+      migratedFrom: null,
+      migratedTo: null,
+      linkedSessions: [],
+      numTurns: content.numTurns,
+    });
   }
   return sessions;
 }
@@ -1526,7 +1577,7 @@ function getClaudeSessions(workdir: string, limit?: number): SessionListResult {
     linkedSessions: record.linkedSessions,
     numTurns: record.numTurns ?? null,
   }));
-  const nativeSessions = getNativeClaudeSessions(resolvedWorkdir);
+  const nativeSessions = getNativeClaudeSessions(resolvedWorkdir, limit);
   const merged = mergeManagedAndNativeSessions(pikiclawSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;
   const projectDir = path.join(getHome(), '.claude', 'projects', claudeProjectDirName(resolvedWorkdir));
@@ -2379,13 +2430,22 @@ export function isClaudePrintModeForced(): boolean {
 }
 
 /**
- * Single-attempt dispatch: print mode when forced via env, otherwise TUI mode
- * with print-mode fallback if TUI prerequisites are missing (node-pty absent,
- * PTY allocation refused, …).
+ * Single-attempt dispatch: print mode when the resolved access mode is 'api'
+ * (or, when no explicit mode was threaded, when forced via env), otherwise TUI
+ * mode with print-mode fallback if TUI prerequisites are missing (node-pty
+ * absent, PTY allocation refused, …).
+ *
+ * `opts.claudeAccessMode` is authoritative when set — the bot resolves it from
+ * the per-agent config so a live dashboard toggle takes effect on the next
+ * spawned turn. Env (isClaudePrintModeForced) is only the fallback for callers
+ * that don't thread a mode (the `pikiclaw run` one-shot path).
  */
 async function doClaudeStreamOnce(opts: StreamOpts): Promise<StreamResult> {
-  if (isClaudePrintModeForced()) {
-    agentLog('[claude] print mode forced via env, using -p');
+  const printMode = opts.claudeAccessMode
+    ? opts.claudeAccessMode === 'api'
+    : isClaudePrintModeForced();
+  if (printMode) {
+    agentLog(`[claude] print mode (-p) — ${opts.claudeAccessMode === 'api' ? 'access mode: api (Agent SDK credits)' : 'forced via env'}`);
     return doClaudeStream(opts);
   }
   try {

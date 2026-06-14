@@ -106,7 +106,12 @@ export function parseTodoWriteAsPlan(input: any): StreamPreviewPlan | null {
 
 export function normalizeActivityLine(text: string): string { return text.replace(/\s+/g, ' ').trim(); }
 
-export function pushRecentActivity(lines: string[], line: string, maxLines = 500) {
+// The activity feed is only ever rendered as a tail — downstream previews trim
+// it to ~900 chars (trimActivityForPreview) and the final reply to ~1600 — yet
+// every tool event rebuilds `s.activity = recentActivity.join('\n')`. A 500-line
+// cap made that rejoin effectively O(n²) over a tool-heavy turn for history no
+// view ever shows; 80 lines comfortably covers the largest consumer.
+export function pushRecentActivity(lines: string[], line: string, maxLines = 80) {
   const cleaned = normalizeActivityLine(line);
   if (!cleaned) return;
   if (lines[lines.length - 1] === cleaned) return;

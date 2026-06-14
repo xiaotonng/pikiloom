@@ -10,6 +10,7 @@ import os from 'node:os';
 import { execFileSync, execSync } from 'node:child_process';
 import {
   DASHBOARD_PERMISSION_TIMEOUTS,
+  DASHBOARD_PERMISSION_CACHE_TTL_MS,
 } from '../core/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -109,7 +110,35 @@ export function checkPermissions(): Record<string, PermissionStatus> {
   return r;
 }
 
+// ---------------------------------------------------------------------------
+// Cached probes for the polling dashboard
+// ---------------------------------------------------------------------------
+
+// `/api/state` is polled (~1.5s while a channel validates) and both probes below
+// spawn subprocesses — checkPermissions() runs screencapture + an `ls` shell,
+// detectHostTerminalApp() runs a `ps` process-tree walk — so they must never run
+// per request. The host terminal is fixed for the process lifetime; permission
+// grants change rarely, so a short TTL is plenty and requestPermission()
+// invalidates the cache so a user-driven grant surfaces on the next poll.
+let permissionsCache: { at: number; value: Record<string, PermissionStatus> } | null = null;
+let hostTerminalAppCache: { value: string | null } | null = null;
+
+export function getPermissionsStatus(): Record<string, PermissionStatus> {
+  if (permissionsCache && Date.now() - permissionsCache.at < DASHBOARD_PERMISSION_CACHE_TTL_MS) {
+    return permissionsCache.value;
+  }
+  const value = checkPermissions();
+  permissionsCache = { at: Date.now(), value };
+  return value;
+}
+
+export function getHostTerminalApp(): string | null {
+  if (!hostTerminalAppCache) hostTerminalAppCache = { value: detectHostTerminalApp() };
+  return hostTerminalAppCache.value;
+}
+
 export function requestPermission(permission: DashboardPermissionKey): PermissionRequestResult {
+  permissionsCache = null; // a request can change grant state — force the next poll to re-probe
   if (process.platform !== 'darwin') {
     return {
       ok: false,

@@ -3,6 +3,8 @@ node_modules/
 .DS_Store
 dist/
 dashboard/dist/
+# Standalone landing-page project — deployed separately via gh-pages, never tracked in main.
+web/
 *.tgz
 tmp/
 dashboard-loaded.png

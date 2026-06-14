@@ -33,9 +33,12 @@ import {
   resolveAgentEffort,
   resolveAgentModel,
   resolveAgentWorkflowEnabled,
+  resolveClaudeAccessMode,
   setAgentEffortEnv,
   setAgentModelEnv,
   setAgentWorkflowEnv,
+  setClaudeAccessModeEnv,
+  type ClaudeAccessMode,
 } from '../core/config/runtime-config.js';
 
 // ---------------------------------------------------------------------------
@@ -55,6 +58,9 @@ export interface RuntimePrefs {
   efforts: Partial<Record<Agent, string>>;
   /** Multi-agent Workflow orchestration toggle, per agent (claude today). */
   workflow: Partial<Record<Agent, boolean>>;
+  /** Claude access mode (subscription TUI vs `claude -p` API credits). Per
+   *  agent for shape parity, but only claude is meaningful today. */
+  accessMode: Partial<Record<Agent, ClaudeAccessMode>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +203,7 @@ export interface DashboardEvent {
 
 class Runtime {
   private botRef: Bot | null = null;
-  readonly runtimePrefs: RuntimePrefs = { models: {}, efforts: {}, workflow: {} };
+  readonly runtimePrefs: RuntimePrefs = { models: {}, efforts: {}, workflow: {}, accessMode: {} };
 
   /** Dashboard event bus — WebSocket connections subscribe to this. */
   readonly events = new EventEmitter();
@@ -242,6 +248,9 @@ class Runtime {
     }
     for (const [agent, enabled] of Object.entries(this.runtimePrefs.workflow)) {
       if (this.isAgent(agent) && typeof enabled === 'boolean') bot.setWorkflowEnabledForAgent(agent, enabled);
+    }
+    for (const [agent, mode] of Object.entries(this.runtimePrefs.accessMode)) {
+      if (agent === 'claude' && (mode === 'subscription' || mode === 'api')) bot.setClaudeAccessMode(mode);
     }
     // Wire stream snapshots → dashboard WebSocket
     const prevPhases = new Map<string, string | null>();
@@ -298,6 +307,10 @@ class Runtime {
     setAgentWorkflowEnv(agent, value);
   }
 
+  setClaudeAccessModeEnv(value: ClaudeAccessMode): void {
+    setClaudeAccessModeEnv(value);
+  }
+
   getRuntimeModel(agent: Agent, config = loadUserConfig()): string {
     if (this.botRef) return this.botRef.modelForAgent(agent) || this.defaultModels[agent];
     return String(this.runtimePrefs.models[agent] || resolveAgentModel(config, agent)).trim();
@@ -314,6 +327,13 @@ class Runtime {
     const pref = this.runtimePrefs.workflow[agent];
     if (typeof pref === 'boolean') return pref;
     return resolveAgentWorkflowEnabled(config, agent);
+  }
+
+  getRuntimeClaudeAccessMode(config = loadUserConfig()): ClaudeAccessMode {
+    if (this.botRef) return this.botRef.claudeAccessMode;
+    const pref = this.runtimePrefs.accessMode.claude;
+    if (pref === 'subscription' || pref === 'api') return pref;
+    return resolveClaudeAccessMode(config);
   }
 
   // -- Channel state cache --

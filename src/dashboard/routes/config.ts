@@ -36,8 +36,8 @@ import {
   getActiveTaskCount,
 } from '../../core/process-control.js';
 import {
-  checkPermissions,
-  detectHostTerminalApp,
+  getPermissionsStatus,
+  getHostTerminalApp,
   isValidPermissionKey,
   requestPermission,
 } from '../platform.js';
@@ -166,7 +166,7 @@ const app = new Hono();
 app.get('/api/state', async (c) => {
   const config = loadUserConfig();
   const setupState = await runtime.buildValidatedSetupState(config);
-  const permissions = checkPermissions();
+  const permissions = getPermissionsStatus();
   const botRef = runtime.getBotRef();
   return c.json({
     version: VERSION,
@@ -176,7 +176,7 @@ app.get('/api/state', async (c) => {
     runtimeWorkdir: runtime.getRuntimeWorkdir(config),
     setupState,
     permissions,
-    hostApp: detectHostTerminalApp(),
+    hostApp: getHostTerminalApp(),
     platform: process.platform,
     pid: process.pid,
     nodeVersion: process.versions.node,
@@ -208,7 +208,7 @@ app.get('/api/host', (c) => {
 
 // Permissions
 app.get('/api/permissions', (c) => {
-  const data = { ...checkPermissions(), hostApp: detectHostTerminalApp() };
+  const data = { ...getPermissionsStatus(), hostApp: getHostTerminalApp() };
   return c.json(data);
 });
 

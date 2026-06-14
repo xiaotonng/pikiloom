@@ -255,6 +255,7 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
       nativeSelectedModel,
       nativeSelectedEffort,
       workflowEnabled: runtime.getRuntimeWorkflowEnabled(agentId, config),
+      claudeAccessMode: agentId === 'claude' ? runtime.getRuntimeClaudeAccessMode(config) : undefined,
       isDefault: agentId === defaultAgent,
       models,
       usage,
@@ -448,6 +449,20 @@ app.post('/api/runtime-agent', async (c) => {
     runtime.setWorkflowEnv(targetAgent, enabled);
     if (targetAgent === 'claude') nextConfig.claudeWorkflowEnabled = enabled;
     if (botRef) botRef.setWorkflowEnabledForAgent(targetAgent, enabled);
+  }
+
+  // Access mode — Claude only (subscription TUI vs `claude -p` API credits).
+  // Persisted preference; takes effect on the next spawned turn.
+  if (typeof body?.accessMode === 'string') {
+    if (targetAgent !== 'claude') return c.json({ ok: false, error: 'accessMode is only supported for claude' }, 400);
+    const mode = body.accessMode;
+    if (mode !== 'subscription' && mode !== 'api') {
+      return c.json({ ok: false, error: "accessMode must be 'subscription' or 'api'" }, 400);
+    }
+    runtime.runtimePrefs.accessMode.claude = mode;
+    runtime.setClaudeAccessModeEnv(mode);
+    nextConfig.claudeAccessMode = mode;
+    if (botRef) botRef.setClaudeAccessMode(mode);
   }
 
   saveUserConfig(nextConfig);

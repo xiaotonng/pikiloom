@@ -82,6 +82,16 @@ export interface UserConfig {
    * Orthogonal to reasoning effort; only claude advertises the capability.
    */
   claudeWorkflowEnabled?: boolean;
+  /**
+   * How Claude turns are spawned, which decides what they bill against:
+   *  - 'subscription' (default): interactive TUI under a PTY → counts inside
+   *    the Pro/Max subscription quota (standard cost).
+   *  - 'api': headless `claude -p` (print mode) → bills the separate Agent SDK
+   *    credit pool (extra cost).
+   * Unset falls back to the `PIKICLAW_CLAUDE_PRINT` / legacy `PIKICLAW_CLAUDE_TUI`
+   * env vars, then to 'subscription'. See resolveClaudeAccessMode.
+   */
+  claudeAccessMode?: 'subscription' | 'api';
   codexModel?: string;
   codexReasoningEffort?: string;
   geminiModel?: string;
@@ -236,6 +246,14 @@ const USER_CONFIG_DIRNAME = '.pikiclaw';
 const USER_CONFIG_FILENAME = 'setting.json';
 
 let activeUserConfig: Partial<UserConfig> = {};
+// Parsed-config cache keyed by setting.json identity (path + mtime + size).
+// loadUserConfig() is hit from ~60 call sites — several times per HTTP request and
+// per agent stream (the MCP bridge resolves GUI config + per-extension OAuth) — so
+// re-reading + JSON.parse + normalize on every call is pure waste. A cache hit costs
+// one statSync (~100x cheaper). saveUserConfig refreshes this entry so writes are
+// visible immediately regardless of mtime granularity. Callers treat the result as
+// read-only and spread to mutate (the same contract getActiveUserConfig already uses).
+let userConfigCache: { path: string; mtimeMs: number; size: number; config: Partial<UserConfig> } | null = null;
 const userConfigListeners = new Set<UserConfigChangeListener>();
 let userConfigSyncTimer: ReturnType<typeof setInterval> | null = null;
 let userConfigSyncRefCount = 0;
@@ -325,7 +343,21 @@ function normalizeUserConfig(config: Partial<UserConfig>): Partial<UserConfig> {
 }
 
 export function loadUserConfig(): Partial<UserConfig> {
-  return loadJsonFile(getUserConfigPath());
+  const filePath = getUserConfigPath();
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    userConfigCache = null;
+    return {};
+  }
+  const cached = userConfigCache;
+  if (cached && cached.path === filePath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.config;
+  }
+  const config = loadJsonFile(filePath);
+  userConfigCache = { path: filePath, mtimeMs: stat.mtimeMs, size: stat.size, config };
+  return config;
 }
 
 export function hasUserConfigFile(): boolean {
@@ -343,7 +375,14 @@ export function getActiveUserConfig(): Partial<UserConfig> {
 export function saveUserConfig(config: Partial<UserConfig>): string {
   const filePath = getUserConfigPath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify({ version: 1, ...normalizeUserConfig(config) }, null, 2)}\n`, { mode: 0o600 });
+  const normalized: Partial<UserConfig> = { version: 1, ...normalizeUserConfig(config) };
+  fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+  try {
+    const stat = fs.statSync(filePath);
+    userConfigCache = { path: filePath, mtimeMs: stat.mtimeMs, size: stat.size, config: normalized };
+  } catch {
+    userConfigCache = null;
+  }
   return filePath;
 }
 

@@ -44,6 +44,9 @@ import { writeScopedLog, type LogLevel } from '../core/logging.js';
 import {
   resolveAgentEffort,
   resolveAgentModel,
+  resolveClaudeAccessMode,
+  DEFAULT_CLAUDE_ACCESS_MODE,
+  type ClaudeAccessMode,
 } from '../core/config/runtime-config.js';
 import {
   envBool, envString, envInt, shellSplit, whichSync,
@@ -463,6 +466,7 @@ export class Bot {
   get claudePermissionMode(): string { return this.agentConfigs.claude?.permissionMode || 'bypassPermissions'; }
   get claudeExtraArgs(): string[] { return this.agentConfigs.claude?.extraArgs || []; }
   get claudeWorkflowEnabled(): boolean { return this.agentConfigs.claude?.workflowEnabled ?? false; }
+  get claudeAccessMode(): ClaudeAccessMode { return this.agentConfigs.claude?.accessMode || DEFAULT_CLAUDE_ACCESS_MODE; }
   get geminiApprovalMode(): string { return this.agentConfigs.gemini?.approvalMode || 'yolo'; }
   get geminiSandbox(): boolean { return this.agentConfigs.gemini?.sandbox ?? false; }
   get geminiExtraArgs(): string[] { return this.agentConfigs.gemini?.extraArgs || []; }
@@ -500,6 +504,19 @@ export class Bot {
       key = next;
     }
     return key;
+  }
+
+  /**
+   * Drop all promotion bookkeeping that pointed at a now-retired canonical key.
+   * `promotedFromAliases.get(key)` is exactly the set of stale keys whose forward
+   * `promotedSessionKeys` entries resolve to `key`, so clearing them here keeps
+   * that map from growing for the whole process lifetime (otherwise one entry
+   * leaks per new session + per Claude `--resume` rotation, never reclaimed).
+   */
+  private forgetPromotion(canonicalKey: string): void {
+    const aliases = this.promotedFromAliases.get(canonicalKey);
+    if (aliases) for (const alias of aliases) this.promotedSessionKeys.delete(alias);
+    this.promotedFromAliases.delete(canonicalKey);
   }
 
   /** Get the current streaming snapshot for a session (used by polling endpoint).
@@ -657,7 +674,7 @@ export class Bot {
         this.snapshotCleanupTimers.set(sessionKey, setTimeout(() => {
           this.streamSnapshots.delete(sessionKey);
           this.snapshotCleanupTimers.delete(sessionKey);
-          this.promotedFromAliases.delete(sessionKey);
+          this.forgetPromotion(sessionKey);
         }, 30_000));
         break;
       }
@@ -673,7 +690,7 @@ export class Bot {
         } else {
           // Cancelled the currently displayed task — drop the whole snapshot.
           this.streamSnapshots.delete(sessionKey);
-          this.promotedFromAliases.delete(sessionKey);
+          this.forgetPromotion(sessionKey);
         }
         break;
       }
@@ -799,6 +816,10 @@ export class Bot {
         // Workflow orchestration is a per-session/per-turn choice (composer
         // toggle / IM /mode), never a persisted default — always boot off.
         workflowEnabled: false,
+        // Access mode (TUI subscription vs `claude -p` Agent SDK credits) IS a
+        // persisted preference — hydrate it from config so the boot value
+        // matches the dashboard toggle / env default.
+        accessMode: resolveClaudeAccessMode(config),
         extraArgs: shellSplit(process.env.CLAUDE_EXTRA_ARGS || ''),
       },
       gemini: {
@@ -2396,6 +2417,18 @@ export class Bot {
     this.log(`workflow for ${agent} changed to ${enabled}`);
   }
 
+  /**
+   * Switch Claude's access mode (subscription TUI vs `claude -p` Agent SDK
+   * credits). Persisted preference — takes effect on the NEXT spawned turn
+   * (in-flight streams keep their own opts); does not reset any conversation
+   * since both modes resume the same native session transcript.
+   */
+  setClaudeAccessMode(mode: ClaudeAccessMode) {
+    const config = this.agentConfigs.claude;
+    if (config) config.accessMode = mode;
+    this.log(`claude access mode changed to ${mode}`);
+  }
+
   private persistAgentPreference(agent: Agent, kind: 'model' | 'effort' | 'workflow', value: string) {
     try {
       // Hermes model writes go to the active BYOK Profile (the runtime's only
@@ -2596,6 +2629,17 @@ export class Bot {
         if (opts.initial) this.agentConfigs[agent].reasoningEffort = nextEffort;
         else this.setEffortForAgent(agent, nextEffort);
       }
+      // Access mode (claude only) IS reconciled — unlike workflow, it's a
+      // persisted preference, so an external setting.json edit or a dashboard
+      // save (which both flow through here via onUserConfigChange) must push
+      // the new value onto the running bot so the next turn spawns accordingly.
+      if (agent === 'claude') {
+        const nextAccessMode = resolveClaudeAccessMode(config);
+        if (this.claudeAccessMode !== nextAccessMode) {
+          if (opts.initial) this.agentConfigs.claude.accessMode = nextAccessMode;
+          else this.setClaudeAccessMode(nextAccessMode);
+        }
+      }
       // Workflow is intentionally NOT reconciled from config here: it's an
       // in-memory per-session toggle (composer / IM /mode), so a config-sync
       // tick must not clobber a deliberate in-session choice.
@@ -2718,6 +2762,9 @@ export class Bot {
       claudeModel: cs.agent === 'claude' ? resolvedModel : this.claudeModel,
       claudePermissionMode: this.claudePermissionMode,
       claudeWorkflowEnabled: workflowEnabled,
+      // Resolved per-stream so a live access-mode switch applies to new turns
+      // while in-flight streams keep the mode they spawned with.
+      claudeAccessMode: cs.agent === 'claude' ? this.claudeAccessMode : undefined,
       claudeAppendSystemPrompt: effectiveSystemPrompt || undefined,
       claudeExtraArgs: this.claudeExtraArgs.length ? this.claudeExtraArgs : undefined,
       // gemini-specific

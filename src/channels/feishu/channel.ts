@@ -23,7 +23,7 @@ import {
 import { FEISHU_LIMITS } from '../../core/constants.js';
 import { ChannelHealth } from '../health.js';
 import { adaptMarkdownForFeishu } from './markdown.js';
-import { writeScopedLog, type LogLevel } from '../../core/logging.js';
+import { writeScopedLog, shouldLog, type LogLevel } from '../../core/logging.js';
 import { recordKnownChatId } from '../../core/config/user-config.js';
 
 export { FeishuChannel };
@@ -501,7 +501,7 @@ class FeishuChannel extends Channel {
   }
 
   private async _handleMessageEvent(event: any) {
-    this._debug(`[recv] raw event received: ${JSON.stringify(event)}`);
+    if (shouldLog('debug')) this._debug(`[recv] raw event received: ${JSON.stringify(event)}`);
     const msg = event?.message;
     if (!msg) {
       this._debug(`[recv] event has no message object`);
@@ -544,7 +544,7 @@ class FeishuChannel extends Channel {
 
     // Group: require @mention
     if (chatType === 'group') {
-      this._debug(`[recv] group check mention: bot=${JSON.stringify(this.bot)}, mentions=${JSON.stringify(msg.mentions)}`);
+      if (shouldLog('debug')) this._debug(`[recv] group check mention: bot=${JSON.stringify(this.bot)}, mentions=${JSON.stringify(msg.mentions)}`);
       if (!this._isBotMentioned(msg)) {
         this._debug(`[recv] skipped: not mentioned in group ${chatId}`);
         return;

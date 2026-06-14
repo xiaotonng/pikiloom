@@ -59,6 +59,9 @@ export interface AgentRuntimeStatus extends AgentInfo {
   nativeSelectedEffort?: string | null;
   /** Whether multi-agent Workflow orchestration is enabled for this agent. */
   workflowEnabled?: boolean;
+  /** Claude access mode: 'subscription' (TUI → Pro/Max quota) or 'api'
+   *  (`claude -p` → Agent SDK credits). Only present for the claude agent. */
+  claudeAccessMode?: 'subscription' | 'api';
   isDefault: boolean;
   models: ModelInfo[];
   usage: UsageResult | null;

@@ -206,6 +206,11 @@ export function collapseSkillPrompt(text: string | null | undefined): string | n
 
 const GLOBAL_SKILLS_ROOT = path.join(os.homedir(), '.pikiclaw', 'skills');
 
+// Per-file cache of parsed SKILL.md metadata, keyed by file mtime. listSkills runs
+// on every skills-menu render (IM + dashboard); without this it re-read and
+// re-regex-parsed every SKILL.md each time. A changed skill re-parses just itself.
+const skillMetaCache = new Map<string, { mtimeMs: number; meta: ReturnType<typeof parseSkillMeta> }>();
+
 function discoverSkillsFromDir(
   dir: string,
   scope: SkillScope,
@@ -219,7 +224,16 @@ function discoverSkillsFromDir(
     try { if (!fs.statSync(skillDir).isDirectory()) continue; } catch { continue; }
     if (!hasFile(skillFile)) continue;
     let meta: ReturnType<typeof parseSkillMeta> = { label: null, description: null };
-    try { meta = parseSkillMeta(fs.readFileSync(skillFile, 'utf-8')); } catch {}
+    try {
+      const mtimeMs = fs.statSync(skillFile).mtimeMs;
+      const cached = skillMetaCache.get(skillFile);
+      if (cached && cached.mtimeMs === mtimeMs) {
+        meta = cached.meta;
+      } else {
+        meta = parseSkillMeta(fs.readFileSync(skillFile, 'utf-8'));
+        skillMetaCache.set(skillFile, { mtimeMs, meta });
+      }
+    } catch {}
     skills.push({
       name: entry,
       label: meta.label,

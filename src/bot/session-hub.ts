@@ -362,27 +362,34 @@ export async function getWorkspaceOverviews(): Promise<WorkspaceOverview[]> {
   const agents = allDriverIds().filter(a => hasDriver(a));
 
   return Promise.all(workspaces.map(async (ws): Promise<WorkspaceOverview> => {
-    const agentSummary: WorkspaceOverview['agentSummary'] = [];
-    let attentionCount = 0;
-    let lastActivityAt: string | null = null;
-
-    for (const agent of agents) {
+    // Fan the agents out in parallel — each _getSessions is independent I/O, and
+    // running them serially made one slow agent stall the whole workspace card.
+    const summaries = await Promise.all(agents.map(async (agent) => {
       try {
         const result = await _getSessions({ agent, workdir: ws.path });
         let active = 0;
         let review = 0;
+        let lastTs: string | null = null;
         for (const session of result.sessions) {
           const status = resolveUserStatus(session);
           if (status === 'active' || session.running) active++;
           else if (status === 'review') review++;
           const ts = session.runUpdatedAt || session.createdAt || '';
-          if (ts && (!lastActivityAt || ts > lastActivityAt)) lastActivityAt = ts;
+          if (ts && (!lastTs || ts > lastTs)) lastTs = ts;
         }
-        agentSummary.push({ agent, active, review, total: result.sessions.length });
-        attentionCount += active + review;
+        return { agent, active, review, total: result.sessions.length, lastTs };
       } catch {
-        agentSummary.push({ agent, active: 0, review: 0, total: 0 });
+        return { agent, active: 0, review: 0, total: 0, lastTs: null as string | null };
       }
+    }));
+
+    const agentSummary: WorkspaceOverview['agentSummary'] = [];
+    let attentionCount = 0;
+    let lastActivityAt: string | null = null;
+    for (const s of summaries) {
+      agentSummary.push({ agent: s.agent, active: s.active, review: s.review, total: s.total });
+      attentionCount += s.active + s.review;
+      if (s.lastTs && (!lastActivityAt || s.lastTs > lastActivityAt)) lastActivityAt = s.lastTs;
     }
 
     return { workspace: ws, attentionCount, agentSummary, lastActivityAt };

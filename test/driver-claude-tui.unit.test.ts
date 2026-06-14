@@ -330,6 +330,15 @@ describe('Claude TUI driver — mid-turn permission prompt auto-answer', () => {
       'Do you want to proceed?\r\n❯ 1. Yes\r\n  2. Yes, and don’t ask again for: git tag\r\n  3. No\r\n\r\nEsc to cancel · Tab to amend\r\n';
     expect(detectClaudeProceedPrompt(spaced)).toBe(true);
 
+    // Regression (the screenshot bug): a real 2.1.177 dangerous-rm frame whose footer truncated at
+    // the 200-col edge to "sctocancel" (the leading "E" dropped). The old detector REQUIRED the
+    // literal "esctocancel" and silently missed this → 3-min kill → resume loop. The structural
+    // classifier keys on the question + cursor'd select, so the footer can truncate harmlessly.
+    const truncatedFooter =
+      'Dangerousrmoperationonpossibly-emptyvariablepath:"$DST/$1.svg"\r\nDoyouwanttoproceed?\r\n' +
+      '❯1.Yes\r\n2.No\r\nsctocancel·Tabtoamend·ctrl+etoexplain\r\n';
+    expect(detectClaudeProceedPrompt(truncatedFooter)).toBe(true);
+
     // Disjoint from the startup bypass dialog: its option 1 is "No, exit", so a
     // "1" keystroke would quit — the proceed handler must never claim that frame.
     const bypass =
@@ -338,11 +347,13 @@ describe('Claude TUI driver — mid-turn permission prompt auto-answer', () => {
     expect(detectClaudeProceedPrompt(bypass)).toBe(false);
     expect(detectClaudeBypassPrompt(bypass)).toBe(true); // sanity: bypass owns this frame
 
-    // Conservative: needs the proceed question AND "1. Yes" AND the Esc footer.
+    // Conservative: needs the proceed question AND a real cursor'd numbered select (`❯` + `1.`).
+    // The footer is corroborating, not required (it truncates) — the load-bearing guards are the
+    // question and the `❯` cursor, which prose lacks.
     expect(detectClaudeProceedPrompt('Do you want to proceed? (just prose, no menu)')).toBe(false);
     expect(detectClaudeProceedPrompt('❯ 1. Yes\n2. No\nEsc to cancel')).toBe(false); // no question
-    // Assistant prose describing a prompt must not trigger a keystroke injection
-    // (no Ink "Esc to cancel" footer, so it stays inert).
+    // Assistant prose describing a prompt must not trigger a keystroke injection — no `❯` cursor,
+    // so it is not a live Ink select.
     expect(detectClaudeProceedPrompt('The CLI asks "Do you want to proceed?" with 1. Yes / 2. No.')).toBe(false);
     expect(detectClaudeProceedPrompt('')).toBe(false);
     expect(detectClaudeProceedPrompt(null)).toBe(false);
@@ -350,24 +361,107 @@ describe('Claude TUI driver — mid-turn permission prompt auto-answer', () => {
   });
 });
 
-describe('Claude TUI driver — stall screen classifier', () => {
-  // Capture-only: when a turn goes quiet, classifyStallScreen flags whether the
-  // screen looks like a blocking interactive prompt (the mid-turn dialog-hang
-  // we cannot otherwise distinguish from a long think or a frozen stream).
-  it('flags interactive prompts but not spinner/plain/empty screens, and returns a sample', async () => {
-    const { classifyStallScreen } = await import('../src/agent/drivers/claude-tui.ts');
-    // Flags interactive prompts (confirm footer / numbered select / trust).
-    expect(classifyStallScreen('\x1b[36m❯ 1. No, exit\x1b[0m\r\n2. Yes, I accept\r\nEnter to confirm · Esc to cancel').looksLikePrompt).toBe(true);
-    expect(classifyStallScreen('Do you want to proceed with this edit? (y/n)').looksLikePrompt).toBe(true);
-    expect(classifyStallScreen('Quick safety check: Is this a project you trust this folder...').looksLikePrompt).toBe(true);
+describe('Claude TUI driver — screen state classifier (classifyClaudeScreen)', () => {
+  // The single verdict consumed by BOTH the in-flight auto-answer and the stall watchdog. It must
+  // read the determinate state from a despaced/truncating PTY tail and, critically, choose the right
+  // affirmative key (bypass-startup → "2", confirm → "1"), since a wrong digit would pick "No,exit".
+  it('classifies bypass / confirm / plan / idle / model-error / unknown with the right affirmativeKey', async () => {
+    const { classifyClaudeScreen } = await import('../src/agent/drivers/claude-tui.ts');
 
-    // Does not flag a spinner / thinking screen or plain output, and returns a sample.
-    const thinking = classifyStallScreen('\x1b[2m✻ Cogitating… (45s · esc to interrupt)\x1b[0m');
-    expect(thinking.looksLikePrompt).toBe(false);
-    expect(thinking.sample.length).toBeGreaterThan(0);
+    // Startup bypass dialog — affirmative is option 2 ("Yes, I accept"), NOT option 1 ("No, exit").
+    const bypass =
+      '\x1b[1mWARNING: Claude Code running in Bypass Permissions mode\x1b[0m\r\n' +
+      '\x1b[36m❯ 1. No, exit\x1b[0m\r\n  2. Yes, I accept\r\nEnter to confirm · Esc to cancel\r\n';
+    expect(classifyClaudeScreen(bypass)).toMatchObject({ state: 'bypass-startup', affirmativeKey: '2' });
+
+    // Mid-turn ask-rule confirm — affirmative is option 1.
+    const confirm =
+      'PermissionruleBash(gittag:*)requiresconfirmation\r\nDoyouwanttoproceed?\r\n❯1.Yes\r\n2.No\r\nEsctocancel\r\n';
+    expect(classifyClaudeScreen(confirm)).toMatchObject({ state: 'confirm-prompt', affirmativeKey: '1' });
+    // …and survives footer truncation ("sctocancel") — the regression the screenshot showed.
+    expect(classifyClaudeScreen('Doyouwanttoproceed?\r\n❯1.Yes\r\n2.No\r\nsctocancel·Tabtoamend').state)
+      .toBe('confirm-prompt');
+    // Explicit (y/n) confirm → key "y".
+    expect(classifyClaudeScreen('Do you want to proceed with this edit? (y/n)'))
+      .toMatchObject({ state: 'confirm-prompt', affirmativeKey: 'y' });
+    // Trust-a-new-folder dialog.
+    expect(classifyClaudeScreen('Quick safety check: Is this a project you trust this folder...').state)
+      .toBe('confirm-prompt');
+
+    // Plan-approval — under the chosen policy this is NOT auto-answered (option 1 grants standing
+    // bypass), so affirmativeKey is null and the chokepoint ends cleanly + asks the user to re-send.
+    const plan =
+      'Claude has written up a plan and is ready to execute. Would you like to proceed?\r\n' +
+      '❯ 1. Yes, and bypass permissions\r\n  2. Yes, manually approve edits\r\n  3. No, refine\r\n' +
+      'shift+tab to approve with this feedback\r\n';
+    expect(classifyClaudeScreen(plan)).toMatchObject({ state: 'plan-approval', affirmativeKey: null });
+
+    // Idle REPL — turn finished. Keys on the persistent mode-line, with OR without typed-ahead, and
+    // must NOT carry the active "esc to interrupt" hint.
+    expect(classifyClaudeScreen('❯\r\n⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents').state)
+      .toBe('idle-repl');
+    expect(classifyClaudeScreen('❯ /install\r\n⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage').state)
+      .toBe('idle-repl');
+
+    // Model-unavailable banner painted to the screen only.
+    expect(classifyClaudeScreen(
+      "There's an issuewiththeselectedmodel(claude-fable-5).Itmaynotexistor\nyoumaynothaveaccesstoit.Run/modeltopickadifferentmodel.").state)
+      .toBe('model-error');
+
+    // Unknown (default-deny): a live spinner, plain output, blank — none may be treated as a
+    // clearable/idle/error state, so the watchdog keeps its self-healing freeze path for these.
+    expect(classifyClaudeScreen('\x1b[2m✻ Cogitating… (45s · esc to interrupt)\x1b[0m').state).toBe('unknown');
+    // A frozen frame that still shows the idle mode-line but ALSO the active interrupt hint is NOT idle.
+    expect(classifyClaudeScreen('✻ Working… esc to interrupt\r\n⏵⏵ bypass permissions on (shift+tab to cycle)').state)
+      .toBe('unknown');
+    expect(classifyClaudeScreen('Running tests…\n  ✓ 325 passed').state).toBe('unknown');
+    expect(classifyClaudeScreen('').state).toBe('unknown');
+    expect(classifyClaudeScreen(null).state).toBe('unknown');
+
+    // Sample is always returned for diagnostics.
+    expect(classifyClaudeScreen('✻ Cogitating…').sample.length).toBeGreaterThan(0);
+  });
+
+  it('classifyStallScreen wrapper still reports looksLikePrompt for blocking dialogs only', async () => {
+    const { classifyStallScreen } = await import('../src/agent/drivers/claude-tui.ts');
+    expect(classifyStallScreen('Doyouwanttoproceed?\r\n❯1.Yes\r\n2.No\r\nEsctocancel').looksLikePrompt).toBe(true);
     expect(classifyStallScreen('Running tests…\n  ✓ 325 passed').looksLikePrompt).toBe(false);
     expect(classifyStallScreen('').looksLikePrompt).toBe(false);
     expect(classifyStallScreen(null).looksLikePrompt).toBe(false);
+  });
+});
+
+describe('Claude TUI driver — decideStallAction (kill-point gating)', () => {
+  // Maps the screen state at the moment the watchdog would fire to what we actually do. Default-deny:
+  // anything ambiguous ('unknown'), or an idle hold with pending background work, stays on the
+  // self-healing 'terminate-stalled' path; only high-confidence states downgrade to a non-resuming end.
+  it('routes confirm→answer-retry→unanswered, idle→clean(only w/o pending bg), model→error, unknown→stalled', async () => {
+    const { decideStallAction } = await import('../src/agent/drivers/claude-tui.ts');
+    const base = { pendingBgAgents: 0, alreadyTriedAnswer: false };
+
+    // Answerable confirm: first reach → answer-retry; after the retry → unanswered (no resume loop).
+    expect(decideStallAction({ ...base, state: 'confirm-prompt', affirmativeKey: '1' })).toBe('answer-retry');
+    expect(decideStallAction({ ...base, state: 'confirm-prompt', affirmativeKey: '1', alreadyTriedAnswer: true }))
+      .toBe('terminate-prompt-unanswered');
+    // Bypass-startup is answerable too (key "2").
+    expect(decideStallAction({ ...base, state: 'bypass-startup', affirmativeKey: '2' })).toBe('answer-retry');
+    // Plan-approval carries no key under the policy → straight to unanswered (clean end, re-send).
+    expect(decideStallAction({ ...base, state: 'plan-approval', affirmativeKey: null }))
+      .toBe('terminate-prompt-unanswered');
+
+    // Idle REPL with nothing pending = finished turn → clean end. With pending bg → keep the hold
+    // (don't kill live in-process work): fall to 'terminate-stalled'.
+    expect(decideStallAction({ ...base, state: 'idle-repl', affirmativeKey: null })).toBe('terminate-clean');
+    expect(decideStallAction({ ...base, state: 'idle-repl', affirmativeKey: null, pendingBgAgents: 2 }))
+      .toBe('terminate-stalled');
+
+    // Model error → its own non-retryable end.
+    expect(decideStallAction({ ...base, state: 'model-error', affirmativeKey: null })).toBe('model-error');
+
+    // Unknown (genuine freeze candidate) → self-healing 'stalled' regardless of pending counts.
+    expect(decideStallAction({ ...base, state: 'unknown', affirmativeKey: null })).toBe('terminate-stalled');
+    expect(decideStallAction({ ...base, state: 'unknown', affirmativeKey: null, pendingBgAgents: 3 }))
+      .toBe('terminate-stalled');
   });
 });
 

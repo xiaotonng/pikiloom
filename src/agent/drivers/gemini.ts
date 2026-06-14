@@ -637,86 +637,125 @@ function loadGeminiSessionData(filePath: string): any {
   }
 }
 
+/** Content-derived native-session fields — everything except time-relative state. */
+interface GeminiNativeContent {
+  sessionId: string;
+  title: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastUpdated: string | null;
+  lastQuestion: string | null;
+  lastAnswer: string | null;
+  lastMessageText: string | null;
+  numTurns: number | null;
+}
+
+// Per-file cache of the derived fields. getNativeGeminiSessionsFromFiles read +
+// JSON-parsed every chat file's full contents on every list request AND per
+// workspace×agent in the overview fan-out. Keyed by (mtime,size) so unchanged
+// chats are never re-read; `running` depends on Date.now() so it's recomputed
+// per call. Stores only the small derived fields, never the full messages array.
+const nativeGeminiContentCache = new Map<string, { mtimeMs: number; size: number; content: GeminiNativeContent | null }>();
+
+function readNativeGeminiContent(filePath: string): GeminiNativeContent | null {
+  const data = loadGeminiSessionData(filePath);
+  if (!data?.sessionId) return null;
+
+  // Gemini CLI writes stub session files for internal bookkeeping — e.g.
+  // `sessionId: "a2a-server"` for its built-in a2a server, plus abandoned
+  // UUID-named sessions that never received a turn. Both share the same shape:
+  // metadata only, no `messages` array. Nothing to render, so skip them.
+  const messages = Array.isArray(data.messages) ? data.messages : [];
+  if (messages.length === 0) return null;
+
+  // Extract title from first user message + last Q&A from tail.
+  let title: string | null = null;
+  let lastQuestion: string | null = null;
+  let lastAnswer: string | null = null;
+  let lastMessageText: string | null = null;
+  for (const msg of messages) {
+    if (msg.type === 'user') {
+      const text = sanitizeSessionUserPreviewText(flattenGeminiUserText(extractGeminiText(msg.content)));
+      if (!title) title = normalizeGeminiSessionTitle(text);
+      if (text) {
+        lastQuestion = shortValue(text, 500);
+        lastMessageText = shortValue(text, 500);
+      }
+    } else if (msg.type === 'model' || msg.type === 'assistant' || msg.type === 'gemini') {
+      const text = extractGeminiText(msg.content);
+      if (text) {
+        lastAnswer = shortValue(text, 500);
+        lastMessageText = shortValue(text, 500);
+      }
+    }
+  }
+  const numTurns = messages.filter((m: any) => m.type === 'user' && flattenGeminiUserText(extractGeminiText(m.content))).length;
+  return {
+    sessionId: String(data.sessionId),
+    title,
+    createdAt: data.startTime || data.createdAt || null,
+    updatedAt: data.lastUpdated || data.startTime || data.createdAt || null,
+    lastUpdated: data.lastUpdated || null,
+    lastQuestion,
+    lastAnswer,
+    lastMessageText,
+    numTurns: numTurns || null,
+  };
+}
+
 /** Read native Gemini CLI sessions from ~/.gemini/tmp/{projectName}/chats/ */
 function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
   const chatsDir = geminiChatsDir(workdir);
   if (!chatsDir || !fs.existsSync(chatsDir)) return [];
 
-  const sessionsById = new Map<string, SessionInfo>();
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(chatsDir, { withFileTypes: true }); } catch { return []; }
 
+  const sessionsById = new Map<string, SessionInfo>();
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.startsWith('session-')) continue;
     if (!entry.name.endsWith('.json') && !entry.name.endsWith('.jsonl')) continue;
     const filePath = path.join(chatsDir, entry.name);
-    try {
-      const data = loadGeminiSessionData(filePath);
-      if (!data?.sessionId) continue;
+    let stat: fs.Stats;
+    try { stat = fs.statSync(filePath); } catch { continue; }
 
-      // Gemini CLI writes stub session files for internal bookkeeping —
-      // e.g. `sessionId: "a2a-server"` for its built-in a2a server, plus
-      // abandoned UUID-named sessions that were created but never received a
-      // turn. Both share the same shape: metadata only, no `messages` array.
-      // They have nothing to render in the sidebar, so skip them.
-      const messages = Array.isArray(data.messages) ? data.messages : [];
-      if (messages.length === 0) continue;
+    let cached = nativeGeminiContentCache.get(filePath);
+    if (!cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
+      cached = { mtimeMs: stat.mtimeMs, size: stat.size, content: readNativeGeminiContent(filePath) };
+      nativeGeminiContentCache.set(filePath, cached);
+    }
+    const content = cached.content;
+    if (!content) continue;
 
-      const sessionId = String(data.sessionId);
-      const updatedAt = data.lastUpdated || data.startTime || data.createdAt || null;
-
-      // If we already saw this sessionId, only replace it if this file is newer
-      const existing = sessionsById.get(sessionId);
-      if (existing && updatedAt && existing.runUpdatedAt && Date.parse(updatedAt) <= Date.parse(existing.runUpdatedAt)) {
-        continue;
-      }
-
-      // Extract title from first user message + last Q&A from tail
-      let title: string | null = null;
-      let lastQuestion: string | null = null;
-      let lastAnswer: string | null = null;
-      let lastMessageText: string | null = null;
-      for (const msg of messages) {
-        if (msg.type === 'user') {
-          const text = sanitizeSessionUserPreviewText(flattenGeminiUserText(extractGeminiText(msg.content)));
-          if (!title) title = normalizeGeminiSessionTitle(text);
-          if (text) {
-            lastQuestion = shortValue(text, 500);
-            lastMessageText = shortValue(text, 500);
-          }
-        } else if (msg.type === 'model' || msg.type === 'assistant' || msg.type === 'gemini') {
-          const text = extractGeminiText(msg.content);
-          if (text) {
-            lastAnswer = shortValue(text, 500);
-            lastMessageText = shortValue(text, 500);
-          }
-        }
-      }
-      const numTurns = messages.filter((m: any) => m.type === 'user' && flattenGeminiUserText(extractGeminiText(m.content))).length;
-      sessionsById.set(sessionId, {
-        sessionId,
-        agent: 'gemini',
-        workdir,
-        workspacePath: null,
-        model: null,
-        createdAt: data.startTime || data.createdAt || null,
-        title,
-        running: data.lastUpdated ? Date.now() - Date.parse(data.lastUpdated) < SESSION_RUNNING_THRESHOLD_MS : false,
-        runState: data.lastUpdated && Date.now() - Date.parse(data.lastUpdated) < SESSION_RUNNING_THRESHOLD_MS ? 'running' : 'completed',
-        runDetail: null,
-        runUpdatedAt: updatedAt || null,
-        classification: null,
-        userStatus: null,
-        userNote: null,
-        lastQuestion,
-        lastAnswer,
-        lastMessageText,
-        migratedFrom: null,
-        migratedTo: null,
-        linkedSessions: [],
-        numTurns: numTurns || null,
-      });
-    } catch { /* skip */ }
+    // If we already saw this sessionId, only replace it if this file is newer.
+    const existing = sessionsById.get(content.sessionId);
+    if (existing && content.updatedAt && existing.runUpdatedAt && Date.parse(content.updatedAt) <= Date.parse(existing.runUpdatedAt)) {
+      continue;
+    }
+    const running = content.lastUpdated ? Date.now() - Date.parse(content.lastUpdated) < SESSION_RUNNING_THRESHOLD_MS : false;
+    sessionsById.set(content.sessionId, {
+      sessionId: content.sessionId,
+      agent: 'gemini',
+      workdir,
+      workspacePath: null,
+      model: null,
+      createdAt: content.createdAt,
+      title: content.title,
+      running,
+      runState: running ? 'running' : 'completed',
+      runDetail: null,
+      runUpdatedAt: content.updatedAt,
+      classification: null,
+      userStatus: null,
+      userNote: null,
+      lastQuestion: content.lastQuestion,
+      lastAnswer: content.lastAnswer,
+      lastMessageText: content.lastMessageText,
+      migratedFrom: null,
+      migratedTo: null,
+      linkedSessions: [],
+      numTurns: content.numTurns,
+    });
   }
   return [...sessionsById.values()];
 }

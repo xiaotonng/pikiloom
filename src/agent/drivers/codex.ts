@@ -1547,7 +1547,20 @@ function readCodexSessionHead(filePath: string): { sessionId: string; cwd: strin
   }
 }
 
-function getNativeCodexSessions(workdir: string): SessionInfo[] {
+// Per-file cache of the head meta + tail Q&A. getNativeCodexSessions walks the
+// whole y/m/d rollout tree and reads each file's 8KB head (to filter by cwd) on
+// every list request AND per workspace×agent in the overview fan-out. Keyed by
+// (mtime,size): unchanged rollouts — including other workspaces' files passed
+// while filtering — are never re-read. `running` depends on Date.now() so it is
+// recomputed per call, not cached.
+const nativeCodexContentCache = new Map<string, {
+  mtimeMs: number;
+  size: number;
+  meta: ReturnType<typeof readCodexSessionHead>;
+  tailQA: ReturnType<typeof extractCodexTailQA> | null;
+}>();
+
+function getNativeCodexSessions(workdir: string, limit?: number): SessionInfo[] {
   const home = getHome();
   if (!home) return [];
   const sessionsDir = path.join(home, '.codex', 'sessions');
@@ -1555,10 +1568,11 @@ function getNativeCodexSessions(workdir: string): SessionInfo[] {
 
   const resolvedWorkdir = path.resolve(workdir);
   const titleIndex = loadCodexSessionIndex();
-  const sessions: SessionInfo[] = [];
-  const seenIds = new Set<string>();
 
-  // Walk year/month/day directories
+  // Collect rollout files across the year/month/day tree, newest-first, then read
+  // bodies only as far as needed: `limit` applies to a recency-sorted merge
+  // downstream, so older rollouts can't surface in a top-`limit` view.
+  const files: { filePath: string; stat: fs.Stats }[] = [];
   const walkDir = (dir: string) => {
     let entries: fs.Dirent[];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -1566,53 +1580,57 @@ function getNativeCodexSessions(workdir: string): SessionInfo[] {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) { walkDir(fullPath); continue; }
       if (!entry.name.startsWith('rollout-') || !entry.name.endsWith('.jsonl')) continue;
-
-      // Read first chunk to extract session_meta fields via regex
-      // (first line can be very large due to base_instructions, so we avoid full JSON parse)
-      try {
-        const meta = readCodexSessionHead(fullPath);
-        if (!meta) continue;
-        if (meta.isSubagent) continue;
-        if (path.resolve(meta.cwd) !== resolvedWorkdir) continue;
-        const metaId = meta.sessionId;
-        const metaCwd = meta.cwd;
-        if (seenIds.has(metaId)) continue;
-        seenIds.add(metaId);
-
-        const stat = fs.statSync(fullPath);
-        const idx = titleIndex.get(metaId);
-        const title = idx?.threadName || null;
-        const updatedAt = idx?.updatedAt || stat.mtime.toISOString();
-        const tailQA = extractCodexTailQA(fullPath);
-
-        sessions.push({
-          sessionId: metaId,
-          agent: 'codex',
-          workdir: metaCwd,
-          workspacePath: null,
-          model: null,
-          createdAt: meta.timestamp || stat.birthtime.toISOString(),
-          title,
-          running: Date.now() - Date.parse(updatedAt) < SESSION_RUNNING_THRESHOLD_MS,
-          runState: Date.now() - Date.parse(updatedAt) < SESSION_RUNNING_THRESHOLD_MS ? 'running' : 'completed',
-          runDetail: null,
-          runUpdatedAt: updatedAt,
-          classification: null,
-          userStatus: null,
-          userNote: null,
-          lastQuestion: tailQA.lastQuestion,
-          lastAnswer: tailQA.lastAnswer,
-          lastMessageText: tailQA.lastMessageText,
-          migratedFrom: null,
-          migratedTo: null,
-          linkedSessions: [],
-          numTurns: null,
-        });
-      } catch { /* skip */ }
+      try { files.push({ filePath: fullPath, stat: fs.statSync(fullPath) }); } catch { /* skip */ }
     }
   };
-
   walkDir(sessionsDir);
+  files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+
+  const sessions: SessionInfo[] = [];
+  const seenIds = new Set<string>();
+  for (const { filePath, stat } of files) {
+    let cached = nativeCodexContentCache.get(filePath);
+    if (!cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
+      // First line can be very large (base_instructions), so read a head chunk
+      // and extract session_meta via regex instead of a full JSON parse.
+      const meta = readCodexSessionHead(filePath);
+      const matches = !!meta && !meta.isSubagent && path.resolve(meta.cwd) === resolvedWorkdir;
+      cached = { mtimeMs: stat.mtimeMs, size: stat.size, meta, tailQA: matches ? extractCodexTailQA(filePath) : null };
+      nativeCodexContentCache.set(filePath, cached);
+    }
+    const meta = cached.meta;
+    if (!meta || meta.isSubagent || path.resolve(meta.cwd) !== resolvedWorkdir) continue;
+    if (seenIds.has(meta.sessionId)) continue;
+    seenIds.add(meta.sessionId);
+
+    const idx = titleIndex.get(meta.sessionId);
+    const updatedAt = idx?.updatedAt || stat.mtime.toISOString();
+    const running = Date.now() - Date.parse(updatedAt) < SESSION_RUNNING_THRESHOLD_MS;
+    sessions.push({
+      sessionId: meta.sessionId,
+      agent: 'codex',
+      workdir: meta.cwd,
+      workspacePath: null,
+      model: null,
+      createdAt: meta.timestamp || stat.birthtime.toISOString(),
+      title: idx?.threadName || null,
+      running,
+      runState: running ? 'running' : 'completed',
+      runDetail: null,
+      runUpdatedAt: updatedAt,
+      classification: null,
+      userStatus: null,
+      userNote: null,
+      lastQuestion: cached.tailQA?.lastQuestion ?? null,
+      lastAnswer: cached.tailQA?.lastAnswer ?? null,
+      lastMessageText: cached.tailQA?.lastMessageText ?? null,
+      migratedFrom: null,
+      migratedTo: null,
+      linkedSessions: [],
+      numTurns: null,
+    });
+    if (typeof limit === 'number' && sessions.length >= limit) break;
+  }
   return sessions;
 }
 
@@ -1705,7 +1723,7 @@ function getCodexSessions(workdir: string, limit?: number): SessionListResult {
     linkedSessions: record.linkedSessions,
     numTurns: record.numTurns ?? null,
   }));
-  const nativeSessions = getNativeCodexSessions(resolvedWorkdir);
+  const nativeSessions = getNativeCodexSessions(resolvedWorkdir, limit);
   const merged = mergeManagedAndNativeSessions(pikiclawSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;
   const sessionsDir = path.join(getHome(), '.codex', 'sessions');

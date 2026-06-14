@@ -14,6 +14,8 @@ dashboard-*.png
 /*.png
 .playwright-mcp/
 **/.playwright-mcp/
+# Antigravity CLI local project state (symlink farm into ~/.gemini); machine-local.
+.antigravitycli/
 replied_issues.txt
 .scratch/
 # Legacy state dir (pre-rename) — never track in the pikiloom repo.

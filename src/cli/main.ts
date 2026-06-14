@@ -325,9 +325,10 @@ Docs: https://github.com/xiaotonng/pikiloom
 /**
  * For a fresh CLI launch (not a daemon-managed child), persist the working
  * directory into setting.json so the bot defaults to where the user invoked
- * the command. Without `-w`, fall back to the cwd; this is preserved across
- * non-daemon self-restarts because process-control inherits cwd when spawning
- * the replacement process.
+ * the command. An explicit `-w` always wins and is saved. Without `-w`, a
+ * previously saved workdir (including one chosen later in the dashboard) is
+ * kept as-is; we only fall back to the launch cwd on first run, when nothing
+ * has been saved yet, so relaunching never silently reverts the workdir.
  */
 function persistWorkdir(args: Record<string, any>, userConfig: Partial<UserConfig>): Partial<UserConfig> {
   if (process.env.PIKILOOM_DAEMON_CHILD) return userConfig;
@@ -335,7 +336,16 @@ function persistWorkdir(args: Record<string, any>, userConfig: Partial<UserConfi
   // the user's saved workdir to "/". Skip persistence so the config stays
   // whatever the user previously chose interactively.
   if (process.env[FROM_LAUNCHD_ENV]) return userConfig;
-  const nextWorkdir = path.resolve(args.workdir || process.cwd());
+  // An explicit `-w` is a deliberate choice and always wins. Without it, a
+  // workdir the user already saved (e.g. picked in the dashboard via
+  // `/api/switch-workdir`) must survive relaunch — otherwise every fresh
+  // `npx pikiloom` silently reverts the workdir to its launch cwd. Only fall
+  // back to cwd on first run, when nothing has been saved yet.
+  const explicitWorkdir = typeof args.workdir === 'string' && args.workdir.trim()
+    ? args.workdir.trim()
+    : '';
+  if (!explicitWorkdir && userConfig.workdir) return userConfig;
+  const nextWorkdir = path.resolve(explicitWorkdir || process.cwd());
   if (userConfig.workdir === nextWorkdir) return userConfig;
   updateUserConfig({ workdir: nextWorkdir });
   return loadUserConfig();

@@ -1,0 +1,28 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="112" fill="#05060a"/>
+  <defs>
+    <linearGradient id="ribbon" x1="96" y1="160" x2="416" y2="352" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b6ffa8"/>
+      <stop offset="0.5" stop-color="#7cff67"/>
+      <stop offset="1" stop-color="#56ef4d"/>
+    </linearGradient>
+  </defs>
+  <g id="icon" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Continuous figure-8 ribbon: one endless band crossing at the center.
+         Right lobe + the UNDER half of the crossing render first in a deeper green for ribbon depth. -->
+    <path d="M256 256
+             C 296 200, 376 188, 412 240
+             C 442 288, 400 332, 340 326
+             C 296 322, 268 290, 256 256
+             C 244 222, 216 190, 172 186
+             C 112 180, 70 224, 100 272
+             C 136 324, 216 312, 256 256 Z"
+          stroke="#34d058" stroke-width="56"/>
+    <!-- OVER pass: the left lobe sweeps ON TOP at the crossing in bright accent, creating the woven Möbius twist. -->
+    <path d="M256 256
+             C 244 222, 216 190, 172 186
+             C 112 180, 70 224, 100 272
+             C 136 324, 216 312, 256 256"
+          stroke="url(#ribbon)" stroke-width="56"/>
+  </g>
+</svg>

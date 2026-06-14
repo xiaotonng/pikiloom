@@ -5,6 +5,12 @@ set -euo pipefail
 DEV_DIR="${HOME}/.pikiloom/dev"
 LOG_FILE="${DEV_DIR}/dev.log"
 
+# Dev dashboard always binds this port. dev.sh frees it before (re)starting so a
+# restart deterministically rebinds the same port instead of drifting upward via
+# the server's EADDRINUSE retry. Read before the env scrub; override with
+# PIKILOOM_DEV_PORT if you really need a different one.
+DEV_PORT="${PIKILOOM_DEV_PORT:-3940}"
+
 # Dev mode must stay on the local source tree.
 # Do not hop into the production/self-bootstrap `npx pikiloom@latest` chain.
 mkdir -p "${DEV_DIR}"
@@ -68,14 +74,25 @@ if pkill -f 'tsx src/cli/main.ts --no-daemon' 2>/dev/null; then
   _killed=1
 fi
 # 2) Kill whatever is listening on the dev dashboard port
-_port_pid=$(lsof -ti tcp:3940 2>/dev/null || true)
+_port_pid=$(lsof -ti "tcp:${DEV_PORT}" 2>/dev/null || true)
 if [[ -n "$_port_pid" ]]; then
   echo "$_port_pid" | xargs kill 2>/dev/null || true
   _killed=1
 fi
 if (( _killed )); then
-  echo "[dev.sh] killed previous dev process(es), waiting for cleanup..."
-  sleep 0.5
+  echo "[dev.sh] killed previous dev process(es), waiting for port ${DEV_PORT} to free..."
+  # Bounded wait for the port to actually release, so we always rebind ${DEV_PORT}
+  # rather than letting the server drift to ${DEV_PORT}+1 on EADDRINUSE.
+  for _i in $(seq 1 20); do
+    _port_pid=$(lsof -ti "tcp:${DEV_PORT}" 2>/dev/null || true)
+    [[ -z "$_port_pid" ]] && break
+    sleep 0.1
+  done
+  # Last resort: force-kill anything still holding the port.
+  if [[ -n "${_port_pid:-}" ]]; then
+    echo "$_port_pid" | xargs kill -9 2>/dev/null || true
+    sleep 0.2
+  fi
 fi
 rm -f "${DEV_DIR}/dev.pid"
 
@@ -122,5 +139,5 @@ fi
 
 {
   npm run build:dashboard
-  npx tsx src/cli/main.ts --no-daemon "$@"
+  npx tsx src/cli/main.ts --no-daemon --dashboard-port "${DEV_PORT}" "$@"
 } 2>&1 | node scripts/retained-tee.mjs "${LOG_FILE}"

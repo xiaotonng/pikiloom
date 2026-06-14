@@ -31,7 +31,8 @@
     "dev": "bash scripts/dev.sh",
     "command": "set -ae && . ./.env && set +a && tsx src/cli/run.ts",
     "build:dashboard": "vite build --config dashboard/vite.config.ts",
-    "build": "npm run build:dashboard && tsc",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && npm run build:dashboard && tsc",
     "prepack": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"

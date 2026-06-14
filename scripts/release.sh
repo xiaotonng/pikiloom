@@ -55,7 +55,11 @@ npm run build
 echo "▸ Linking globally…"
 npm link
 
-INSTALLED=$(node dist/cli.js --version)
+# Verify the actual published binary, not a stale orphan. The entry point is
+# whatever package.json `bin` resolves to (dist/cli/main.js), so a reorganized
+# source tree can't leave us verifying a leftover file.
+BIN=$(node -p "require('./package.json').bin.pikiloom")
+INSTALLED=$(node "$BIN" --version)
 INSTALLED_VERSION=$(printf '%s\n' "$INSTALLED" | awk '{print $NF}')
 if [ "$INSTALLED_VERSION" != "$NEW_VERSION" ]; then
   echo "✗ Version mismatch: expected $NEW_VERSION, got $INSTALLED" >&2

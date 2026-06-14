@@ -94,7 +94,6 @@ export function App() {
 
   const version = state?.version || '...';
 
-  const [prompted, setPrompted] = useState(false);
   useEffect(() => {
     if (tab === 'sessions') setSessionsTabReady(true);
   }, [tab]);
@@ -118,24 +117,6 @@ export function App() {
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [refreshAgentStatus]);
-
-  useEffect(() => {
-    if (
-      state
-      && !prompted
-      && location.pathname !== '/'
-      && !state.config.weixinBotToken
-      && !state.config.telegramBotToken
-      && !state.config.feishuAppId
-      && !state.config.slackBotToken
-      && !state.config.discordBotToken
-      && !state.config.dingtalkClientId
-      && !state.config.wecomBotId
-    ) {
-      setPrompted(true);
-      setTimeout(() => setModal({ type: 'weixin' }), 400);
-    }
-  }, [state, prompted, location.pathname]);
 
   // Restart: phase-based overlay
   const [restartPhase, setRestartPhase] = useState<RestartPhase>(null);

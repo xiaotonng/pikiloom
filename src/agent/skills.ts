@@ -120,11 +120,25 @@ function ensureDirSymlink(linkPath: string, targetDir: string) {
       const currentReal = realPathOrNull(path.resolve(path.dirname(linkPath), currentTarget));
       const desiredReal = realPathOrNull(targetDir);
       if (currentTarget === desiredTarget || (currentReal && desiredReal && currentReal === desiredReal)) return;
+      // Symlink points elsewhere — including dangling legacy targets like the
+      // pre-rename `../.pikiclaw/skills`. `rmSync(recursive,force)` silently
+      // no-ops on a dangling symlink (it follows the link, sees the target is
+      // gone, treats it as already deleted) and leaves the link in place, which
+      // then trips EEXIST below. `unlinkSync` removes the link itself reliably.
+      fs.unlinkSync(linkPath);
+    } else {
+      fs.rmSync(linkPath, { recursive: true, force: true });
     }
-    fs.rmSync(linkPath, { recursive: true, force: true });
   } catch {}
   fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-  fs.symlinkSync(desiredTarget, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+  try {
+    fs.symlinkSync(desiredTarget, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (err) {
+    // Tolerate a concurrent creator (the prod self-bootstrap and `npm run dev`
+    // can both initialize the same workdir) — if the link now resolves to the
+    // intended target, the race is benign; otherwise surface the real error.
+    if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST' || fs.readlinkSync(linkPath) !== desiredTarget) throw err;
+  }
 }
 
 function copyMergedTree(

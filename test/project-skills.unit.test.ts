@@ -94,6 +94,28 @@ describe('project skills', () => {
       expect(fs.realpathSync(path.join(workdir, '.agents', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiloom', 'skills')));
     }
 
+    // repoints a stale legacy symlink (.claude/skills -> ../.pikiclaw/skills)
+    // even when the legacy target no longer exists. A dangling symlink survives
+    // rmSync(recursive,force), so initialize must unlink it before relinking.
+    {
+      const workdir = makeTmpDir('pikiloom-relink-skill-');
+      const claudeSkills = path.join(workdir, '.claude', 'skills');
+      fs.mkdirSync(path.dirname(claudeSkills), { recursive: true });
+      // Point at the pre-rename name whose dir was never created here.
+      fs.symlinkSync('../.pikiclaw/skills', claudeSkills, 'dir');
+      expect(fs.existsSync(claudeSkills)).toBe(false); // dangling
+
+      initializeProjectSkills(workdir);
+
+      expect(fs.lstatSync(claudeSkills).isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(claudeSkills)).toBe(path.join('..', '.pikiloom', 'skills'));
+      expect(fs.realpathSync(claudeSkills)).toBe(fs.realpathSync(path.join(workdir, '.pikiloom', 'skills')));
+
+      // Idempotent: a second pass over an already-correct link is a no-op.
+      initializeProjectSkills(workdir);
+      expect(fs.readlinkSync(claudeSkills)).toBe(path.join('..', '.pikiloom', 'skills'));
+    }
+
     // collapses canonical skill expansions back to the slash command shorthand
     {
       const workdir = makeTmpDir('pikiloom-collapse-skill-');

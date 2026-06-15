@@ -79,42 +79,46 @@ This is the shape that matters: one creator, with a swarm of AI agents at their 
 
 ## See It in Action
 
+> **A Swarm, in Parallel** — The whole point: run **N agents across N panes at once**. Every pane is an independent agent stream on its own session and workspace. Dispatch a task to each and watch them all work simultaneously — then fan out from 1 → 2 → 3 → 6 panes as you scale.
+
+<p align="center"><img src="docs/promo-parallel.gif" alt="Multiple agents working in parallel across panes — dispatch to all, watch them stream at once" width="820"></p>
+
+<p align="center"><img src="docs/promo-dashboard-workspace.png" alt="Three agents running in parallel — three panes, three live sessions" width="820"></p>
+
 > **Real-world Task** — Ask pikiloom to gather and summarize today's AI news; the agent reads, writes, and ships the results back through Telegram, all controlled from your phone.
 
-<p align="center"><img src="docs/promo-demo.gif" alt="Demo: Ask Telegram, agent works locally, result returns to chat" width="780"></p>
-
-> **Web Dashboard** — Multi-pane workspace with a session list, live conversation threads, tool-use traces, file/image attachments, queued-task chips, and a unified input composer (1 / 2 / 3 / 6 pane layouts, light/dark theme, EN/中文).
-
-<p align="center"><img src="docs/promo-dashboard-workspace.png" alt="Web Dashboard workspace" width="780"></p>
+<p align="center"><img src="docs/promo-demo.gif" alt="Telegram demo: ask, the agent works locally, the result returns to chat" width="780"></p>
 
 <details>
-<summary><b>More: Basic Ops · IM Access · Agents · Models · Extensions · Permissions · System Info</b></summary>
+<summary><b>More: Six-pane grid · Switch agents mid-session · Standard/Extra mode · IM · Agents &amp; Models · Extensions · System</b></summary>
 
-> Send a message, watch the agent stream its thoughts, and receive files back instantly.
+> **Six in parallel** — Six independent agent streams on one screen. Pick the layout (1 / 2 / 3 / 6) that matches how wide you want to fan out; each pane keeps its own agent, model, and session history. Light/dark theme and full EN/中文 throughout.
 
-<img src="docs/promo-basic-ops.gif" alt="Basic operations" width="780">
+<img src="docs/promo-dashboard-six.png" alt="Six-pane parallel grid — six agent streams at once" width="820">
+
+> **Switch the Agent mid-session** — Swap the "brain" on the fly — Claude Code · Codex · Gemini · Hermes — without leaving the workspace; the same conversation history follows you to the next agent.
+
+<img src="docs/promo-dashboard-agent-switch.png" alt="Per-session agent switcher" width="820">
+
+> **Standard / Extra access mode** — Per agent, choose which billing pool Claude turns land on: **Standard** (interactive, counted inside your Pro/Max subscription) or **Extra** (headless `claude -p`, billed against the separate Agent SDK credit pool). Plus per-session model and reasoning-effort selectors.
+
+<img src="docs/promo-dashboard-agent-mode.png" alt="Standard / Extra access mode toggle" width="820">
 
 > **IM Access** — Check and configure connection statuses for Telegram, Feishu, WeChat, Slack, Discord, DingTalk, and WeCom.
 
-<img src="docs/promo-dashboard-im.png" alt="IM Access" width="780">
+<img src="docs/promo-dashboard-im.png" alt="IM Access" width="820">
 
-> **Agents** — Manage installed agent CLIs, set your default agent, configure per-agent models and reasoning effort, and bind a Profile to drive an agent on a non-native model.
+> **Agents &amp; Models** — Manage installed agent CLIs, set your default agent, and bind a secure Providers + Profiles vault (Claude · GPT · Gemini · DeepSeek · Doubao · MiMo · MiniMax · Qwen · OpenRouter · any OpenAI-compatible proxy), validated against the read-only `models.dev` catalog and injected per-agent at spawn time. Local backends (Ollama, mlx-lm on Apple Silicon) attach the moment they're detected.
 
-<img src="docs/promo-dashboard-agents.png" alt="Agents" width="780">
-
-> **Models** — A secure Providers + Profiles vault (Claude · GPT · Gemini · DeepSeek · Doubao · MiMo · MiniMax · Qwen · OpenRouter · any OpenAI-compatible proxy), validated against the read-only `models.dev` catalog and injected per-agent at spawn time. Local backends (Ollama, mlx-lm on Apple Silicon) attach automatically the moment they're detected.
+<img src="docs/promo-dashboard-agents.png" alt="Agents and Models" width="820">
 
 > **Extensions** — Manage global MCP servers, community skills, and built-in automation for headless browsers and macOS desktop (Peekaboo). Add servers via stdio, HTTP, or OAuth 2.1 with Dynamic Client Registration.
 
-<img src="docs/promo-dashboard-extensions.png" alt="Extensions" width="780">
+<img src="docs/promo-dashboard-extensions.png" alt="Extensions" width="820">
 
-> **System Permissions** — Handle macOS Accessibility, Screen Recording, and Disk Access permissions seamlessly.
+> **System &amp; Permissions** — Monitor your working directory alongside real-time CPU, memory, and disk usage, and grant macOS Accessibility / Screen Recording / Disk Access in one place.
 
-<img src="docs/promo-dashboard-permissions.png" alt="Permissions" width="780">
-
-> **System Info** — Monitor your working directory alongside real-time CPU, memory, and disk usage.
-
-<img src="docs/promo-dashboard-system.png" alt="System Info" width="780">
+<img src="docs/promo-dashboard-system.png" alt="System and Permissions" width="820">
 
 </details>
 

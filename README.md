@@ -6,7 +6,7 @@
 
 ##### *The open Agent orchestrator for the era when creators no longer need to read code.*
 
-*Plug in any agent (Claude · Codex · Gemini · Hermes · …), any model (Claude · GPT · Gemini · DeepSeek · Doubao · MiMo · MiniMax · OpenRouter · or any third-party proxy), and any tool (Skills · MCP · CLI). Drive them seamlessly from your favorite terminal—whether it's an IM, Web Dashboard, or future interfaces. pikiloom is built using pikiloom.*
+*Plug in any agent (Claude · Codex · Gemini · Hermes · …), any model (Claude · GPT · Gemini · DeepSeek · Doubao · MiMo · MiniMax · Qwen · OpenRouter · local Ollama / mlx-lm · or any OpenAI-compatible proxy), and any tool (Skills · MCP · CLI) — then drive a **swarm of them in parallel** from whichever terminal is closest: an IM, the Web Dashboard, or the CLI. pikiloom is built with pikiloom.*
 
 ```bash
 npx pikiloom@latest
@@ -176,7 +176,7 @@ agent CLI versions).
 
 ## How People Are Using It
 
-- **Run a Swarm in Parallel** — Open N sessions in N dashboard panes (or N IM threads), each running a different agent on a different workspace, all executing simultaneously. One person, many agents, one unified cockpit. Steer any of them at any moment.
+- **Run a Swarm in Parallel** — N panes (or N IM threads), each a different agent on a different repo, all running at once: Claude refactors here, Codex writes tests there, Gemini reviews a third. One cockpit; steer any of them mid-flight.
 - **Self-Hosted Dev Loop** — pikiloom was built using pikiloom. The dev workflow *is* the product: drive the orchestrator from your phone, write code, ship a release, and iterate.
 - **Walk-Away Coding** — Kick off a massive refactoring task, close your laptop, and monitor/steer it from your phone over Telegram. The agent continues running locally, streaming results back to your chat.
 - **Multi-Agent Tag Team** — Let Claude Code draft an initial implementation, switch to Codex for an in-depth review, and finally hand it over to Gemini for a fresh perspective. Same files, same continuous session history.

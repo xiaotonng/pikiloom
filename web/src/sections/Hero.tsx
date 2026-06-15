@@ -43,7 +43,7 @@ export default function Hero() {
           fallback={
             <div
               className="h-full w-full"
-              style={{ background: 'radial-gradient(60% 60% at 50% 25%, rgba(82,39,255,.18), transparent 70%)' }}
+              style={{ background: 'radial-gradient(60% 60% at 50% 25%, rgb(var(--brand-glow) / .18), transparent 70%)' }}
             />
           }
         >
@@ -67,7 +67,7 @@ export default function Hero() {
       {/* color wash + fade into the page background */}
       <div
         className="pointer-events-none absolute inset-0 -z-10"
-        style={{ background: 'radial-gradient(60% 50% at 50% 0%, rgba(82,39,255,.28), transparent 70%)' }}
+        style={{ background: 'radial-gradient(60% 50% at 50% 0%, rgb(var(--brand-glow) / .28), transparent 70%)' }}
       />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-48 bg-gradient-to-b from-transparent to-[#05060a]" />
 

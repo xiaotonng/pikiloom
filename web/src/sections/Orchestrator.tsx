@@ -72,7 +72,7 @@ function Core() {
       {/* soft pulse behind the card */}
       <div
         className="piki-core-pulse pointer-events-none absolute h-44 w-44 rounded-full blur-3xl"
-        style={{ background: 'radial-gradient(circle, rgba(82,39,255,.4), transparent 70%)' }}
+        style={{ background: 'radial-gradient(circle, rgb(var(--brand-glow) / .4), transparent 70%)' }}
       />
       <div className="relative z-10 w-48 rounded-2xl border border-white/15 bg-[#0a0c14]/85 p-5 text-center shadow-2xl backdrop-blur">
         <div className="mx-auto mb-2 grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-emerald-400 text-white shadow-lg">

@@ -2,6 +2,25 @@
 
 :root {
   color-scheme: dark;
+  /* Brand glow — the ice-cyan of the logo (#38bdf8 family). Single source for
+     the background washes so the page's atmosphere echoes the brand mark
+     instead of fighting it with indigo. Space-separated for rgb( / a) syntax. */
+  --brand-glow: 56 189 248;
+  /* Brand accent — violet end of the wordmark's cyan→violet gradient; also the
+     "agents" accent in the particles / marquees. */
+  --brand-accent: #a78bfa;
+}
+
+/* Brand wordmark — one monochrome mark, recoloured by using its own alpha as a
+   mask so we can paint a gradient through it: crisp on the dark canvas and
+   themeable in a single place. Width follows the source aspect (1000×229) from
+   whatever height the element is given. */
+.brand-logo {
+  display: inline-block;
+  aspect-ratio: 1000 / 229;
+  background: linear-gradient(90deg, rgb(var(--brand-glow)), var(--brand-accent));
+  -webkit-mask: url("./assets/logo-wordmark.png") center / contain no-repeat;
+  mask: url("./assets/logo-wordmark.png") center / contain no-repeat;
 }
 
 html,

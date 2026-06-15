@@ -27,7 +27,7 @@ function SwarmStage() {
   const placeholder = (
     <div
       className="h-full w-full"
-      style={{ background: 'radial-gradient(120% 120% at 50% 0%, rgba(82,39,255,.25), transparent 60%), radial-gradient(100% 100% at 50% 100%, rgba(56,189,248,.18), transparent 60%)' }}
+      style={{ background: 'radial-gradient(120% 120% at 50% 0%, rgb(var(--brand-glow) / .25), transparent 60%), radial-gradient(100% 100% at 50% 100%, rgb(var(--brand-glow) / .14), transparent 60%)' }}
     />
   );
 

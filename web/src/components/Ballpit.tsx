@@ -278,7 +278,12 @@ class X {
     this.clear();
     this.#postprocessing?.dispose();
     this.renderer.dispose();
-    this.renderer.forceContextLoss();
+    // NOTE: deliberately NOT calling renderer.forceContextLoss(). React
+    // StrictMode (and any remount) re-runs the effect on the SAME <canvas>
+    // node; force-losing the context permanently poisons that canvas, so the
+    // replayed mount gets a dead context (getShaderPrecisionFormat → null →
+    // throw). dispose() already frees GL resources, and the browser reclaims
+    // the context once the canvas leaves the DOM on a real unmount.
     this.isDisposed = true;
   }
 
@@ -690,6 +695,10 @@ class Z extends InstancedMesh {
     const roomEnv = new RoomEnvironment();
     const pmrem = new PMREMGenerator(renderer);
     const envTexture = pmrem.fromScene(roomEnv).texture;
+    // The env map is baked once into `envTexture`; the generator's own render
+    // targets are no longer needed and would otherwise leak on every remount.
+    pmrem.dispose();
+    roomEnv.dispose?.();
     const geometry = new SphereGeometry();
     const material = new Y({ envMap: envTexture, ...config.materialParams });
     material.envMapRotation.x = -Math.PI / 2;

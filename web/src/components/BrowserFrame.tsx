@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
  */
 export default function BrowserFrame({
   src,
+  video,
   alt,
   ratioW,
   ratioH,
@@ -17,7 +18,8 @@ export default function BrowserFrame({
   badge,
   className,
 }: {
-  src: string;
+  src?: string;
+  video?: string;
   alt: string;
   ratioW: number;
   ratioH: number;
@@ -39,14 +41,27 @@ export default function BrowserFrame({
         {badge ? <span className="text-[11px] font-medium text-neutral-400">{badge}</span> : <span className="w-10" />}
       </div>
       <div className="w-full overflow-hidden bg-[#0a0c12]" style={{ aspectRatio: String(visibleRatio) } as CSSProperties}>
-        <img
-          src={src}
-          alt={alt}
-          loading="lazy"
-          decoding="async"
-          className="block w-full"
-          style={{ transform: `translateY(-${(cropTop * 100).toFixed(3)}%)` }}
-        />
+        {video ? (
+          <video
+            src={video}
+            autoPlay
+            loop
+            muted
+            playsInline
+            aria-label={alt}
+            className="block w-full"
+            style={{ transform: `translateY(-${(cropTop * 100).toFixed(3)}%)` }}
+          />
+        ) : (
+          <img
+            src={src}
+            alt={alt}
+            loading="lazy"
+            decoding="async"
+            className="block w-full"
+            style={{ transform: `translateY(-${(cropTop * 100).toFixed(3)}%)` }}
+          />
+        )}
       </div>
     </figure>
   );

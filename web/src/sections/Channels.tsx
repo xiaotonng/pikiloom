@@ -42,9 +42,8 @@ export default function Channels() {
           <BrowserFrame
             src={asset('media/promo-dashboard-im.png')}
             alt="IM Access dashboard — connection status for all channels"
-            ratioW={1400}
-            ratioH={787}
-            cropTop={0.137}
+            ratioW={1440}
+            ratioH={900}
             badge="IM Access"
           />
           <p className="mt-3 text-center text-sm text-neutral-400">

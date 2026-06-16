@@ -105,6 +105,10 @@ This is the shape that matters: one creator, with a swarm of AI agents at their 
 
 <p align="center"><img src="docs/promo-dashboard-workspace.png" alt="Three agents running in parallel — three panes, three live sessions" width="820"></p>
 
+> **Switch the Agent mid-session — the context follows** — One Claude session, hand the work down the line: switch to Gemini, then Hermes, without leaving the thread. Claude builds a `useDebounce` hook, Gemini reviews *the previous agent's* code, Hermes recaps the whole session — each agent inherits the full history across the swap.
+
+<p align="center"><img src="docs/promo-switch.gif" alt="Switch agent mid-session — Claude builds, Gemini reviews, Hermes recaps, all in one continuous session" width="820"></p>
+
 > **Real-world Task** — Ask pikiloom to gather and summarize today's AI news; the agent reads, writes, and ships the results back through Telegram, all controlled from your phone.
 
 <p align="center"><img src="docs/promo-demo.gif" alt="Telegram demo: ask, the agent works locally, the result returns to chat" width="780"></p>
@@ -115,10 +119,6 @@ This is the shape that matters: one creator, with a swarm of AI agents at their 
 > **Six in parallel** — Six independent agent streams on one screen. Pick the layout (1 / 2 / 3 / 6) that matches how wide you want to fan out; each pane keeps its own agent, model, and session history. Light/dark theme and full EN/中文 throughout.
 
 <img src="docs/promo-dashboard-six.png" alt="Six-pane parallel grid — six agent streams at once" width="820">
-
-> **Switch the Agent mid-session** — Swap the "brain" on the fly — Claude Code · Codex · Gemini · Hermes — without leaving the workspace; the same conversation history follows you to the next agent.
-
-<img src="docs/promo-dashboard-agent-switch.png" alt="Per-session agent switcher" width="820">
 
 > **Standard / Extra access mode** — Per agent, choose which billing pool Claude turns land on: **Standard** (interactive, counted inside your Pro/Max subscription) or **Extra** (headless `claude -p`, billed against the separate Agent SDK credit pool). Plus per-session model and reasoning-effort selectors.
 

@@ -15,7 +15,7 @@ export default function InAction() {
         </p>
       </div>
 
-      {/* Parallel multi-pane demo — the hero (live screen recording) */}
+      {/* 1) Parallel multi-pane demo — the hero (live screen recording) */}
       <div className="mt-14">
         <BrowserFrame
           video={asset('media/promo-parallel.mp4')}
@@ -29,7 +29,22 @@ export default function InAction() {
         </p>
       </div>
 
-      {/* Telegram (from your phone) + the six-pane grid */}
+      {/* 2) Switch the agent mid-session — context migrates across the swap */}
+      <div className="mt-10">
+        <BrowserFrame
+          video={asset('media/promo-switch.mp4')}
+          alt="Switch agent mid-session — Claude builds, Gemini reviews, Hermes recaps, all in one session"
+          ratioW={1280}
+          ratioH={800}
+          badge="Switch the brain · same session"
+        />
+        <p className="mt-3 text-center text-sm text-neutral-400">
+          One Claude session: switch to Gemini, then Hermes — the conversation history follows. Claude builds a hook,
+          Gemini reviews <em>the previous agent's</em> code, Hermes recaps the whole thread.
+        </p>
+      </div>
+
+      {/* From your phone (Telegram) + the six-pane grid */}
       <div className="mt-6 grid items-start gap-6 lg:grid-cols-2">
         <figure className="overflow-hidden rounded-2xl border border-white/10 bg-[#0a0c12] shadow-2xl">
           <div className="flex items-center gap-2 border-b border-white/5 bg-white/[0.02] px-4 py-2.5">
@@ -42,24 +57,23 @@ export default function InAction() {
         <BrowserFrame src={asset('media/promo-dashboard-six.png')} alt="Six independent agent streams in a six-pane grid" ratioW={1600} ratioH={1000} badge="Six in parallel" />
       </div>
 
-      {/* Money features: switch agent mid-session · Standard/Extra mode · 7 IM channels */}
+      {/* Standard/Extra mode · 7 IM channels · Agents & Models */}
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
-        <BrowserFrame src={asset('media/promo-dashboard-agent-switch.png')} alt="Switch the agent mid-session" ratioW={1440} ratioH={900} badge="Switch agent" />
         <BrowserFrame src={asset('media/promo-dashboard-agent-mode.png')} alt="Standard / Extra access mode" ratioW={1440} ratioH={900} badge="Standard / Extra" />
         <BrowserFrame src={asset('media/promo-dashboard-im.png')} alt="Seven native IM channels" ratioW={1440} ratioH={900} badge="IM Access" />
+        <BrowserFrame src={asset('media/promo-dashboard-agents.png')} alt="Agents and Models" ratioW={1440} ratioH={900} badge="Agents &amp; Models" />
       </div>
       <p className="mt-4 text-center text-sm text-neutral-500">
-        Switch the agent mid-session (Claude · Codex · Gemini · Hermes) · toggle Claude Standard / Extra billing · connect 7 IM channels.
+        Toggle Claude Standard / Extra billing · connect 7 IM channels · a Providers + Profiles vault with local models (Ollama · mlx-lm).
       </p>
 
-      {/* Config: Agents &amp; Models · Extensions · System */}
-      <div className="mt-6 grid gap-6 lg:grid-cols-3">
-        <BrowserFrame src={asset('media/promo-dashboard-agents.png')} alt="Agents and Models" ratioW={1440} ratioH={900} badge="Agents &amp; Models" />
+      {/* Extensions · System */}
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <BrowserFrame src={asset('media/promo-dashboard-extensions.png')} alt="Extensions — MCP servers and skills" ratioW={1440} ratioH={900} badge="Extensions" />
         <BrowserFrame src={asset('media/promo-dashboard-system.png')} alt="System and permissions" ratioW={1440} ratioH={900} badge="System" />
       </div>
       <p className="mt-4 text-center text-sm text-neutral-500">
-        Providers + Profiles vault &amp; local models (Ollama · mlx-lm) · MCP servers and skills · live CPU / memory / disk &amp; macOS permissions.
+        MCP servers and skills · live CPU / memory / disk &amp; macOS permissions.
       </p>
     </section>
   );

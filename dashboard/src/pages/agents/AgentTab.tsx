@@ -221,7 +221,9 @@ type CopyPack = {
   rowAccessMode: string;
   accessSubscription: string;
   accessApi: string;
-  accessModeHint: string;
+  accessSubscriptionDesc: string;
+  accessApiDesc: string;
+  accessModeSwitchNote: string;
   providerNative: string;
   providerNativeFromAgent: string;
   effortDefault: string;
@@ -297,9 +299,11 @@ function getCopy(locale: Locale): CopyPack {
       workflowOff: '关闭（默认）',
       workflowHint: '开启后，遇到大型多步任务（广度调研、大规模重构 / 审计、跨多文件评审）智能体可自行编排多个子智能体并行处理。关闭时彻底禁用 Workflow 工具，普通对话不受影响。',
       rowAccessMode: '接入模式',
-      accessSubscription: '标准 · 订阅额度',
-      accessApi: '额外 · API 额度',
-      accessModeHint: '决定 Claude 走哪条计费通道：标准＝交互式 TUI，计入 Pro/Max 订阅额度；额外＝headless `claude -p`，计入独立的 Agent SDK 额度池（按 API 计费）。切换后仅对新建会话/轮次生效，进行中的任务不受影响。',
+      accessSubscription: 'TUI 模式',
+      accessApi: '标准 · `claude -p`',
+      accessSubscriptionDesc: '把 Claude Code 当交互式终端来跑，借标准 Claude 的 TUI 能力解析每一轮输出，计入 Pro/Max 订阅额度。',
+      accessApiDesc: '标准的 headless 接入：直接以 `claude -p` 调用并读取结构化输出。长期会计入独立的 API 计费额度池（当前暂未生效，仍复用你现有的 Claude 登录）。',
+      accessModeSwitchNote: '切换仅对新建会话/轮次生效，进行中的任务不受影响。',
       providerNative: '官方（CLI 内置认证）',
       providerNativeFromAgent: '智能体自身配置',
       effortDefault: '默认',
@@ -371,9 +375,11 @@ function getCopy(locale: Locale): CopyPack {
     workflowOff: 'Off (default)',
     workflowHint: 'When on, the agent may orchestrate multiple sub-agents in parallel for large multi-step work (broad research, big refactors/audits, cross-file reviews). Off fully disables the Workflow tool; ordinary chat is unaffected.',
     rowAccessMode: 'Access mode',
-    accessSubscription: 'Standard · subscription',
-    accessApi: 'Extra · API credits',
-    accessModeHint: 'Which billing pool Claude turns land on: Standard = interactive TUI, counted inside your Pro/Max subscription quota; Extra = headless `claude -p`, billed against the separate Agent SDK credit pool (API pricing). Switching applies to new sessions/turns only; in-flight tasks are unaffected.',
+    accessSubscription: 'TUI mode',
+    accessApi: 'Standard · `claude -p`',
+    accessSubscriptionDesc: 'Runs Claude Code as an interactive terminal, parsing each turn through the standard Claude TUI, counted inside your Pro/Max subscription quota.',
+    accessApiDesc: 'The standard headless path: invokes `claude -p` directly and reads its structured output. Will eventually count against a separate API credit pool (not yet in effect — it still reuses your existing Claude sign-in).',
+    accessModeSwitchNote: 'Switching applies to new sessions/turns only; in-flight tasks are unaffected.',
     providerNative: 'Native (CLI auth)',
     providerNativeFromAgent: "agent's own config",
     effortDefault: 'default',
@@ -478,7 +484,7 @@ function makeInitialDraft(
       profileId: boundInfo.profileId,
       // Fold orchestration into the synthetic `ultra` rung for display.
       effort: foldUltraEffort(agentId, boundInfo.effort, agentStatus?.workflowEnabled),
-      accessMode: agentId === 'claude' ? (agentStatus?.claudeAccessMode || 'subscription') : undefined,
+      accessMode: agentId === 'claude' ? (agentStatus?.claudeAccessMode || 'api') : undefined,
     };
   }
   const native = agentStatus?.nativeConfig || null;
@@ -487,7 +493,7 @@ function makeInitialDraft(
     modelId: native?.model || agentStatus?.selectedModel || '',
     profileId: null,
     effort: foldUltraEffort(agentId, native?.effort || agentStatus?.selectedEffort, agentStatus?.workflowEnabled),
-    accessMode: agentId === 'claude' ? (agentStatus?.claudeAccessMode || 'subscription') : undefined,
+    accessMode: agentId === 'claude' ? (agentStatus?.claudeAccessMode || 'api') : undefined,
   };
 }
 
@@ -751,14 +757,18 @@ function AgentInlineConfig({
         <div>
           <Label className="!mb-1 text-[11px]">{copy.rowAccessMode}</Label>
           <Select
-            value={draft.accessMode || 'subscription'}
+            value={draft.accessMode || 'api'}
             options={[
-              { value: 'subscription', label: copy.accessSubscription },
               { value: 'api', label: copy.accessApi },
+              { value: 'subscription', label: copy.accessSubscription },
             ]}
             onChange={v => setDraft(d => ({ ...d, accessMode: v as 'subscription' | 'api' }))}
           />
-          <div className="mt-1 text-[11px] leading-relaxed text-fg-5">{copy.accessModeHint}</div>
+          <div className="mt-1.5 space-y-1 text-[11px] leading-relaxed text-fg-5">
+            <div><span className="font-medium text-fg-3">{copy.accessApi}</span>{' — '}{copy.accessApiDesc}</div>
+            <div><span className="font-medium text-fg-3">{copy.accessSubscription}</span>{' — '}{copy.accessSubscriptionDesc}</div>
+            <div>{copy.accessModeSwitchNote}</div>
+          </div>
         </div>
       )}
 

@@ -144,7 +144,10 @@ export function setAgentWorkflowEnv(agent: Agent, value: boolean, env: NodeJS.Pr
 
 export type ClaudeAccessMode = 'subscription' | 'api';
 
-export const DEFAULT_CLAUDE_ACCESS_MODE: ClaudeAccessMode = 'subscription';
+// Default `api` = headless `claude -p`, the standard integration path. The
+// interactive TUI ('subscription', Pro/Max quota) is opt-in via the dashboard
+// 接入模式 toggle or PIKILOOM_CLAUDE_TUI=1.
+export const DEFAULT_CLAUDE_ACCESS_MODE: ClaudeAccessMode = 'api';
 
 /**
  * Access mode implied by env, or null when neither var has an opinion.

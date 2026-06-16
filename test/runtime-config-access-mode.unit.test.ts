@@ -26,9 +26,9 @@ describe('resolveClaudeAccessMode', () => {
     }
   });
 
-  it('defaults to subscription with no config and no env', () => {
-    expect(resolveClaudeAccessMode({})).toBe('subscription');
-    expect(DEFAULT_CLAUDE_ACCESS_MODE).toBe('subscription');
+  it('defaults to api (claude -p) with no config and no env', () => {
+    expect(resolveClaudeAccessMode({})).toBe('api');
+    expect(DEFAULT_CLAUDE_ACCESS_MODE).toBe('api');
   });
 
   it('honours the persisted config field over everything', () => {
@@ -54,7 +54,7 @@ describe('resolveClaudeAccessMode', () => {
   });
 
   it('ignores an invalid config value and falls through to the default', () => {
-    expect(resolveClaudeAccessMode({ claudeAccessMode: 'bogus' as never })).toBe('subscription');
+    expect(resolveClaudeAccessMode({ claudeAccessMode: 'bogus' as never })).toBe('api');
   });
 
   it('setClaudeAccessModeEnv round-trips through the env reader', () => {

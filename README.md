@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo-wordmark.png" alt="pikiloom" width="440">
+<img src="docs/logo-wordmark-gradient.png" alt="pikiloom" width="440">
 
 ## Put the world's smartest AI agents in your pocket.
 
@@ -13,18 +13,36 @@ npx pikiloom@latest
 ```
 
 <p>
-<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/v/pikiloom?label=npm&color=cb3837" alt="npm"></a>
-<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/dm/pikiloom?label=downloads&color=success" alt="npm downloads"></a>
-<a href="https://github.com/xiaotonng/pikiloom/stargazers"><img src="https://img.shields.io/github/stars/xiaotonng/pikiloom?style=flat&color=yellow" alt="GitHub stars"></a>
+<b><a href="https://xiaotonng.github.io/pikiloom/">▶&nbsp;&nbsp;Explore the live site &amp; demos →</a></b>
+</p>
+
+<p>
+<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/v/pikiloom?label=npm&color=cb3837&logo=npm&logoColor=white" alt="npm version"></a>
+<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fxiaotonng%2Fpikiloom%2Fmain%2Fdocs%2Fdownloads.json&logo=npm&logoColor=white" alt="combined npm installs per month (pikiloom + pikiclaw)"></a>
+<a href="https://xiaotonng.github.io/pikiloom/"><img src="https://img.shields.io/badge/live%20demo-pikiloom-38bdf8" alt="Live demo"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-<a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-green.svg" alt="Node 20+"></a>
+<a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-44cc11.svg" alt="Node 20+"></a>
 </p>
 
 <p>
 <b>English</b> | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<img src="docs/promo-orchestrator.png" alt="Pikiloom — AI-Native Agent Orchestrator" width="820">
+<a href="https://xiaotonng.github.io/pikiloom/#orchestrator"><img src="docs/promo-orchestrator.png" alt="pikiloom — the open Agent orchestrator: any terminal, any agent, any model, any tool" width="820"></a>
+
+<sub><a href="https://xiaotonng.github.io/pikiloom/#orchestrator">↗ Explore the interactive, animated version on the live site</a></sub>
+
+</div>
+
+---
+
+<div align="center">
+
+###### ENGINEERS FROM THESE TEAMS BUILD WITH PIKILOOM
+
+**ByteDance · Tencent · Alibaba · Meta · Google · Moonshot AI · MiniMax · StepFun**
+
+<sub>Individual engineers from these teams build with pikiloom — real practitioners reaching for it day to day, not corporate endorsements.</sub>
 
 </div>
 
@@ -78,6 +96,8 @@ This is the shape that matters: one creator, with a swarm of AI agents at their 
 ---
 
 ## See It in Action
+
+▶ **[Watch these in motion on the live site →](https://xiaotonng.github.io/pikiloom/#in-action)**
 
 > **A Swarm, in Parallel** — The whole point: run **N agents across N panes at once**. Every pane is an independent agent stream on its own session and workspace. Dispatch a task to each and watch them all work simultaneously — then fan out from 1 → 2 → 3 → 6 panes as you scale.
 

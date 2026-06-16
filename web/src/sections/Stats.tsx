@@ -2,8 +2,12 @@ import { useEffect, useState } from 'react';
 import CountUp from '@/components/CountUp';
 import { LINKS } from '@/site';
 
-// Last known good value — shown instantly if the live npm API is slow/blocked.
-const FALLBACK_DOWNLOADS = 6765;
+// Combined monthly installs across the package's whole history: the current
+// name `pikiloom` plus its predecessor `pikiclaw` (renamed; the old name still
+// forwards here). Summing both is the honest measure of reach.
+const PACKAGES = ['pikiloom', 'pikiclaw'] as const;
+// Last known good combined value — shown instantly if the live npm API is slow/blocked.
+const FALLBACK_DOWNLOADS = 8386;
 
 function StatValue({ value, suffix }: { value: number | null; suffix?: string }) {
   if (value === null) {
@@ -23,9 +27,20 @@ export default function Stats() {
   useEffect(() => {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 6000);
-    fetch('https://api.npmjs.org/downloads/point/last-month/pikiloom', { signal: ac.signal })
-      .then((r) => r.json())
-      .then((d) => setDownloads(typeof d?.downloads === 'number' ? d.downloads : FALLBACK_DOWNLOADS))
+    // Fetch every package name in parallel; each failure degrades to 0 so one
+    // slow/blocked request can never reject the whole sum.
+    Promise.all(
+      PACKAGES.map((pkg) =>
+        fetch(`https://api.npmjs.org/downloads/point/last-month/${pkg}`, { signal: ac.signal })
+          .then((r) => r.json())
+          .then((d) => (typeof d?.downloads === 'number' ? d.downloads : 0))
+          .catch(() => 0),
+      ),
+    )
+      .then((counts) => {
+        const total = counts.reduce((sum, n) => sum + n, 0);
+        setDownloads(total > 0 ? total : FALLBACK_DOWNLOADS);
+      })
       .catch(() => setDownloads(FALLBACK_DOWNLOADS))
       .finally(() => clearTimeout(timer));
     return () => {

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo-wordmark.png" alt="pikiloom" width="440">
+<img src="docs/logo-wordmark-gradient.png" alt="pikiloom" width="440">
 
 ## 把全世界最聪明的 AI Agent 装进你的口袋。
 
@@ -13,18 +13,36 @@ npx pikiloom@latest
 ```
 
 <p>
-<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/v/pikiloom?label=npm&color=cb3837" alt="npm"></a>
-<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/dm/pikiloom?label=downloads&color=success" alt="npm downloads"></a>
-<a href="https://github.com/xiaotonng/pikiloom/stargazers"><img src="https://img.shields.io/github/stars/xiaotonng/pikiloom?style=flat&color=yellow" alt="GitHub stars"></a>
+<b><a href="https://xiaotonng.github.io/pikiloom/">▶&nbsp;&nbsp;访问在线站点 &amp; 演示 →</a></b>
+</p>
+
+<p>
+<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/npm/v/pikiloom?label=npm&color=cb3837&logo=npm&logoColor=white" alt="npm version"></a>
+<a href="https://www.npmjs.com/package/pikiloom"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fxiaotonng%2Fpikiloom%2Fmain%2Fdocs%2Fdownloads.json&logo=npm&logoColor=white" alt="月安装量(pikiloom + pikiclaw 合计)"></a>
+<a href="https://xiaotonng.github.io/pikiloom/"><img src="https://img.shields.io/badge/live%20demo-pikiloom-38bdf8" alt="Live demo"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-<a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-green.svg" alt="Node 20+"></a>
+<a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520-44cc11.svg" alt="Node 20+"></a>
 </p>
 
 <p>
 <a href="README.md">English</a> | <b>简体中文</b>
 </p>
 
-<img src="docs/promo-orchestrator.png" alt="Pikiloom —— AI-Native Agent 编排器" width="820">
+<a href="https://xiaotonng.github.io/pikiloom/#orchestrator"><img src="docs/promo-orchestrator.png" alt="pikiloom —— 开放式 Agent 编排器：任意终端、任意 Agent、任意模型、任意工具" width="820"></a>
+
+<sub><a href="https://xiaotonng.github.io/pikiloom/#orchestrator">↗ 在线站点上有可交互、带动效的完整版本</a></sub>
+
+</div>
+
+---
+
+<div align="center">
+
+###### 这些团队的工程师都在用 pikiloom 构建
+
+**字节跳动 · 腾讯 · 阿里巴巴 · Meta · Google · 月之暗面 · MiniMax · 阶跃星辰**
+
+<sub>来自这些团队的工程师在日常工作中使用 pikiloom —— 是真实的个人实践者，而非公司层面的官方背书。</sub>
 
 </div>
 
@@ -78,6 +96,8 @@ npx pikiloom@latest
 ---
 
 ## 实际演示
+
+▶ **[在线站点上看动态演示 →](https://xiaotonng.github.io/pikiloom/#in-action)**
 
 > **真实任务** —— 让 pikiloom 收集并总结今天的 AI 新闻；Agent 自动阅读、撰写，最后通过 Telegram 将结果推送到你的手机上。
 

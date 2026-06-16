@@ -2351,7 +2351,13 @@ export class Bot {
       || agentConfig.reasoningEffort
       || 'high';
     const effort = cs.agent === 'gemini' ? null : (effortRaw || null);
-    return { model: model || null, effort };
+    // Fold to the synthetic 'ultra' rung for display when Workflow is on (mirrors
+    // effortSelectionForAgent / the dashboard's foldUltraEffort), so the live reply
+    // badge and IM running footer label the turn 'ultra' instead of a bare 'max'.
+    const displayEffort = effort && getDriverCapabilities(cs.agent).workflow && this.workflowEnabledForAgent(cs.agent)
+      ? 'ultra'
+      : effort;
+    return { model: model || null, effort: displayEffort };
   }
 
   fetchSessions(agent: Agent | undefined, workdir?: string): Promise<SessionQueryResult> {
@@ -2788,6 +2794,12 @@ export class Bot {
       forkOf: extras?.forkOf,
     };
     const result = await doStream(opts);
+    // 'ultra' is a display-only rung (max reasoning + Workflow). The command ran on
+    // concrete max+workflow; relabel the result effort so the reply footer (IM
+    // final card, etc.) matches the picker. Display-only — never re-fed into a run.
+    if (cs.agent === 'claude' && workflowEnabled && result.thinkingEffort) {
+      result.thinkingEffort = 'ultra';
+    }
     this.stats.totalTurns++;
     if (result.inputTokens) this.stats.totalInputTokens += result.inputTokens;
     if (result.outputTokens) this.stats.totalOutputTokens += result.outputTokens;

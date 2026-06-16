@@ -4,7 +4,7 @@ import { createT } from '../../i18n';
 import { api } from '../../api';
 import { loadSessionMessages, peekSessionMessages } from '../../session-preload';
 import { useDashboardEvent, useDashboardReconnect, type DashboardEvent } from '../../ws';
-import { cn, getAgentMeta, getSessionRunFailureDetail, shortenModel, sessionDisplayState } from '../../utils';
+import { cn, foldUltraEffort, getAgentMeta, getSessionRunFailureDetail, shortenModel, sessionDisplayState } from '../../utils';
 import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
 import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent } from '../../types';
@@ -770,7 +770,11 @@ export const SessionPanel = memo(function SessionPanel({
   // agent's runtime default. Always resolves to something so the divider never
   // shows a bare label without context.
   const displayModel = (liveStream?.model || session.model || globalModel) || null;
-  const displayEffort = (liveStream?.effort || session.thinkingEffort || globalEffort) || null;
+  const displayEffort = foldUltraEffort(
+    session.agent || '',
+    (liveStream?.effort || session.thinkingEffort || globalEffort) || null,
+    agentRuntime?.workflowEnabled,
+  ) || null;
   const displayModelShort = displayModel ? shortenModel(displayModel) : null;
   const runFailureDetail = getSessionRunFailureDetail(session, {
     streaming,

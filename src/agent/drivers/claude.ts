@@ -1063,9 +1063,35 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     try { proc.stdin?.end(); } catch {}
   };
 
-  const emit = () => {
-    opts.onText(s.text, s.thinking, s.activity, buildStreamPreviewMeta(s), s.plan);
+  // Simulated streaming smoothing — mirrors the TUI driver's TuiStreamBuffer.
+  // `claude -p` surfaces text via stream-json deltas that arrive in irregular
+  // SSE bursts; without metering, the dashboard/IM preview jumps "一卡一卡".
+  // Reveal `s.text` into the preview at a steady ~1000 chars/s so it reads as
+  // fluid typing. Display-only: the returned result still uses the full `s.text`.
+  const PRINT_STREAM_CHUNK_CHARS = 20;
+  const PRINT_STREAM_CHUNK_INTERVAL_MS = 20;
+  let displayedLen = 0;
+  let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
+  const rawEmit = () => {
+    opts.onText(s.text.slice(0, displayedLen), s.thinking, s.activity, buildStreamPreviewMeta(s), s.plan);
   };
+  const scheduleStreamTick = () => {
+    if (streamTickTimer || displayedLen >= s.text.length) return;
+    streamTickTimer = setTimeout(() => {
+      streamTickTimer = null;
+      if (displayedLen >= s.text.length) return;
+      displayedLen = Math.min(s.text.length, displayedLen + PRINT_STREAM_CHUNK_CHARS);
+      rawEmit();
+      scheduleStreamTick();
+    }, PRINT_STREAM_CHUNK_INTERVAL_MS);
+  };
+  const flushDisplay = () => {
+    if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
+    displayedLen = s.text.length;
+    rawEmit();
+  };
+  // New text → show what's revealed now, then keep the typewriter draining.
+  const emit = () => { rawEmit(); scheduleStreamTick(); };
 
   const abortStream = () => {
     if (interrupted || proc.killed) return;
@@ -1211,6 +1237,10 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
         awaitingSteeredResponseStart = false;
         steerQueued = false;
         resetClaudeTurnState(s);
+        // New segment: restart the typewriter from empty so the next response
+        // reveals from its first character instead of jumping.
+        displayedLen = 0;
+        if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
       }
       if (evType === 'system' || evType === 'result' || evType === 'assistant') {
         agentLog(`[event] type=${evType} session=${ev.session_id || s.sessionId || '?'} model=${ev.model || s.model || '?'}`);
@@ -1234,6 +1264,8 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
         } else {
           closeInput();
         }
+        // Segment complete — reveal any buffered tail at once.
+        flushDisplay();
       }
       emit();
     } catch {}
@@ -1272,6 +1304,9 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
 
   if (!s.text.trim() && s.msgs.length) s.text = s.msgs.join('\n\n');
   if (!s.thinking.trim() && s.thinkParts.length) s.thinking = s.thinkParts.join('\n\n');
+  // Reveal anything still buffered by the typewriter so the final live preview
+  // matches the returned message (smoothing can lag a fast final burst).
+  flushDisplay();
 
   // Catch the Claude CLI's synthetic "API Error: …" assistant body (transient
   // Anthropic 5xx / 529 Overloaded). Without this rewrite the raw error string

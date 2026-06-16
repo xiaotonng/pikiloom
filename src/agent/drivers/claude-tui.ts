@@ -1039,6 +1039,20 @@ export function decideClaudeTuiStop(input: {
 export type ClaudeTuiStallDecision = 'wait' | 'stall';
 
 /**
+ * True for the `im_ask_user` MCP tool in any form — Claude Code names MCP tools
+ * `mcp__<server>__<tool>` (here `mcp__pikiloom__im_ask_user`), so match the
+ * namespaced suffix as well as the bare name (robust to the server name
+ * changing). The driver tails Pre/PostToolUse hooks by id but must also know
+ * *which* pending tool is the one that blocks on the user, so the stall
+ * watchdog can stay armed for every other tool and disarm only for a live
+ * question. See decideClaudeTuiStall(`awaitingUserReply`).
+ */
+export function isAskUserToolName(name: unknown): boolean {
+  if (typeof name !== 'string' || !name) return false;
+  return name === 'im_ask_user' || name.endsWith('__im_ask_user');
+}
+
+/**
  * Decide whether the turn has gone dead. claude CLI is known to freeze
  * mid-turn (observed 2026-06-02 on 2.1.160): after a tool_result lands the
  * next assistant segment never starts — the process stays alive, the JSONL
@@ -1059,17 +1073,31 @@ export type ClaudeTuiStallDecision = 'wait' | 'stall';
  * past `ptyDeadMs`, declare the stall immediately instead of waiting out the
  * 10/30-minute quiet thresholds. Long thinking and long foreground commands
  * keep painting frames, which routes them to the slow thresholds as before.
+ *
+ * `awaitingUserReply` is the one state that is quiet BY DESIGN, not because the
+ * process froze: an `im_ask_user` MCP call is in flight (PreToolUse seen, no
+ * PostToolUse) and the turn is blocked on the user's reply — the `/ask-user`
+ * callback never times out. Every signal (JSONL, hooks, PTY) goes silent while
+ * the user thinks, which is indistinguishable by timing alone from a freeze, so
+ * the watchdog must never stall here. The hard turn deadline remains the
+ * backstop if the user never answers; PostToolUse re-arms the watchdog the
+ * instant the answer lands. Without this, the last question regularly gets
+ * SIGTERMed mid-wait and mislabelled a "CLI freeze".
  */
 export function decideClaudeTuiStall(input: {
   now: number;
   lastProgressAt: number;
   pendingToolCount: number;
+  /** An im_ask_user call is in flight — the turn is intentionally blocked on
+   *  the user, not frozen. Short-circuits to 'wait' regardless of quiet time. */
+  awaitingUserReply?: boolean;
   quietMs?: number;
   pendingToolMs?: number;
   /** Wall-clock of the last raw PTY byte; 0/undefined = signal unavailable. */
   lastPtyDataAt?: number;
   ptyDeadMs?: number;
 }): ClaudeTuiStallDecision {
+  if (input.awaitingUserReply) return 'wait';
   const ptyAt = input.lastPtyDataAt ?? 0;
   if (ptyAt > 0) {
     const ptyDeadMs = input.ptyDeadMs ?? CLAUDE_TUI_STALL_PTY_DEAD_MS;
@@ -1651,6 +1679,13 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
   let lastClearedStopAt = 0;
   /** Hook-reported tools still executing: PreToolUse seen, no PostToolUse. */
   const pendingHookToolIds = new Set<string>();
+  /** Subset of pendingHookToolIds that are `im_ask_user` calls — the turn is
+   *  intentionally blocked on the user's reply (the /ask-user callback never
+   *  times out), so the stall watchdog must stay disarmed while any are in
+   *  flight. Cleared by the answer (PostToolUse) or the turn ending (Stop). */
+  const pendingAskUserToolIds = new Set<string>();
+  /** Edge-logged so the "watchdog disarmed" line fires on transitions only. */
+  let loggedAwaitingUser = false;
 
   // Incremental main-JSONL drain — the canonical text/thinking/usage feed.
   // Used by both the 200ms poll tick and the post-exit final drain. Returns
@@ -1721,8 +1756,15 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       lastToolEventAt = Date.now();
       const hookToolId = typeof ev?.tool_use_id === 'string' ? ev.tool_use_id : '';
       if (hookToolId) {
-        if (ev?.event === 'PreToolUse') pendingHookToolIds.add(hookToolId);
-        else if (ev?.event === 'PostToolUse') pendingHookToolIds.delete(hookToolId);
+        if (ev?.event === 'PreToolUse') {
+          pendingHookToolIds.add(hookToolId);
+          // im_ask_user blocks the turn on the user — track it separately so the
+          // stall watchdog can tell an intentional question-wait from a freeze.
+          if (isAskUserToolName(ev?.tool_name)) pendingAskUserToolIds.add(hookToolId);
+        } else if (ev?.event === 'PostToolUse') {
+          pendingHookToolIds.delete(hookToolId);
+          pendingAskUserToolIds.delete(hookToolId);
+        }
       }
       // A Task PreToolUse and the first sub-agent tool PreToolUse can land in
       // the same tick batch. If the sub-agent's hook arrives before we've
@@ -1920,6 +1962,8 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           agentWarn(`[claude-tui] Stop fired with ${pendingHookToolIds.size} unmatched PreToolUse event(s) — clearing (lost PostToolUse hooks)`);
           pendingHookToolIds.clear();
         }
+        // A fired Stop ends the turn — any tracked ask-user is moot.
+        pendingAskUserToolIds.clear();
       }
       const pendingBg = pendingClaudeBackgroundAgentCount(s);
       const decision = decideClaudeTuiStop({
@@ -1985,6 +2029,19 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
         state.promptSubmittedAt || 0,
       );
       const inPostStopHold = !!state.stoppedAt && state.stoppedAt >= nonStopProgressAt;
+      // An im_ask_user call is in flight → the turn is blocked on the user's
+      // reply, not frozen (the /ask-user callback never times out). Disarm the
+      // stall watchdog AND the freeze diagnostics until the user answers
+      // (PostToolUse clears the id). Otherwise the quiet wait trips
+      // decideClaudeTuiStall, classifies 'unknown', and gets SIGTERMed +
+      // mislabelled a "CLI freeze" — the last-question hang the user reported.
+      const awaitingUserReply = pendingAskUserToolIds.size > 0;
+      if (awaitingUserReply !== loggedAwaitingUser) {
+        loggedAwaitingUser = awaitingUserReply;
+        if (awaitingUserReply) {
+          agentLog(`[claude-tui] im_ask_user in flight — stall watchdog disarmed until the user replies pid=${proc.pid}`);
+        }
+      }
       // Chokepoint answer-retry grace. We sent the affirmative key at a stuck dialog; give it time
       // to clear. If the screen is no longer a blocking dialog, the answer took — disarm and re-arm
       // so a later prompt in the same turn can also get a chokepoint retry. If it is STILL a dialog
@@ -2007,7 +2064,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
       if (!stallKilled) {
         const nowMs = Date.now();
         const quietMs = nowMs - lastProgressAt;
-        if (quietMs >= STALL_DIAG_QUIET_THRESHOLD_MS && !inPostStopHold) {
+        if (quietMs >= STALL_DIAG_QUIET_THRESHOLD_MS && !inPostStopHold && !awaitingUserReply) {
           const ptyQuietMs = nowMs - lastPtyDataAt;
           stallDiagWentQuiet = true;
           if (quietMs > stallDiagMaxQuietMs) stallDiagMaxQuietMs = quietMs;
@@ -2049,6 +2106,7 @@ export async function doClaudeTuiStream(opts: StreamOpts): Promise<StreamResult>
           now: Date.now(),
           lastProgressAt,
           pendingToolCount: pendingHookToolIds.size + pendingBgForStall,
+          awaitingUserReply,
           lastPtyDataAt: inPostStopHold ? 0 : lastPtyDataAt,
         });
         if (stallDecision === 'stall') {

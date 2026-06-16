@@ -1009,6 +1009,46 @@ describe('Claude TUI driver — decideClaudeTuiStop + decideClaudeTuiStall watch
       now: 100_000, lastProgressAt: 0, pendingToolCount: 0,
       lastPtyDataAt: 10_000, ptyDeadMs: 60_000,
     })).toBe('stall');
+
+    // awaitingUserReply short-circuits BOTH slow and fast paths: an im_ask_user
+    // call is in flight, so the turn is blocked on the user (not frozen) no
+    // matter how long every signal — including the PTY — has been silent. This
+    // is the last-question hang: without it the quiet wait was SIGTERMed as a
+    // "CLI freeze". The hard turn deadline is the only backstop here.
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 0, pendingToolCount: 1,
+      awaitingUserReply: true, lastPtyDataAt: 0,
+    })).toBe('wait');
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 0, pendingToolCount: 1,
+      awaitingUserReply: true, lastPtyDataAt: 0 /* fast-path would stall */ + 1,
+    })).toBe('wait');
+    // Same timings, but the answer landed (PostToolUse cleared the id) → the
+    // watchdog re-arms and the genuine-freeze path fires again.
+    expect(decideClaudeTuiStall({
+      now: 100 * MIN, lastProgressAt: 0, pendingToolCount: 0,
+      awaitingUserReply: false, lastPtyDataAt: 0,
+    })).toBe('stall');
+  });
+});
+
+describe('Claude TUI driver — isAskUserToolName (im_ask_user detection)', () => {
+  it('matches the bare + MCP-namespaced im_ask_user tool, nothing else', async () => {
+    const { isAskUserToolName } = await import('../src/agent/drivers/claude-tui.ts');
+    // The form Claude Code reports in Pre/PostToolUse hooks for the bridge tool.
+    expect(isAskUserToolName('mcp__pikiloom__im_ask_user')).toBe(true);
+    // Robust to the server name changing, and to the bare name.
+    expect(isAskUserToolName('mcp__something__im_ask_user')).toBe(true);
+    expect(isAskUserToolName('im_ask_user')).toBe(true);
+    // Must NOT match other (non-blocking) tools, look-alikes, or junk.
+    expect(isAskUserToolName('mcp__pikiloom__im_send_file')).toBe(false);
+    expect(isAskUserToolName('mcp__pikiloom__await_background')).toBe(false);
+    expect(isAskUserToolName('im_ask_user_extra')).toBe(false);
+    expect(isAskUserToolName('Bash')).toBe(false);
+    expect(isAskUserToolName('')).toBe(false);
+    expect(isAskUserToolName(null)).toBe(false);
+    expect(isAskUserToolName(undefined)).toBe(false);
+    expect(isAskUserToolName(123)).toBe(false);
   });
 });
 

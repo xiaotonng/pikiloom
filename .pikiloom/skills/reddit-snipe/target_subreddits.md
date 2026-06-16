@@ -3,11 +3,11 @@
 每个 sub 记录：URL · 主题契合度 · mod 严格度 · 评论形态 · 备注。
 
 **评论形态**（用于 SKILL.md Step 5 选模板）：
-- `link` — 允许在评论里贴 `npx pikiclaw@latest` + GitHub 链接
-- `no-link` — 只口头提 pikiclaw 名字（automod 会过滤含外链的评论 / sub rule 禁止）
+- `link` — 允许在评论里贴 `npx pikiloom@latest` + GitHub 链接
+- `no-link` — 只口头提 pikiloom 名字（automod 会过滤含外链的评论 / sub rule 禁止）
 - `skip` — 不评论。mod 极严，任何第三方工具评论都会删 — 不浪费 ammo
 
-身份永远是 pikiclaw builder（不存在"隐藏身份攒 karma"模式）；唯一变化的是评论里是否带链接。
+身份永远是 pikiloom builder（不存在"隐藏身份攒 karma"模式）；唯一变化的是评论里是否带链接。
 
 ## Tier 1 · 高契合度 · 主战场
 
@@ -15,7 +15,7 @@
 |-----|---------|-----------|---------|------|
 | [r/ClaudeAI](https://www.reddit.com/r/ClaudeAI/) | ★★★★★ | 中 | link | Claude 用户大本营。允许 "I built X"，禁纯广告 |
 | [r/ChatGPTCoding](https://www.reddit.com/r/ChatGPTCoding/) | ★★★★★ | 中 | link | coding agent / Cursor / Aider / Cline 讨论密集 |
-| [r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/) | ★★★★ | 中偏严 | link | 偏自托管 + 本地 LLM。pikiclaw 本地运行属性正中靶心 |
+| [r/LocalLLaMA](https://www.reddit.com/r/LocalLLaMA/) | ★★★★ | 中偏严 | link | 偏自托管 + 本地 LLM。pikiloom 本地运行属性正中靶心 |
 | [r/AI_Agents](https://www.reddit.com/r/AI_Agents/) | ★★★★★ | 中 | link | agent 主题最直接的 sub。规模不大但高纯度 |
 | [r/cursor](https://www.reddit.com/r/cursor/) | ★★★★ | 中 | link | Cursor 用户群，部分人在找替代/补充 |
 

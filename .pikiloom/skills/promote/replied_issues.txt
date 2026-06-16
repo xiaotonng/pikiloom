@@ -58,3 +58,9 @@ https://github.com/m1heng/clawdbot-feishu/issues/406
 https://github.com/chenhg5/cc-connect/issues/916
 https://github.com/chenhg5/cc-connect/issues/910
 https://github.com/a5c-ai/claude-code-telegram-bot/issues/5
+# --- run 2026-06-15T23:59:23Z · billing-segment batch ---
+https://github.com/dn00/clarp/issues/17
+https://github.com/byte5ai/omadia/issues/309
+https://github.com/paperclipai/paperclip/issues/3753
+https://github.com/getpaseo/paseo/issues/1029
+https://github.com/chenhg5/cc-connect/issues/1365

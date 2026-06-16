@@ -22,7 +22,7 @@
     /https?:\/\/\S+/i,
   ];
 
-  const PIKICLAW_SIGNALS = [
+  const PIKILOOM_SIGNALS = [
     /claude\s*code/i,
     /\bcodex\b/i,
     /gemini\s*cli/i,
@@ -30,8 +30,9 @@
     /ai\s+(coding|dev)\s+(agent|tool|assistant)/i,
     /(agent|claude)\s+(dashboard|orchestrator)/i,
     /\bmcp\b/i,
-    /telegram|feishu|wechat|whatsapp|discord/i,
+    /telegram|feishu|wechat|whatsapp|discord|slack|dingtalk|wecom/i,
     /multi[\s-]?agent/i,
+    /agent\s+swarm|parallel\s+agents/i,
     /remote\s+(coding|claude|agent)/i,
     /mobile\s+claude/i,
     /\bcursor\b/i,
@@ -78,8 +79,8 @@
   const hasProductSignal = (text) =>
     PRODUCT_SIGNALS.some((re) => re.test(text || ""));
 
-  const hasPikiclawSignal = (text) =>
-    PIKICLAW_SIGNALS.some((re) => re.test(text || ""));
+  const hasPikiloomSignal = (text) =>
+    PIKILOOM_SIGNALS.some((re) => re.test(text || ""));
 
   const absUrl = (href) => {
     if (!href) return "";
@@ -143,7 +144,7 @@
         post_type: postType,
         external_url: externalUrl,
         has_product_signal: hasProductSignal(allText) || !!externalUrl,
-        has_pikiclaw_signal: hasPikiclawSignal(allText),
+        has_pikiloom_signal: hasPikiloomSignal(allText),
         lang: detectLang(title + " " + bodyPreview),
         is_locked: isLocked,
         source: "shreddit-post",
@@ -208,7 +209,7 @@
         post_type: "",
         external_url: "",
         has_product_signal: hasProductSignal(title),
-        has_pikiclaw_signal: hasPikiclawSignal(title),
+        has_pikiloom_signal: hasPikiloomSignal(title),
         lang: detectLang(title),
         is_locked: false,
         source: "search-title-link",
@@ -264,7 +265,7 @@
           post_type: "",
           external_url: "",
           has_product_signal: hasProductSignal(fullText),
-          has_pikiclaw_signal: hasPikiclawSignal(fullText),
+          has_pikiloom_signal: hasPikiloomSignal(fullText),
           lang: detectLang(title),
           is_locked: false,
           source: "article-fallback",

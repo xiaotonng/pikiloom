@@ -15,7 +15,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
@@ -224,6 +224,54 @@ export interface BrowserSupervisorEndpoints {
   cdpEndpoint?: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Peekaboo (native macOS GUI control) — npx package warming
+// ---------------------------------------------------------------------------
+
+/** npx package spec for the multi-bin Peekaboo package. */
+export const PEEKABOO_NPX_PACKAGE = '@steipete/peekaboo';
+/** argv for the long-running MCP server written into the agent's mcp-config. */
+export const PEEKABOO_MCP_ARGV = ['-y', '-p', PEEKABOO_NPX_PACKAGE, 'peekaboo-mcp'];
+/**
+ * argv for the cache warm: the quick `peekaboo` bin (prints its version and
+ * exits) under the SAME `-p` package spec the server uses, so it populates the
+ * exact npx cache entry `peekaboo-mcp` later reuses. Deliberately NOT the
+ * `peekaboo-mcp` bin — that's a server that never exits.
+ */
+export const PEEKABOO_WARM_ARGV = ['-y', '-p', PEEKABOO_NPX_PACKAGE, 'peekaboo', '--version'];
+
+let peekabooWarmStarted = false;
+
+/**
+ * Pre-warm the Peekaboo npx package so the agent's MCP server connects instantly.
+ *
+ * `peekaboo-mcp` ships a native Swift binary, so a cold `npx -y -p
+ * @steipete/peekaboo …` pays a large one-time download. The agent CLI launches
+ * that server itself and abandons it when the MCP handshake doesn't arrive
+ * within its startup window — killing the npx child mid-download. The cache
+ * never finishes, the next session is cold too, and Peekaboo stays stuck at
+ * "Still connecting" indefinitely.
+ *
+ * Warming from a detached process that outlives any single session breaks the
+ * loop: the download completes once, independent of the agent's timeout, and
+ * every later session finds the package cached. Idempotent + process-singleton
+ * (repeated stream-start calls are no-ops; npx itself short-circuits once the
+ * package is present) and strictly fire-and-forget — it never blocks or fails
+ * a session.
+ */
+export function ensurePeekabooWarm(): void {
+  if (process.platform !== 'darwin' || peekabooWarmStarted) return;
+  peekabooWarmStarted = true;
+  try {
+    const child = spawn('npx', PEEKABOO_WARM_ARGV, { stdio: 'ignore', detached: true });
+    // npx missing / spawn failure: clear the latch so a later call can retry.
+    child.on('error', () => { peekabooWarmStarted = false; });
+    child.unref();
+  } catch {
+    peekabooWarmStarted = false;
+  }
+}
+
 export function buildSupplementalMcpServers(
   gui: GuiIntegrationConfig = resolveGuiIntegrationConfig(),
   endpoints: BrowserSupervisorEndpoints = {},
@@ -248,7 +296,7 @@ export function buildSupplementalMcpServers(
     servers.push({
       name: 'peekaboo',
       command: 'npx',
-      args: ['-y', '-p', '@steipete/peekaboo', 'peekaboo-mcp'],
+      args: [...PEEKABOO_MCP_ARGV],
     });
   }
   return servers;
@@ -622,6 +670,10 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
   let hadActivity = false;
   const gui = resolveGuiIntegrationConfig();
   for (const hint of buildGuiSetupHints(gui)) opts.onLog?.(hint);
+  // Peekaboo ships a native binary behind npx; warm its cache out-of-band so the
+  // agent's MCP server connects instantly instead of hanging at "Still
+  // connecting" on a cold first-run download (see ensurePeekabooWarm).
+  if (gui.peekabooEnabled) ensurePeekabooWarm();
   // Lazy browser lifecycle: probe an already-running managed Chrome via
   // <profileDir>/DevToolsActivePort and attach if reachable; otherwise leave
   // Chrome unlaunched and let playwright/mcp launch it with `--user-data-dir`

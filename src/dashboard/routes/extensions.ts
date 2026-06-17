@@ -26,6 +26,7 @@ import {
 } from '../../agent/index.js';
 import type { McpServerConfig } from '../../core/config/user-config.js';
 import { loadUserConfig, saveUserConfig } from '../../core/config/user-config.js';
+import { ensurePeekabooWarm } from '../../agent/mcp/bridge.js';
 import { runtime } from '../runtime.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -42,6 +43,10 @@ function setBuiltinEnabled(catalogId: string, enabled: boolean): boolean {
   }
   if (catalogId === 'peekaboo') {
     saveUserConfig({ ...loadUserConfig(), peekabooEnabled: enabled });
+    // Warm the npx package the moment Peekaboo is enabled so it's downloaded
+    // before the first session — otherwise the agent hits a cold cache and
+    // hangs at "Still connecting". Disabling is a no-op.
+    if (enabled) ensurePeekabooWarm();
     return true;
   }
   return false;

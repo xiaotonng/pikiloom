@@ -10,6 +10,7 @@
 import { resolveCredential } from '../core/secrets/index.js';
 import { getActiveProfile, getProvider } from './store.js';
 import { peekProviderModelInfo, prefetchProviderModels } from './provider-models.js';
+import { ensureResponsesBridge, upstreamToken } from './responses-bridge.js';
 import type { ProviderConfig, ModelProfileConfig, ProviderKind } from './types.js';
 
 export interface InjectedSpawnConfig {
@@ -78,7 +79,13 @@ function providerSlug(provider: ProviderConfig): string {
   if (host.includes('dashscope') || host.includes('qwen')) return 'qwen';
   if (host.includes('volces') || host.includes('volcengine') || host.includes('doubao')) return 'doubao';
   if (host.includes('openrouter')) return 'openrouter';
-  return 'openrouter';
+  // Unknown host: derive a stable slug from the hostname's leading label. (The
+  // old `return 'openrouter'` fallback mis-slugged every unrecognised provider —
+  // including localhost Ollama — as openrouter.) This never collides with
+  // codex's reserved built-in `openai`/`oss`/`ollama` ids, which are routed
+  // before we ever reach providerSlug.
+  const label = host.replace(/:\d+$/, '').replace(/^(www|api)\./, '').split('.')[0].replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return label || 'byok';
 }
 
 /**
@@ -165,6 +172,20 @@ function claudeAnthropicBaseURL(provider: ProviderConfig): string {
   return raw.replace(/\/v1$/, '');
 }
 
+/**
+ * First-party Anthropic = the official API host (`api.anthropic.com` / any
+ * `*.anthropic.com`). A Claude route counts as "direct" when it lands here —
+ * both the subscription path and an own-key BYOK profile pointed at
+ * api.anthropic.com. Everything else (OpenRouter, DeepSeek, domestic series, a
+ * self-hosted relay, localhost) is a third-party proxy. Unparseable → treat as
+ * proxy (safe default: suppressing attribution is harmless, churning isn't).
+ */
+function isFirstPartyAnthropic(baseURL: string): boolean {
+  let host: string;
+  try { host = new URL(baseURL).hostname.toLowerCase(); } catch { return false; }
+  return host === 'anthropic.com' || host.endsWith('.anthropic.com');
+}
+
 // ---------------------------------------------------------------------------
 // Per-agent translation rules
 // ---------------------------------------------------------------------------
@@ -193,51 +214,159 @@ const claudeInjector: AgentInjector = (provider, profile, apiKey) => {
       detail: `Claude BYOK requires Anthropic or OpenAI-compatible (Anthropic-API-shaped) provider; got ${provider.kind}.`,
     };
   }
+  const baseURL = claudeAnthropicBaseURL(provider);
+  const env: Record<string, string> = {
+    ANTHROPIC_BASE_URL: baseURL,
+    ANTHROPIC_API_KEY: apiKey,
+    ANTHROPIC_AUTH_TOKEN: apiKey,
+  };
+  // Claude Code >= 2.1.36 stamps a per-request `x-anthropic-billing-header`
+  // (cc_version / cc_entrypoint / cch=… — the cch token churns every turn).
+  // Third-party proxies (OpenRouter, DeepSeek /anthropic, domestic series, any
+  // OpenAI-compat or self-hosted Anthropic-shaped front) often key their
+  // prefix/KV cache on request headers, so the churn forces a full prompt
+  // reprocess every turn — slow and expensive. `0` makes claude omit the header
+  // (env-bool: 0/false/no/off). Only on proxy routes: first-party Anthropic
+  // (api.anthropic.com — subscription OR own-key direct) is left exactly as
+  // shipped; its cache is content/breakpoint based, so attribution is irrelevant
+  // there and we don't touch it.
+  if (!isFirstPartyAnthropic(baseURL)) {
+    env.CLAUDE_CODE_ATTRIBUTION_HEADER = '0';
+  }
   return {
-    env: {
-      ANTHROPIC_BASE_URL: claudeAnthropicBaseURL(provider),
-      ANTHROPIC_API_KEY: apiKey,
-      ANTHROPIC_AUTH_TOKEN: apiKey,
-    },
+    env,
     argvAppend: [],
     modelOverride: profile.modelId,
     detail: `Claude BYOK → ${provider.name} / ${profile.modelId}`,
   };
 };
 
+function providerHostname(provider: ProviderConfig): string {
+  try { return new URL(provider.baseURL).hostname.toLowerCase(); } catch { return ''; }
+}
+
+/** True for localhost endpoints (Ollama / LM Studio / llama.cpp). */
+function isLocalProvider(provider: ProviderConfig): boolean {
+  const h = providerHostname(provider);
+  return h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0' || h === '::1';
+}
+
+/** Providers that natively implement the OpenAI Responses API (codex talks to them directly). */
+function isResponsesNativeProvider(provider: ProviderConfig): boolean {
+  return providerHost(provider).includes('openrouter');
+}
+
+/** codex's built-in local provider id for a localhost endpoint. */
+function codexLocalProvider(provider: ProviderConfig): 'ollama' | 'lmstudio' {
+  let port = '';
+  try { port = new URL(provider.baseURL).port; } catch { /* ignore */ }
+  if (port === '1234' || /lm\s*studio/i.test(provider.name)) return 'lmstudio';
+  return 'ollama';
+}
+
+type CodexRoute = 'openai-native' | 'responses-native' | 'local-oss' | 'bridge';
+
 /**
- * Codex CLI honours `model_providers.<slug>` definitions in `config.toml`.
- * Setting `OPENAI_BASE_URL` alone is not enough — Codex still routes through
- * the default `openai` provider's auth flow. The robust path is to declare a
- * one-shot `model_providers.<slug>` via `-c` overrides and bind it via
- * `model_provider="<slug>"`. The credential lives in the env var named by
- * `env_key`, picked host-aware (e.g. `OPENROUTER_API_KEY` for openrouter.ai).
- *
- * Note on `wire_api`: codex 0.130 dropped `"chat"` ("no longer supported"); we
- * omit the field entirely so codex picks its current default (`responses`),
- * which OpenRouter and other major OpenAI-compatible providers accept.
+ * Decide how codex should reach a provider. Codex 0.140+ speaks ONLY the
+ * Responses API, so the route depends on what the provider implements:
+ *   openai-native   genuine OpenAI            → built-in `openai` provider
+ *   local-oss       localhost Ollama/LMStudio → built-in `ollama`/`lmstudio` (responses)
+ *   responses-native OpenRouter, …            → custom provider, responses direct
+ *   bridge          chat-only (DeepSeek, Kimi, MiniMax, 豆包, Qwen, Zhipu, …)
+ *                                             → local Responses↔Chat bridge
  */
-const codexInjector: AgentInjector = (provider, profile, apiKey) => {
+function codexRoute(provider: ProviderConfig): CodexRoute {
+  if (provider.kind === 'openai') return 'openai-native';
+  if (isLocalProvider(provider)) return 'local-oss';
+  if (isResponsesNativeProvider(provider)) return 'responses-native';
+  return 'bridge';
+}
+
+/**
+ * Codex CLI honours `model_providers.<slug>` definitions in `config.toml` and
+ * binds the active one via `model_provider="<slug>"`. The credential lives in
+ * the env var named by `env_key`, picked host-aware (e.g. `DEEPSEEK_API_KEY`).
+ *
+ * Codex 0.140+ dropped Chat Completions (`wire_api = "chat"` is rejected at
+ * config load) — it speaks ONLY the Responses API. So this injector routes per
+ * `codexRoute()`: responses-capable providers (OpenAI, OpenRouter, local
+ * Ollama/LM Studio) are reached directly with the default `responses` wire;
+ * chat-only providers (DeepSeek and the domestic series) are routed through the
+ * in-process Responses↔Chat bridge, which codex sees as just another
+ * responses-speaking provider on localhost.
+ */
+const codexInjector: AgentInjector = async (provider, profile, apiKey) => {
   if (provider.kind !== 'openai' && provider.kind !== 'openai-compatible') {
     return {
       ...EMPTY,
-      detail: `Codex BYOK requires OpenAI-compatible provider; got ${provider.kind}.`,
+      detail: `Codex BYOK requires an OpenAI-compatible provider; got ${provider.kind}.`,
     };
   }
+  const model = profile.modelId;
+  const route = codexRoute(provider);
+
+  // Local Ollama / LM Studio: codex's built-in provider already speaks the
+  // Responses API to the local server. Just select it — no custom provider, no
+  // API key. (Defining `model_providers.<built-in>` is rejected: "Built-in
+  // providers cannot be overridden.")
+  if (route === 'local-oss') {
+    const local = codexLocalProvider(provider);
+    return {
+      env: {}, argvAppend: [],
+      codexConfigOverrides: [`model_provider="${local}"`],
+      modelOverride: model,
+      detail: `Codex local → ${provider.name} / ${model} (built-in ${local}, responses)`,
+    };
+  }
+
+  // Genuine OpenAI: use the built-in `openai` provider; inject the key (+ base).
+  if (route === 'openai-native') {
+    const env: Record<string, string> = { OPENAI_API_KEY: apiKey };
+    if (provider.baseURL) env.OPENAI_BASE_URL = provider.baseURL;
+    return {
+      env, argvAppend: [],
+      codexConfigOverrides: ['model_provider="openai"'],
+      modelOverride: model,
+      detail: `Codex BYOK → OpenAI / ${model}`,
+    };
+  }
+
   const slug = providerSlug(provider);
   const envKey = codexEnvKey(provider);
-  const overrides = [
-    `model_providers.${slug}.name="${tomlEscape(provider.name)}"`,
-    `model_providers.${slug}.base_url="${tomlEscape(provider.baseURL)}"`,
-    `model_providers.${slug}.env_key="${envKey}"`,
-    `model_provider="${slug}"`,
-  ];
+
+  // Chat-only providers: route through the local Responses↔Chat bridge. Codex
+  // forwards `Authorization: Bearer <key>` (from env_key) to the bridge, which
+  // relays it to the upstream chat endpoint — the bridge never stores secrets.
+  if (route === 'bridge') {
+    const port = await ensureResponsesBridge();
+    const base = `http://127.0.0.1:${port}/u/${upstreamToken(provider.baseURL)}`;
+    return {
+      env: { [envKey]: apiKey },
+      argvAppend: [],
+      codexConfigOverrides: [
+        `model_providers.${slug}.name="${tomlEscape(provider.name)}"`,
+        `model_providers.${slug}.base_url="${tomlEscape(base)}"`,
+        `model_providers.${slug}.env_key="${envKey}"`,
+        `model_provider="${slug}"`,
+      ],
+      modelOverride: model,
+      detail: `Codex BYOK → ${provider.name} / ${model} via Responses↔Chat bridge (provider=${slug})`,
+    };
+  }
+
+  // responses-native (OpenRouter, …): point codex straight at the provider's
+  // Responses endpoint (wire_api omitted ⇒ codex default `responses`).
   return {
     env: { [envKey]: apiKey },
     argvAppend: [],
-    codexConfigOverrides: overrides,
-    modelOverride: profile.modelId,
-    detail: `Codex BYOK → ${provider.name} / ${profile.modelId} (provider=${slug})`,
+    codexConfigOverrides: [
+      `model_providers.${slug}.name="${tomlEscape(provider.name)}"`,
+      `model_providers.${slug}.base_url="${tomlEscape(provider.baseURL)}"`,
+      `model_providers.${slug}.env_key="${envKey}"`,
+      `model_provider="${slug}"`,
+    ],
+    modelOverride: model,
+    detail: `Codex BYOK → ${provider.name} / ${model} (provider=${slug}, native responses)`,
   };
 };
 
@@ -316,11 +445,16 @@ export async function resolveAgentInjection(agentId: string): Promise<InjectedSp
   const injector = AGENT_INJECT_TABLE[agentId];
   if (!injector) return null;
 
-  let apiKey: string;
+  // Local providers (Ollama / LM Studio / llama.cpp) need no credential — codex
+  // reaches them via its built-in localhost provider with no auth. Don't let a
+  // missing/placeholder key block an otherwise-valid local binding.
+  let apiKey = '';
   try {
     apiKey = await resolveCredential(provider.credential);
   } catch (e: any) {
-    throw new Error(`Failed to resolve credential for ${provider.name}: ${e?.message || e}`);
+    if (!isLocalProvider(provider)) {
+      throw new Error(`Failed to resolve credential for ${provider.name}: ${e?.message || e}`);
+    }
   }
 
   const result = await injector(provider, profile, apiKey);

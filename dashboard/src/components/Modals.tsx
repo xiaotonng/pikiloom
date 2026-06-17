@@ -182,6 +182,35 @@ export function TelegramModal({ open, onClose }: { open: boolean; onClose: () =>
 /* ═══════════════════════════════════════════════════
    Feishu Modal
    ═══════════════════════════════════════════════════ */
+
+/**
+ * Minimum API scopes for the Feishu bot, ready to paste into the Open Platform
+ * "Permissions → Batch import" dialog. Each scope maps to a capability the
+ * channel actually calls (see channels/feishu/channel.ts):
+ *   - p2p_msg / group_at_msg readonly → receive the im.message.receive_v1 event
+ *   - send_as_bot → send / reply / recall as the bot
+ *   - im:message → edit cards (patch) + reactions
+ *   - im:resource → upload / download images & files
+ * Bot capability and event subscriptions are configured separately and cannot
+ * be imported here (see the guide note).
+ */
+const FEISHU_PERMS_JSON = JSON.stringify(
+  {
+    scopes: {
+      tenant: [
+        'im:message',
+        'im:message:send_as_bot',
+        'im:message.p2p_msg:readonly',
+        'im:message.group_at_msg:readonly',
+        'im:resource',
+      ],
+      user: [],
+    },
+  },
+  null,
+  2,
+);
+
 export function FeishuModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const state = useStore(s => s.state);
   const toast = useStore(s => s.toast);
@@ -296,7 +325,23 @@ export function FeishuModal({ open, onClose }: { open: boolean; onClose: () => v
               <p>{t('modal.feishuGuideStep2')}</p>
               <p>{t('modal.feishuGuideStep3')}</p>
               <p>{t('modal.feishuGuideStep4')}</p>
-              <p className="ml-3 font-mono text-[11px] text-fg-5">{t('modal.feishuGuidePerms')}</p>
+              <div className="ml-3 mt-1">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-fg-5">{t('modal.feishuGuidePerms')}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      navigator.clipboard.writeText(FEISHU_PERMS_JSON);
+                      toast(t('modal.feishuJsonCopied'));
+                    }}
+                  >
+                    {t('modal.feishuCopyJson')}
+                  </Button>
+                </div>
+                <pre className="overflow-x-auto rounded-md border border-edge bg-inset p-2 font-mono text-[11px] leading-snug text-fg-3">{FEISHU_PERMS_JSON}</pre>
+                <p className="mt-1 text-[11px] text-fg-5">{t('modal.feishuJsonNote')}</p>
+              </div>
               <p>{t('modal.feishuGuideStep5')}</p>
               <p>{t('modal.feishuGuideStep6')}</p>
               <p>{t('modal.feishuGuideStep7')}</p>

@@ -48,7 +48,22 @@ export interface AgentNativeConfig {
   source: string;
 }
 
+/**
+ * How an agent's CLI is installed. Mirrors the server's AgentInstallSpec.
+ * `method: 'manual'` agents (e.g. Hermes, a Python CLI installed via its own
+ * script) can't be npm-installed by pikiloom — the dashboard shows the
+ * copyable `command` + `docsUrl` instead of a one-click Install button.
+ */
+export interface AgentInstallInfo {
+  method: 'npm' | 'manual';
+  command: string;
+  docsUrl?: string;
+  note?: string;
+}
+
 export interface AgentRuntimeStatus extends AgentInfo {
+  /** Install descriptor (npm vs manual). Drives the install affordance. */
+  install?: AgentInstallInfo | null;
   selectedModel: string | null;
   selectedEffort: string | null;
   /** Native-auth model/effort, independent of any active BYOK Profile.

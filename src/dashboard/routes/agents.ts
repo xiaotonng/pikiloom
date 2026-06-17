@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAgentInstallCommand, getAgentLabel, getAgentPackage } from '../../agent/npm.js';
+import { getAgentInstall, getAgentInstallCommand, getAgentLabel, getAgentPackage } from '../../agent/npm.js';
 import { loadUserConfig, saveUserConfig, applyUserConfig, type UserConfig } from '../../core/config/user-config.js';
 import { setAgentBoundModelId, type AgentDetectOptions, type UsageResult } from '../../agent/index.js';
 import { getAgentUpdateState, checkAgentLatestVersion, manualAgentUpdate } from '../../agent/auto-update.js';
@@ -115,8 +115,20 @@ function cleanupNpmStagingFromError(stderr: string): string[] {
 }
 
 async function installAgentViaNpm(agent: Agent, log: (msg: string) => void): Promise<void> {
-  const pkg = getAgentPackage(agent);
-  if (!pkg) throw new Error(`Unsupported agent: ${agent}`);
+  // Only npm-published agents can be installed unattended. Manual agents
+  // (e.g. Hermes — a Python CLI with its own installer) surface their command
+  // + docs in the dashboard instead; the UI never POSTs here for them, but we
+  // still guard with an actionable message rather than an opaque
+  // "Unsupported agent" in case the endpoint is hit directly (CLI/API).
+  const spec = getAgentInstall(agent);
+  if (!spec) throw new Error(`Unknown agent: ${agent}`);
+  if (spec.method !== 'npm') {
+    const docs = spec.docsUrl ? ` See ${spec.docsUrl}.` : '';
+    throw new Error(
+      `${getAgentLabel(agent)} can't be installed automatically — run it yourself: ${spec.command}.${docs}`,
+    );
+  }
+  const pkg = getAgentPackage(agent)!;
   log(`Installing ${getAgentLabel(agent)} via npm...`);
   let result = await runCommand('npm', ['install', '-g', `${pkg}@latest`], {
     timeoutMs: AGENT_INSTALL_TIMEOUT_MS,
@@ -257,6 +269,7 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
       workflowEnabled: runtime.getRuntimeWorkflowEnabled(agentId, config),
       claudeAccessMode: agentId === 'claude' ? runtime.getRuntimeClaudeAccessMode(config) : undefined,
       isDefault: agentId === defaultAgent,
+      install: getAgentInstall(agentId),
       models,
       usage,
       nativeConfig,
@@ -323,6 +336,17 @@ app.post('/api/agent-install', async (c) => {
   const body = await c.req.json();
   const agent = String(body?.agent || '').trim();
   if (!runtime.isAgent(agent)) return c.json({ ok: false, error: 'Invalid agent' }, 400);
+  // Manual-install agents (e.g. Hermes) aren't npm-installable — the dashboard
+  // shows their command + docs instead of an Install button, so this is a bad
+  // request rather than a server error. Return the actionable command.
+  const installSpec = getAgentInstall(agent);
+  if (installSpec && installSpec.method !== 'npm') {
+    const docs = installSpec.docsUrl ? ` See ${installSpec.docsUrl}.` : '';
+    return c.json({
+      ok: false,
+      error: `${getAgentLabel(agent)} can't be installed automatically — run it yourself: ${installSpec.command}.${docs}`,
+    }, 400);
+  }
   runtime.log(`[agents] install requested agent=${agent} command="${getAgentInstallCommand(agent) || '(unknown)'}"`);
   try {
     await installAgentViaNpm(agent, msg => runtime.log(`[agents] ${msg}`));

@@ -204,6 +204,11 @@ type CopyPack = {
   upToDate: string;
   install: string;
   installing: string;
+  // Manual-install agents (e.g. Hermes): copyable command + docs instead of a button.
+  manualInstallHint: string;
+  copyCommand: string;
+  copied: string;
+  docs: string;
   profilesTitle: string;
   profilesHint: string;
   modelsTitle: string;
@@ -285,6 +290,10 @@ function getCopy(locale: Locale): CopyPack {
       upToDate: '已是最新',
       install: '安装',
       installing: '安装中…',
+      manualInstallHint: '该智能体自带安装脚本，pikiloom 无法通过 npm 自动安装。请在终端运行下面的命令，完成后刷新本页。',
+      copyCommand: '复制',
+      copied: '已复制',
+      docs: '文档',
       profilesHint: '把你常用的模型登记成一条条快捷方式，自由起别名。这是一份纯粹的选择列表——智能体（包括 Hermes）会从这里挑模型，但选了谁不会反向显示在这里。',
       profilesTitle: '我的模型',
       modelsTitle: '模型供应商',
@@ -361,6 +370,10 @@ function getCopy(locale: Locale): CopyPack {
     upToDate: 'Up to date',
     install: 'Install',
     installing: 'Installing…',
+    manualInstallHint: 'This agent ships its own installer — pikiloom can\'t install it via npm. Run the command below in your terminal, then refresh this page.',
+    copyCommand: 'Copy',
+    copied: 'Copied',
+    docs: 'Docs',
     profilesTitle: 'My Models',
     profilesHint: 'Register the models you actually use as named shortcuts. A pure selection list — agents (including Hermes) pick from here, but who picks what does not bubble back into this view.',
     modelsTitle: 'Model Providers',
@@ -847,6 +860,33 @@ function buildRowSummary(
   };
 }
 
+/** Copyable single-line install command, used for manual-install agents (e.g.
+ *  Hermes — a Python CLI pikiloom can't npm-install). Mirrors the Extensions
+ *  install-block style: `$ <cmd> [Copy]`. */
+function InstallCommandRow({ command, copyLabel, copiedLabel }: {
+  command: string; copyLabel: string; copiedLabel: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(() => {
+    void navigator.clipboard?.writeText(command);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [command]);
+  return (
+    <div className="flex items-start gap-2 overflow-hidden rounded-lg border border-edge/70 bg-panel/60 px-3 py-2 font-mono text-[12px] text-fg-2">
+      <span className="mt-[2px] select-none text-fg-5">$</span>
+      <code className="min-w-0 flex-1 break-all">{command}</code>
+      <button
+        type="button"
+        onClick={onCopy}
+        className="shrink-0 rounded px-2 py-0.5 text-[10.5px] text-fg-5 transition-colors hover:bg-panel-h hover:text-fg-2"
+      >
+        {copied ? copiedLabel : copyLabel}
+      </button>
+    </div>
+  );
+}
+
 function AgentRow({
   agent,
   copy,
@@ -883,6 +923,9 @@ function AgentRow({
   // the reinstall lands and detection recovers (auto-update sets this status
   // before the npm call and clears it after).
   const updating = agent.updateStatus === 'updating';
+  // Manual-install agents (Hermes) can't be npm-installed by pikiloom — show
+  // their copyable command + docs link instead of a one-click Install button.
+  const manualInstall = !agent.installed && agent.install?.method === 'manual';
 
   // Usage — quiet by default. The inline segments show the first two windows
   // (drivers order them short-to-long: 5h, 7d) plus the worst window when it
@@ -989,10 +1032,20 @@ function AgentRow({
               <Spinner className="h-3 w-3" /> {copy.updating}
             </div>
           )}
-          {!loading && !updating && !agent.installed && (
+          {!loading && !updating && !agent.installed && !manualInstall && (
             <Button variant="primary" size="sm" disabled={installing} onClick={() => onInstall(agent)}>
               {installing ? copy.installing : copy.install}
             </Button>
+          )}
+          {!loading && !updating && manualInstall && agent.install?.docsUrl && (
+            <a
+              href={agent.install.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-7 items-center rounded-md border border-edge px-2.5 text-[11px] font-medium text-fg-3 transition-colors hover:bg-panel-h hover:text-fg"
+            >
+              {copy.docs} ↗
+            </a>
           )}
           {!loading && !updating && agent.installed && agent.updateAvailable && (
             <Button variant="outline" size="sm" disabled={updatingAgent} onClick={() => onUpdate(agent)}>
@@ -1019,6 +1072,14 @@ function AgentRow({
           )}
         </div>
       </div>
+
+      {/* Manual-install guidance (Hermes): localized hint + copyable command. */}
+      {!loading && manualInstall && agent.install && (
+        <div className="mt-2 space-y-1.5">
+          <div className="text-[11px] leading-relaxed text-fg-4">{copy.manualInstallHint}</div>
+          <InstallCommandRow command={agent.install.command} copyLabel={copy.copyCommand} copiedLabel={copy.copied} />
+        </div>
+      )}
 
       {/* Update status detail (errors / skipped reasons). */}
       {!loading && agent.installed && agent.updateAvailable && agent.updateStatus === 'skipped' && agent.updateDetail && (

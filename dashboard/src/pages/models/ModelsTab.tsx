@@ -543,11 +543,18 @@ function ConfigModal({
   const [draft, setDraft] = useState<ConfigDraft>(() => initial || draftFromTemplate(TEMPLATES[0], locale));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Id of the provider this modal has already created in an Add flow. Once a
+  // Save creates the provider (even if its validation then fails and the modal
+  // stays open), subsequent Saves must PATCH this same provider rather than
+  // POST a second one — otherwise fixing a bad key/URL spawns a duplicate
+  // "configured but wrong" provider alongside the corrected one.
+  const [createdId, setCreatedId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setDraft(initial || draftFromTemplate(TEMPLATES[0], locale));
     setError(null);
+    setCreatedId(null);
   }, [open, initial, locale]);
 
   const isEdit = !!existingProvider;
@@ -568,18 +575,21 @@ function ConfigModal({
           ? { source: 'command', argv: draft.cmdLine.trim().split(/\s+/).filter(Boolean) }
           : null;
 
-      // 1) Persist the provider (create or update).
+      // 1) Persist the provider (create or update). `editTargetId` is the
+      //    existing provider when editing, OR one this Add flow already
+      //    created on a prior Save attempt — in both cases we PATCH in place.
+      const editTargetId = existingProvider?.id ?? createdId;
       let providerId: string;
-      if (isEdit && existingProvider) {
+      if (editTargetId) {
         const providerPatch: any = {
-          name: draft.name.trim() || existingProvider.name,
+          name: draft.name.trim() || existingProvider?.name || `${kindLabel(draft.kind, locale)}`,
           baseURL: draft.baseURL.trim(),
         };
         if (draft.credMode === 'paste' && draft.apiKey) providerPatch.apiKey = draft.apiKey;
         else if (credentialRef) providerPatch.credentialRef = credentialRef;
-        const provRes = await send<{ ok: boolean; error?: string }>('PATCH', `/api/models/providers/${existingProvider.id}`, providerPatch);
+        const provRes = await send<{ ok: boolean; error?: string }>('PATCH', `/api/models/providers/${editTargetId}`, providerPatch);
         if (!provRes.ok) { setError(provRes.error || 'Failed to update provider'); return; }
-        providerId = existingProvider.id;
+        providerId = editTargetId;
       } else {
         const providerBody: any = {
           kind: draft.kind,
@@ -591,6 +601,9 @@ function ConfigModal({
         const provRes = await send<{ ok: boolean; provider?: ProviderRow; error?: string }>('POST', '/api/models/providers', providerBody);
         if (!provRes.ok || !provRes.provider) { setError(provRes.error || 'Failed to create provider'); return; }
         providerId = provRes.provider.id;
+        // Remember it so a retry after a failed validation edits this provider
+        // instead of creating another.
+        setCreatedId(providerId);
       }
 
       // 2) Validate immediately. Only close the modal if the credential is healthy;
@@ -609,12 +622,14 @@ function ConfigModal({
     } finally {
       setSubmitting(false);
     }
-  }, [draft, isEdit, existingProvider, locale, onSaved, onClose, copy.validationInvalid]);
+  }, [draft, isEdit, existingProvider, createdId, locale, onSaved, onClose, copy.validationInvalid]);
 
   const canSave = !submitting
     && draft.name.trim().length > 0
     && draft.baseURL.trim().length > 0
-    && (draft.credMode !== 'paste' || (isEdit ? true : draft.apiKey.length > 0))
+    // Key already stored once we're editing (a real edit, or a retry on a
+    // provider this Add flow created) — let the user re-save without re-typing.
+    && (draft.credMode !== 'paste' || (isEdit || createdId ? true : draft.apiKey.length > 0))
     && (draft.credMode !== 'env' || draft.envVar.trim().length > 0)
     && (draft.credMode !== 'command' || draft.cmdLine.trim().length > 0);
 

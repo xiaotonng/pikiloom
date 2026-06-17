@@ -115,14 +115,54 @@ function tomlEscape(value: string): string {
 }
 
 /**
- * Anthropic-protocol baseURL: the SDK appends `/v1/messages` itself, so
- * `ANTHROPIC_BASE_URL` must NOT carry a trailing `/v1` (otherwise requests
- * land on `/v1/v1/messages` and 404). Providers (OpenRouter, DeepSeek, …)
- * publish their endpoints with `/v1` for OpenAI-protocol callers, so we
- * keep that as the canonical stored form and strip it here for Claude.
+ * OpenAI-compatible providers that expose their Anthropic-protocol API under a
+ * dedicated namespace on the SAME origin (not the OpenAI base we store). Keyed
+ * by `providerSlug`; the value maps the origin → the Anthropic base URL.
+ *
+ *   slug       stored OpenAI baseURL                    Anthropic base
+ *   ─────────  ───────────────────────────────────      ───────────────────────────────
+ *   deepseek   https://api.deepseek.com                 https://api.deepseek.com/anthropic
+ *   kimi       https://api.moonshot.cn/v1               https://api.moonshot.cn/anthropic
+ *   zai        https://open.bigmodel.cn/api/paas/v4     https://open.bigmodel.cn/api/anthropic
+ *
+ * The SDK appends `/v1/messages`, so e.g. DeepSeek lands on
+ * `…/anthropic/v1/messages` — the endpoint DeepSeek actually serves the
+ * Anthropic protocol on (cf. src/agent/drivers/claude.ts).
  */
-function anthropicBaseURL(rawBaseURL: string): string {
-  return rawBaseURL.replace(/\/+$/, '').replace(/\/v1$/, '');
+const ANTHROPIC_ENDPOINT_BY_SLUG: Record<string, (origin: string) => string> = {
+  deepseek: origin => `${origin}/anthropic`,
+  kimi: origin => `${origin}/anthropic`,
+  zai: origin => `${origin}/api/anthropic`,
+};
+
+/**
+ * Anthropic-protocol baseURL for Claude BYOK. Claude Code speaks the Anthropic
+ * Messages API and appends `/v1/messages` to `ANTHROPIC_BASE_URL` itself, so
+ * the base must point at the provider's *Anthropic-compatible* root.
+ *
+ * The base must NOT carry a trailing `/v1` (otherwise requests land on
+ * `/v1/v1/messages` and 404). The canonical stored form is the OpenAI base
+ * (so `validateProvider`'s GET /models and the Codex/Hermes injectors keep
+ * working); we translate it here:
+ *   - Anthropic-native (and Anthropic-shaped third parties): strip a trailing
+ *     `/v1` and pass through verbatim.
+ *   - Known OpenAI-compatible providers whose Anthropic API lives under a
+ *     separate path (DeepSeek `/anthropic`, Kimi `/anthropic`, Zhipu
+ *     `/api/anthropic`): rebuild from the origin via `ANTHROPIC_ENDPOINT_BY_SLUG`.
+ *     Rebuilding from the origin (not the stored path) is idempotent — a user
+ *     who already pasted the `/anthropic` URL doesn't get `/anthropic/anthropic`.
+ *   - Anything else: best-effort, strip a trailing `/v1` (historical default).
+ */
+function claudeAnthropicBaseURL(provider: ProviderConfig): string {
+  const raw = provider.baseURL.replace(/\/+$/, '');
+  if (provider.kind === 'anthropic') return raw.replace(/\/v1$/, '');
+  const mapper = ANTHROPIC_ENDPOINT_BY_SLUG[providerSlug(provider)];
+  if (mapper) {
+    let origin: string;
+    try { origin = new URL(raw).origin; } catch { return raw.replace(/\/v1$/, ''); }
+    return mapper(origin);
+  }
+  return raw.replace(/\/v1$/, '');
 }
 
 // ---------------------------------------------------------------------------
@@ -142,8 +182,9 @@ type AgentInjector = (
  *
  * For OpenAI-compatible providers (OpenRouter, DeepSeek native, …), the
  * baseURL must point to an Anthropic-protocol-compatible endpoint
- * (`/v1/messages`-shaped). OpenRouter's `/api/v1` and DeepSeek's
- * `/anthropic/v1` both qualify.
+ * (`/v1/messages`-shaped). `claudeAnthropicBaseURL` translates the stored
+ * OpenAI base into the right Anthropic root per provider (e.g. DeepSeek's
+ * `https://api.deepseek.com` → `https://api.deepseek.com/anthropic`).
  */
 const claudeInjector: AgentInjector = (provider, profile, apiKey) => {
   if (provider.kind !== 'anthropic' && provider.kind !== 'openai-compatible') {
@@ -154,7 +195,7 @@ const claudeInjector: AgentInjector = (provider, profile, apiKey) => {
   }
   return {
     env: {
-      ANTHROPIC_BASE_URL: anthropicBaseURL(provider.baseURL),
+      ANTHROPIC_BASE_URL: claudeAnthropicBaseURL(provider),
       ANTHROPIC_API_KEY: apiKey,
       ANTHROPIC_AUTH_TOKEN: apiKey,
     },

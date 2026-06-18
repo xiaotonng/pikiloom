@@ -42,6 +42,7 @@ export function indexSkillsByCommand(skills: SkillInfo[]): Map<string, SkillInfo
 export function buildDefaultMenuCommands(agentCount: number, skills: SkillInfo[] = []): MenuCommand[] {
   const commands: MenuCommand[] = [
     { command: 'sessions', description: 'Switch sessions' },
+    { command: 'digest', description: 'Recent session digest' },
   ];
 
   if (agentCount > 1) {

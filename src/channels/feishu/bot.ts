@@ -42,6 +42,8 @@ import {
   getWorkspacesData,
   resolveSkillPrompt,
   handleGoalCommand,
+  getSessionsDigestData,
+  formatSessionsDigestText,
 } from '../../bot/commands.js';
 import {
   buildAgentsCommandView,
@@ -449,6 +451,11 @@ export class FeishuBot extends Bot {
     }
 
     await this.sendCommandView(ctx, await buildSessionsCommandView(this, ctx.chatId, 0, this.sessionsPageSize));
+  }
+
+  private async cmdDigest(ctx: FeishuContext) {
+    const data = await getSessionsDigestData(this, ctx.chatId);
+    await ctx.reply(formatSessionsDigestText(data));
   }
 
   private async cmdStatus(ctx: FeishuContext) {
@@ -1082,6 +1089,7 @@ export class FeishuBot extends Bot {
       switch (cmd) {
         case 'start':    await this.cmdStart(ctx); return;
         case 'sessions': await this.cmdSessions(ctx, args); return;
+        case 'digest': await this.cmdDigest(ctx); return;
         case 'agents':   await this.cmdAgents(ctx, args); return;
         case 'models':   await this.cmdModels(ctx, args); return;
         case 'mode':     await this.cmdMode(ctx); return;

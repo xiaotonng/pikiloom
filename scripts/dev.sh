@@ -45,13 +45,40 @@ fi
 
 if (( _should_detach )); then
   : > "${LOG_FILE}"
-  # nohup ignores SIGHUP so the worker outlives this shell; disown removes it
-  # from the job table so the calling agent's bash doesn't track it.
-  # setsid isn't portable to macOS, but nohup + redirect + disown is enough
-  # because the worker is reparented to init once we exit immediately below.
-  nohup env PIKILOOM_DEV_DETACHED=1 bash "$0" "$@" </dev/null >>"${LOG_FILE}" 2>&1 &
-  _bg_pid=$!
-  disown "$_bg_pid" 2>/dev/null || true
+  # Agent tool runners can clean up the shell's remaining child process tree
+  # after this parent exits. Launch the worker in a new session from a short
+  # Python parent so it is reparented before the tool runner performs cleanup.
+  if command -v python3 >/dev/null 2>&1; then
+    _bg_pid=$(python3 - "$0" "${LOG_FILE}" "$(pwd)" "$@" <<'PY'
+import os
+import subprocess
+import sys
+
+script, log_file, workdir, *args = sys.argv[1:]
+env = os.environ.copy()
+env["PIKILOOM_DEV_DETACHED"] = "1"
+with open(os.devnull, "rb") as stdin, open(log_file, "ab", buffering=0) as log:
+    proc = subprocess.Popen(
+        ["bash", script, *args],
+        cwd=workdir,
+        env=env,
+        stdin=stdin,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        close_fds=True,
+        start_new_session=True,
+    )
+print(proc.pid)
+PY
+)
+    if [[ ! "${_bg_pid}" =~ ^[0-9]+$ ]]; then
+      _bg_pid="(spawned)"
+    fi
+  else
+    nohup env PIKILOOM_DEV_DETACHED=1 bash "$0" "$@" </dev/null >>"${LOG_FILE}" 2>&1 &
+    _bg_pid=$!
+    disown "$_bg_pid" 2>/dev/null || true
+  fi
   cat <<EOF
 [dev.sh] detached worker spawned (pid=${_bg_pid}); restart proceeds outside caller's process tree
 [dev.sh]   log:  ${LOG_FILE}     (tail -f to follow)
@@ -137,7 +164,14 @@ if (( ! _is_detached_worker )); then
   : > "${LOG_FILE}"
 fi
 
-{
-  npm run build:dashboard
-  npx tsx src/cli/main.ts --no-daemon --dashboard-port "${DEV_PORT}" "$@"
-} 2>&1 | node scripts/retained-tee.mjs "${LOG_FILE}"
+if (( _is_detached_worker )); then
+  {
+    npm run build:dashboard
+    npx tsx src/cli/main.ts --no-daemon --dashboard-port "${DEV_PORT}" "$@"
+  } >>"${LOG_FILE}" 2>&1
+else
+  {
+    npm run build:dashboard
+    npx tsx src/cli/main.ts --no-daemon --dashboard-port "${DEV_PORT}" "$@"
+  } 2>&1 | node scripts/retained-tee.mjs "${LOG_FILE}"
+fi

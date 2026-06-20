@@ -6,7 +6,7 @@ Thanks for your interest in contributing! This guide will help you get started.
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+ (see `package.json` `engines`)
 - At least one agent CLI installed and authenticated: [`claude`](https://docs.anthropic.com/en/docs/claude-code), [`codex`](https://github.com/openai/codex), or [`gemini`](https://github.com/google-gemini/gemini-cli)
 - A bot token for testing (Telegram, Feishu, or WeChat)
 

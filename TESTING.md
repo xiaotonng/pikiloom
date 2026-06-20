@@ -54,24 +54,18 @@ Agent live tests also require the corresponding CLI to be installed and authenti
 
 ## Current Test Files
 
-| File | Scope |
+The suite currently has **43** unit test files under `test/*.unit.test.ts`. Vitest picks them up automatically via `vitest.config.ts`.
+
+| Area | Files |
 |---|---|
-| `test/bot.unit.test.ts` | Shared `Bot` base class behavior, chat state, runStream wiring |
-| `test/bot-telegram.unit.test.ts` | Telegram bot orchestration (commands, callbacks, streaming lifecycle) |
-| `test/channel-telegram.unit.test.ts` | Telegram transport (send / edit / delete / upload / download) |
-| `test/code-agent.unit.test.ts` | Shared agent layer, stream handling, session workspace |
-| `test/driver-claude.unit.test.ts` | Claude Code driver — stream parsing, model listing |
-| `test/driver-codex.unit.test.ts` | Codex driver — HTTP server, streaming, human-in-the-loop |
-| `test/driver-gemini.unit.test.ts` | Gemini driver — stream parsing, session reads |
-| `test/mcp-bridge.unit.test.ts` | MCP bridge — path resolution, validation, callback wiring |
-| `test/interaction.unit.test.ts` | Unified human-in-the-loop interaction flow (Codex + im_ask_user) |
-| `test/session-control.unit.test.ts` | Dashboard session-control surface |
-| `test/session-messages-window.unit.test.ts` | Session message windowing for dashboard streaming |
-| `test/dashboard-live-session-state.unit.test.ts` | Dashboard live session state tracking |
-| `test/dashboard-assistant-content.unit.test.ts` | Dashboard assistant content rendering |
-| `test/project-skills.unit.test.ts` | Project skill discovery + `.claude/commands` compat |
-| `test/process-control.unit.test.ts` | Restart, watchdog, process tree termination |
-| `test/browser-supervisor.unit.test.ts` | Managed-browser singleton: probe / ensure / invalidate |
+| Bot / commands | `bot.unit.test.ts`, `bot-telegram.unit.test.ts`, `command-ui.unit.test.ts`, `goal.unit.test.ts`, `await-resume.unit.test.ts`, `known-chats-allowlist.unit.test.ts` |
+| Channels | `channel-dingtalk.unit.test.ts`, `channel-discord.unit.test.ts`, `channel-feishu.unit.test.ts`, `channel-slack.unit.test.ts`, `channel-telegram.unit.test.ts`, `channel-validation.unit.test.ts`, `channel-wecom.unit.test.ts` |
+| Agent drivers | `driver-claude.unit.test.ts`, `driver-claude-tui.unit.test.ts`, `driver-codex.unit.test.ts`, `driver-gemini.unit.test.ts`, `driver-hermes.unit.test.ts`, `code-agent.unit.test.ts` |
+| Sessions / git | `session-control.unit.test.ts`, `session-messages-window.unit.test.ts`, `delete-session.unit.test.ts`, `git-status.unit.test.ts`, `resolve-default-agent.unit.test.ts` |
+| Dashboard | `dashboard-assistant-content.unit.test.ts`, `dashboard-browser-remote.unit.test.ts`, `dashboard-live-session-state.unit.test.ts`, `dashboard-session-failure.unit.test.ts`, `dashboard-terminal.unit.test.ts`, `live-preview.unit.test.ts` |
+| MCP / extensions | `mcp-bridge.unit.test.ts`, `mcp-extensions-http.unit.test.ts`, `agent-install-spec.unit.test.ts`, `agent-images.unit.test.ts` |
+| Skills / browser / process | `project-skills.unit.test.ts`, `claude-goal-bridge.unit.test.ts`, `browser-supervisor.unit.test.ts`, `stream-browser-failure.unit.test.ts`, `process-control.unit.test.ts`, `peekaboo-warm.unit.test.ts` |
+| Runtime / config | `interaction.unit.test.ts`, `model-injector.unit.test.ts`, `runtime-config-access-mode.unit.test.ts` |
 
 ## Manual Verification Scripts
 

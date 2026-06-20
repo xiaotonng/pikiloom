@@ -59,13 +59,21 @@ npm link
 # whatever package.json `bin` resolves to (dist/cli/main.js), so a reorganized
 # source tree can't leave us verifying a leftover file.
 BIN=$(node -p "require('./package.json').bin.pikiloom")
-INSTALLED=$(node "$BIN" --version)
+INSTALLED=$("$BIN" --version)
 INSTALLED_VERSION=$(printf '%s\n' "$INSTALLED" | awk '{print $NF}')
 if [ "$INSTALLED_VERSION" != "$NEW_VERSION" ]; then
   echo "✗ Version mismatch: expected $NEW_VERSION, got $INSTALLED" >&2
   exit 1
 fi
+GLOBAL_BIN="$(npm prefix -g)/bin/pikiloom"
+GLOBAL_INSTALLED=$("$GLOBAL_BIN" --version)
+GLOBAL_INSTALLED_VERSION=$(printf '%s\n' "$GLOBAL_INSTALLED" | awk '{print $NF}')
+if [ "$GLOBAL_INSTALLED_VERSION" != "$NEW_VERSION" ]; then
+  echo "✗ Global link version mismatch: expected $NEW_VERSION, got $GLOBAL_INSTALLED" >&2
+  exit 1
+fi
 echo "  ✓ Verified: $INSTALLED"
+echo "  ✓ Verified global link: $GLOBAL_INSTALLED"
 
 # ── 3. Git commit, tag & push ────────────────────────────────────────────────
 

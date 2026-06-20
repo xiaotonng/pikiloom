@@ -15,6 +15,14 @@ vi.mock('node:child_process', async importOriginal => {
   };
 });
 
+vi.mock('../src/core/platform.ts', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/core/platform.ts')>();
+  return {
+    ...actual,
+    IS_MAC: true,
+  };
+});
+
 describe('Claude API retry classification', () => {
   it('retries transient overloads but not quota/rate-limit exhaustion', async () => {
     const { isRetryableClaudeApiError } = await import('../src/agent/utils.ts');

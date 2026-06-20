@@ -1,4 +1,4 @@
-import { Children, useState, type ComponentType, type KeyboardEvent, type ReactNode } from 'react';
+import { useState, type ComponentType, type KeyboardEvent, type ReactNode } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { cn } from '../../utils';
@@ -8,18 +8,10 @@ export const mdPlugins = [remarkGfm, remarkBreaks];
 
 const isWebUrl = (href: string) => /^https?:\/\//.test(href);
 const hasUrlScheme = (href: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(href);
-const SPECIAL_FILE_NAMES = /^(Dockerfile|Makefile|Procfile|LICENSE|README|AGENTS|CLAUDE)$/i;
-const VERSION_LIKE = /^v?\d+(?:\.\d+)+(?:[-+][a-z0-9][\w.-]*)?$/i;
-const SINGLE_FILE = /^(?:\.[A-Za-z0-9_-]{2,}|[A-Za-z0-9_.@-]+\.[A-Za-z0-9][A-Za-z0-9_-]{0,11})$/;
-const FILE_TOKEN_RE = /(^|[\s([{<])((?:file:\/\/|~\/|\.{1,2}\/|\/)[^\s<>"'`]+|(?:[A-Za-z0-9_.@-]+\/)[^\s<>"'`]+|(?:\.[A-Za-z0-9_-]{2,}|[A-Za-z0-9_.@-]+\.[A-Za-z0-9][A-Za-z0-9_-]{0,11}|Dockerfile|Makefile|Procfile|LICENSE|README|AGENTS|CLAUDE)(?::\d+(?::\d+)?)?)/g;
 
 export interface MarkdownRenderOptions {
   workdir?: string | null;
 }
-
-export type FileLinkTextPart =
-  | { kind: 'text'; text: string }
-  | { kind: 'file'; text: string };
 
 function stripLineSuffix(value: string): string {
   return value.replace(/:(\d+)(?::\d+)?$/, '');
@@ -55,13 +47,16 @@ function trimFileToken(value: string): { text: string; trailing: string } {
   return { text, trailing };
 }
 
+// A locator is a real path — rooted, relative-prefixed, or containing a directory
+// segment. Bare file names (`package.json`, `SKILL.md`) are intentionally NOT locators:
+// they are ambiguous (which one?) and linkifying every mention buries output in noise.
 export function isFileLocator(value: string): boolean {
   const text = trimFileToken(value).text;
   if (!text || isWebUrl(text)) return false;
   if (hasUrlScheme(text) && !text.startsWith('file://')) return false;
 
   const pathPart = stripLineSuffix(text);
-  if (!pathPart || VERSION_LIKE.test(pathPart)) return false;
+  if (!pathPart) return false;
   if (pathPart.startsWith('file://')) return pathPart.length > 'file://'.length;
   if (/^[A-Za-z]:[\\/]/.test(pathPart)) return true;
   if (/^(\/|~\/|\.{1,2}\/)/.test(pathPart)) return pathPart.length > 1;
@@ -70,38 +65,7 @@ export function isFileLocator(value: string): boolean {
     if (/^[A-Za-z0-9-]+\.[A-Za-z]{2,}$/.test(firstSegment)) return false;
     return true;
   }
-  if (SPECIAL_FILE_NAMES.test(pathPart)) return true;
-  return SINGLE_FILE.test(pathPart);
-}
-
-export function splitTextFileLinks(text: string): FileLinkTextPart[] {
-  const parts: FileLinkTextPart[] = [];
-  let lastIndex = 0;
-  FILE_TOKEN_RE.lastIndex = 0;
-  const pushText = (value: string) => {
-    if (!value) return;
-    const last = parts[parts.length - 1];
-    if (last?.kind === 'text') last.text += value;
-    else parts.push({ kind: 'text', text: value });
-  };
-
-  for (let match = FILE_TOKEN_RE.exec(text); match; match = FILE_TOKEN_RE.exec(text)) {
-    const prefix = match[1] || '';
-    const raw = match[2] || '';
-    const tokenStart = match.index + prefix.length;
-    const tokenEnd = tokenStart + raw.length;
-    const { text: fileText, trailing } = trimFileToken(raw);
-    if (!fileText || !isFileLocator(fileText)) continue;
-
-    if (tokenStart > lastIndex) pushText(text.slice(lastIndex, tokenStart));
-    parts.push({ kind: 'file', text: fileText });
-    if (trailing) pushText(trailing);
-    lastIndex = tokenEnd;
-  }
-
-  if (lastIndex === 0) return [{ kind: 'text', text }];
-  if (lastIndex < text.length) pushText(text.slice(lastIndex));
-  return parts;
+  return false;
 }
 
 function openFileLocator(locator: string, workdir?: string | null) {
@@ -129,25 +93,6 @@ function FileLink({ locator, workdir, children }: { locator: string; workdir?: s
   );
 }
 
-function linkifyChildren(children: ReactNode, workdir?: string | null): ReactNode {
-  const nodes: ReactNode[] = [];
-  Children.toArray(children).forEach((child, childIndex) => {
-    if (typeof child !== 'string' && typeof child !== 'number') {
-      nodes.push(child);
-      return;
-    }
-    const text = String(child);
-    for (const [partIndex, part] of splitTextFileLinks(text).entries()) {
-      if (part.kind === 'file') {
-        nodes.push(<FileLink key={`${childIndex}-${partIndex}`} locator={part.text} workdir={workdir} />);
-      } else if (part.text) {
-        nodes.push(part.text);
-      }
-    }
-  });
-  return nodes;
-}
-
 /* ── Copy button for fenced code blocks ── */
 export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -173,12 +118,12 @@ export function classifyCode(text: string): string {
 export function createMarkdownComponents(options: MarkdownRenderOptions = {}): Record<string, ComponentType<any>> {
   const workdir = options.workdir || null;
   return {
-    h1: ({ children }: any) => <h2 className="text-[16px] font-bold text-fg mt-4 mb-2">{linkifyChildren(children, workdir)}</h2>,
-    h2: ({ children }: any) => <h3 className="text-[14.5px] font-semibold text-fg mt-4 mb-1.5">{linkifyChildren(children, workdir)}</h3>,
-    h3: ({ children }: any) => <h4 className="text-[13.5px] font-semibold text-fg mt-3 mb-1">{linkifyChildren(children, workdir)}</h4>,
-    p: ({ children }: any) => <p className="my-1.5 whitespace-pre-wrap break-words">{linkifyChildren(children, workdir)}</p>,
-    strong: ({ children }: any) => <strong className="font-semibold text-fg">{linkifyChildren(children, workdir)}</strong>,
-    em: ({ children }: any) => <em className="italic text-fg-3">{linkifyChildren(children, workdir)}</em>,
+    h1: ({ children }: any) => <h2 className="text-[16px] font-bold text-fg mt-4 mb-2">{children}</h2>,
+    h2: ({ children }: any) => <h3 className="text-[14.5px] font-semibold text-fg mt-4 mb-1.5">{children}</h3>,
+    h3: ({ children }: any) => <h4 className="text-[13.5px] font-semibold text-fg mt-3 mb-1">{children}</h4>,
+    p: ({ children }: any) => <p className="my-1.5 whitespace-pre-wrap break-words">{children}</p>,
+    strong: ({ children }: any) => <strong className="font-semibold text-fg">{children}</strong>,
+    em: ({ children }: any) => <em className="italic text-fg-3">{children}</em>,
     a: ({ href, children }: any) => {
       if (href && isWebUrl(href)) {
         return <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline underline-offset-2 decoration-blue-400/30 cursor-pointer hover:text-blue-300 transition-colors">{children}</a>;
@@ -193,7 +138,7 @@ export function createMarkdownComponents(options: MarkdownRenderOptions = {}): R
     li: ({ children }: any) => (
       <li className="flex gap-2 items-start">
         <span className="shrink-0 mt-[10px] w-[5px] h-[5px] rounded-full bg-fg-5/40" />
-        <span className="flex-1">{linkifyChildren(children, workdir)}</span>
+        <span className="flex-1">{children}</span>
       </li>
     ),
     blockquote: ({ children }: any) => <blockquote className="border-l-2 border-fg-5/30 pl-3 my-2 text-fg-4 italic">{children}</blockquote>,
@@ -242,8 +187,8 @@ export function createMarkdownComponents(options: MarkdownRenderOptions = {}): R
       </div>
     ),
     thead: ({ children }: any) => <thead className="bg-[rgba(0,0,0,0.1)]">{children}</thead>,
-    th: ({ children }: any) => <th className="px-3 py-1.5 text-left font-semibold text-fg-3 border-b border-edge/30">{linkifyChildren(children, workdir)}</th>,
-    td: ({ children }: any) => <td className="px-3 py-1.5 text-fg-4 border-t border-edge/12">{linkifyChildren(children, workdir)}</td>,
+    th: ({ children }: any) => <th className="px-3 py-1.5 text-left font-semibold text-fg-3 border-b border-edge/30">{children}</th>,
+    td: ({ children }: any) => <td className="px-3 py-1.5 text-fg-4 border-t border-edge/12">{children}</td>,
     tr: ({ children }: any) => <tr className="even:bg-[rgba(255,255,255,0.015)]">{children}</tr>,
   };
 }

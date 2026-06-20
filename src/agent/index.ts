@@ -83,7 +83,7 @@ export {
   updateSessionMeta, promoteSessionId, recordFork,
   listPikiloomSessions, findPikiloomSession, getSessionStoredConfig,
   ensureManagedSession, findManagedThreadSession, stageSessionFiles,
-  mergeManagedAndNativeSessions,
+  mergeManagedAndNativeSessions, managedRecordToSessionInfo,
   getSessions, getSessionTail, getSessionMessages,
   applyTurnWindow, applyTurnFilter,
   classifySession, deriveUserStatus,

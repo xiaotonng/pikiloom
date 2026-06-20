@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
@@ -84,6 +84,36 @@ export function RunEndNotice({ detail, t, className }: {
   );
 }
 
+// Re-parsing the full, growing assistant text through react-markdown on every
+// stream delta is O(n) per delta → O(n²) over a long reply (a 16KB answer costs
+// ~800ms of main-thread parse work, 12–27ms per late delta). That starves the
+// event loop and makes typing in the composer stutter mid-stream. Cap the
+// re-parse to ~16fps while streaming — reading doesn't need more, and the gaps
+// between parses leave the main thread free for keystrokes. Once the turn is
+// done we render immediately (intervalMs 0) so the final text is never stale.
+const STREAM_MARKDOWN_THROTTLE_MS = 64;
+
+function useThrottledValue<T>(value: T, intervalMs: number): T {
+  const [throttled, setThrottled] = useState(value);
+  const lastAppliedAt = useRef(0);
+  const timer = useRef<number | null>(null);
+  useEffect(() => {
+    if (intervalMs <= 0) return;
+    const elapsed = Date.now() - lastAppliedAt.current;
+    const apply = () => { lastAppliedAt.current = Date.now(); setThrottled(value); };
+    if (elapsed >= intervalMs) {
+      apply();
+    } else {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = window.setTimeout(apply, intervalMs - elapsed);
+    }
+    return () => { if (timer.current) clearTimeout(timer.current); };
+  }, [value, intervalMs]);
+  // When not throttling (turn done), return the live value so the final,
+  // complete text renders without waiting on a trailing timer.
+  return intervalMs <= 0 ? value : throttled;
+}
+
 /* ── Live streaming preview ── */
 export function LivePreview({
   stream,
@@ -122,6 +152,15 @@ export function LivePreview({
   }, [thinkingOpen, stream.thinking]);
 
   const subAgents = stream.subAgents ?? null;
+
+  // Throttle + memoize the response markdown so it re-parses at most ~16fps while
+  // streaming (and only when the text actually changes — not when activity /
+  // thinking / tool rows update around it).
+  const liveText = useThrottledValue(stream.text, stream.phase === 'streaming' ? STREAM_MARKDOWN_THROTTLE_MS : 0);
+  const responseMarkdown = useMemo(
+    () => <ReactMarkdown remarkPlugins={mdPlugins} components={mdComponents}>{liveText}</ReactMarkdown>,
+    [liveText],
+  );
 
   return (
     <div className="space-y-3 animate-in">
@@ -186,9 +225,7 @@ export function LivePreview({
       {/* Response text with thinking dots */}
       {stream.text && (
         <div className="session-md text-[13.5px] leading-[1.75] text-fg-2">
-          <ReactMarkdown remarkPlugins={mdPlugins} components={mdComponents}>
-            {stream.text}
-          </ReactMarkdown>
+          {responseMarkdown}
           {stream.phase === 'streaming' && <ThinkingDots className="ml-1 inline-flex align-text-bottom text-fg-4" />}
         </div>
       )}

@@ -85,6 +85,9 @@ export const SessionPanel = memo(function SessionPanel({
     /** Wall-clock ms when the turn started — drives the ticking elapsed chip. */
     startedAt?: number | null;
     error?: string | null;
+    /** Prompt of the streaming turn (from the snapshot). Lets us render the user
+     *  bubble for a follow-up this panel didn't originate (no local pendingPrompt). */
+    question?: string | null;
   } | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [streamPhase, setStreamPhase] = useState<string | null>(null);
@@ -454,6 +457,7 @@ export const SessionPanel = memo(function SessionPanel({
           generatingImages: state.previewMeta?.generatingImages ?? 0,
           startedAt: typeof state.startedAt === 'number' ? state.startedAt : null,
           error: null,
+          question: state.question ?? null,
         });
       }
       setStreaming(true);
@@ -770,10 +774,16 @@ export const SessionPanel = memo(function SessionPanel({
   // agent's runtime default. Always resolves to something so the divider never
   // shows a bare label without context.
   const displayModel = (liveStream?.model || session.model || globalModel) || null;
+  // For an in-flight turn the backend already folds `liveStream.effort` to
+  // `ultra` (resolveSessionStreamConfig threads the per-send workflow), so
+  // foldUltraEffort just passes it through. For saved turns / a reopened session
+  // the fold is driven by the session's own persisted workflow flag, falling
+  // back to the agent-global flag only for legacy records that predate it (the
+  // global flag is wrong for a per-send ultra, which never flips it).
   const displayEffort = foldUltraEffort(
     session.agent || '',
     (liveStream?.effort || session.thinkingEffort || globalEffort) || null,
-    agentRuntime?.workflowEnabled,
+    session.workflowEnabled ?? agentRuntime?.workflowEnabled,
   ) || null;
   const displayModelShort = displayModel ? shortenModel(displayModel) : null;
   const runFailureDetail = getSessionRunFailureDetail(session, {
@@ -814,9 +824,25 @@ export const SessionPanel = memo(function SessionPanel({
     if (!liveStream || !result.length) return result;
     const last = result[result.length - 1];
     if (!last.assistant) return result;
-    // If a pending prompt exists and doesn't match the last turn's user message,
-    // the live stream is for a new follow-up turn, not the last one in history.
-    if (pendingPrompt && last.user?.text?.trim() !== pendingPrompt.trim()) return result;
+    // The live preview duplicates the last history turn's assistant ONLY when
+    // that turn is the one currently streaming (history was reloaded mid-stream
+    // and captured its partial/complete response). Strip it then so the answer
+    // isn't rendered twice. Otherwise the live stream is a NEW turn and the last
+    // history turn is a prior, COMPLETED one — its answer must be kept.
+    //   • local send: pendingPrompt is the streaming turn's prompt — authoritative.
+    //   • external send (IM / API / another tab, where pendingPrompt is null):
+    //     the snapshot's `question` carries the streaming turn's prompt. Without
+    //     this an externally driven follow-up DELETED the previous turn's
+    //     completed answer (and its own prompt showed nowhere) — "swallowed".
+    // Fall back to a live-text/assistant-prefix check only when no prompt is known.
+    const streamPrompt = pendingPrompt ?? (liveStream.question || null);
+    const liveText = (liveStream.text || '').trim();
+    const lastAssistantText = last.assistant.text?.trim() || '';
+    const isStreamingTurn = streamPrompt != null
+      ? last.user?.text?.trim() === streamPrompt.trim()
+      : !!lastAssistantText && !!liveText
+        && (liveText.startsWith(lastAssistantText) || lastAssistantText.startsWith(liveText));
+    if (!isStreamingTurn) return result;
     return [...result.slice(0, -1), { ...last, assistant: null }];
   }, [rawTurns, liveStream, pendingPrompt, optimisticBridgesImages]);
 
@@ -910,6 +936,19 @@ export const SessionPanel = memo(function SessionPanel({
                     <ThinkingDots className="text-fg-5" />
                   </div>
                 )}
+              </div>
+            )}
+            {/* Externally driven follow-up (no local optimistic bubble): render the
+                streaming turn's user prompt from the snapshot so the live answer
+                isn't prompt-less. Suppressed once history has captured this turn's
+                user (deduped against the last loaded turn); the strip in `turns`
+                then hides the doubled answer. Fixes the "new question swallowed"
+                case for IM / API / another-tab sends. */}
+            {liveStream && liveStreamShouldRender(liveStream) && !pendingPrompt && liveStream.question
+              && !(rawTurns.length > 0
+                   && rawTurns[rawTurns.length - 1]?.user?.text?.trim() === liveStream.question.trim()) && (
+              <div className="session-turn">
+                <UserBubble text={liveStream.question} t={t} />
               </div>
             )}
             {/* Live stream preview — skip entirely when the stream has nothing to show

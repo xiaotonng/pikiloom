@@ -1,185 +1,140 @@
 ---
 name: snipe
-description: Search Twitter for trending promotional posts about coding/AI agent tools, generate reply drafts with pikiclaw GitHub card, and push results to Feishu doc + bot notification. Does NOT auto-post to Twitter.
+description: Twitter/X 截流。在 coding/AI agent 工具的高流量推广帖下，自动发现→起草→自我批判→护栏→（按 posture）发布 pikiloom 回复，并记录+度量。内容话术统一来自 _promo/pitch.md；可由 _promo/orchestrate.md 无人值守驱动。
 user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Agent, WebFetch, mcp__pikiclaw-browser__browser_navigate, mcp__pikiclaw-browser__browser_take_screenshot, mcp__pikiclaw-browser__browser_snapshot, mcp__pikiclaw-browser__browser_press_key, mcp__pikiclaw-browser__browser_click, mcp__pikiclaw-browser__browser_evaluate, mcp__pikiclaw-browser__browser_type, mcp__pikiclaw-browser__browser_run_code, mcp__pikiclaw-browser__browser_fill_form
-argument-hint: "[keywords] or blank for default"
+allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Agent, WebFetch, mcp__pikiloom-browser__browser_navigate, mcp__pikiloom-browser__browser_take_screenshot, mcp__pikiloom-browser__browser_snapshot, mcp__pikiloom-browser__browser_press_key, mcp__pikiloom-browser__browser_click, mcp__pikiloom-browser__browser_evaluate, mcp__pikiloom-browser__browser_type, mcp__pikiloom-browser__browser_run_code_unsafe, mcp__pikiloom-browser__browser_wait_for, mcp__pikiloom-browser__browser_tabs
+argument-hint: "[keywords] or blank for default sweep"
 ---
 
-# Snipe: Twitter 热帖截流
+# Snipe: Twitter/X 热帖截流
 
-在 coding agent / AI 开发工具领域的高流量推广帖下回复 pikiclaw，截取流量拿 star。
-本 skill 只生成回复草稿推送到飞书，**不自动发推**（避免封号）。
+在 coding agent / AI 开发工具领域的高流量推广帖下回复 pikiloom，截取流量拿 star。
 
-## 核心策略
+**本 skill 只负责 Twitter 渠道的「发现 + 抽取 + 发布」机制。** 所有产品话术、差异点、诚实边界、
+语气/语言规则、回复骨架与反模式，统一来自 **[`../_promo/pitch.md`](../_promo/pitch.md)** —— 不在本文件
+重复，也不要在本文件改话术（改话术只改 pitch.md）。去重 / 护栏 / 度量 / 发布姿态由共享核心负责：
 
-用户验证过的高效打法：
-- 在 **同领域产品** 的推广帖下回复（流量越大越好）
-- **一句话差异化** + `npx pikiclaw@latest` + GitHub 链接
-- pikiclaw 的核心差异点（按重要性）：**多 agent 会话并行管理**（dashboard 里同时操控 Claude/Codex/Gemini）、**丝滑的本地体验**（一行 npx 启动，零配置）、**实用的 skill/MCP 插件生态**（社区沉淀的 skill 和 MCP 开箱即用）、**IM 接入**（Telegram/飞书/微信随时接管同一个会话）、**完全开源 + 本地运行**
-- **IM 不是头条卖点，而是"体验"的一部分** — 头条永远是多会话管理 + 流畅度 + 插件生态
+| 关注点 | 位置 |
+|---|---|
+| 产品话术 SSOT | `_promo/pitch.md`（§9 表里 twitter 列是本渠道的机制差异） |
+| 去重记录（写时强制） | `_promo/registry.py`（channel = `twitter`） |
+| 发布护栏（频次/集中度/变体/熔断） | `_promo/guard.py` |
+| 飞书推送 | `_promo/push_feishu.py` |
+| 无人值守编排 + posture | `_promo/orchestrate.md` |
+| 旋钮（caps / posture / kill switch） | `_promo/config.json` → `channels.twitter` |
 
-历史案例参考：
-- 某远程 agent 管理工具推广帖下回复 → 7,792 views, 31 likes（原帖 14 万）
-- 某 macOS agent 管理工具推广帖下回复 → 1,258 views（原帖 5.4 万）
-- 规律：原帖与 pikiclaw 功能越接近，回复转化率越高
+> 运行根目录：`cd /Users/admin/Desktop/project/pikiloom`。脚本前缀：`.pikiloom/skills/_promo/`。
 
-## 工作流
+## Twitter 渠道的两个铁律（来自实测 + 平台研究）
 
-### Step 1: 读取已回复记录
+1. **链接绝不放主回复正文。** X 对带外链的帖/回复显著降权。主回复 = 一句差异化 + `npx pikiloom@latest`
+   （平台内原生文本，不触发降权）；**GitHub 链接放到对自己回复的自回复（self-reply）里**。
+2. **绝不复制同一段文案 / 同一条外链刷多帖** —— 这是 X 明文的封号信号。每条独立起草（`guard.py` 的
+   变体检查会拦截过相似的草稿）。
 
-读取 `.pikiclaw/skills/snipe/sniped_posts.txt`，避免重复推荐。
+---
 
-### Step 2: 搜索高流量推广帖
+## 工作流（手动单次运行；无人值守见 `_promo/orchestrate.md`）
 
-使用浏览器工具在 Twitter 搜索近期热门推广帖。
-
-**如果用户传入了关键词参数**，直接用该关键词搜索。
-**否则**，按以下策略动态搜索。不要死记某个产品名，而是用场景关键词捕获整个领域的推广帖：
-
-**搜索关键词（从通用到具体，搜 3-5 组即可）：**
-
-```
-coding agent tool
-AI coding assistant 推荐
-claude code 工具
-coding agent 开源
-remote coding agent
-AI agent dashboard
-vibe coding 工具
-coding agent mobile
-AI dev tool launch
+### Step 1: 预检
+```bash
+cd /Users/admin/Desktop/project/pikiloom
+python3 .pikiloom/skills/_promo/guard.py caps      # 看 twitter 今日剩余配额；为 0 则今天不跑
 ```
 
-**搜索操作步骤：**
+### Step 2: 搜索高流量推广帖（浏览器）
+
+**传入关键词参数** → 直接搜该词。**否则**用场景关键词动态发现（搜 3–5 组即可，不要死记产品名）：
+
+```
+coding agent tool / AI coding assistant / claude code tool / remote coding agent
+AI agent dashboard / vibe coding 工具 / coding agent mobile / AI dev tool launch
+claude code api cost / claude max subscription   (billing 段 = 最高转化，命中用 pitch 角度 0)
+```
 
 对每个关键词：
-1. 导航到 `https://x.com/search?q={keyword}&src=typed_query&f=top`
-2. 等待页面加载完成（确认看到推文内容）
-3. 读取 `.pikiclaw/skills/snipe/scripts/extract_tweets.js` 文件内容
-4. 通过 `browser_evaluate` 注入执行该 JS，获取返回的 JSON 字符串
-5. 解析 JSON 得到推文数组
-6. 如果结果不够多，按 End 键滚动一次，再次执行 JS 提取
-7. 合并所有关键词的结果，按 `text[:80] + url` 去重
+1. `browser_navigate` → `https://x.com/search?q={keyword}&src=typed_query&f=top`
+2. `browser_wait_for` 确认推文加载
+3. 读取 [`scripts/extract_tweets.js`](./scripts/extract_tweets.js)，用 `browser_evaluate` 注入执行，得到 JSON
+4. 结果不够就按 End 滚动一次再抽
+5. 合并所有关键词结果，按 `text[:80]+url` 去重。无效关键词直接跳过。
 
-**重要**：如果某个关键词搜索结果很少或没有推广帖，跳过即可，不要在无效关键词上浪费时间。
+### Step 3: 筛选候选
 
-### Step 3: 筛选候选帖
+**硬门槛（全部满足）：** `views > 5000`；最近 48h 内；与 pikiloom 有功能交集；正在推广具体产品/工具
+（有 `has_product_signal`）；不在 registry：
+```bash
+python3 .pikiloom/skills/_promo/registry.py seen twitter "<tweet_url>" && echo SKIP   # 已记录则跳过
+```
+**排除：** 自己(@sthnavy)的帖；纯新闻/讨论/提问；已是 pikiloom 用户；政治/争议。
 
-从所有提取的推文中，识别 **正在推广具体产品/工具** 的帖子。
+**优先级：** ① 功能高度重叠的产品推广帖（截流最佳）② 同赛道不同切入点 ③ 泛 AI 工具帖。选 Top 3–5。
 
-**识别推广帖的信号：**
-- 帖子内容提到具体产品名、功能介绍、安装命令
-- has_product_signal 为 true（包含 GitHub 链接、npm/pip 安装命令、产品域名）
-- 外部链接指向产品官网或 GitHub
-- 语气是介绍/推荐/发布（而非纯讨论或提问）
+### Step 4: 起草（子 agent，话术来自 pitch.md）
 
-**必须满足：**
-- views > 5,000（流量池太小不值得）
-- 最近 48 小时内发布
-- 推广的产品/工具与 pikiclaw 有功能交集（coding agent 管理、远程控制、多 agent 切换、IM 接入等）
-- 不在 `sniped_posts.txt` 中
-
-**优先级排序（高到低）：**
-1. 功能与 pikiclaw 高度重叠的产品推广帖（截流效果最好）
-2. 同赛道但切入点不同的产品推广帖（可以打差异化）
-3. 泛 AI 工具推广帖（曝光有但转化低）
-
-**排除：**
-- 自己 (@sthnavy) 的帖子
-- 纯新闻/资讯/讨论帖（没有推广具体产品）
-- 已经是 pikiclaw 用户/转发者的帖子
-- 政治/争议/无关话题
-
-选出 Top 3-5 条候选帖。对每条候选帖，简要分析它推广的产品与 pikiclaw 的功能交集和差异点。
-
-### Step 4: 生成回复草稿
-
-对每条候选帖，生成回复草稿。
-
-**核心原则：读懂原帖在推什么，找到 pikiclaw 相比它最锋利的一个差异点，用最短的文字打穿。**
-
-**回复格式（极简优先）：**
+委托子 agent 起草，内容契约 = [`../_promo/pitch.md`](../_promo/pitch.md)：orienter(§1) + 挑一个最锋利的
+差异点(§2，billing 命中优先) + 诚实边界(§3) + 语言跟随原帖(§6)。**Twitter 形态（pitch §9）：**
 
 ```
-{一句差异化，直击原帖产品的短板或 pikiclaw 的独特优势}
-npx pikiclaw@latest
+{一句差异化，直击原帖产品短板或 pikiloom 独特优势 —— 必须 ground 在原帖具体内容上}
+npx pikiloom@latest
+```
+（**正文到此为止，不含链接**。1–2 句最佳，绝不超 3 句。）
 
-GitHub: https://github.com/xiaotonng/pikiclaw
+**自回复（second tweet）内容：**
+```
+Open-source, runs local: https://github.com/xiaotonng/pikiloom
 ```
 
-**差异化切入角度（从上到下是推荐优先级，挑与原帖产品最对得上的一个）：**
-- 对方只管单 agent / 单会话 → "Dashboard 里并行管理 Claude/Codex/Gemini 多会话，随时切换"
-- 对方体验粗糙 / 配置复杂 → "一行 npx 启动，dashboard 开箱即用，零配置"
-- 对方生态封闭 / 没有插件 → "开放的 skill/MCP 插件体系，社区沉淀的实用工具开箱即用"
-- 对方是闭源 / SaaS → "完全开源，会话和代码全部留在本机"
-- 对方只有 CLI → "自带 web dashboard，浏览器里完整控制多会话"
-- 对方只能在桌前使用 → "Telegram/飞书/微信直连，手机随时接管同一个会话"
-- 对方只支持英文 / 单平台 → "中英双语，macOS 桌面自动化 + Playwright 浏览器控制"
-
-**回复规则：**
-- 语言跟随原帖（中文帖用中文，英文帖用英文）
-- 保持极简，**1-2 句话最佳**，绝不超过 3 句
-- 必须包含 `npx pikiclaw@latest` 和 GitHub 链接
-- 用建设者/开发者的语气，不用"推荐""安利"等推销词
-- 不要贬低原帖产品，只强调 pikiclaw 的不同
-
-### Step 5: 生成报告 Markdown
-
-将候选帖和回复草稿整理为 Markdown 报告：
-
-```markdown
-# Snipe 候选 — {YYYY-MM-DD}
-
-共发现 {n} 条高流量推广帖，以下按推荐优先级排列。
-
----
-
-## 候选 1: {原帖内容摘要，不超过 20 字}
-- **作者**: @{handle}（{name}）
-- **链接**: {tweet_url}
-- **数据**: {views} views / {likes} likes / {retweets} RT
-- **推广产品**: {product_name} — {一句话描述这个产品做什么}
-- **与 pikiclaw 的交集**: {功能重叠点}
-- **pikiclaw 的差异优势**: {最锋利的差异点}
-
-### 推荐回复
-> {draft}
-
----
-
-## 候选 2: ...
-...
-
----
-
-## 操作指南
-1. 优先回复候选 1（流量最大 / 功能最近），依次往下
-2. 在 Twitter 发回复时粘贴 GitHub 链接，Twitter 会自动生成卡片
-3. 发完后将推文 URL 追加到 `.pikiclaw/skills/snipe/sniped_posts.txt`
+每条起草后立即记录（存草稿文本供变体检查）：
+```bash
+python3 .pikiloom/skills/_promo/registry.py add --channel twitter --url "<tweet_url>" \
+  --status drafted --type launch --lang <en|zh> --audience <views> --title "<摘要>" \
+  --draft-file /tmp/snipe_draft_<id>.txt
 ```
 
-### Step 6: 推送到飞书
+### Step 5: 自我批判（替代人工 review）
 
-1. 将 Step 5 生成的 Markdown 报告写入 `/tmp/snipe_report.md`
-2. 执行飞书推送脚本：
+对每条草稿按 pitch.md §10 反模式自检（营销腔 / 贬低原帖 / 堆功能 / 超长 / 未 ground 原帖 / 越诚实边界）。
+FAIL → 让子 agent 修一次；再 FAIL → `registry.py update --channel twitter --url <u> --status skipped` 丢弃。
+
+### Step 6: 护栏 + 按 posture 发布
 
 ```bash
-cd /Users/admin/Desktop/project/pikiclaw && python3 .pikiclaw/skills/snipe/scripts/push_feishu.py --report-file /tmp/snipe_report.md
+python3 .pikiloom/skills/_promo/guard.py check --channel twitter --url "<tweet_url>" \
+  --draft-file /tmp/snipe_draft_<id>.txt        # exit 3 = deny；deny 则 update --status skipped 跳过
+POSTURE=$(python3 -c "import json;print(json.load(open('.pikiloom/skills/_promo/config.json'))['posture'])")
 ```
 
-3. 检查脚本输出：
-   - `OK:` 开头 → 成功，报告文档 URL 和通知都已发送
-   - `PARTIAL:` → 文档创建成功但通知未发（缺 FEISHU_RECEIVE_ID）
-   - `ERROR:` → 失败，在对话中直接展示报告内容作为兜底
+- **shadow**：不发，推预览卡片即可。
+- **batch**：`update --status approved` + 推 veto 卡片（见 orchestrate.md Phase 4）。
+- **auto**：直接发（浏览器，见下）。
 
-### Step 7: 更新记录
+**浏览器发推机制（main reply + self-reply）：**
+1. `browser_navigate` 到 tweet_url。
+2. 点回复框，`browser_type` 主回复正文（差异化 + `npx pikiloom@latest`，**无链接**），提交。
+3. 提交后定位到刚发出的自己的回复，点它的「回复」，`browser_type` 自回复（GitHub 链接行），提交。
+   X 会对链接自动生成卡片。
+4. **发送前后各截图核对**：发前确认正文不含 `github.com`；发后读 DOM 确认主回复无外链、自回复有链接，
+   且文案只出现一次（防重复粘贴）。异常则不再操作，记 `failed` 让人工介入。
+5. 成功后记录：
+```bash
+python3 .pikiloom/skills/_promo/registry.py mark-posted --channel twitter \
+  --url "<tweet_url>" --post-url "<我们主回复的 url>"
+```
 
-将本次所有候选帖 URL 追加到 `.pikiclaw/skills/snipe/sniped_posts.txt`。
+### Step 7: 报告 + 度量
+
+把候选 + 草稿整理为 `/tmp/snipe_report.md`（每条含：作者/链接/views/likes/推广产品/交集/差异点/草稿），推飞书：
+```bash
+python3 .pikiloom/skills/_promo/push_feishu.py --report-file /tmp/snipe_report.md --title "🎯 Snipe 候选"
+python3 .pikiloom/skills/_promo/measure.py report      # t.co referrer / star 关联，附在卡片后
+```
+输出 `OK:` 成功 / `SKIP:` 缺飞书凭证 / `ERROR:` 失败（兜底把报告贴进对话）。
 
 ## 注意事项
 
-- **绝不自动发推** — 所有回复草稿仅推送到飞书供人工审核
-- **质量 > 数量** — 每次 3-5 条候选即可
-- **不要固定搜某个产品名** — 用场景关键词动态发现，这个领域每天都有新工具出现
-- 飞书凭证从项目根目录 `.env` 读取（需要 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_CHAT_ID`）
+- **质量 > 数量**：每次 3–5 条候选即可；`guard.py` 会按 `config.json` 的 daily_cap / per_author / 变体兜底。
+- **不要固定搜某个产品名** —— 用场景关键词动态发现，这个领域每天有新工具。
+- **kill_switch / abort.txt 随时生效**；账号尽量用 Premium（链接容忍度 + 触达约 10×）。
+- 历史案例规律：原帖与 pikiloom 功能越接近，回复转化越高。

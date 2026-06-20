@@ -229,6 +229,14 @@ export interface StreamSnapshot {
    * content. Same order as queuedTaskIds.
    */
   queuedTasks?: Array<{ taskId: string; prompt: string }>;
+  /**
+   * Prompt of the RUNNING turn (skill-collapsed), attached at delivery time from
+   * the live RunningTask record. Lets a watching terminal render the user's
+   * message for a turn it did NOT originate (an IM/API/other-tab follow-up has
+   * no local optimistic bubble) — without it, an externally driven follow-up
+   * shows a prompt-less answer.
+   */
+  question?: string | null;
   incomplete?: boolean;
   text?: string;
   thinking?: string;
@@ -535,6 +543,11 @@ export class Bot {
    */
   private enrichSnapshot(snap: StreamSnapshot): StreamSnapshot {
     let next = snap;
+    // Attach the running turn's prompt so a watching terminal can render the
+    // user message for a follow-up it didn't originate (no local optimistic
+    // bubble). The RunningTask record is the source of truth while it's live.
+    const runningPrompt = next.taskId ? this.activeTasks.get(next.taskId)?.prompt : '';
+    if (runningPrompt) next = { ...next, question: collapseSkillPrompt(runningPrompt) ?? runningPrompt };
     if (next.queuedTaskIds?.length) {
       const queuedTasks = next.queuedTaskIds.map(taskId => {
         const raw = this.activeTasks.get(taskId)?.prompt || '';
@@ -741,8 +754,12 @@ export class Bot {
     this.emitStream(sessionKey, { type: 'queued', taskId, position: this.getQueuePosition(sessionKey, taskId) });
   }
 
-  protected emitStreamStart(taskId: string, session: Pick<SessionRuntime, 'key' | 'agent' | 'sessionId' | 'workdir' | 'modelId' | 'thinkingEffort'>) {
-    const cfg = this.resolveSessionStreamConfig(session);
+  protected emitStreamStart(
+    taskId: string,
+    session: Pick<SessionRuntime, 'key' | 'agent' | 'sessionId' | 'workdir' | 'modelId' | 'thinkingEffort'>,
+    opts?: { workflowEnabled?: boolean },
+  ) {
+    const cfg = this.resolveSessionStreamConfig(session, opts);
     const key = this.liveSessionKey(taskId, session.key);
     this.debug(`[stream-lifecycle] start task=${taskId} key=${key} sessionId=${session.sessionId || '(pending)'} model=${cfg.model || '-'}`);
     this.emitStream(key, {
@@ -1748,7 +1765,10 @@ export class Bot {
         return;
       }
 
-      this.emitStreamStart(taskId, session);
+      // Thread the per-send Workflow choice so the live divider folds to `ultra`
+      // immediately (the dashboard composer picks ultra per-send without flipping
+      // the agent-global flag resolveSessionStreamConfig would otherwise read).
+      this.emitStreamStart(taskId, session, { workflowEnabled: opts.workflowEnabled });
 
       // Wire up IM rendering for non-dashboard chats so /goal-driven tasks stream
       // to the same channel that submitted them, matching handleMessage's UX.
@@ -2336,7 +2356,10 @@ export class Bot {
    * Mirrors the fallback chain used inside runStream() so callers (e.g. submitSessionTask
    * emitting a 'start' event) can label the active turn before runStream resolves it.
    */
-  resolveSessionStreamConfig(cs: Pick<SessionRuntime, 'agent' | 'sessionId' | 'workdir' | 'modelId' | 'thinkingEffort'>): { model: string | null; effort: string | null } {
+  resolveSessionStreamConfig(
+    cs: Pick<SessionRuntime, 'agent' | 'sessionId' | 'workdir' | 'modelId' | 'thinkingEffort'>,
+    opts?: { workflowEnabled?: boolean },
+  ): { model: string | null; effort: string | null } {
     const agentConfig = this.agentConfigs[cs.agent] || {};
     const sessionWorkdir = cs.workdir || this.workdir;
     const storedConfig = cs.sessionId && !isPendingSessionId(cs.sessionId)
@@ -2354,7 +2377,11 @@ export class Bot {
     // Fold to the synthetic 'ultra' rung for display when Workflow is on (mirrors
     // effortSelectionForAgent / the dashboard's foldUltraEffort), so the live reply
     // badge and IM running footer label the turn 'ultra' instead of a bare 'max'.
-    const displayEffort = effort && getDriverCapabilities(cs.agent).workflow && this.workflowEnabledForAgent(cs.agent)
+    // Prefer the per-turn workflow choice when the caller threads one (dashboard
+    // composer sends ultra per-send without flipping the agent-global flag);
+    // fall back to the agent-global flag (IM /mode, agent card).
+    const workflowOn = opts?.workflowEnabled ?? this.workflowEnabledForAgent(cs.agent);
+    const displayEffort = effort && getDriverCapabilities(cs.agent).workflow && workflowOn
       ? 'ultra'
       : effort;
     return { model: model || null, effort: displayEffort };

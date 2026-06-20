@@ -1,6 +1,6 @@
 import { useStore } from '../store';
 import { getAgentMeta } from '../utils';
-import { usageWindowTone, worstUsageWindow } from '../usage';
+import { usageGauge, usageWindowTone } from '../usage';
 import { Tooltip } from './ui';
 import { BrandIcon } from './BrandIcon';
 import { UsageRing } from './UsageRing';
@@ -21,13 +21,13 @@ export function HeaderUsage({ t }: { t: (key: string) => string }) {
   const agentStatus = useStore(s => s.agentStatus);
   const refreshAgentStatus = useStore(s => s.refreshAgentStatus);
   const entries = (agentStatus?.agents ?? []).flatMap(agent => {
-    const worst = worstUsageWindow(agent.usage);
-    return worst ? [{ agent, worst }] : [];
+    const gauge = usageGauge(agent.usage);
+    return gauge ? [{ agent, gauge }] : [];
   });
   if (!entries.length) return null;
   return (
     <div className="hidden items-center gap-2 pr-1 md:flex">
-      {entries.map(({ agent, worst }) => (
+      {entries.map(({ agent, gauge }) => (
         <Tooltip
           key={agent.agent}
           content={(
@@ -41,7 +41,13 @@ export function HeaderUsage({ t }: { t: (key: string) => string }) {
           className="cursor-default items-center gap-1"
         >
           <BrandIcon brand={agent.agent} size={12} />
-          <UsageRing percent={worst.usedPercent ?? 0} tone={usageWindowTone(worst)} size={13} />
+          <UsageRing
+            percent={gauge.primary.usedPercent ?? 0}
+            tone={usageWindowTone(gauge.primary)}
+            trackTone={gauge.secondaryTone ?? undefined}
+            alert={gauge.secondaryAlert}
+            size={13}
+          />
         </Tooltip>
       ))}
     </div>

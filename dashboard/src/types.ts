@@ -354,6 +354,9 @@ export interface SessionInfo {
   isCurrent?: boolean;
   model?: string;
   thinkingEffort?: string | null;
+  /** Whether the last turn ran with Workflow on — folds `thinkingEffort` to the
+   *  synthetic `ultra` rung for display (see foldUltraEffort). */
+  workflowEnabled?: boolean | null;
   workdir?: string;
   runState: 'running' | 'completed' | 'incomplete';
   runDetail?: string | null;

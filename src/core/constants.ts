@@ -331,6 +331,14 @@ export const AGENT_UPDATE_TIMEOUTS = {
   npmPrefix: 10_000,
   /** Timeout for `npm view <pkg> version`. */
   npmView: 20_000,
+  /** Max time an agent spawn waits for an in-flight reinstall of that agent's
+   *  own CLI to finish before exec'ing. A concurrent `npm install -g` / `brew
+   *  upgrade` (this process OR the prod self-bootstrap) briefly removes the bin
+   *  symlink, so racing it yields exit 127 "command not found"; the wait
+   *  resolves early the instant the install ends. */
+  spawnWait: 2 * 60_000,
+  /** Poll interval while a spawn waits out an in-flight reinstall. */
+  spawnWaitPoll: 200,
 };
 
 // ---------------------------------------------------------------------------

@@ -35,7 +35,7 @@ export {
 export { validateProvider, type ProviderValidationResult } from './validation.js';
 
 export {
-  resolveAgentInjection, isAgentBoundToProfile,
+  resolveAgentInjection, isAgentBoundToProfile, prewarmLocalModel,
   type InjectedSpawnConfig,
 } from './injector.js';
 

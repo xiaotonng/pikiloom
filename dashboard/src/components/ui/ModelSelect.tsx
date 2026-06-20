@@ -78,13 +78,16 @@ export function ModelSelect({
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      // Escape closes only this open dropdown — swallow it (capture phase +
+      // stopPropagation) so a parent Modal's own document-level Escape handler
+      // doesn't also fire and tear down the whole modal.
+      if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); }
     };
     document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', handleKeyDown, true);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keydown', handleKeyDown, true);
     };
   }, [open]);
 

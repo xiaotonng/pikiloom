@@ -9,7 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { restartManagedBrowser } from '../browser-supervisor.js';
 import { terminateProcessTree } from '../core/process-control.js';
-import { AGENT_DETECT_TIMEOUTS, AGENT_STREAM_HARD_KILL_GRACE_MS } from '../core/constants.js';
+import { AGENT_DETECT_TIMEOUTS, AGENT_STREAM_HARD_KILL_GRACE_MS, AGENT_UPDATE_TIMEOUTS } from '../core/constants.js';
+import { awaitAgentUpdateIdle } from './auto-update.js';
 import { getDriver, allDrivers, getAcceptedProviderKinds, hasDriver } from './driver.js';
 import {
   resolveAgentInjection, getActiveProfile, getActiveProfileId, getProvider, updateProfile, listProfiles,
@@ -447,10 +448,15 @@ function prepareStreamOpts(opts: StreamOpts): { prepared: StreamOpts; session: S
   };
 }
 
-function finalizeStreamResult(result: StreamResult, workdir: string, prompt: string, session: SessionWorkspaceInfo): StreamResult {
+function finalizeStreamResult(result: StreamResult, workdir: string, prompt: string, session: SessionWorkspaceInfo, workflowEnabled?: boolean): StreamResult {
   if (result.sessionId) syncManagedSessionIdentity(session, workdir, result.sessionId);
   session.record.model = result.model || session.record.model;
   if (result.thinkingEffort) session.record.thinkingEffort = result.thinkingEffort;
+  // Remember whether this turn ran with Workflow on so the synthetic `ultra`
+  // rung re-folds for display after the live stream ends and on resume — the
+  // stored `thinkingEffort` stays the concrete rung (e.g. `max`). `undefined`
+  // (driver invoked outside the bot) leaves the prior value untouched.
+  if (workflowEnabled !== undefined) session.record.workflowEnabled = workflowEnabled;
   // Capture the BYOK Profile that was in effect for this run so a future
   // `session.switch` can re-bind it (null = native CLI auth).
   try {
@@ -565,13 +571,40 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     agentWarn(`[byok] failed to apply Profile injection: ${e?.message || e}`);
   }
 
+  // In-memory-first: stamp the turn's resolved reasoning rung + Workflow opt-in
+  // onto the centralized index NOW — before the agent CLI has flushed its own
+  // session file — so the session list/composer reflect the user's pick during
+  // the very first turn instead of only after finalizeStreamResult. The managed
+  // record is the single source of truth for this metadata and links to the
+  // native agent-session by id on promotion; finalize re-stamps it (plus the
+  // actual model) authoritatively at turn end.
+  try {
+    if (prepared.thinkingEffort) {
+      session.record.thinkingEffort = prepared.thinkingEffort.trim().toLowerCase() || session.record.thinkingEffort;
+    }
+    if (opts.claudeWorkflowEnabled !== undefined) {
+      session.record.workflowEnabled = opts.claudeWorkflowEnabled;
+    }
+    saveSessionRecord(opts.workdir, session.record);
+  } catch (e: any) {
+    agentWarn(`[session] turn-start metadata stamp failed: ${e?.message || e}`);
+  }
+
   try {
     const driver = getDriver(prepared.agent);
     if (opts.forkOf && !driver.capabilities?.fork) {
       throw new Error(`Agent ${prepared.agent} does not support fork`);
     }
+    // A background agent-CLI auto-update (`npm install -g` / `brew upgrade`, by
+    // this process OR the `npx pikiloom@latest` self-bootstrap) briefly removes
+    // the bin while it relinks; exec'ing into that window fails with exit 127
+    // "command not found". Wait out any in-flight reinstall of THIS agent before
+    // dispatching to the driver — this is the one chokepoint every agent turn
+    // (claude -p, claude TUI, codex app-server, gemini) passes through. No-op
+    // when nothing is updating.
+    await awaitAgentUpdateIdle(prepared.agent, AGENT_UPDATE_TIMEOUTS.spawnWait);
     const result = await driver.doStream(prepared);
-    const finalized = finalizeStreamResult(result, opts.workdir, opts.prompt, session);
+    const finalized = finalizeStreamResult(result, opts.workdir, opts.prompt, session, opts.claudeWorkflowEnabled);
     // Once the child has its real session ID, link the lineage. We do this
     // after finalize so the child record is persisted with its native ID.
     if (opts.forkOf && finalized.sessionId) {

@@ -164,6 +164,37 @@ describe('buildCodexTurnInput and usage helpers', () => {
     });
     }
 
+    // --- managed-owned fields (effort + Workflow) survive the native spread ---
+    // The native session file carries neither, so `...native` would clobber them
+    // to undefined; without explicit recovery the list dropped the user's
+    // per-session pick and saved-turn effort fell back to the global default
+    // (the "picked ultra, reverts to max after the turn" bug).
+    {
+    const merged = mergeManagedAndNativeSessions([
+      {
+        sessionId: 'sess-eff', agent: 'claude', workdir: tmpDir,
+        workspacePath: '/tmp/pikiloom/workspace', model: 'claude-opus-4-8',
+        thinkingEffort: 'max', workflowEnabled: true,
+        createdAt: '2026-03-16T00:00:00.000Z', title: 't',
+        running: false, runState: 'completed', runDetail: null,
+        runUpdatedAt: '2026-03-16T00:00:00.000Z',
+        lastQuestion: 'q', lastAnswer: 'a', lastMessageText: 'a',
+      },
+    ], [
+      {
+        sessionId: 'sess-eff', agent: 'claude', workdir: tmpDir,
+        workspacePath: null, model: 'claude-opus-4-8',
+        thinkingEffort: undefined, workflowEnabled: undefined,
+        createdAt: '2026-03-16T00:01:00.000Z', title: 't',
+        running: false, runState: 'completed', runDetail: null,
+        runUpdatedAt: '2026-03-16T00:01:00.000Z',
+        lastQuestion: 'q', lastAnswer: 'a', lastMessageText: 'a',
+      },
+    ]);
+    expect(merged[0].thinkingEffort).toBe('max');
+    expect(merged[0].workflowEnabled).toBe(true);
+    }
+
     // --- prefers newer native previews when the native session has advanced further ---
     {
     const merged = mergeManagedAndNativeSessions([

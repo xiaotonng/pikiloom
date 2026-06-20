@@ -75,6 +75,7 @@ import {
   renderCommandSelectionKeyboard,
   renderSessionTurnHtml,
   truncateMiddle,
+  unpackCallbackData,
 } from './render.js';
 import { currentHumanLoopQuestion, humanLoopOptionSelected, type HumanLoopPromptState, type ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
 import { TelegramChannel, type TgContext, type TgCallbackContext, type TgMessage } from './channel.js';
@@ -1127,7 +1128,7 @@ export class TelegramBot extends Bot {
   }
 
   private async handleSessionsPageCallback(data: string, ctx: TgCallbackContext): Promise<boolean> {
-    const action = decodeCommandAction(data);
+    const action = decodeCommandAction(unpackCallbackData(data));
     if (!action) return false;
     const result = await executeCommandAction(this, ctx.chatId, action, {
       sessionsPageSize: this.sessionsPageSize,

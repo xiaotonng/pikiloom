@@ -178,6 +178,13 @@ export function shortenModel(model: string): string {
   return s;
 }
 
+/** Mirror of the backend `isPendingSessionId` (src/agent/utils.ts): a brand-new
+ *  session's optimistic stub id before the agent CLI hands back its native id.
+ *  The pending→native swap is the SAME logical session, not a navigation. */
+export function isPendingSessionId(sessionId: string | null | undefined): boolean {
+  return typeof sessionId === 'string' && sessionId.startsWith('pending_');
+}
+
 export type SessionDisplayState = 'running' | 'completed' | 'incomplete' | 'waiting';
 export function sessionDisplayState(session: Pick<SessionInfo, 'running' | 'runState' | 'awaiting'>): SessionDisplayState {
   if (session.running || session.runState === 'running') return 'running';

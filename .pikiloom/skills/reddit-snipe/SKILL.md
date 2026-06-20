@@ -1,6 +1,6 @@
 ---
 name: reddit-snipe
-description: Search Reddit (target subs + cross-Reddit search) for recent high-engagement threads about coding agents / Claude Code / AI dev tools, draft peer-builder English reply comments as the pikiloom builder, push results to Feishu doc + bot. English-first. Does NOT auto-post to Reddit.
+description: Reddit 截流。在 coding agent / Claude Code / AI dev tool 的高互动帖下，以 pikiloom builder 身份自动发现→起草→自我批判→护栏→（按 posture）发布英文 peer 评论，并记录+度量。English-first。话术统一来自 _promo/pitch.md；可由 _promo/orchestrate.md 无人值守驱动。
 user-invocable: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Agent, WebFetch, mcp__pikiloom-browser__browser_navigate, mcp__pikiloom-browser__browser_take_screenshot, mcp__pikiloom-browser__browser_snapshot, mcp__pikiloom-browser__browser_press_key, mcp__pikiloom-browser__browser_click, mcp__pikiloom-browser__browser_evaluate, mcp__pikiloom-browser__browser_type, mcp__pikiloom-browser__browser_run_code_unsafe, mcp__pikiloom-browser__browser_wait_for, mcp__pikiloom-browser__browser_tabs
 argument-hint: "[keyword] | [r/subreddit] | blank for full sweep"
@@ -14,6 +14,19 @@ argument-hint: "[keyword] | [r/subreddit] | blank for full sweep"
 **身份原则**：从第一条评论开始就明确"I'm building pikiloom"。不做匿名 karma-farming，
 不在 OP 面前伪装成普通用户。Reddit 反自我营销文化是对**推销话术**的反感，不是对**坦诚的 builder**
 的反感 — peer-builder 语气 + 真实回应 OP 痛点，本身就是被欢迎的。
+
+**本文件只负责 Reddit 渠道的机制**（发现 / 抽取 / sub 规则 / 浏览器发评论）。产品话术、差异点、诚实
+边界、语气统一来自 **[`../_promo/pitch.md`](../_promo/pitch.md)**（不在本文件重复、不在本文件改话术）。
+去重 / 护栏 / posture / 度量由共享核心负责：
+
+| 关注点 | 位置 |
+|---|---|
+| 产品话术 SSOT | `_promo/pitch.md`（§9 表 reddit 列 = 本渠道机制差异，含 no-link 变体规则） |
+| 去重（写时强制） | `_promo/registry.py`（channel = `reddit`） |
+| 护栏（日 3 条 / 单 sub 1 条 / 变体 / 熔断） | `_promo/guard.py` |
+| 飞书推送 / 度量 | `_promo/push_feishu.py` / `_promo/measure.py` |
+| 无人值守编排 + posture | `_promo/orchestrate.md` |
+| 旋钮 | `_promo/config.json` → `channels.reddit` |
 
 ## 战略前提（区别于 Twitter snipe）
 
@@ -52,13 +65,16 @@ OP 痛点 + 不堆功能 + 不贬低同行，第一条评论就可以是 builder
 
 ## 工作流
 
-### Step 0: 读取已处理记录
+### Step 0: 预检 + 去重源
 
-读取 `.pikiloom/skills/reddit-snipe/sniped_threads.txt`。每行格式：
+```bash
+cd /Users/admin/Desktop/project/pikiloom
+python3 .pikiloom/skills/_promo/guard.py caps      # reddit 今日剩余配额；为 0 则今天不跑
 ```
-<thread_url> | <ISO timestamp> | <link|no-link|skipped>
+去重统一走共享 registry（写时强制，不再用扁平 `sniped_threads.txt`；旧文件已迁移）。每个候选 thread：
+```bash
+python3 .pikiloom/skills/_promo/registry.py seen reddit "<thread_url>" && echo SKIP   # 已记录则跳过
 ```
-后续用 thread URL 去重。`link / no-link` 仅记录该次草稿形态，便于回看 sub 规则学习。
 
 ### Step 2: 决定本轮检索来源
 
@@ -193,22 +209,11 @@ Curious if it lines up with what you're after — happy to share more if useful.
 - **不复制粘贴**：每条草稿独立 draft，不能是同一段模板换个开头
 - **每条草稿尾部加一行 meta**：`<!-- 适用 sub: r/X · OP 痛点: ... · 差异点: ... -->`（飞书报告里展示，发评论前删掉）
 
-### 差异化切入角度（按 pikiloom 实际优势排序，挑与 OP 最相关的一个）
+### 差异化切入角度
 
-> 重要：参考 memory 中"don't fabricate differentiation"反馈 — 只用 UX/execution 上真实成立的差异点，show-don't-tell。
-> **0 号角度（最强，OP 一提钱/API key/`-p`/SDK credits 就用它）优先于下面所有：**
-
-0. **对方在为 headless / `-p` / SDK 用量付 API 费** → "pikiloom's default Claude driver runs the real Claude Code TUI under a PTY, so turns count against your existing Pro/Max subscription — no separate API credits. It tails the `~/.claude/projects/<id>.jsonl` transcript and parses the same usage events as `-p`, just on the subscription billing path."
-   - **诚实边界（绝不越界，会被人当场验证）**：仅限 Claude（Pro/Max）；说 "no *extra* API bill" 不说 "free/unlimited"（订阅自身额度仍在）；不是 hack / 钻空子，就是交互式 Claude Code 本来走的计费路径；不断言某个具名竞品"乱收费"，中性真实说法是"most `-p`/SDK-based wrappers bill API credits"。
-1. 对方在管单 agent / 单会话 → "Dashboard runs N agents in N panes in parallel — Claude in one, Codex in another, Gemini in a third, each its own workspace; switch via tabs"
-2. 对方体验粗糙 / 配置复杂 → "Single `npx` start, no config files, dashboard auto-opens"
-3. 对方生态封闭 → "Open skill/MCP plugin model — drop in community skills, they work in every session and every agent"
-4. 对方闭源 SaaS → "Fully OSS, runs entirely local, your conversations and code never leave the machine"
-5. 对方 CLI-only → "Web dashboard for full session control in the browser"
-6. 对方只能桌前用 → "Drive the same session from any IM — Telegram / Feishu / WeChat / Slack / Discord / DingTalk / WeCom — take over from your phone"
-7. 对方一个团队想共用 → "Group mode: drop it into a Slack/Discord/Feishu group and the whole team steers the same agent swarm"
-8. 对方被单一 agent / 模型锁死 → "Agent-agnostic (Claude Code / Codex / Gemini / Hermes / any ACP agent) and model-agnostic (frontier + local Ollama/mlx-lm + OpenRouter + any OpenAI-compatible)"
-9. 对方单平台自动化 → "macOS desktop automation + Playwright browser control built in"
+挑与 OP 最相关的 **1 个**差异点，全部来自 **[`../_promo/pitch.md`](../_promo/pitch.md) §2**（0–9 号）。
+角度 0 = billing（OP 一提钱 / API key / `-p` / SDK credits 就用它，优先于其余；守 pitch §3 诚实边界）。
+**不在本文件重复列表 —— 改差异点只改 pitch.md。** Reddit 专属：show-don't-tell，只用真实成立的点（don't fabricate）。
 
 ### Step 6: 生成报告 Markdown
 
@@ -255,22 +260,37 @@ Curious if it lines up with what you're after — happy to share more if useful.
 4. 隔天回访候选，看回复是否被 mod 删 / 被 OP 回应
 ```
 
+### Step 6.5: 自我批判 + 护栏（替代人工 review）
+
+每条草稿按 pitch.md §10 自检（营销腔 / 贬低同行 / 堆功能 / 没 ground OP / 越诚实边界 / 隐藏 builder 身份）。
+FAIL → 修一次；再 FAIL → `registry.py update --channel reddit --url <u> --status skipped` 丢弃。然后护栏：
+```bash
+python3 .pikiloom/skills/_promo/guard.py check --channel reddit --url "<thread_url>" \
+  --draft-file /tmp/reddit_draft_<id>.txt        # exit 3 = deny（日 3 / 单 sub 1 / 变体 / 熔断）；deny 则跳过
+```
+
 ### Step 7: 推送到飞书
 
 ```bash
-cd /Users/admin/Desktop/project/pikiloom && \
-  python3 .pikiloom/skills/snipe/scripts/push_feishu.py \
-    --report-file /tmp/reddit_snipe_report.md \
-    --title "🦞 Reddit Snipe 候选"
+cd /Users/admin/Desktop/project/pikiloom
+python3 .pikiloom/skills/_promo/push_feishu.py --report-file /tmp/reddit_snipe_report.md --title "🦞 Reddit Snipe"
+python3 .pikiloom/skills/_promo/measure.py report     # reddit referrer / star 关联，附卡片后
 ```
+输出 `OK:` 成功 / `SKIP:` 缺飞书凭证 / `ERROR:` 失败（兜底把报告贴进对话）。
 
-输出含义同 snipe skill（`OK:` / `PARTIAL:` / `ERROR:`）。`ERROR` 时把报告内容直接贴在对话里作为兜底。
+### Step 8: 按 posture 发布 + 记录
 
-### Step 8: 更新去重记录
-
-将本轮所有候选 thread URL 追加到 `.pikiloom/skills/reddit-snipe/sniped_threads.txt`，
-格式 `<url> | <ISO timestamp> | <link|no-link|skipped>`。即使最终没发评论也记录 —
-避免下次重新评估同一帖；`skipped` 用于"评估过但 sub 规则不允许"的情况。
+`POSTURE=$(python3 -c "import json;print(json.load(open('.pikiloom/skills/_promo/config.json'))['posture'])")`
+- **shadow**：不发，推预览卡片。
+- **batch**：`registry.py update --channel reddit --url <u> --status approved` + 推 veto 卡片（见 orchestrate.md Phase 4）。
+- **auto**：浏览器发评论（见下「浏览器发评论的操作要点」，Lexical 坑务必照做），成功后：
+```bash
+python3 .pikiloom/skills/_promo/registry.py mark-posted --channel reddit \
+  --url "<thread_url>" --post-url "<我们评论的 url>"     # 失败则 update --status failed
+```
+起草时即记录（存草稿供变体检查）：`registry.py add --channel reddit --url "<thread_url>" --status drafted
+--repo "r/<sub>" --type <question|discussion|launch> --lang en --audience <score> --title "<标题>"
+--draft-file /tmp/reddit_draft_<id>.txt`。评估过但 sub 不允许 → `--status skipped`（仍记录，避免重复评估）。
 
 ## 反模式（必须拒绝）
 
@@ -286,10 +306,11 @@ cd /Users/admin/Desktop/project/pikiloom && \
 
 ## 边界与安全
 
-- **绝不自动发评论** — push_feishu.py 是输出层，发评论永远人工
-- **每天最多 3 条评论** — 防 mod / automod 风控
-- **同一 sub 24h 内最多 1 条评论** — 防 sub-level 限频
-- 飞书凭证沿用项目根 `.env`（`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID`）
+- **发布姿态由 `config.json` `posture` 决定**（shadow 不发 / batch 发前可 veto / auto 直发）；
+  `kill_switch` 与 `abort.txt` 随时生效。三渠道里 Reddit 浏览器发评论最易翻车，**建议最后才开 auto**。
+- **每天最多 3 条 / 同一 sub 24h 内最多 1 条** — 由 `guard.py` 按 `config.json` 强制（不靠人记）。
+- 被 mod / automod 删评论 → `registry.py update --channel reddit --url <u> --status removed`，触发 guard 熔断暂停本渠道。
+- 飞书凭证沿用项目根 `.env`（`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID`）。
 
 ## 浏览器发评论的操作要点（实跑踩坑后总结）
 
@@ -307,5 +328,5 @@ cd /Users/admin/Desktop/project/pikiloom && \
 
 - 目标 sub 白名单 + 每 sub 的 mod 严格度: `.pikiloom/skills/reddit-snipe/target_subreddits.md`
 - DOM 抽取脚本: `.pikiloom/skills/reddit-snipe/scripts/extract_reddit_threads.js`
-- 已处理记录: `.pikiloom/skills/reddit-snipe/sniped_threads.txt`
-- 飞书推送（共用 snipe）: `.pikiloom/skills/snipe/scripts/push_feishu.py --title "🦞 Reddit Snipe 候选"`
+- 去重 / 记录: `_promo/registry.py`（channel=reddit；旧 `sniped_threads.txt` 已迁移，留作历史）
+- 共享核心: `_promo/{pitch.md,config.json,guard.py,push_feishu.py,measure.py,orchestrate.md}`

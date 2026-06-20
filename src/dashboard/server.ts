@@ -4,6 +4,7 @@
 
 import http from 'node:http';
 import { Hono } from 'hono';
+import { compress } from 'hono/compress';
 import { getRequestListener } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import path from 'node:path';
@@ -128,6 +129,14 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
   if (opts.bot) runtime.attachBot(opts.bot);
 
   const app = new Hono();
+
+  // -- Compression --
+  // gzip/deflate every compressible response (JSON API payloads, JS/CSS bundles,
+  // the HTML shell). Session message/list endpoints ship hundreds of KB of JSON;
+  // Vite chunks are another few hundred KB raw. The middleware skips already-
+  // compressed binary types (png/ico) by content-type, so the immutable image
+  // assets pay no CPU cost. Registered first so it wraps both routes and static.
+  app.use('*', compress());
 
   // -- API routes --
   app.route('/', configRoutes);

@@ -59,11 +59,27 @@ describe('CommandAction codec', () => {
     expect(decodeCommandAction('wf:2')).toBeNull();    // non-boolean flag
   });
 
-  it('keeps encoded payloads short enough for IM button callbacks (<= 64 bytes)', () => {
-    // Telegram limits inline button callback data to 64 bytes. Long ids are
-    // truncated upstream; we just verify the encoded prefix stays small.
+  it('keeps typical encoded payloads short enough for IM button callbacks (<= 64 bytes)', () => {
+    // Telegram limits inline button callback data to 64 bytes. Short native ids
+    // fit comfortably; long BYOK ids (uuid + provider/model) can overflow and
+    // are handled by the Telegram callback registry (see telegram-render test),
+    // not by this codec — so here we only assert the common short case.
     for (const action of samples) {
       expect(Buffer.byteLength(encodeCommandAction(action))).toBeLessThanOrEqual(64);
     }
+  });
+
+  it('a realistic BYOK model pick overflows the raw codec (why the registry exists)', () => {
+    // Regression guard for the BUTTON_DATA_INVALID crash: `md:p:<uuid>:<id>`
+    // carries ~42 bytes of overhead, so any normal provider/model id tips it
+    // past 64. Documenting it here keeps the Telegram registry honest.
+    const action: CommandAction = {
+      kind: 'models.select.model',
+      modelId: 'deepseek/deepseek-chat-v3-0324',
+      profileId: '7f3c1a2b-9d4e-4f60-8a11-2c3d4e5f6a7b',
+    };
+    expect(Buffer.byteLength(encodeCommandAction(action))).toBeGreaterThan(64);
+    // ...but it must still round-trip once resolved back from the registry.
+    expect(decodeCommandAction(encodeCommandAction(action))).toEqual(action);
   });
 });

@@ -433,6 +433,31 @@ describe('Bot selection switching (model / effort)', () => {
     expect(bot.effortSelectionForAgent('claude')).toBe('xhigh');
     }
   });
+
+  it('folds the live-stream effort to ultra from the per-turn workflow, independent of the agent-global flag', () => {
+    const bot = new Bot() as any;
+    // Unknown session id → no stored config; cs.thinkingEffort drives the rung.
+    const cs = {
+      agent: 'claude',
+      sessionId: 'sess-live',
+      workdir: process.env.PIKILOOM_WORKDIR!,
+      modelId: 'claude-opus-4-8',
+      thinkingEffort: 'max',
+    };
+
+    // The dashboard composer picks ultra per-send and threads workflow per-turn
+    // WITHOUT flipping the agent-global flag. The live divider regressed to a
+    // bare "max" because resolveSessionStreamConfig only read the global flag.
+    expect(bot.workflowEnabledForAgent('claude')).toBe(false);
+    expect(bot.resolveSessionStreamConfig(cs).effort).toBe('max');
+    expect(bot.resolveSessionStreamConfig(cs, { workflowEnabled: true }).effort).toBe('ultra');
+
+    // A concrete per-turn pick (workflow off) must win over a global ON (e.g. IM
+    // /mode left orchestration on) so one-off "max" sends don't mislabel as ultra.
+    bot.setWorkflowEnabledForAgent('claude', true);
+    expect(bot.resolveSessionStreamConfig(cs).effort).toBe('ultra');
+    expect(bot.resolveSessionStreamConfig(cs, { workflowEnabled: false }).effort).toBe('max');
+  });
 });
 
 describe('Bot thread-aware agent switching', () => {

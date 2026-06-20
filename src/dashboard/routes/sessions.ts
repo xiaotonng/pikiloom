@@ -99,6 +99,32 @@ function enrichWithRuntimeStatus(sessions: SessionInfo[], bot: Bot | null): Dash
   });
 }
 
+// Session list cards render only the *head* of these text fields (previews via
+// firstMeaningfulLine / slice / sanitize) and use them for client-side substring
+// search. A session whose last turn dumped a huge tool output or long answer would
+// otherwise ship tens of KB per card that the list never displays — on a busy
+// workspace the swim-lane ballooned to ~600KB, dominated by these fields. Cap each
+// to a preview length: previews are unchanged and search still matches the head.
+// Full text remains available from the session-detail / messages endpoints.
+const LIST_PREVIEW_FIELD_CAP = 2048;
+
+function capPreviewField<T extends string | null | undefined>(value: T): T | string {
+  return typeof value === 'string' && value.length > LIST_PREVIEW_FIELD_CAP
+    ? value.slice(0, LIST_PREVIEW_FIELD_CAP)
+    : value;
+}
+
+/** Thin a session for list/swim-lane responses by capping its heavy preview text. */
+export function projectSessionForList(session: DashboardSessionInfo): DashboardSessionInfo {
+  return {
+    ...session,
+    lastQuestion: capPreviewField(session.lastQuestion),
+    lastAnswer: capPreviewField(session.lastAnswer),
+    lastMessageText: capPreviewField(session.lastMessageText),
+    runDetail: capPreviewField(session.runDetail),
+  };
+}
+
 function readStringField(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -237,6 +263,7 @@ app.get('/api/sessions/:agent', async (c) => {
   const result = await querySessions({ workdir, agent });
   const enriched = enrichWithRuntimeStatus(result.sessions, botRef);
   const paged = paginateSessionResult(enriched, page, limit);
+  paged.sessions = paged.sessions.map(projectSessionForList);
 
   runtime.debug(
     `[sessions] endpoint=single agent=${agent} ok=${result.ok} total=${result.total} ` +
@@ -270,6 +297,7 @@ app.get('/api/sessions', async (c) => {
     const result = await querySessions({ workdir, agent: a.agent });
     const enriched = enrichWithRuntimeStatus(result.sessions, botRef);
     const paged = paginateSessionResult(enriched, page, limit);
+    paged.sessions = paged.sessions.map(projectSessionForList);
 
     swimLane[a.agent] = {
       ok: result.ok,

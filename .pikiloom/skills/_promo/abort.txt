@@ -1,0 +1,5 @@
+# Per-target veto for `batch` posture (the circuit breaker).
+# Add a target URL (issue / tweet / thread) here to STOP it from being auto-posted.
+# guard.py enforces this deterministically — a listed URL is denied regardless of posture.
+# To halt EVERYTHING instead, set "kill_switch": true in config.json.
+# One URL per line. Lines starting with # are ignored.

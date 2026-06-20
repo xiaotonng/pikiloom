@@ -1,348 +1,171 @@
 ---
 name: promote
-description: This skill should be used to search GitHub for relevant issues, filter them, draft replies to promote pikiloom using a sub-agent, and publish those replies while tracking already replied issues to avoid duplicates.
-version: 5.0.0
+description: GitHub 截流。在同领域项目（local coding agent ↔ IM / mobile / remote console）的 feature-request issue 下，自动发现→起草→自我批判→护栏→（按 posture）发布 pikiloom 回复，并记录+度量。话术统一来自 _promo/pitch.md；可由 _promo/orchestrate.md 无人值守驱动。
+version: 6.0.0
 ---
 
 # GitHub Promotion Workflow
 
-This skill targets the open issues of **same-space projects** (local coding agent ↔ IM / mobile / remote console) — that's where users have already self-identified as needing this category of tool. We share pikiloom as another option that may help; we do not position against the host project.
+This skill targets the open issues of **same-space projects** (local coding agent ↔ IM / mobile /
+remote console) — where users have already self-identified as needing this category of tool. We share
+pikiloom as another option; we never position against the host project.
 
-## 1. Context Check (Anti-Duplication)
+**This file holds GitHub-specific mechanics only** (which repos, which issues, how to post). All product
+copy, differentiators, honesty bounds, tone, language, skeleton, and anti-patterns come from
+**[`../_promo/pitch.md`](../_promo/pitch.md)** — do not duplicate or edit copy here. Dedup / guardrails /
+posting-posture / measurement come from the shared core:
 
-Before doing anything, ALWAYS read the registry of already replied issues to ensure we do not spam or reply to the same issue twice.
+| 关注点 | 位置 |
+|---|---|
+| 产品话术 SSOT | `_promo/pitch.md`（§9 表 github 列 = 本渠道机制差异） |
+| 去重（写时强制） | `_promo/registry.py`（channel = `github`） |
+| 护栏（每仓上限/日配额/变体/熔断/deny_repos） | `_promo/guard.py` |
+| 飞书推送 / 度量 | `_promo/push_feishu.py` / `_promo/measure.py` |
+| 无人值守编排 + posture | `_promo/orchestrate.md` |
+| 旋钮 | `_promo/config.json` → `channels.github` |
 
-- **Registry Path:** `.pikiloom/skills/promote/replied_issues.txt`
-- **Action:** Read this file and keep the URLs in context.
+> 运行根目录：`cd /Users/admin/Desktop/project/pikiloom`。脚本前缀：`.pikiloom/skills/_promo/`。
 
-## 2. Primary Path — Same-Space Project Issues
+## GitHub 渠道的铁律
 
-This is the main targeting strategy. Walk the issue trackers of the peer projects below — their users already feel the pain pikiloom addresses. **pikiloom now natively supports Telegram, Feishu, WeChat, Slack, Discord, DingTalk, and WeCom as co-equal channels**, so every IM-bridge repo below is a same-channel peer — there is no "wrong channel" anymore. Replies may engage a channel-specific ask (e.g. a Discord-only feature request) *and* channel-agnostic ones (MCP bridge, multi-session, dashboard, parallel agent swarm, watchdog). The only real fit test is whether pikiloom genuinely does the asked-for thing today.
+1. **只打 feature-request / 用户提问 issue，绝不打 bug 报告。** "能加 X 吗" 是开放问题，分享别的工具已有
+   X 是正当同行信息；bug 报告是宿主实现的封闭范围，进去推等于批评。`guard.py` 不知道 issue 类型 —— 这一条
+   靠筛选阶段把关。
+2. **每仓终身 ≤ 2 条**（`config.json` `per_repo_lifetime_cap`）。历史上 `chenhg5/cc-connect` 13 条、
+   `RichardAtCT/claude-code-telegram` 10 条 —— 这种集中度正是 AUP §4「coordinated inauthentic activity」
+   要抓的轮廓。`guard.py` 会按 registry 里的历史强制拦截超限的仓。
+3. **不打上游本体仓**（`anthropics/claude-code` 等，见 `deny_repos`）—— 不是同类桥接，曝光最高、有官方
+   triage、风险最大。历史误打了 14 条，停止。`guard.py` 直接 deny。
+4. **每条独立起草 + 必带披露行**（"I'm building / 我在做 pikiloom"）。披露既是诚实也是护身符；boilerplate
+   翻译版仍是 boilerplate，`guard.py` 变体检查会拦。
 
-### Bucket A — IM-channel peers (all native today, highest fit)
+---
 
+## Step 1: 预检
 ```bash
-# Telegram cluster
-gh issue list --repo chenhg5/cc-connect --state open --limit 50
-gh issue list --repo RichardAtCT/claude-code-telegram --state open --limit 50
-gh issue list --repo a5c-ai/claude-code-telegram-bot --state open --limit 30
-gh issue list --repo seedprod/claude-code-telegram --state open --limit 30
-gh issue list --repo cutevisor/return-by-death --state open --limit 30
-gh issue list --repo JohannOosthuizen/Gemini-CLI-Telegram-Bot --state open --limit 30
-gh issue list --repo ada720725-star/claude-code-telegram --state open --limit 30
-gh issue list --repo gohyperdev/hdcd-telegram --state open --limit 30
-
-# Feishu cluster
-gh issue list --repo laborany/laborany --state open --limit 30
-gh issue list --repo MidnightV1/Claude-Code-Feishu --state open --limit 30
-gh issue list --repo whobot-ai/claude-code-feishu-channel --state open --limit 30
-gh issue list --repo m1heng/clawdbot-feishu --state open --limit 30
-gh issue list --repo CherryLover/claude-code-feishu --state open --limit 30
-gh issue list --repo AwadYoo/claude-code-feishu-channel --state open --limit 30
-gh issue list --repo czm15053/claude-code-feishu-channel --state open --limit 30
-gh issue list --repo AkaiZheng/ClaudeCode-Feishu-Channel --state open --limit 30
-
-# WeChat cluster
-gh issue list --repo Johnixr/claude-code-wechat-channel --state open --limit 30
-gh issue list --repo Wechat-ggGitHub/wechat-claude-code --state open --limit 30
-gh issue list --repo m1heng/claude-plugin-weixin --state open --limit 30
+cd /Users/admin/Desktop/project/pikiloom
+python3 .pikiloom/skills/_promo/guard.py caps      # github 今日剩余配额；为 0 则今天不跑
 ```
 
-### Bucket B — More IM-channel peers (also native — no topic restriction)
+## Step 2: 主路径 — 同领域项目 issue
 
-> Discord / Slack / DingTalk / WeCom are now first-class pikiloom channels, so these are full-fit peers, not "channel-agnostic only." WeCom (企业微信) repos aren't pinned here yet — let the refresh loop below discover them.
+walk 下列同类项目的 issue tracker（pikiloom 原生支持 Telegram/Feishu/WeChat/Slack/Discord/DingTalk/WeCom，
+所有 IM-bridge 仓都是同渠道同类）。bucket 内并行，按时间排序，忽略 >90 天且无活动的。
 
+### Bucket A — IM-channel peers（原生，契合度最高）
 ```bash
-# Discord cluster (190★ + 70★ + 41★)
-gh issue list --repo zebbern/claude-code-discord --state open --limit 30
-gh issue list --repo timoconnellaus/claude-code-discord-bot --state open --limit 30
-gh issue list --repo ebibibi/claude-code-discord-bridge --state open --limit 30
-gh issue list --repo BrunoJurkovic/claude-code-discord-status --state open --limit 30
-gh issue list --repo jubalm/claude-code-discord --state open --limit 30
-
-# Slack cluster (157★)
-gh issue list --repo mpociot/claude-code-slack-bot --state open --limit 30
-gh issue list --repo jeremylongshore/claude-code-slack-channel --state open --limit 30
-gh issue list --repo 41fred/claude-code-slack --state open --limit 30
-gh issue list --repo AnandChowdhary/claude-code-slack-bot --state open --limit 30
-
-# DingTalk
-gh issue list --repo sfyyy/claude-code-dingtalk-mcp --state open --limit 30
+# Telegram
+for r in chenhg5/cc-connect RichardAtCT/claude-code-telegram a5c-ai/claude-code-telegram-bot \
+         seedprod/claude-code-telegram cutevisor/return-by-death JohannOosthuizen/Gemini-CLI-Telegram-Bot \
+         ada720725-star/claude-code-telegram gohyperdev/hdcd-telegram; do
+  gh issue list --repo "$r" --state open --limit 40; done
+# Feishu
+for r in laborany/laborany MidnightV1/Claude-Code-Feishu whobot-ai/claude-code-feishu-channel \
+         m1heng/clawdbot-feishu CherryLover/claude-code-feishu AwadYoo/claude-code-feishu-channel \
+         czm15053/claude-code-feishu-channel AkaiZheng/ClaudeCode-Feishu-Channel; do
+  gh issue list --repo "$r" --state open --limit 30; done
+# WeChat
+for r in Johnixr/claude-code-wechat-channel Wechat-ggGitHub/wechat-claude-code m1heng/claude-plugin-weixin; do
+  gh issue list --repo "$r" --state open --limit 30; done
 ```
 
-### Bucket C — Mobile / remote / dashboard cluster
-
+### Bucket B — 更多 IM-channel peers（Discord / Slack / DingTalk / WeCom，均原生）
 ```bash
-gh issue list --repo 9cat/claude-code-app --state open --limit 30
-gh issue list --repo ahmed3elshaer/everything-claude-code-mobile --state open --limit 30
-gh issue list --repo aiya000/claude-code-mobile-ssh --state open --limit 30
-gh issue list --repo qingpingwang/remote-claude-code --state open --limit 30
-gh issue list --repo BMeyn/claude_code_mobile --state open --limit 30
+for r in zebbern/claude-code-discord timoconnellaus/claude-code-discord-bot ebibibi/claude-code-discord-bridge \
+         BrunoJurkovic/claude-code-discord-status jubalm/claude-code-discord \
+         mpociot/claude-code-slack-bot jeremylongshore/claude-code-slack-channel 41fred/claude-code-slack \
+         AnandChowdhary/claude-code-slack-bot sfyyy/claude-code-dingtalk-mcp; do
+  gh issue list --repo "$r" --state open --limit 30; done
 ```
 
-Run within a bucket in parallel. Sort by recency and ignore anything older than 90 days unless thread is still active.
-
-**Refresh the list periodically** — popularity in this space moves quickly. Before a run, re-check across all channel keywords:
-
+### Bucket C — Mobile / remote / dashboard
 ```bash
-for kw in "claude code telegram" "claude code feishu" "claude code wechat" "claude code discord" "claude code slack" "claude code dingtalk" "claude code wecom" "claude code 企业微信" "claude code mobile" "claude code swarm" "codex telegram" "codex feishu" "gemini cli telegram"; do
+for r in 9cat/claude-code-app ahmed3elshaer/everything-claude-code-mobile aiya000/claude-code-mobile-ssh \
+         qingpingwang/remote-claude-code BMeyn/claude_code_mobile; do
+  gh issue list --repo "$r" --state open --limit 30; done
+```
+
+**定期刷新仓列表**（这个领域更新很快）：
+```bash
+for kw in "claude code telegram" "claude code feishu" "claude code wechat" "claude code discord" \
+          "claude code slack" "claude code dingtalk" "claude code wecom" "claude code 企业微信" \
+          "claude code mobile" "claude code swarm" "codex telegram" "codex feishu" "gemini cli telegram"; do
   gh search repos "$kw" --limit 15 --json fullName,stargazersCount,description,pushedAt \
     --jq 'sort_by(-.stargazersCount) | .[] | "\(.stargazersCount)★ \(.fullName) — \(.description // "")"'
 done
 ```
+>10★ 且 90 天内有 push 而不在上面的，按类别补进 A/B/C。
 
-If a repo with >10★ pushed within the last 90 days isn't in the list above, add it (Bucket A/B if it's an IM-channel bridge — they're all native peers now; Bucket C if mobile/remote/dashboard).
-
-## 3. Secondary Path — Keyword Search
-
-After working through the same-space repos, fall back to broad keyword searches for stragglers. Only run these if the primary path produces fewer than 5 candidates.
+## Step 3: 次路径 — 关键词搜索（主路径不足 5 条候选时才跑）
 
 ```bash
-# Examples — run with --json url,title,repository and filter aggregator/awesome repos
-gh search issues "claude code mobile" --state open --limit 30
-gh search issues "claude code telegram" --state open --limit 30
-gh search issues "coding agent remote" --state open --limit 30
-gh search issues "claude code 飞书" --state open --limit 30
-gh search issues "claude code 微信" --state open --limit 30
-gh search issues "claude code 企业微信" --state open --limit 30
-gh search issues "agent web dashboard" --state open --limit 30
-gh search issues "run multiple coding agents" --state open --limit 30
-# Billing-pain segment — highest-intent (people paying API credits who'd rather use their Max sub).
-# Keywords below are calibrated to ones that actually return open issues (GitHub issue search is AND-on-terms;
-# long phrases like "claude code api cost" return ~0 — don't use them).
-gh search issues "claude code billing" --state open --limit 30
-gh search issues "claude code credits" --state open --limit 30
-gh search issues "claude max api" --state open --limit 30
-gh search issues "use claude subscription" --state open --limit 30
-gh search issues "claude code subscription" --state open --limit 30
+# billing 段 = 最高转化（付 API credits、想用 Max 订阅跑自动化的人）；GitHub issue 搜索是 term-AND，
+# 长 phrase 返回 ~0，用下面这些校准过能出 open issue 的词：
+for q in "claude code billing" "claude code credits" "claude max api" "use claude subscription" \
+         "claude code subscription" "claude code mobile" "claude code telegram" "claude code 飞书" \
+         "claude code 微信" "agent web dashboard" "run multiple coding agents"; do
+  gh search issues "$q" --state open --limit 30 --json url,title,repository \
+    | jq -r '[.[] | select(.repository.name | test("trending|news|weekly|github-daily|awesome|digest|bulletin|pikiloom|pikiclaw"; "i") | not)
+        | select(.repository.nameWithOwner | test("xiaotonng/") | not)]
+        | .[] | "\(.url) | \(.title) | \(.repository.nameWithOwner)"'; done
 ```
+> **billing 段命中时，回复用 pitch §2 角度 0 开场**（守住 §3 诚实边界）。
+> **丢弃 issue-mirror / digest bot**（republish 别人 issue，OP 不在那）：小仓上的 4–5 位 issue 号、
+> 或标题像 `[upstream PR N] …` / `Weekly Tech Report` / `AI CLI 日报`。起草前先 `gh issue view` 确认。
 
-> **The billing-pain segment is the highest-conversion target.** An issue where someone is annoyed that headless / `-p` / SDK usage burns API credits separate from their Pro/Max subscription is a near-perfect fit — pikiloom's default TUI/PTY path is the direct answer. Prioritize these candidates and lead the reply with the cost angle (within the honesty bounds in §4).
->
-> **Drop issue-mirror / digest bots** that the name-based filter misses — they republish other repos' issues/PRs so the OP isn't actually reachable there. Tell-tales: a 4–5-digit issue number on an otherwise small repo, or titles like `[upstream PR N] …`, `Track upstream … release`, `Weekly Tech Report`, `AI CLI 日报 / radar`. Verify with `gh issue view` before drafting.
+## Step 4: 去重 + 筛选
 
-Filter command (drops aggregator/news repos and our own):
+对每个候选 URL 先去重，再 `gh issue view <url>` 读全文再判断：
 ```bash
-gh search issues "<query>" --state open --limit 30 --json url,title,repository \
-  | jq -r '[.[]
-      | select(.repository.name | test("trending|news|weekly|github-daily|awesome|digest|bulletin|pikiloom|pikiclaw"; "i") | not)
-      | select(.repository.nameWithOwner | test("xiaotonng/") | not)]
-      | .[] | "\(.url) | \(.title) | \(.repository.nameWithOwner)"'
+python3 .pikiloom/skills/_promo/registry.py seen github "<issue_url>" && echo SKIP   # 已记录则跳过
+```
+**全部满足才选：** ① 是 feature-request / 用户提问（**不是**宿主实现相关的 bug）② pikiloom **今天就有**这个能力
+（不要硬拗，读者会查）③ 线程还活着（近期活动，未 closed/wontfix/locked）④ 作者是用户而非 maintainer 在做路线规划。
+**任一命中即跳过：** bug 报告 / maintainer 已承诺修或有在飞 PR / 社区公告 / pikiloom 并无该能力 / 争议政治帖。
+
+pikiloom 真正能解的痛点见 **pitch.md §2**（角度 0 billing 是头牌差异点；其余按 OP 痛点挑 1–2 个）。选 **3–6** 条最强候选。
+
+## Step 5: 起草（子 agent，话术来自 pitch.md）
+
+委托子 agent 起草，**唯一内容契约 = [`../_promo/pitch.md`](../_promo/pitch.md)**：peer-position+orienter(§1) →
+out-of-box 主张(§8 step2，回答"装好是不是开箱即有") → 一句实现证据(§4) → `npx pikiloom@latest` →
+`https://github.com/xiaotonng/pikiloom`。语言跟随 **issue 正文**(§6)，≤5 句，挑 1–2 个对得上的差异点(§2)。
+
+每条起草后记录：
+```bash
+python3 .pikiloom/skills/_promo/registry.py add --channel github --url "<issue_url>" \
+  --status drafted --repo "<owner/repo>" --type <feature-request|question> --lang <en|zh|ja> \
+  --title "<issue 标题>" --draft-file /tmp/promo_draft_<id>.txt
 ```
 
-## 4. Filter and Select
+## Step 6: 自我批判（替代人工 review gate）
 
-Drop any URL already in `replied_issues.txt`. For the remaining candidates, run `gh issue view <url>` to read the full thread before judging.
+对每条草稿按 pitch.md §10 自检（营销腔 / 对比宿主 / >2 差异点 / 超 5 句 / 没 ground issue 痛点 / 缺披露 /
+越诚实边界 / boilerplate）。FAIL → 子 agent 修一次；再 FAIL → `update --status skipped` 丢弃。不做第三次。
 
-**The target sub-segment in peer trackers is FEATURE-REQUEST issues, not bug reports.** Why: a user asking "can you add X" is an open question — sharing that another tool already has X is legitimate peer information. A bug report specific to the host project's implementation is closed scope — sharing pikiloom there reads as critique.
-
-**Pick issues where ALL hold:**
-- Issue is a `[Feature]` / feature-request OR a generic user-question (not a `[Bug]` specific to host implementation)
-- The asked-for capability is something pikiloom **actually has today** (do not stretch — readers will check)
-- Thread is alive (recent activity, not closed/wontfix/duplicate-locked)
-- Author is the user, not the maintainer doing roadmap planning out loud
-
-**Skip when ANY holds:**
-- It's a bug report tied to the host project's specific code paths
-- Maintainer has already committed to a fix or there's an in-flight PR
-- The thread is a community announcement / pinned design discussion
-- Pikiloom doesn't actually have the asked-for feature, or only has something tangentially related
-- The conversation is heated / political — promotion lands as opportunism
-
-**Pain points pikiloom genuinely solves (use only when relevant):**
-
-*Cost / Billing — the headline differentiator (lead with this when the issue mentions cost, API key, `-p`/headless, SDK credits, or "burns through credits"):*
-- pikiloom's **default** Claude driver runs the *real interactive Claude Code TUI* under a PTY, so turns count against your existing **Claude Pro/Max subscription** — the same billing path as using Claude Code yourself, **no extra API spend**.
-- Most IM/automation wrappers shell out to `claude -p` / the Agent SDK, which bills the **separate metered API credit pool** on top of your subscription. That's the cost gap pikiloom closes.
-- Implementation anchor (use as the credibility sentence): it tails the JSONL transcript Claude writes to `~/.claude/projects/<id>.jsonl` and runs the same usage/tool parser as print mode — i.e. headless automation on the subscription billing path; it falls back to `-p` only if PTY allocation fails.
-- **Honesty bounds (do NOT cross — these claims get tested publicly):** Claude-specific (Pro/Max only; Codex/Gemini bill on their own terms). Say "no *extra* API bill," never "free" or "unlimited" — subscription usage limits still apply. It is not a hack/loophole — it is the exact path interactive Claude Code already uses. Don't assert a named competitor "overcharges"; the neutral true frame is "most `-p`/SDK-based wrappers bill API credits."
-
-*Channels & Agents:*
-- Need to drive a local agent from Telegram, Feishu, WeChat, Slack, Discord, DingTalk, or WeCom — all first-class, run any subset at once
-- Want one tool that spans multiple IM channels + a web dashboard + CLI as co-equal terminals
-- Want to switch between Claude Code / Codex / Gemini / Hermes (or any CLI/ACP agent) mid-workflow
-- **Group Collaboration** — drop the orchestrator into a Feishu / Slack / Discord / WeCom group so a whole team steers the same agent swarm
-
-*Parallel Swarm & Orchestration:*
-- Run **N agents in N windows** in parallel, one operator — each dashboard pane is an independent session + workspace
-- Mix-and-match: Claude Code in pane 1, Codex in pane 2, Gemini in pane 3, on different repos at once
-- Long-running tasks dying / sleeping / disconnecting (watchdog, auto-restart)
-- Session resume, multi-turn, switch agents mid-session
-- Task queue with **Steer** — interrupt and re-prioritize a busy agent
-- Codex Human Loop — Codex's prompts surface in IM as interactive replies
-
-*Model Routing:*
-- One vault routes frontier (Claude / GPT / Gemini), Chinese domestic (DeepSeek / Doubao / MiMo / MiniMax / Qwen), local (Ollama, mlx-lm on Apple Silicon), OpenRouter, and any OpenAI-compatible proxy — per-agent model selection
-- Self-hosted, runs entirely on the user's machine; code and conversations never leave it
-
-*Web Console:*
-- Web dashboard at localhost:3939 for full agent control from a browser
-- Real-time streaming with tool-use, thinking traces, plan progress
-- Image and file attachments, conversation history, draft persistence
-- Context window usage display per turn
-- Centralized config: agents, channels, models, permissions, extensions
-
-*MCP & GUI Automation:*
-- `im_list_files` / `im_send_file` MCP tools for file exchange with the agent
-- Managed Chrome profile via Playwright MCP (login persists across sessions)
-- macOS desktop automation via Peekaboo MCP (Accessibility API + ScreenCaptureKit)
-
-*Skills & Extensibility:*
-- `.pikiloom/skills/` reusable workflows triggered from IM
-- Compatible with `.claude/commands/*.md` skill format
-
-Pick **3–6** of the strongest candidates for a single run.
-
-## 5. Draft Replies via Sub-Agent
-
-Delegate drafting to a sub-agent so the main thread stays focused on selection.
-
-**Prompt for the sub-agent:**
-
-> Draft short, grounded GitHub issue replies that share `pikiloom` as another tool the issue author may find useful.
->
-> **What pikiloom is:**
-> Node.js CLI (`npx pikiloom@latest`) — an AI-native **agent orchestrator** that drives a *swarm* of agents in parallel from whichever terminal is closest. Plugs Claude Code, Codex, Gemini, Hermes (or any CLI/ACP agent) into Telegram, Feishu, WeChat, Slack, Discord, DingTalk, WeCom, a web dashboard at localhost:3939, and a local CLI/API — all co-equal terminals. Runs entirely on the user's own machine; routes any model (frontier / Chinese domestic / local Ollama·mlx-lm / OpenRouter / any OpenAI-compatible proxy). It's self-bootstrapped — pikiloom is built with pikiloom.
->
-> **Capabilities (use only what's relevant to the specific issue):**
->
-> *Cost / Billing (lead with this when the issue is about API cost, API keys, `-p`/headless, or SDK credits):*
-> - Default Claude driver runs the real interactive Claude Code TUI under a PTY → turns count against the user's existing **Pro/Max subscription**, no extra API spend. Most wrappers use `claude -p` / the Agent SDK → separate metered API credits on top.
-> - Credibility anchor: tails the JSONL transcript at `~/.claude/projects/<id>.jsonl`, same usage parser as print mode; falls back to `-p` only if PTY fails.
-> - Bounds: Claude-only (Pro/Max); "no extra API bill" not "free/unlimited"; not a loophole (same path as interactive Claude Code); never claim a named competitor "overcharges."
->
-> *Channels & Agents:*
-> - Telegram, Feishu, WeChat, Slack, Discord, DingTalk, WeCom — run any subset simultaneously, plus web dashboard + CLI as co-equal terminals
-> - Claude Code, Codex, Gemini, Hermes (ACP) — or any CLI/ACP agent via the `AgentDriver` contract; switch mid-session, per-agent model selection
-> - **N agents in N windows, one operator** — parallel sessions, each its own workspace; mix agents across panes on different repos
-> - **Group Collaboration** — drop the orchestrator into a Feishu / Slack / Discord / WeCom group; a whole team steers the same swarm
->
-> *Dashboard as Agent Console:*
-> - Web dashboard at localhost:3939 — full interactive console in the browser
-> - Tool-use activity, thinking traces, plan progress, real-time WebSocket streaming
-> - Image / file attachments, file previews, draft persistence across session switches
-> - Context window usage per turn, token tracking, usage status per agent
-> - Channel/agent/model/permission/extension config in one place
->
-> *Runtime & Orchestration:*
-> - Streaming preview with continuous IM message updates
-> - Session switching, resume, multi-turn
-> - Task queue with **Steer** — send follow-up while agent is busy; interrupt and re-prioritize
-> - Codex Human Loop — Codex's mid-task questions surface as IM prompts
-> - Long-task sleep prevention, watchdog, auto-restart
->
-> *MCP & GUI Automation:*
-> - Per-stream MCP bridge: `im_list_files`, `im_send_file`
-> - Managed Chrome profile via Playwright MCP — log in once, reuse
-> - macOS desktop automation via Peekaboo MCP — Accessibility API + ScreenCaptureKit (`see` / `click` / `type` / `window` / `menu` / `app` / `dock`)
->
-> *Skills & Extensibility:*
-> - `.pikiloom/skills/` project-level workflows triggered via `/skills` and `/sk_<name>`
-> - Compatible with `.claude/commands/*.md` skill format
->
-> *Other:*
-> - Workspace browsing & switching from IM
-> - File attachments enter the session workspace automatically
-> - i18n: Chinese / English; light & dark theme
->
-> **Language rule (HARD):**
-> - Reply in the **language of the issue body**, NOT the repo's default language. A Chinese issue in an English-default repo gets a Chinese reply.
-> - Chinese issue → 中文回复（自然书面语，不要翻译腔）。Japanese → 日本語. Other → English.
-> - Code identifiers, file paths, and CLI commands stay in their native form regardless of language.
->
-> **Tone rules (HARD CONSTRAINTS):**
-> - Voice = **humble peer-builder sharing implementation notes**. Frame: "I hit the same thing; here's how I handled it, in case any of it is useful." The reader decides whether to look further. Never "use mine instead", never "X doesn't do Y so try Z".
-> - Do NOT address the maintainer (no "供作者参考", "供大佬参考", "@maintainer", "thanks @owner for considering this", etc.). The reply is for the issue author and lurkers — talking to the maintainer reads as either flattery or confrontation, both bad.
-> - Do NOT critique the host project. Do NOT use "switch from X", "X doesn't support", "while waiting for X to fix this", "if you find X limiting", "X 还没做" — even neutral-sounding versions of these telegraph competitive intent.
-> - Do NOT boast: avoid "我做了一遍" (boastful) — prefer "我自己卡过同样的问题, 后来这样处理" / "I hit the same thing in a side project, ended up doing X" (matter-of-fact).
-> - Mention only 1–3 capabilities directly relevant to this exact issue — DO NOT enumerate features.
-> - Lead with **implementation specifics** (file paths, function names, data structures, protocol details) over feature names. That's what signals real building, not marketing.
-> - Keep replies under 5 sentences.
->
-> **Humble closes (use one, vary across drafts):**
-> - 中文: "希望对你有帮助。" / "权当一个参考。" / "如果思路不对就忽略。" / "在你的场景下不一定合适, 给个参考。" / "一个参考思路。"
-> - English: "Sharing in case the shape is useful." / "One reference shape — feel free to ignore if it doesn't fit." / "In case any of that helps."
-> - Japanese: "ご参考まで。" / "もしご参考になれば。"
-> - Never: "供作者参考" / "供大佬参考" / "@author what do you think" / "looking forward to your thoughts".
->
-> **Reply skeleton:**
-> 1. **Peer-position + one-line orienter** (REQUIRED — assume the reader has never heard of pikiloom and is reading this from a notification).
->    - 中文模板: "我自己也卡过同样的问题。我在做一个类似的工具叫 `pikiloom`——一个 agent orchestrator，把 Claude Code / Codex / Gemini 接到 Telegram / 飞书 / 微信 / Slack / Discord 等 + 本地 dashboard，可并行跑多个 agent。"
->    - English template: "I'm building a similar tool (`pikiloom`) — an agent orchestrator that runs Claude Code / Codex / Gemini across Telegram / Feishu / Slack / Discord (and more) plus a localhost dashboard, several agents in parallel — hit the same thing."
->    - The orienter is **always one compact line**, never a feature paragraph. Vary surface form across drafts so it doesn't read as a copy-paste signature, but always include "Claude Code / Codex / Gemini" and "IM channels (Telegram / Feishu / Slack / Discord / …) + dashboard" — those are the load-bearing identifiers. Pick the 2–3 channels that match the host repo (a Discord-bot repo → lead with Discord), don't list all seven.
-> 2. **Out-of-box claim — the headline message** (REQUIRED). The reader's actual question is "if I install your thing, do I get this without setup?" — answer that *first*, before any implementation detail.
->    - The claim must be specific to the issue's exact pain point. Not "pikiloom has lots of features" but "this exact capability is available the moment you run `npx pikiloom@latest`, with no config edits / no env vars / no patches".
->    - 中文常用句型: "这个能力装好就有" / "开箱即用，不用写配置" / "`npx pikiloom@latest` 起来就能直接 X"
->    - English: "this works out of the box" / "no env vars or config edits needed" / "drop in and run — `npx pikiloom@latest` and the X is there"
->    - This is the load-bearing sentence in the entire reply. Everything else exists to support it.
-> 3. **One sentence of implementation evidence** — file/function/data-structure level detail. This is the credibility anchor proving the out-of-box claim isn't marketing fluff. NOT the main message — keep it to a single sentence; the goal is "they actually built this", not "let me teach you how it works".
-> 4. Trial line: `npx pikiloom@latest`
-> 5. Project link: `https://github.com/xiaotonng/pikiloom`
-> 6. Optional: humble close on its own line, before the trial line, when the issue is heated or the author has done deep root-cause analysis themselves.
->
-> **Skeleton anti-patterns — reject the draft if any apply:**
-> - Reply opens with implementation detail before the reader knows what pikiloom is. Implementation in a vacuum is incomprehensible to a notification-arrival reader.
-> - Reply leads with implementation BEFORE the out-of-box claim. The reader's question is "do I get this for free?" — answer that first; the implementation evidence is a footnote in service of that claim.
-> - Out-of-box claim is generic ("pikiloom is easy to use", "everything works") instead of pinned to the specific capability the issue is asking about.
-> - "pikiloom is X" or "pikiloom can do X" — vendor voice. Use "I'm building / 我在做" instead.
-> - Orienter expanded into a feature list (more than the bridges + dashboard line). That's promo, not orientation.
-> - Implementation paragraph dominates the reply — more than one sentence on file/function/data-structure level. That's a tutorial, not a peer note.
-> - Orienter in a separate paragraph before the "I hit the same thing" — feels like an ad header. Fold orienter and peer-position into the same opener.
->
-> **Contributor-flavored variant — use only when the issue author is clearly a developer and the issue is technical:**
-> Replace step 2 with one line of implementation specifics that signals "we hit and solved this" — e.g., per-stream MCP bridge spawn order, watchdog re-attach strategy, Playwright managed-profile lifecycle. Keep it grounded; do not embellish.
->
-> Provide only the drafted replies, one per issue, with the issue URL above each draft.
-
-Review the drafts. Reject any that:
-- Read like marketing copy
-- Compare pikiloom to the host project
-- List >3 features
-- Exceed 5 sentences
-- Don't engage with the specific pain point in the issue
-
-If a draft fails review, send it back to the sub-agent for a single revision pass. After two failed passes, drop that issue from the run.
-
-## 6. Review Gate Before Posting
-
-Posting to other people's issues is hard-to-reverse — once the comment is up, deletion is visible.
-
-**Always present the final draft set to the user for explicit approval before step 7.** Format:
-
-```
-ISSUE 1: <url>
-TITLE: <title>
-REPO: <owner/repo>
-PAIN POINT: <one-line summary>
-DRAFT:
-<draft text>
-
-ISSUE 2: ...
-```
-
-The user replies with "post all" / "post 1, 3" / "skip" / specific edits. Do not post until approval lands.
-
-## 7. Post Approved Replies
+## Step 7: 护栏 + 按 posture 发布
 
 ```bash
-gh issue comment <URL> --body "<Drafted Reply>"
+python3 .pikiloom/skills/_promo/guard.py check --channel github --url "<issue_url>" \
+  --draft-file /tmp/promo_draft_<id>.txt        # exit 3 = deny（每仓上限/deny_repos/日配额/变体）；deny 则跳过
+POSTURE=$(python3 -c "import json;print(json.load(open('.pikiloom/skills/_promo/config.json'))['posture'])")
 ```
+- **shadow**：不发，推预览卡片。
+- **batch**：`update --status approved` + 推 veto 卡片，veto 窗口后由后续 run 发（见 orchestrate.md Phase 4）。
+- **auto**：直接发：
+```bash
+gh issue comment "<issue_url>" --body-file /tmp/promo_draft_<id>.txt
+python3 .pikiloom/skills/_promo/registry.py mark-posted --channel github \
+  --url "<issue_url>" --post-url "<我们评论的 url>"      # 失败则 update --status failed
+```
+> GitHub `gh` 发帖是三渠道里最可靠、最可逆的，建议 `auto` 从 github 先开。
 
-If a post fails (rate limit, blocked, etc.), report it and continue with the rest.
-
-## 8. Update the Registry
-
-For every successfully posted reply:
+## Step 8: 报告 + 度量 + 回访
 
 ```bash
-echo "<URL>" >> .pikiloom/skills/promote/replied_issues.txt
+python3 .pikiloom/skills/_promo/registry.py stats
+python3 .pikiloom/skills/_promo/push_feishu.py --report-file /tmp/promo_report.md --title "🚀 GitHub Promote"
+python3 .pikiloom/skills/_promo/measure.py report
 ```
-
-Never skip this step — duplicate replies are the worst possible outcome of this skill.
-
-## 9. Report Back
-
-End the run with:
-- Count of issues searched / candidates filtered / posted / skipped
-- Any blocked posts and why
-- Recommended next-run focus (e.g., "Feishu cluster has 4 fresh open issues; revisit in 7 days")
+**回访**：≥24h 的评论若被 hide/lock，`registry.py update --channel github --url <u> --status hidden` —— 会触发
+`guard.py` 熔断，暂停该渠道。报告含：搜索/候选/已发/跳过/失败计数 + 下轮建议（如"Feishu 簇有 4 条新 open issue，7 天后再来"）。

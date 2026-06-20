@@ -1,0 +1,74 @@
+{
+  "_doc": {
+    "purpose": "Single config for the autonomous promotion engine. All three channel skills (snipe/reddit-snipe/promote) and the orchestrator read knobs from here. Edit caps/posture here, never inside a SKILL.md.",
+    "posture": {
+      "shadow": "Draft + critique + record only. NEVER posts. Use for the first runs to inspect what the engine WOULD post.",
+      "batch":  "Engine drafts/critiques/guards, pushes ONE Feishu card listing what it is about to post, waits veto_window_hours; if no ABORT reply, it posts the batch. Near-zero touch + a circuit breaker. DEFAULT.",
+      "auto":   "Posts immediately after critic-pass + guard-pass. Feishu card is a notification only. Fully unattended."
+    },
+    "kill_switch": "Set true to halt ALL posting on the next run regardless of posture. The fastest safe stop.",
+    "first_run_advice": "Leave posture=shadow for 2-3 cycles, read the Feishu reports, then move to batch, then auto once you trust the drafts."
+  },
+
+  "posture": "batch",
+  "kill_switch": false,
+  "veto_window_hours": 2,
+
+  "channels": {
+    "github": {
+      "enabled": true,
+      "daily_cap": 5,
+      "per_repo_lifetime_cap": 2,
+      "min_gap_minutes": 20,
+      "deny_repos": [
+        "anthropics/claude-code",
+        "anthropics/claude-plugins-official"
+      ],
+      "_deny_repos_why": "Upstream agent body, not a same-space peer bridge: highest scrutiny (staff triage) + commenting our tool there is off-strategy. The registry had 14 comments here historically; stop adding.",
+      "allow_target_types": ["feature-request", "question"],
+      "deny_target_types": ["bug"]
+    },
+    "twitter": {
+      "enabled": true,
+      "daily_cap": 12,
+      "per_author_daily_cap": 2,
+      "min_gap_minutes": 15,
+      "min_views": 5000,
+      "max_age_hours": 48,
+      "link_in_self_reply": true,
+      "_link_in_self_reply_why": "X downranks reach of posts containing external links. Main reply = pitch + `npx pikiloom@latest` (native, no link); GitHub link posted as a self-reply underneath."
+    },
+    "reddit": {
+      "enabled": true,
+      "daily_cap": 3,
+      "per_sub_daily_cap": 1,
+      "min_gap_minutes": 60,
+      "max_age_hours": 336,
+      "english_only": true
+    }
+  },
+
+  "content_variation": {
+    "min_distinct_ratio": 0.55,
+    "_min_distinct_ratio_why": "Reject a draft whose bag-of-words overlap with a prior POSTED draft on the same channel exceeds (1 - ratio) = 0.45 Jaccard. Calibrated: reworded boilerplate (incl. same-angle paraphrases) scores 0.53-0.65 -> caught; genuinely distinct drafts score <0.10 -> pass. Stops boilerplate-across-targets, the top spam-classifier trigger on X and GitHub.",
+    "shingle_size": 1
+  },
+
+  "critic": {
+    "max_revisions": 1,
+    "_max_revisions_why": "draft -> critic -> at most one revision -> {pass | drop}. Replaces the human review gate with an autonomous adversarial pass."
+  },
+
+  "backoff": {
+    "on_hidden_or_removed": true,
+    "channel_cooldown_hours": 48,
+    "_why": "If a recent post on a channel was hidden/removed/locked, pause that channel for the cooldown. A hidden comment is a warning shot; arguing it escalates to a report."
+  },
+
+  "measure": {
+    "github_repo": "xiaotonng/pikiloom",
+    "npm_pkg": "pikiloom",
+    "correlate_window_hours": 48,
+    "_traffic_note": "GitHub Traffic API keeps only 14 days; measure.py must run daily to persist history."
+  }
+}

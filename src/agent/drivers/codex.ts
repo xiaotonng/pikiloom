@@ -24,7 +24,7 @@ import {
   normalizeStreamPreviewPlan,
   IMAGE_EXTS,
   listPikiloomSessions, findPikiloomSession, isPendingSessionId,
-  mergeManagedAndNativeSessions,
+  mergeManagedAndNativeSessions, managedRecordToSessionInfo,
   stripInjectedPrompts, sanitizeSessionUserPreviewText, computeContext, readTailLines, applyTurnWindow,
   roundPercent, toIsoFromEpochSeconds, labelFromWindowMinutes,
   usageWindowFromRateLimit, parseJsonTail, emptyUsage,
@@ -1698,31 +1698,9 @@ function getCodexSessionTailFromRollout(opts: SessionTailOpts): SessionTailResul
 function getCodexSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
   // Merge pikiloom-tracked sessions with native Codex sessions
-  const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'codex').map(record => ({
-    sessionId: record.sessionId,
-    agent: 'codex' as const,
-    workdir: record.workdir,
-    workspacePath: record.workspacePath,
-    threadId: record.threadId,
-    model: record.model,
-    createdAt: record.createdAt,
-    title: record.title,
-    running: record.runState === 'running',
-    runState: record.runState,
-    runDetail: record.runDetail,
-    runUpdatedAt: record.runUpdatedAt,
-    runPid: record.runPid,
-    classification: record.classification,
-    userStatus: record.userStatus,
-    userNote: record.userNote,
-    lastQuestion: record.lastQuestion,
-    lastAnswer: record.lastAnswer,
-    lastMessageText: record.lastMessageText,
-    migratedFrom: record.migratedFrom,
-    migratedTo: record.migratedTo,
-    linkedSessions: record.linkedSessions,
-    numTurns: record.numTurns ?? null,
-  }));
+  // Canonical record→SessionInfo mapper (single source of truth) — see claude.ts.
+  // Hand-rolling dropped thinkingEffort/workflowEnabled/profileId from the merge.
+  const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'codex').map(managedRecordToSessionInfo);
   const nativeSessions = getNativeCodexSessions(resolvedWorkdir, limit);
   const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;

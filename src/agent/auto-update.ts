@@ -57,6 +57,92 @@ export function getAllAgentUpdateStates(): Record<string, AgentUpdateState> {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Spawn coordination
+//
+// A CLI reinstall (`npm install -g` / `brew upgrade`) briefly tears down and
+// rewrites the bin symlink, so an agent spawn that races it execs into
+// "/bin/sh: <cli>: command not found" (exit 127). The updating process drops a
+// per-agent marker file for the duration of the destructive step; the spawn
+// path waits while it's held. The marker is cross-process (this worker AND the
+// `npx pikiloom@latest` self-bootstrap both update + spawn), and carries the
+// updater's pid so a marker orphaned by a crashed updater is detected via
+// liveness and cleaned up — a spawn never hangs on a stale marker, and a
+// genuinely-missing CLI (no marker) fails fast instead of waiting.
+// ---------------------------------------------------------------------------
+
+/** Path of the in-flight-reinstall marker for `agent` (one file per agent). */
+export function agentUpdateMarkerPath(agent: string): string {
+  return path.join(os.homedir(), STATE_DIR_NAME, `agent-update-${agent}.installing`);
+}
+
+/**
+ * True when a live updater is mid-reinstall of `agent`. Reads the marker's pid
+ * and probes liveness with `kill(pid, 0)`; an orphaned marker (writer gone) is
+ * removed and reported idle so spawns don't hang on a crashed updater.
+ */
+function agentReinstallInFlight(agent: string): boolean {
+  const marker = agentUpdateMarkerPath(agent);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(marker, 'utf8');
+  } catch {
+    return false; // no marker — nothing updating
+  }
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(pid, 0); // throws ESRCH if the updater is gone
+      return true;
+    } catch {
+      try { fs.rmSync(marker, { force: true }); } catch {}
+      return false;
+    }
+  }
+  // Unreadable pid — fall back to mtime so a corrupt marker still ages out.
+  try {
+    return Date.now() - fs.statSync(marker).mtimeMs <= AGENT_UPDATE_COMMAND_TIMEOUT_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Marks `agent` as mid-reinstall (cross-process) for the duration of
+ * `install()` so concurrent spawns can wait it out. Always clears the marker,
+ * even when the install throws.
+ */
+export async function withAgentUpdateGate<T>(agent: string, install: () => Promise<T>): Promise<T> {
+  const id = String(agent || '').trim();
+  if (!id) return install();
+  const marker = agentUpdateMarkerPath(id);
+  try {
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, `${process.pid}\n`);
+  } catch {}
+  try {
+    return await install();
+  } finally {
+    try { fs.rmSync(marker, { force: true }); } catch {}
+  }
+}
+
+/**
+ * Resolves once no live reinstall of `agent` is in flight, or after
+ * `timeoutMs`. No-op (returns immediately) when nothing is updating. Called
+ * from the spawn path so we never exec a half-swapped CLI binary.
+ */
+export async function awaitAgentUpdateIdle(agent: string, timeoutMs: number): Promise<void> {
+  const id = String(agent || '').trim();
+  if (!id) return;
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (agentReinstallInFlight(id)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(AGENT_UPDATE_TIMEOUTS.spawnWaitPoll, remaining)));
+  }
+}
+
 function updaterLockPath(): string {
   return path.join(os.homedir(), STATE_DIR_NAME, 'agent-auto-update.lock');
 }
@@ -380,8 +466,8 @@ export function startAgentAutoUpdate(opts: {
         opts.log(`agent auto-update: updating ${label} ${currentVersion || 'unknown'} -> ${latestVersion} via ${strategy.kind}`);
 
         const result = strategy.kind === 'brew'
-          ? await updateViaBrew(strategy.cask)
-          : await updateViaNpm(strategy.pkg);
+          ? await withAgentUpdateGate(id, () => updateViaBrew(strategy.cask))
+          : await withAgentUpdateGate(id, () => updateViaNpm(strategy.pkg));
         if (result.ok) {
           opts.log(`agent auto-update: ${label} update completed`);
           setUpdateState(id, { updateAvailable: false, status: 'updated', detail: null, checkedAt: Date.now() });
@@ -464,10 +550,10 @@ export async function manualAgentUpdate(
   let result: UpdateResult;
   if (brewCask) {
     log(`manual update: updating ${label} via brew upgrade --cask ${brewCask}`);
-    result = await updateViaBrew(brewCask);
+    result = await withAgentUpdateGate(id, () => updateViaBrew(brewCask));
   } else {
     log(`manual update: updating ${label} via npm install -g ${pkg}@latest`);
-    result = await updateViaNpm(pkg);
+    result = await withAgentUpdateGate(id, () => updateViaNpm(pkg));
   }
 
   if (result.ok) {

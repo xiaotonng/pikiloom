@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
-import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, getAgentMeta, shortenModel } from '../../utils';
+import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, foldUltraEffort, getAgentMeta, isPendingSessionId, shortenModel } from '../../utils';
 import { usageWindowTone, worstUsageWindow } from '../../usage';
 import { api } from '../../api';
 import { useStore } from '../../store';
@@ -174,8 +174,22 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     };
   }, [dk]);
 
-  // Reset applied cascade choice + transient pending state when session changes.
+  // Reset applied cascade choice + transient pending state when the user moves to
+  // a DIFFERENT session. Real navigation already remounts this composer (the panel
+  // is keyed by a stable mountKey), so the only sessionId change a mounted instance
+  // sees is the pending→native promotion of its OWN first send — the same logical
+  // session. Resetting there is the bug: it snapped the chip back to the global
+  // runtime default the instant you hit Enter (e.g. picked `medium`, sent, chip
+  // flips to the global `high`/stale model), contradicting the live divider for the
+  // turn now running. Skip the reset across that promotion so the pick sticks.
+  const prevSessionRef = useRef({ agent: session.agent || '', sessionId: session.sessionId });
   useEffect(() => {
+    const prev = prevSessionRef.current;
+    const curr = { agent: session.agent || '', sessionId: session.sessionId };
+    prevSessionRef.current = curr;
+    const isPromotion = prev.agent === curr.agent
+      && isPendingSessionId(prev.sessionId) && !isPendingSessionId(curr.sessionId);
+    if (isPromotion) return;
     setSelectedAgent('');
     setSelectedModel('');
     setSelectedEffort('');
@@ -320,11 +334,14 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
       || (sendOwnsSessionAgent ? (session.model || '') : '')
       || targetStatus?.selectedModel
       || '').trim() || null;
+    // Mirror currentEffort's fold so an unedited send in a resumed `ultra`
+    // session sends `ultra` (re-decomposed to max+workflow) instead of a bare
+    // `max` that silently drops orchestration. The explicit local pick stays raw.
     const targetEffort = targetAgent === 'gemini'
       ? null
       : ((selectedEffort
-        || (sendOwnsSessionAgent ? (session.thinkingEffort || '') : '')
-        || targetStatus?.selectedEffort
+        || (sendOwnsSessionAgent ? foldUltraEffort(targetAgent, session.thinkingEffort, session.workflowEnabled) : '')
+        || foldUltraEffort(targetAgent, targetStatus?.selectedEffort, targetStatus?.workflowEnabled)
         || '').trim() || null);
     const isAgentSwitch = targetAgent !== session.agent;
     const targetSessionId = isAgentSwitch ? '' : session.sessionId;
@@ -580,11 +597,17 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     || (sessionOwnsAgent ? (session.model || '') : '')
     || currentAgent?.selectedModel
     || '';
+  // An explicit local pick is authoritative and already carries `ultra` when
+  // chosen (picking a concrete rung deliberately turns Workflow off). Only the
+  // *fallbacks* need folding: the session's last run and the agent-global default
+  // store the concrete rung + a separate workflow flag, so re-fold them to `ultra`
+  // for display. currentEffort also feeds the rerun send — sending `ultra`
+  // re-decomposes to max+workflow, correctly preserving orchestration on resume.
   const currentEffort = effectiveAgent === 'gemini'
     ? ''
     : (selectedEffort
-      || (sessionOwnsAgent ? (session.thinkingEffort || '') : '')
-      || currentAgent?.selectedEffort
+      || (sessionOwnsAgent ? foldUltraEffort(effectiveAgent, session.thinkingEffort, session.workflowEnabled) : '')
+      || foldUltraEffort(effectiveAgent, currentAgent?.selectedEffort, currentAgent?.workflowEnabled)
       || '');
   // Surface the resolved selection to the parent so the rerun action sends with
   // the model/effort the user currently sees, not the stale session runtime.

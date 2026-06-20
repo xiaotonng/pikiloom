@@ -381,6 +381,13 @@ export interface ManagedSessionRecord {
   model: string | null;
   thinkingEffort: string | null;
   /**
+   * Whether the most recent turn ran with Claude Workflow orchestration on.
+   * `thinkingEffort` stays the concrete rung (e.g. `max`); this flag is what
+   * folds it back to the synthetic `ultra` rung for display (see
+   * `foldUltraEffort`). Null on legacy records that predate the field.
+   */
+  workflowEnabled: boolean | null;
+  /**
    * The BYOK Profile bound to the agent when this session ran. Null when the
    * native (CLI's own auth) model was used. Restored on session resume so
    * model+credentials match the original run.
@@ -493,6 +500,9 @@ export interface SessionInfo {
   threadId?: string | null;
   model: string | null;
   thinkingEffort?: string | null;
+  /** Whether the last turn ran with Workflow on — folds `thinkingEffort` to the
+   *  `ultra` rung for display. See ManagedSessionRecord.workflowEnabled. */
+  workflowEnabled?: boolean | null;
   profileId?: string | null;
   createdAt: string | null;
   title: string | null;

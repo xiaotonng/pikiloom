@@ -51,6 +51,48 @@ export function worstUsageWindow(usage: UsageResult | null): UsageWindowInfo | n
   return worst;
 }
 
+/** The live, fast-recovering window the always-on ring should represent. */
+const PRIMARY_WINDOW_LABEL = '5h';
+
+export interface UsageGauge {
+  /** Window the ring's arc fills to — the live 5h window when present. */
+  primary: UsageWindowInfo;
+  /** Tone of the worst *secondary* (non-5h) window, but only once it has
+   *  crossed warn/err. Drives the ring's colored track ("how close is the
+   *  slow weekly / extra-usage ceiling"). null while every slow window is calm. */
+  secondaryTone: UsageTone | null;
+  /** A secondary window has hit its hard limit (7d / Extra ≥100%) — a weekly
+   *  cutoff or the extra-usage budget wall. Drives the outer alert halo. */
+  secondaryAlert: boolean;
+}
+
+/**
+ * Splits an agent's windows into the always-on ring's two channels: the 5h
+ * arc (predictable — the ring always means "can I keep working right now"),
+ * plus an escalation signal sourced from the worst *slower* window so an
+ * imminent weekly / extra-usage wall never hides behind a calm live number.
+ * Falls back to the worst window as the arc when no 5h bucket is reported
+ * (e.g. telemetry-only), degrading to the old single-window behavior.
+ */
+export function usageGauge(usage: UsageResult | null): UsageGauge | null {
+  const windows = displayableUsageWindows(usage);
+  if (!windows.length) return null;
+  const primary = windows.find(w => w.label === PRIMARY_WINDOW_LABEL) ?? worstUsageWindow(usage)!;
+  let worstSecondary: UsageWindowInfo | null = null;
+  for (const w of windows) {
+    if (w === primary) continue;
+    if (!worstSecondary || (w.usedPercent ?? 0) > (worstSecondary.usedPercent ?? 0)) worstSecondary = w;
+  }
+  let secondaryTone: UsageTone | null = null;
+  let secondaryAlert = false;
+  if (worstSecondary) {
+    const tone = usageWindowTone(worstSecondary);
+    if (tone !== 'ok') secondaryTone = tone;
+    if (tone === 'err') secondaryAlert = true;
+  }
+  return { primary, secondaryTone, secondaryAlert };
+}
+
 export function usagePercentText(window: UsageWindowInfo): string {
   return `${Math.round(window.usedPercent ?? 0)}%`;
 }

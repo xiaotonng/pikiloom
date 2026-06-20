@@ -24,6 +24,7 @@ import {
   listProviders, getProvider, addProvider, updateProvider, removeProvider, setProviderValidation,
   listProfiles, getProfile, addProfile, updateProfile, removeProfile,
   getActiveProfileId, setActiveProfile,
+  prewarmLocalModel,
   validateProvider,
   getProviderModelList, invalidateProviderModels,
   type ProviderKind, type ProviderConfig,
@@ -297,6 +298,13 @@ router.post('/api/models/agents/:agent/active', async c => {
   if (profileId === undefined) return c.json({ ok: false, error: 'profileId (string|null) is required' }, 400);
   try {
     setActiveProfile(agent, profileId);
+    // Warm a local backend the instant it's selected, so the user's first turn
+    // skips the model cold-load. Fire-and-forget; never blocks the bind.
+    if (profileId) {
+      const profile = getProfile(profileId);
+      const provider = profile ? getProvider(profile.providerId) : null;
+      if (profile && provider) prewarmLocalModel(provider, profile.modelId);
+    }
     return c.json({ ok: true, agent, activeProfileId: profileId });
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || String(e) }, 400);

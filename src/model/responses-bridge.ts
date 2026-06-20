@@ -130,26 +130,123 @@ async function handleResponses(
     return;
   }
 
-  const raw = await upstreamResp.text();
-  if (!upstreamResp.ok) {
+  if (!upstreamResp.ok || !upstreamResp.body) {
+    const raw = await upstreamResp.text().catch(() => '');
     warn(`upstream ${upstreamResp.status}: ${raw.slice(0, 300)}`);
     sendResponsesError(res, `upstream ${upstreamResp.status}: ${raw.slice(0, 500)}`);
     return;
   }
 
-  let chat: any;
-  try { chat = JSON.parse(raw); } catch { sendResponsesError(res, `bad upstream JSON: ${raw.slice(0, 200)}`); return; }
-
-  const events = buildResponsesEvents(chat, chatReq.model);
-  res.writeHead(200, {
-    'content-type': 'text/event-stream',
-    'cache-control': 'no-cache',
-    connection: 'keep-alive',
+  // Forward the upstream Chat Completions SSE incrementally, translating each
+  // delta into Responses events, so codex (and the dashboard) render the answer
+  // progressively — token-by-token — instead of popping it in at once. Codex
+  // still rebuilds the turn from the terminal `response.output_item.done` +
+  // `response.completed`, which we always emit.
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+  res.flushHeaders?.();
+  let seq = 0;
+  const emit = (type: string, extra: Record<string, unknown>) => {
+    res.write(`event: ${type}\n`);
+    res.write(`data: ${JSON.stringify({ type, sequence_number: seq++, ...extra })}\n\n`);
+  };
+  const respId = genId('resp');
+  const model = chatReq.model;
+  const ZERO = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  const baseResp = (status: string, output: any[], usageOut: any) => ({
+    id: respId, object: 'response', created_at: Math.floor(Date.now() / 1000), status, model, output, usage: usageOut,
   });
-  for (const ev of events) {
-    res.write(`event: ${ev.type}\n`);
-    res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  emit('response.created', { response: baseResp('in_progress', [], ZERO) });
+  emit('response.in_progress', { response: baseResp('in_progress', [], ZERO) });
+
+  let nextIndex = 0;
+  let msgOpen = false, msgId = '', msgIndex = 0, msgText = '';
+  const tools = new Map<number, { id: string; name: string; args: string; index: number; itemId: string; opened: boolean }>();
+  let usage: any = null;
+  const finalItems: any[] = [];
+
+  const openMsg = () => {
+    if (msgOpen) return;
+    msgOpen = true; msgId = genId('msg'); msgIndex = nextIndex++;
+    emit('response.output_item.added', { output_index: msgIndex, item: { id: msgId, type: 'message', role: 'assistant', content: [], status: 'in_progress' } });
+  };
+
+  const reader = (upstreamResp.body as any).getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') { buf = ''; break; }
+        let chunk: any;
+        try { chunk = JSON.parse(data); } catch { continue; }
+        if (chunk.usage) usage = chunk.usage;
+        const choice = chunk.choices?.[0];
+        if (!choice) continue;
+        const delta = choice.delta || {};
+        if (typeof delta.content === 'string' && delta.content) {
+          openMsg();
+          msgText += delta.content;
+          emit('response.output_text.delta', { item_id: msgId, output_index: msgIndex, content_index: 0, delta: delta.content });
+        }
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const idx = typeof tc.index === 'number' ? tc.index : 0;
+            let st = tools.get(idx);
+            if (!st) { st = { id: tc.id || genId('call'), name: '', args: '', index: -1, itemId: genId('fc'), opened: false }; tools.set(idx, st); }
+            if (tc.id) st.id = tc.id;
+            if (tc.function?.name) st.name += tc.function.name;
+            if (!st.opened && st.name) {
+              st.opened = true; st.index = nextIndex++;
+              emit('response.output_item.added', { output_index: st.index, item: { id: st.itemId, type: 'function_call', name: st.name, arguments: '', call_id: st.id, status: 'in_progress' } });
+            }
+            if (typeof tc.function?.arguments === 'string' && tc.function.arguments) {
+              st.args += tc.function.arguments;
+              if (st.opened) emit('response.function_call_arguments.delta', { item_id: st.itemId, output_index: st.index, delta: tc.function.arguments });
+            }
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    warn(`stream read error: ${e?.message || e}`);
   }
+
+  if (msgOpen) {
+    emit('response.output_text.done', { item_id: msgId, output_index: msgIndex, content_index: 0, text: msgText });
+    const item = { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: msgText }] };
+    emit('response.output_item.done', { output_index: msgIndex, item });
+    finalItems.push(item);
+  }
+  for (const st of tools.values()) {
+    if (!st.opened) {
+      st.index = nextIndex++;
+      emit('response.output_item.added', { output_index: st.index, item: { id: st.itemId, type: 'function_call', name: st.name, arguments: '', call_id: st.id, status: 'in_progress' } });
+      if (st.args) emit('response.function_call_arguments.delta', { item_id: st.itemId, output_index: st.index, delta: st.args });
+    }
+    emit('response.function_call_arguments.done', { item_id: st.itemId, output_index: st.index, arguments: st.args });
+    const item = { id: st.itemId, type: 'function_call', name: st.name, arguments: st.args || '{}', call_id: st.id };
+    emit('response.output_item.done', { output_index: st.index, item });
+    finalItems.push(item);
+  }
+  if (!finalItems.length) {
+    const id = genId('msg');
+    emit('response.output_item.added', { output_index: 0, item: { id, type: 'message', role: 'assistant', content: [], status: 'in_progress' } });
+    const item = { id, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '' }] };
+    emit('response.output_item.done', { output_index: 0, item });
+    finalItems.push(item);
+  }
+  const usageOut = usage
+    ? { input_tokens: num(usage.prompt_tokens), output_tokens: num(usage.completion_tokens), total_tokens: num(usage.total_tokens) || (num(usage.prompt_tokens) + num(usage.completion_tokens)) }
+    : ZERO;
+  emit('response.completed', { response: baseResp('completed', finalItems, usageOut) });
   res.end();
 }
 
@@ -223,7 +320,7 @@ function toChatRequest(body: any): any {
     ? body.tools.map(toChatTool).filter((t: any) => t)
     : undefined;
 
-  const req: any = { model: body.model, messages, stream: false };
+  const req: any = { model: body.model, messages, stream: true, stream_options: { include_usage: true } };
   if (tools && tools.length) req.tools = tools;
   if (body.tool_choice != null) req.tool_choice = toChatToolChoice(body.tool_choice);
   if (typeof body.temperature === 'number') req.temperature = body.temperature;
@@ -256,82 +353,6 @@ function toChatToolChoice(tc: any): any {
   if (tc?.type === 'function' && tc.name) return { type: 'function', function: { name: tc.name } };
   if (tc?.type === 'function' && tc.function) return tc;
   return 'auto';
-}
-
-// ---------------------------------------------------------------------------
-// Response synthesis: Chat Completion → Responses SSE events
-// ---------------------------------------------------------------------------
-
-function buildResponsesEvents(chat: any, model: string): any[] {
-  const choice = chat?.choices?.[0] || {};
-  const msg = choice.message || {};
-
-  const items: any[] = [];
-  const text = typeof msg.content === 'string'
-    ? msg.content
-    : (Array.isArray(msg.content) ? msg.content.map((c: any) => c?.text || '').join('') : '');
-  if (text && text.trim()) {
-    items.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
-  }
-  const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-  for (const tc of toolCalls) {
-    const fn = tc.function || {};
-    items.push({
-      type: 'function_call',
-      name: fn.name,
-      arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments ?? {}),
-      call_id: tc.id || genId('call'),
-    });
-  }
-  // Always emit at least one item so codex sees a well-formed turn.
-  if (!items.length) items.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '' }] });
-
-  const respId = genId('resp');
-  const usage = chat?.usage || {};
-  const usageOut = {
-    input_tokens: num(usage.prompt_tokens),
-    output_tokens: num(usage.completion_tokens),
-    total_tokens: num(usage.total_tokens) || (num(usage.prompt_tokens) + num(usage.completion_tokens)),
-  };
-  const responseObj = (status: string, output: any[]) => ({
-    id: respId, object: 'response', created_at: Math.floor(Date.now() / 1000),
-    status, model, output, usage: usageOut,
-  });
-
-  let seq = 0;
-  const events: any[] = [];
-  const push = (e: any) => { events.push({ ...e, sequence_number: seq++ }); };
-
-  push({ type: 'response.created', response: responseObj('in_progress', []) });
-  push({ type: 'response.in_progress', response: responseObj('in_progress', []) });
-
-  const finalItems: any[] = [];
-  items.forEach((item, idx) => {
-    const id = genId(item.type === 'function_call' ? 'fc' : 'msg');
-    const full = { ...item, id };
-    finalItems.push(full);
-    push({ type: 'response.output_item.added', output_index: idx, item: skeleton(full) });
-    if (item.type === 'message') {
-      const t = item.content?.[0]?.text || '';
-      if (t) {
-        push({ type: 'response.output_text.delta', item_id: id, output_index: idx, content_index: 0, delta: t });
-        push({ type: 'response.output_text.done', item_id: id, output_index: idx, content_index: 0, text: t });
-      }
-    } else if (item.type === 'function_call') {
-      push({ type: 'response.function_call_arguments.delta', item_id: id, output_index: idx, delta: item.arguments });
-      push({ type: 'response.function_call_arguments.done', item_id: id, output_index: idx, arguments: item.arguments });
-    }
-    push({ type: 'response.output_item.done', output_index: idx, item: full });
-  });
-
-  push({ type: 'response.completed', response: responseObj('completed', finalItems) });
-  return events;
-}
-
-function skeleton(item: any): any {
-  if (item.type === 'message') return { id: item.id, type: 'message', role: item.role, content: [], status: 'in_progress' };
-  if (item.type === 'function_call') return { id: item.id, type: 'function_call', name: item.name, arguments: '', call_id: item.call_id, status: 'in_progress' };
-  return item;
 }
 
 function chatCompletionsUrl(base: string): string {

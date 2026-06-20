@@ -126,12 +126,61 @@ export function renderCommandSelectionHtml(view: CommandSelectionView): string {
   return lines.join('\n');
 }
 
+/**
+ * Telegram caps `callback_data` at 64 bytes. Most encoded actions fit easily,
+ * but BYOK model rows encode as `md:p:<uuid>:<modelId>` (~42 bytes of overhead
+ * before the model id even starts), so a single long provider/model id blows
+ * the limit — and Telegram then rejects the *entire* message with
+ * BUTTON_DATA_INVALID, killing the whole menu. Mirror the PathRegistry idiom
+ * from directory.ts: stash the over-length payload and ship a short `r:<id>`
+ * token instead, resolving it back on the callback round-trip.
+ */
+const TELEGRAM_CALLBACK_LIMIT = 64;
+
+class CallbackDataRegistry {
+  private idToData = new Map<number, string>();
+  private dataToId = new Map<string, number>();
+  private nextId = 1;
+
+  pack(data: string): string {
+    if (Buffer.byteLength(data, 'utf8') <= TELEGRAM_CALLBACK_LIMIT) return data;
+    let id = this.dataToId.get(data);
+    if (id == null) {
+      id = this.nextId++;
+      this.dataToId.set(data, id);
+      this.idToData.set(id, data);
+      if (this.idToData.size > 500) {
+        for (const oldId of [...this.idToData.keys()].slice(0, 200)) {
+          const oldData = this.idToData.get(oldId)!;
+          this.idToData.delete(oldId);
+          this.dataToId.delete(oldData);
+        }
+      }
+    }
+    return `r:${id}`;
+  }
+
+  unpack(data: string): string {
+    if (!data.startsWith('r:')) return data;
+    const id = Number.parseInt(data.slice(2), 10);
+    if (!Number.isFinite(id)) return data;
+    return this.idToData.get(id) ?? data;
+  }
+}
+
+const callbackDataRegistry = new CallbackDataRegistry();
+
+/** Resolve a `r:<id>` token back to its original encoded action payload. */
+export function unpackCallbackData(data: string): string {
+  return callbackDataRegistry.unpack(data);
+}
+
 export function renderCommandSelectionKeyboard(view: CommandSelectionView): { inline_keyboard: { text: string; callback_data: string }[][] } | undefined {
   if (!view.rows.length) return undefined;
   return {
     inline_keyboard: view.rows.map(row => row.map(button => ({
       text: formatCommandButtonLabel(button),
-      callback_data: encodeCommandAction(button.action),
+      callback_data: callbackDataRegistry.pack(encodeCommandAction(button.action)),
     }))),
   };
 }

@@ -8,6 +8,7 @@
  */
 
 import { resolveCredential } from '../core/secrets/index.js';
+import { writeScopedLog } from '../core/logging.js';
 import { getActiveProfile, getProvider } from './store.js';
 import { peekProviderModelInfo, prefetchProviderModels } from './provider-models.js';
 import { ensureResponsesBridge, upstreamToken } from './responses-bridge.js';
@@ -264,6 +265,45 @@ function codexLocalProvider(provider: ProviderConfig): 'ollama' | 'lmstudio' {
   return 'ollama';
 }
 
+/** Ollama keeps a prewarmed model resident for this long (its `keep_alive`). */
+const PREWARM_KEEP_ALIVE = '30m';
+
+/**
+ * Warm a localhost model backend so the user's first real turn doesn't pay the
+ * model cold-load (weights → memory). Fire-and-forget: never blocks the caller,
+ * never throws.
+ *
+ *  - Ollama has a native load endpoint — `POST /api/generate {model, keep_alive}`
+ *    with no prompt loads the weights and returns immediately; `keep_alive`
+ *    keeps them resident across the seed + real turns of a session.
+ *  - LM Studio JIT-loads on first request, so we nudge it with a 1-token
+ *    completion against its OpenAI-compatible endpoint.
+ *
+ * Called when a local Profile is bound (warm while the user reads / types) and
+ * again at spawn (re-assert keep_alive). Measured: a cold gemma3:4b spent ~12s
+ * before its first token; prewarmed, generation starts in ~2s.
+ */
+export function prewarmLocalModel(provider: ProviderConfig, modelId: string): void {
+  if (!modelId || !isLocalProvider(provider)) return;
+  let origin: string;
+  try { origin = new URL(provider.baseURL).origin; } catch { return; }
+  const swallow = () => {};
+  if (codexLocalProvider(provider) === 'lmstudio') {
+    void fetch(`${origin}/v1/chat/completions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: modelId, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+    }).then(swallow, swallow);
+    return;
+  }
+  void fetch(`${origin}/api/generate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: modelId, keep_alive: PREWARM_KEEP_ALIVE }),
+  }).then(
+    r => { writeScopedLog('model-prewarm', `ollama load ${modelId} → ${r.status}`); },
+    e => { writeScopedLog('model-prewarm', `ollama load ${modelId} failed: ${e?.message || e}`, { level: 'warn', stream: 'stderr' }); },
+  );
+}
+
 type CodexRoute = 'openai-native' | 'responses-native' | 'local-oss' | 'bridge';
 
 /**
@@ -311,6 +351,7 @@ const codexInjector: AgentInjector = async (provider, profile, apiKey) => {
   // providers cannot be overridden.")
   if (route === 'local-oss') {
     const local = codexLocalProvider(provider);
+    prewarmLocalModel(provider, model);
     return {
       env: {}, argvAppend: [],
       codexConfigOverrides: [`model_provider="${local}"`],

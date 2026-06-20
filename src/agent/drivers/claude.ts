@@ -25,7 +25,7 @@ import {
   emitSessionIdUpdate,
   IMAGE_EXTS, mimeForExt,
   listPikiloomSessions, findPikiloomSession, isPendingSessionId,
-  mergeManagedAndNativeSessions,
+  mergeManagedAndNativeSessions, managedRecordToSessionInfo,
   readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
   CLAUDE_AT_MENTION_IMAGE_RE, extractClaudeAtMentionImagePaths, stripClaudeAtMentionImages,
   attachAgentImage,
@@ -1587,31 +1587,11 @@ function getNativeClaudeSessions(workdir: string, limit?: number): SessionInfo[]
 function getClaudeSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
   // Merge pikiloom-tracked sessions with native Claude sessions
-  const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'claude').map(record => ({
-    sessionId: record.sessionId,
-    agent: 'claude' as const,
-    workdir: record.workdir,
-    workspacePath: record.workspacePath,
-    threadId: record.threadId,
-    model: record.model,
-    createdAt: record.createdAt,
-    title: record.title,
-    running: record.runState === 'running',
-    runState: record.runState,
-    runDetail: record.runDetail,
-    runUpdatedAt: record.runUpdatedAt,
-    runPid: record.runPid,
-    classification: record.classification,
-    userStatus: record.userStatus,
-    userNote: record.userNote,
-    lastQuestion: record.lastQuestion,
-    lastAnswer: record.lastAnswer,
-    lastMessageText: record.lastMessageText,
-    migratedFrom: record.migratedFrom,
-    migratedTo: record.migratedTo,
-    linkedSessions: record.linkedSessions,
-    numTurns: record.numTurns ?? null,
-  }));
+  // Canonical record→SessionInfo mapper (single source of truth). Hand-rolling
+  // this projection silently dropped pikiloom-owned metadata (thinkingEffort,
+  // workflowEnabled, profileId), so the merged list lost the user's per-session
+  // effort / Workflow / BYOK choices. Centralizing it keeps every field in sync.
+  const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'claude').map(managedRecordToSessionInfo);
   const nativeSessions = getNativeClaudeSessions(resolvedWorkdir, limit);
   const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;

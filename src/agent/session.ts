@@ -281,6 +281,7 @@ function normalizeSessionRecord(raw: any, workdir: string): ManagedSessionRecord
     title: typeof raw?.title === 'string' && raw.title.trim() ? raw.title.trim() : null,
     model: typeof raw?.model === 'string' && raw.model.trim() ? raw.model.trim() : null,
     thinkingEffort: typeof raw?.thinkingEffort === 'string' && raw.thinkingEffort.trim() ? raw.thinkingEffort.trim() : null,
+    workflowEnabled: typeof raw?.workflowEnabled === 'boolean' ? raw.workflowEnabled : null,
     profileId: typeof raw?.profileId === 'string' && raw.profileId.trim() ? raw.profileId.trim() : null,
     stagedFiles: Array.isArray(raw?.stagedFiles) ? dedupeStrings(raw.stagedFiles.filter((v: unknown) => typeof v === 'string')) : [],
     lastUserAttachments: Array.isArray(raw?.lastUserAttachments)
@@ -359,7 +360,7 @@ function writeSessionMeta(record: ManagedSessionRecord) {
     workspacePath: record.workspacePath,
     threadId: record.threadId,
     createdAt: record.createdAt, updatedAt: record.updatedAt,
-    title: record.title, model: record.model, thinkingEffort: record.thinkingEffort, stagedFiles: record.stagedFiles,
+    title: record.title, model: record.model, thinkingEffort: record.thinkingEffort, workflowEnabled: record.workflowEnabled, stagedFiles: record.stagedFiles,
     runState: record.runState, runDetail: record.runDetail, runUpdatedAt: record.runUpdatedAt,
     runPid: record.runPid,
     classification: record.classification,
@@ -651,7 +652,7 @@ export function ensureSessionWorkspace(opts: EnsureSessionWorkspaceOpts): Sessio
       workspacePath: sessionWorkspacePath(workdir, opts.agent, sessionId),
       threadId,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      title: summarizePromptTitle(opts.title) || null, model: null, thinkingEffort: null, profileId: null, stagedFiles: [], lastUserAttachments: [],
+      title: summarizePromptTitle(opts.title) || null, model: null, thinkingEffort: null, workflowEnabled: null, profileId: null, stagedFiles: [], lastUserAttachments: [],
       runState: 'completed', runDetail: null, runUpdatedAt: new Date().toISOString(),
       runPid: null,
       classification: null, userStatus: null, userNote: null,
@@ -674,7 +675,7 @@ export function ensureSessionWorkspace(opts: EnsureSessionWorkspaceOpts): Sessio
 // Record to SessionInfo
 // ---------------------------------------------------------------------------
 
-function managedRecordToSessionInfo(record: ManagedSessionRecord): SessionInfo {
+export function managedRecordToSessionInfo(record: ManagedSessionRecord): SessionInfo {
   // Collapse pre-fix records that stored the canonical skill expansion as the
   // title / lastQuestion / lastMessageText. New records get collapsed at write
   // time in `prepareStreamOpts`; this read-time pass keeps existing sessions
@@ -690,6 +691,7 @@ function managedRecordToSessionInfo(record: ManagedSessionRecord): SessionInfo {
     threadId: record.threadId,
     model: record.model,
     thinkingEffort: record.thinkingEffort,
+    workflowEnabled: record.workflowEnabled ?? null,
     profileId: record.profileId ?? null,
     createdAt: record.createdAt,
     title,
@@ -830,11 +832,12 @@ export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<
  * existing session. Returns null values when the session is not found or
  * fields are not set.
  */
-export function getSessionStoredConfig(workdir: string, agent: Agent, sessionId: string): { model: string | null; thinkingEffort: string | null; profileId: string | null } {
+export function getSessionStoredConfig(workdir: string, agent: Agent, sessionId: string): { model: string | null; thinkingEffort: string | null; workflowEnabled: boolean | null; profileId: string | null } {
   const record = findPikiloomSession(workdir, agent, sessionId);
   return {
     model: record?.model ?? null,
     thinkingEffort: record?.thinkingEffort ?? null,
+    workflowEnabled: record?.workflowEnabled ?? null,
     profileId: record?.profileId ?? null,
   };
 }
@@ -938,6 +941,16 @@ export function mergeManagedAndNativeSessions(managedSessions: SessionInfo[], na
       runUpdatedAt: useNativeTimeline ? (native.runUpdatedAt ?? managed.runUpdatedAt) : (managed.runUpdatedAt ?? native.runUpdatedAt),
       title: native.title || managed.title,
       model: native.model || managed.model,
+      // Pikiloom-owned metadata: the native session file (Claude JSONL etc.)
+      // carries none of these, so the `...native` spread would clobber them with
+      // `undefined`/`null`. The managed record (our centralized index) is the
+      // source of truth — recover each like `model` above. Without this the list
+      // silently drops the user's per-session choices: effort/Workflow fold back
+      // to the global default (per-send `ultra` → `max` after the turn) and the
+      // BYOK Profile binding is lost on resume.
+      thinkingEffort: managed.thinkingEffort ?? native.thinkingEffort ?? null,
+      workflowEnabled: managed.workflowEnabled ?? native.workflowEnabled ?? null,
+      profileId: managed.profileId ?? native.profileId ?? null,
       createdAt: native.createdAt || managed.createdAt,
       classification: managed.classification ?? native.classification ?? null,
       userStatus: managed.userStatus ?? native.userStatus ?? null,

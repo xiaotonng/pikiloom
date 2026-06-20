@@ -100,6 +100,56 @@ function groupForkDescendants(sessions: SessionInfo[]): SessionWithDepth[] {
 let _slotKeySeq = 0;
 function nextMountKey() { return `mk-${Date.now().toString(36)}-${(++_slotKeySeq).toString(36)}`; }
 
+/* ── Persisted workspace-layout storage ──
+   Uses localStorage (NOT sessionStorage) so the set of open session windows
+   survives a full browser restart and is shared across every tab of the same
+   origin. On read we fall back to the legacy sessionStorage key once and
+   migrate it forward, so windows opened before this change aren't lost. */
+function layoutGet(key: string): string | null {
+  try {
+    const v = localStorage.getItem(key);
+    if (v != null) return v;
+    const legacy = sessionStorage.getItem(key);
+    if (legacy != null) {
+      try { localStorage.setItem(key, legacy); sessionStorage.removeItem(key); } catch {}
+      return legacy;
+    }
+  } catch {}
+  return null;
+}
+function layoutSet(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+
+/* ── Workspace layout ladder ──
+   The session grid steps through these slot counts. Opening a window past the
+   current capacity climbs to the next rung (1→2→3→6); closing one descends to
+   the smallest rung that still holds the remaining windows. Auto-degrade never
+   drops below `floorMode` (the resolution default, or the user's last manual
+   pick); at the top rung a new window overlays the active slot instead of
+   growing. The layout therefore tracks the window count without manual toggling. */
+type LayoutMode = 1 | 2 | 3 | 6;
+const LAYOUT_LADDER: readonly LayoutMode[] = [1, 2, 3, 6];
+const MAX_LAYOUT: LayoutMode = 6;
+
+/** Smallest ladder rung that can display `count` windows (capped at the max). */
+function fitLayout(count: number): LayoutMode {
+  for (const m of LAYOUT_LADDER) if (m >= count) return m;
+  return MAX_LAYOUT;
+}
+
+/** Resolution-derived default slot count — the initial auto-degrade floor. */
+function defaultLayoutMode(): LayoutMode {
+  const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  return w >= 1920 ? 3 : w >= 1280 ? 2 : 1;
+}
+
+/** Target rung for `count` open windows, never below `floor`, never above max. */
+function layoutForCount(count: number, floor: LayoutMode): LayoutMode {
+  const fit = fitLayout(count);
+  return fit > floor ? fit : floor;
+}
+
 type FilterMode = 'all' | 'running' | 'review';
 
 function isOpenTarget(value: string | null | undefined): value is OpenTarget {
@@ -158,21 +208,24 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   // flickered to a spinner right after pressing enter); the slot is one object that
   // commits atomically with the panel, so there is no race.
   type SessionSlot = { agent: string; sessionId: string; workdir: string; mountKey: string; pendingPrompt?: string | null; pendingImageUrls?: string[] };
-  // Layout: 1/2/3/6 visible session slots
-  type LayoutMode = 1 | 2 | 3 | 6;
 
-  // Restore workspace layout from sessionStorage (default by screen width)
+  // Restore workspace layout from localStorage (default by screen width)
   const [layoutMode, setLayoutModeRaw] = useState<LayoutMode>(() => {
-    try {
-      const v = sessionStorage.getItem('pikiloom-layout-mode');
-      if (v === '1' || v === '2' || v === '3' || v === '6') return Number(v) as LayoutMode;
-    } catch {}
-    const w = window.innerWidth;
-    return w >= 1920 ? 3 : w >= 1280 ? 2 : 1;
+    const v = layoutGet('pikiloom-layout-mode');
+    if (v === '1' || v === '2' || v === '3' || v === '6') return Number(v) as LayoutMode;
+    return defaultLayoutMode();
+  });
+  // Auto-degrade floor: closing windows never shrinks the grid below this. Seeds
+  // from the resolution default; a manual layout pick (handleSelectLayoutMode)
+  // overrides it so the user's explicit choice becomes the new minimum.
+  const [floorMode, setFloorModeRaw] = useState<LayoutMode>(() => {
+    const v = layoutGet('pikiloom-layout-floor');
+    if (v === '1' || v === '2' || v === '3' || v === '6') return Number(v) as LayoutMode;
+    return defaultLayoutMode();
   });
   const [openSessions, setOpenSessionsRaw] = useState<SessionSlot[]>(() => {
     try {
-      const v = sessionStorage.getItem('pikiloom-open-sessions');
+      const v = layoutGet('pikiloom-open-sessions');
       if (v) {
         const parsed = JSON.parse(v);
         if (Array.isArray(parsed)) return parsed.map((s: any) => ({ ...s, mountKey: s.mountKey || nextMountKey() }));
@@ -181,38 +234,45 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     return [];
   });
   const [activeSlotIndex, setActiveSlotIndexRaw] = useState(() => {
-    try {
-      const v = sessionStorage.getItem('pikiloom-active-slot');
-      if (v != null) { const n = Number(v); if (Number.isFinite(n) && n >= 0) return n; }
-    } catch {}
+    const v = layoutGet('pikiloom-active-slot');
+    if (v != null) { const n = Number(v); if (Number.isFinite(n) && n >= 0) return n; }
     return 0;
   });
 
-  // Persist wrappers — write to sessionStorage on every change
+  // Persist wrappers — write to localStorage on every change (shared across tabs)
   const setLayoutMode = useCallback((mode: LayoutMode) => {
     setLayoutModeRaw(mode);
-    try { sessionStorage.setItem('pikiloom-layout-mode', String(mode)); } catch {}
+    layoutSet('pikiloom-layout-mode', String(mode));
+  }, []);
+  const setFloorMode = useCallback((mode: LayoutMode) => {
+    setFloorModeRaw(mode);
+    layoutSet('pikiloom-layout-floor', String(mode));
   }, []);
   const setOpenSessions = useCallback((updater: SessionSlot[] | ((prev: SessionSlot[]) => SessionSlot[])) => {
     setOpenSessionsRaw(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      try {
-        // Strip the transient optimistic prompt fields — they only matter for the
-        // live mount of a fresh session, never across a reload (blob image URLs
-        // would be dead anyway).
-        const persistable = next.map(({ pendingPrompt: _p, pendingImageUrls: _i, ...rest }) => rest);
-        sessionStorage.setItem('pikiloom-open-sessions', JSON.stringify(persistable));
-      } catch {}
+      // Strip the transient optimistic prompt fields — they only matter for the
+      // live mount of a fresh session, never across a reload (blob image URLs
+      // would be dead anyway).
+      const persistable = next.map(({ pendingPrompt: _p, pendingImageUrls: _i, ...rest }) => rest);
+      layoutSet('pikiloom-open-sessions', JSON.stringify(persistable));
       return next;
     });
   }, []);
   const setActiveSlotIndex = useCallback((updater: number | ((prev: number) => number)) => {
     setActiveSlotIndexRaw(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      try { sessionStorage.setItem('pikiloom-active-slot', String(next)); } catch {}
+      layoutSet('pikiloom-active-slot', String(next));
       return next;
     });
   }, []);
+  // Manual layout pick from the footer toggle. The chosen mode also becomes the
+  // new auto-degrade floor — an explicit choice overrides the resolution default
+  // (e.g. picking "Six" keeps six panes even after windows close).
+  const handleSelectLayoutMode = useCallback((mode: LayoutMode) => {
+    setLayoutMode(mode);
+    setFloorMode(mode);
+  }, [setLayoutMode, setFloorMode]);
 
   // When layout shrinks, trim open sessions to fit
   useEffect(() => {
@@ -226,8 +286,12 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   // Refs so setSelectedSession stays stable and all callers see current values
   const layoutModeRef = useRef(layoutMode);
   layoutModeRef.current = layoutMode;
+  const floorModeRef = useRef(floorMode);
+  floorModeRef.current = floorMode;
   const activeSlotRef = useRef(activeSlotIndex);
   activeSlotRef.current = activeSlotIndex;
+  const openSessionsRef = useRef(openSessions);
+  openSessionsRef.current = openSessions;
   // Track which grid slot the NewSessionView occupies (updated during render IIFE)
   const newSessionSlotRef = useRef(-1);
 
@@ -253,12 +317,21 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         setActiveSlotIndex(newList.length - 1);
         return newList;
       }
-      // All slots full — replace active slot (evict what user is currently viewing)
+      // Grid full but we can still climb the ladder — grow one rung and append
+      // instead of evicting (auto-embed: 2→3→6).
+      if (layoutModeRef.current < MAX_LAYOUT) {
+        const newList = [...prev, withKey];
+        setLayoutMode(layoutForCount(newList.length, floorModeRef.current));
+        setActiveSlotIndex(newList.length - 1);
+        return newList;
+      }
+      // At the top rung — fall back to overlay: replace the active slot (evict
+      // what the user is currently viewing).
       const newList = [...prev];
       newList[activeSlotRef.current] = withKey;
       return newList;
     });
-  }, []);
+  }, [setOpenSessions, setActiveSlotIndex, setLayoutMode]);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showNewSession, setShowNewSession] = useState<string | null>(null);
@@ -555,7 +628,11 @@ export const SessionWorkspace = memo(function SessionWorkspace({
       await api.removeWorkspace(wsPath);
       setWorkspaces(prev => prev.filter(w => w.path !== wsPath));
       setSessionsMap(prev => { const n = { ...prev }; delete n[wsPath]; return n; });
-      setOpenSessions(prev => prev.filter(s => s.workdir !== wsPath));
+      setOpenSessions(prev => {
+        const next = prev.filter(s => s.workdir !== wsPath);
+        if (next.length !== prev.length) setLayoutMode(layoutForCount(next.length, floorModeRef.current));
+        return next;
+      });
       setActiveSlotIndex(0);
       setConfirmRemove(null);
     } catch {}
@@ -639,7 +716,11 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         if (filtered.length === list.length) return prev;
         return { ...prev, [target.workdir]: filtered };
       });
-      setOpenSessions(prev => prev.filter(s => !(s.workdir === target.workdir && s.agent === target.agent && s.sessionId === target.sessionId)));
+      setOpenSessions(prev => {
+        const next = prev.filter(s => !(s.workdir === target.workdir && s.agent === target.agent && s.sessionId === target.sessionId));
+        if (next.length !== prev.length) setLayoutMode(layoutForCount(next.length, floorModeRef.current));
+        return next;
+      });
       setConfirmDeleteSession(null);
     } catch (err: any) {
       toastSession(err?.message || t('session.deleteFailed'), false);
@@ -704,14 +785,37 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     void loadSessionsForWorkspace(next.workdir, { background: true, force: true });
   }, [loadSessionsForWorkspace, warmSession, setOpenSessions, setActiveSlotIndex]);
 
+  /* ── Open / cancel the new-session composer ──
+     Opening "+" climbs a rung when every slot is occupied so the composer gets
+     its own pane (instead of overlaying an active session). At the top rung it
+     overlays, mirroring the new-window behavior. Cancelling collapses back to
+     fit the real open windows so the borrowed pane doesn't linger. */
+  const handleOpenNewSession = useCallback((wsPath: string) => {
+    if (openSessionsRef.current.length >= layoutModeRef.current && layoutModeRef.current < MAX_LAYOUT) {
+      setLayoutMode(layoutForCount(layoutModeRef.current + 1, floorModeRef.current));
+    }
+    setShowNewSession(wsPath);
+  }, [setLayoutMode]);
+
+  const handleCloseNewSession = useCallback(() => {
+    setShowNewSession(null);
+    setLayoutMode(layoutForCount(openSessionsRef.current.length, floorModeRef.current));
+  }, [setLayoutMode]);
+
   /* ── Select session — stable callback that takes wsPath ── */
   const handleSelectSession = useCallback((session: SessionInfo, workdir: string) => {
     warmSession(session, workdir);
+    const agent = session.agent || '';
+    // Selecting an already-open session fills no new pane; if the composer had
+    // borrowed a grown pane, collapse it back to fit (no-op in every other case).
+    if (openSessionsRef.current.some(s => s.agent === agent && s.sessionId === session.sessionId)) {
+      setLayoutMode(layoutForCount(openSessionsRef.current.length, floorModeRef.current));
+    }
     setShowNewSession(null);
     startTransition(() => {
-      setSelectedSession({ agent: session.agent || '', sessionId: session.sessionId, workdir });
+      setSelectedSession({ agent, sessionId: session.sessionId, workdir });
     });
-  }, [warmSession]);
+  }, [warmSession, setLayoutMode]);
 
   const handlePanelSessionChange = useCallback((next: { agent: string; sessionId: string; workdir: string }, fromSlotIdx?: number) => {
     warmSession({ agent: next.agent, sessionId: next.sessionId, runState: 'running' }, next.workdir);
@@ -810,9 +914,12 @@ export const SessionWorkspace = memo(function SessionWorkspace({
       } else if (activeSlotRef.current >= next.length) {
         setActiveSlotIndex(next.length - 1);
       }
+      // Auto-degrade: shrink to the smallest rung that still fits what's left,
+      // but never below the floor (6→3→2…).
+      setLayoutMode(layoutForCount(next.length, floorModeRef.current));
       return next;
     });
-  }, []);
+  }, [setOpenSessions, setActiveSlotIndex, setLayoutMode]);
 
   return (
     <div className="h-full overflow-hidden p-4 flex gap-3 mx-auto">
@@ -878,7 +985,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                 selectedKey={selectedKey}
                 openSessionKeys={openSessionKeys}
                 onSelectSession={handleSelectSession}
-                onNewSession={setShowNewSession}
+                onNewSession={handleOpenNewSession}
                 onRefresh={handleRefreshWorkspace}
                 onRemove={handleRemoveWorkspace}
                 onExtensions={setExtensionsWorkdir}
@@ -898,7 +1005,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
             {([1, 2, 3, 6] as const).map(mode => (
               <button
                 key={mode}
-                onClick={() => setLayoutMode(mode)}
+                onClick={() => handleSelectLayoutMode(mode)}
                 className={cn(
                   'flex-1 flex items-center justify-center p-1.5 rounded transition-all',
                   layoutMode === mode ? 'bg-panel-h text-fg-2 shadow-[0_1px_2px_rgba(0,0,0,0.1)]' : 'text-fg-5/40 hover:text-fg-4',
@@ -959,7 +1066,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                       workdir={showNewSession}
                       workspaceName={workspaces.find(ws => ws.path === showNewSession)?.name || showNewSession.split('/').pop() || ''}
                       onSessionCreated={handleNewSessionCreated}
-                      onClose={() => setShowNewSession(null)}
+                      onClose={handleCloseNewSession}
                       t={t}
                     />
                   </div>

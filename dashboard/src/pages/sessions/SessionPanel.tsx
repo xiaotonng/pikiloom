@@ -7,7 +7,7 @@ import { useDashboardEvent, useDashboardReconnect, type DashboardEvent } from '.
 import { cn, foldUltraEffort, getAgentMeta, getSessionRunFailureDetail, shortenModel, sessionDisplayState } from '../../utils';
 import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
-import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent } from '../../types';
+import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent, SnapshotArtifact } from '../../types';
 import { TurnView, UserBubble, TurnDivider } from './TurnView';
 import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
@@ -82,6 +82,8 @@ export const SessionPanel = memo(function SessionPanel({
     previewMeta?: StreamPreviewMeta | null;
     subAgents?: StreamSubAgent[] | null;
     generatingImages?: number;
+    /** Files delivered mid-turn via `im_send_file`, carried on the snapshot. */
+    artifacts?: SnapshotArtifact[] | null;
     /** Wall-clock ms when the turn started — drives the ticking elapsed chip. */
     startedAt?: number | null;
     error?: string | null;
@@ -455,6 +457,7 @@ export const SessionPanel = memo(function SessionPanel({
           previewMeta: state.previewMeta ?? null,
           subAgents: state.previewMeta?.subAgents ?? null,
           generatingImages: state.previewMeta?.generatingImages ?? 0,
+          artifacts: state.artifacts ?? null,
           startedAt: typeof state.startedAt === 'number' ? state.startedAt : null,
           error: null,
           question: state.question ?? null,
@@ -506,6 +509,7 @@ export const SessionPanel = memo(function SessionPanel({
               previewMeta: state.previewMeta ?? null,
               subAgents: state.previewMeta?.subAgents ?? null,
               generatingImages: state.previewMeta?.generatingImages ?? 0,
+              artifacts: state.artifacts ?? null,
               error: state.error,
             }
           : prev);

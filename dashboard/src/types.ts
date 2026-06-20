@@ -450,7 +450,7 @@ export interface SessionMessage {
 }
 
 export interface MessageBlock {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'plan' | 'sub_agent' | 'system_notice';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'file' | 'plan' | 'sub_agent' | 'system_notice';
   content: string;
   toolName?: string;
   toolId?: string;
@@ -463,6 +463,27 @@ export interface MessageBlock {
   imageMime?: string;
   /** Image block: optional caption (e.g. Codex `revised_prompt`). */
   imageCaption?: string;
+  /** File block: server-side on-disk path (opaque to client). */
+  filePath?: string;
+  /** File block: MIME type. */
+  fileMime?: string;
+  /** File block: display name (the artifact's original basename). */
+  fileName?: string;
+  /** File block: size in bytes (for the download chip). */
+  fileSize?: number;
+  /** File block: optional caption supplied at delivery time. */
+  fileCaption?: string;
+}
+
+/** A file delivered to the user mid-turn, carried live on the stream snapshot.
+ *  `content`/`url` already point at the dashboard attachment endpoint. */
+export interface SnapshotArtifact {
+  url: string;
+  fileName: string;
+  fileSize: number;
+  mime: string;
+  kind: 'photo' | 'document';
+  caption?: string;
 }
 
 export interface RichMessage {

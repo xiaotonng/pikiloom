@@ -6,7 +6,8 @@ import {
   attachAgentImage,
   attachInlineImage,
   materializeImage,
-  rewriteImageBlocksForTransport,
+  rewriteAttachmentBlocksForTransport,
+  attachmentUrl,
   decodeAttachmentPathParam,
   resolveAllowedAttachmentPath,
 } from '../src/agent/images.ts';
@@ -88,7 +89,7 @@ describe('attachInlineImage', () => {
   });
 });
 
-describe('materializeImage & rewriteImageBlocksForTransport', () => {
+describe('materializeImage & rewriteAttachmentBlocksForTransport', () => {
   it('materializes from imagePath/data URL, rejects non-images, and rewrites transport blocks', () => {
     // --- materializeImage prefers imagePath when present ---
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
@@ -122,16 +123,16 @@ describe('materializeImage & rewriteImageBlocksForTransport', () => {
     // --- materializeImage returns null for non-image blocks ---
     expect(materializeImage({ type: 'text', content: 'hi' })).toBeNull();
 
-    // --- rewriteImageBlocksForTransport leaves small inline data URLs untouched ---
+    // --- rewriteAttachmentBlocksForTransport leaves small inline data URLs untouched ---
     const dataUrl = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
-    const untouched = rewriteImageBlocksForTransport(
+    const untouched = rewriteAttachmentBlocksForTransport(
       [{ type: 'image', content: dataUrl, imageMime: 'image/png' }],
       { agent: 'codex', sessionId: 's1' },
     );
     expect(untouched[0].content).toBe(dataUrl);
 
-    // --- rewriteImageBlocksForTransport rewrites file:// sentinels to attachment HTTP URLs ---
-    const rewritten = rewriteImageBlocksForTransport(
+    // --- rewriteAttachmentBlocksForTransport rewrites file:// sentinels to attachment HTTP URLs ---
+    const rewritten = rewriteAttachmentBlocksForTransport(
       [{
         type: 'image',
         content: 'file:///tmp/codex/img.png',
@@ -143,9 +144,9 @@ describe('materializeImage & rewriteImageBlocksForTransport', () => {
     expect(rewritten[0].content.startsWith('/api/sessions/codex/s1/attachment?p=')).toBe(true);
     expect(rewritten[0].imagePath).toBe('/tmp/codex/img.png');
 
-    // --- rewriteImageBlocksForTransport preserves the original path through encode → decode round-trip ---
+    // --- rewriteAttachmentBlocksForTransport preserves the original path through encode → decode round-trip ---
     const original = '/Users/admin/.codex/generated_images/abc/img.png';
-    const roundTrip = rewriteImageBlocksForTransport(
+    const roundTrip = rewriteAttachmentBlocksForTransport(
       [{
         type: 'image',
         content: `file://${original}`,
@@ -157,10 +158,44 @@ describe('materializeImage & rewriteImageBlocksForTransport', () => {
     const token = new URL(roundTrip[0].content, 'http://localhost').searchParams.get('p') || '';
     expect(decodeAttachmentPathParam(token)).toBe(original);
 
-    // --- rewriteImageBlocksForTransport passes through non-image blocks unchanged ---
+    // --- rewriteAttachmentBlocksForTransport passes through non-image blocks unchanged ---
     const textBlocks: MessageBlock[] = [{ type: 'text', content: 'hello' }];
-    const passthrough = rewriteImageBlocksForTransport(textBlocks, { agent: 'codex', sessionId: 's1' });
+    const passthrough = rewriteAttachmentBlocksForTransport(textBlocks, { agent: 'codex', sessionId: 's1' });
     expect(passthrough[0]).toEqual(textBlocks[0]);
+
+    // --- rewriteAttachmentBlocksForTransport rewrites file blocks and carries the
+    //     pristine download name as the `n` query param ---
+    const fileBlocks: MessageBlock[] = [{
+      type: 'file',
+      content: 'file:///tmp/codex/report final.pdf',
+      filePath: '/tmp/codex/report final.pdf',
+      fileMime: 'application/pdf',
+      fileName: 'report final.pdf',
+      fileSize: 4096,
+    }];
+    const fileRewritten = rewriteAttachmentBlocksForTransport(fileBlocks, { agent: 'codex', sessionId: 's1' });
+    const fileUrl = new URL(fileRewritten[0].content, 'http://localhost');
+    expect(fileUrl.pathname).toBe('/api/sessions/codex/s1/attachment');
+    expect(decodeAttachmentPathParam(fileUrl.searchParams.get('p') || '')).toBe('/tmp/codex/report final.pdf');
+    expect(fileUrl.searchParams.get('n')).toBe('report final.pdf');
+    expect(fileRewritten[0].filePath).toBe('/tmp/codex/report final.pdf');
+  });
+});
+
+describe('attachmentUrl', () => {
+  it('builds an opaque, round-trippable attachment URL with an optional download name', () => {
+    const url = attachmentUrl('claude', 'sess-1', '/Users/admin/.pikiloom/attachments/claude/sess-1/delivered/x-out.zip', {
+      downloadName: 'out.zip',
+    });
+    const parsed = new URL(url, 'http://localhost');
+    expect(parsed.pathname).toBe('/api/sessions/claude/sess-1/attachment');
+    expect(decodeAttachmentPathParam(parsed.searchParams.get('p') || ''))
+      .toBe('/Users/admin/.pikiloom/attachments/claude/sess-1/delivered/x-out.zip');
+    expect(parsed.searchParams.get('n')).toBe('out.zip');
+
+    // No download name → no `n` param.
+    const bare = new URL(attachmentUrl('claude', 'sess-1', '/tmp/a.png'), 'http://localhost');
+    expect(bare.searchParams.has('n')).toBe(false);
   });
 });
 

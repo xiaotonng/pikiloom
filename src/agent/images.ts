@@ -1,10 +1,13 @@
 /**
- * images.ts — unified image pipeline for the agent layer.
+ * images.ts — unified image (and on-disk attachment) pipeline for the agent
+ * layer.
  *
  * Every driver produces image blocks through `attachAgentImage`, every IM
  * channel consumes them through `materializeImage`, and every dashboard
- * response routes large images through the attachment HTTP endpoint via
- * `rewriteImageBlocksForTransport`. The shape isolates *where the bytes live*
+ * response routes on-disk image/file blocks through the attachment HTTP
+ * endpoint via `rewriteAttachmentBlocksForTransport` (delivered non-image files
+ * — see agent/artifacts.ts — ride the same transport). The shape isolates
+ * *where the bytes live*
  * from *how a renderer wants to consume them*, so adding a new driver source
  * (Codex `image_generation_call`, Claude MCP `tool_result` image, Gemini Imagen,
  * future) or a new transport (a fourth IM channel, a CLI exporter, an OG-image
@@ -25,7 +28,7 @@
  *  - `content` always carries a directly-renderable reference: a `data:` URL
  *    for inline bytes, or an attachment HTTP URL for files on disk.
  *  - Below `INLINE_THRESHOLD_BYTES`, drivers may inline as `data:`. Above the
- *    threshold, `rewriteImageBlocksForTransport` substitutes a relative
+ *    threshold, `rewriteAttachmentBlocksForTransport` substitutes a relative
  *    `/api/sessions/:agent/:id/attachment?...` URL — keeps RichMessage
  *    payloads small even when a session has many large images.
  *  - IM channels prefer `imagePath` over decoding `content`, avoiding wasted
@@ -212,7 +215,7 @@ export function attachAgentImage(opts: AttachAgentImageOpts): MessageBlock | nul
     content = `data:${mime};base64,${bytes.toString('base64')}`;
   } else {
     // Sentinel: the transport layer rewrites this into an HTTP URL with the
-    // right session context. Renderers that bypass `rewriteImageBlocksForTransport`
+    // right session context. Renderers that bypass `rewriteAttachmentBlocksForTransport`
     // see a `file://` URL and can still resolve it via `materializeImage` since
     // `imagePath` is also populated.
     content = `file://${abs}`;
@@ -348,7 +351,7 @@ export function materializeImage(block: MessageBlock): MaterializedImage | null 
 }
 
 // ---------------------------------------------------------------------------
-// rewriteImageBlocksForTransport — for JSON responses crossing the wire
+// rewriteAttachmentBlocksForTransport — for JSON responses crossing the wire
 // ---------------------------------------------------------------------------
 
 export interface TransportContext {
@@ -374,29 +377,59 @@ export function decodeAttachmentPathParam(value: string): string {
 }
 
 /**
- * Rewrite a block array for transport: any image block whose `content` is a
- * `file://` sentinel becomes an attachment HTTP URL, and any inline `data:`
- * URL above the threshold is also promoted to an HTTP URL (keeping the
- * RichMessage payload compact even when a session has many large images).
+ * Build the dashboard attachment URL that serves `absPath` for a given session.
+ * Single source for the `/api/sessions/:agent/:id/attachment?p=…` shape so the
+ * transport rewrite, live stream snapshots, and any future caller stay in sync.
+ * `downloadName` is carried as an opaque `&n=` hint the endpoint uses for the
+ * Content-Disposition filename (the pristine basename, not the on-disk one).
+ */
+export function attachmentUrl(
+  agent: Agent,
+  sessionId: string,
+  absPath: string,
+  opts: { apiBase?: string; downloadName?: string } = {},
+): string {
+  const base = (opts.apiBase || '/api/sessions').replace(/\/+$/, '');
+  const encoded = encodePathForUrl(absPath);
+  const name = opts.downloadName ? `&n=${encodeURIComponent(opts.downloadName)}` : '';
+  return `${base}/${encodeURIComponent(agent)}/${encodeURIComponent(sessionId)}/attachment?p=${encoded}${name}`;
+}
+
+/**
+ * Rewrite a block array for transport. Image and file blocks whose `content`
+ * is a `file://` sentinel (or which carry an on-disk `imagePath`/`filePath`)
+ * become attachment HTTP URLs; inline `data:` image URLs are left untouched so
+ * the dashboard renders them directly. Keeps RichMessage payloads compact even
+ * when a session delivered many large artifacts.
  *
  * Pure: returns a new array; the input is not mutated.
  */
-export function rewriteImageBlocksForTransport(
+export function rewriteAttachmentBlocksForTransport(
   blocks: MessageBlock[],
   ctx: TransportContext,
 ): MessageBlock[] {
-  const base = (ctx.apiBase || '/api/sessions').replace(/\/+$/, '');
   return blocks.map(block => {
-    if (block.type !== 'image') return block;
-    const sourcePath = block.imagePath
-      || (block.content?.startsWith('file://') ? block.content.slice('file://'.length) : '');
-    if (!sourcePath) return block;
-    // Inline content under the threshold: leave the data URL alone — the
-    // dashboard renders it directly, no extra request.
-    if (block.content?.startsWith('data:')) return block;
-    const encoded = encodePathForUrl(sourcePath);
-    const url = `${base}/${encodeURIComponent(ctx.agent)}/${encodeURIComponent(ctx.sessionId)}/attachment?p=${encoded}`;
-    return { ...block, content: url, imagePath: sourcePath };
+    if (block.type === 'image') {
+      const sourcePath = block.imagePath
+        || (block.content?.startsWith('file://') ? block.content.slice('file://'.length) : '');
+      if (!sourcePath) return block;
+      // Inline content under the threshold: leave the data URL alone — the
+      // dashboard renders it directly, no extra request.
+      if (block.content?.startsWith('data:')) return block;
+      const url = attachmentUrl(ctx.agent, ctx.sessionId, sourcePath, { apiBase: ctx.apiBase });
+      return { ...block, content: url, imagePath: sourcePath };
+    }
+    if (block.type === 'file') {
+      const sourcePath = block.filePath
+        || (block.content?.startsWith('file://') ? block.content.slice('file://'.length) : '');
+      if (!sourcePath) return block;
+      const url = attachmentUrl(ctx.agent, ctx.sessionId, sourcePath, {
+        apiBase: ctx.apiBase,
+        downloadName: block.fileName || undefined,
+      });
+      return { ...block, content: url, filePath: sourcePath };
+    }
+    return block;
   });
 }
 

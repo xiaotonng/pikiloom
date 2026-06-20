@@ -54,7 +54,7 @@ Agent live tests also require the corresponding CLI to be installed and authenti
 
 ## Current Test Files
 
-The suite currently has **48** unit test files under `test/*.unit.test.ts`. Vitest picks them up automatically via `vitest.config.ts`.
+The suite currently has **49** unit test files under `test/*.unit.test.ts`. Vitest picks them up automatically via `vitest.config.ts`.
 
 | Area | Files |
 |---|---|
@@ -63,7 +63,7 @@ The suite currently has **48** unit test files under `test/*.unit.test.ts`. Vite
 | Agent drivers | `driver-claude.unit.test.ts`, `driver-claude-tui.unit.test.ts`, `driver-codex.unit.test.ts`, `driver-gemini.unit.test.ts`, `driver-hermes.unit.test.ts`, `code-agent.unit.test.ts` |
 | Sessions / git | `session-control.unit.test.ts`, `session-messages-window.unit.test.ts`, `sessions-list-projection.unit.test.ts`, `sessions-digest.unit.test.ts`, `delete-session.unit.test.ts`, `git-status.unit.test.ts`, `resolve-default-agent.unit.test.ts` |
 | Dashboard | `dashboard-assistant-content.unit.test.ts`, `dashboard-browser-remote.unit.test.ts`, `dashboard-file-links.unit.test.ts`, `dashboard-live-session-state.unit.test.ts`, `dashboard-session-failure.unit.test.ts`, `dashboard-terminal.unit.test.ts`, `live-preview.unit.test.ts` |
-| MCP / extensions | `mcp-bridge.unit.test.ts`, `mcp-extensions-http.unit.test.ts`, `agent-install-spec.unit.test.ts`, `agent-images.unit.test.ts` |
+| MCP / extensions | `mcp-bridge.unit.test.ts`, `mcp-extensions-http.unit.test.ts`, `agent-install-spec.unit.test.ts`, `agent-images.unit.test.ts`, `agent-artifacts.unit.test.ts` |
 | Skills / browser / process | `project-skills.unit.test.ts`, `claude-goal-bridge.unit.test.ts`, `browser-supervisor.unit.test.ts`, `stream-browser-failure.unit.test.ts`, `process-control.unit.test.ts`, `agent-update-gate.unit.test.ts`, `peekaboo-warm.unit.test.ts` |
 | Runtime / config | `interaction.unit.test.ts`, `model-injector.unit.test.ts`, `runtime-config-access-mode.unit.test.ts` |
 

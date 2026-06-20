@@ -548,17 +548,20 @@ export interface SessionListOpts {
 /** A single message in a session tail (plain text). */
 export interface TailMessage { role: 'user' | 'assistant'; text: string; }
 
-/** A content block within a message — text, thinking, tool activity, image, or
- *  a `system_notice` (agent-runtime placeholder like Claude CLI's `model:"<synthetic>"`
- *  feedback events — surface as a notice, not as a real assistant reply).
+/** A content block within a message — text, thinking, tool activity, image,
+ *  a delivered `file` (non-image artifact handed to the user), or a
+ *  `system_notice` (agent-runtime placeholder like Claude CLI's
+ *  `model:"<synthetic>"` feedback events — surface as a notice, not as a real
+ *  assistant reply).
  *
- *  Image blocks: `content` always carries a directly-renderable reference (a
- *  `data:` URL for inline bytes, or an `attachment://` / HTTP URL when the
- *  bytes live on disk and a transport-served reference is preferred). When the
- *  bytes have a stable on-disk location, drivers also fill `imagePath` so IM
- *  channels can stream straight from disk without a base64 round-trip. */
+ *  Image / file blocks: `content` always carries a directly-renderable
+ *  reference (a `data:` URL for inline image bytes, or an attachment HTTP URL
+ *  when the bytes live on disk and a transport-served reference is preferred).
+ *  When the bytes have a stable on-disk location, the block also fills
+ *  `imagePath` / `filePath` so IM channels can stream straight from disk
+ *  without a base64 round-trip and the dashboard can serve them over HTTP. */
 export interface MessageBlock {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'plan' | 'sub_agent' | 'system_notice';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'file' | 'plan' | 'sub_agent' | 'system_notice';
   content: string;
   toolName?: string;
   toolId?: string;
@@ -572,6 +575,16 @@ export interface MessageBlock {
   imageMime?: string;
   /** Image block: optional caption — e.g. Codex `revised_prompt`, MCP tool description. */
   imageCaption?: string;
+  /** File block: authoritative on-disk path of the delivered artifact. */
+  filePath?: string;
+  /** File block: MIME type (e.g. `application/pdf`); `application/octet-stream` when unknown. */
+  fileMime?: string;
+  /** File block: display name shown to the user (the artifact's original basename). */
+  fileName?: string;
+  /** File block: size in bytes, for the download chip. */
+  fileSize?: number;
+  /** File block: optional caption supplied at delivery time. */
+  fileCaption?: string;
 }
 
 /** Rich message with structured content blocks. */

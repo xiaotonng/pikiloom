@@ -224,7 +224,7 @@ function imageBlocksFromManagedRecord(record: { workspacePath: string; lastUserA
     const abs = path.isAbsolute(rel) ? rel : path.join(record.workspacePath, rel);
     blocks.push({
       type: 'image',
-      // `file://` sentinel — `rewriteImageBlocksForTransport` (dashboard
+      // `file://` sentinel — `rewriteAttachmentBlocksForTransport` (dashboard
       // response layer) converts it to a proper /attachment URL.
       content: `file://${abs}`,
       imagePath: abs,

@@ -15,6 +15,7 @@ import {
   bumpContinuationCount, pauseGoal, resumeGoal, setGoal as setGoalState, clearGoal as clearGoalState,
   setCodexGoal, getCodexGoal, clearCodexGoal, pauseCodexGoal, resumeCodexGoal,
   getClaudeNativeGoal, buildClaudeSetGoalPrompt, buildClaudeClearGoalPrompt,
+  deliverArtifact, attachmentUrl,
   type Agent, type CodexCumulativeUsage, type StreamOpts, type StreamResult, type StreamPreviewMeta, type StreamPreviewPlan, type StreamSubAgent, type SessionInfo, type UsageResult,
   type AgentInteraction, type CodexTurnControl,
   type ModelInfo, type ModelListResult, type TailMessage, type SessionTailResult,
@@ -30,7 +31,7 @@ import {
   type SessionQueryResult,
 } from './session-hub.js';
 import { getDriver, hasDriver, allDriverIds, getDriverCapabilities } from '../agent/driver.js';
-import { resolveGuiIntegrationConfig } from '../agent/mcp/bridge.js';
+import { resolveGuiIntegrationConfig, type McpSendFileCallback, type McpSendFileResult } from '../agent/mcp/bridge.js';
 import { terminateProcessTree } from '../core/process-control.js';
 import { expandTilde } from '../core/platform.js';
 import { VERSION } from '../core/version.js';
@@ -97,10 +98,14 @@ function appendExtraPrompt(base: string | undefined, extra: string): string {
   return `${lhs}\n\n${rhs}`;
 }
 
+// NOTE: the `[Artifact Return]` header is a load-bearing marker — both
+// `stripInjectedPrompts` (bot/streaming.ts) and Gemini's
+// `GEMINI_SYSTEM_BLOCK_SENTINELS` key on it to strip this injected block from
+// displayed user messages. Keep the token in sync if you ever change it.
 function buildMcpDeliveryPrompt(): string {
   return [
     '[Artifact Return]',
-    'This is an IM/chat conversation, so pay attention to the IM tools.',
+    'To hand a file to the user — a screenshot, report, archive, generated asset, anything they asked you to "send" — call the `im_send_file` tool with the file path and a short caption. It is delivered through whatever terminal the user is on (an IM chat or the web dashboard) and stays retrievable even when they are connected remotely. Do NOT just print a local filesystem path: a remote user cannot open paths on this machine.',
   ].join('\n');
 }
 
@@ -203,9 +208,26 @@ export interface InteractionSnapshot {
   currentIndex?: number;
 }
 
+/**
+ * A file the agent handed to the user via `im_send_file`, surfaced live in the
+ * running turn's snapshot. The `url` is the dashboard attachment endpoint
+ * (already path-encoded), so a remote browser can fetch it without knowing the
+ * on-disk location. The durable record lives in the delivered-artifact manifest
+ * (agent/artifacts.ts) and re-renders from the transcript read after reload.
+ */
+export interface SnapshotArtifact {
+  url: string;
+  fileName: string;
+  fileSize: number;
+  mime: string;
+  kind: 'photo' | 'document';
+  caption?: string;
+}
+
 export type StreamEvent =
   | { type: 'start'; taskId: string; agent: string; sessionId: string | null; model: string | null; effort: string | null }
   | { type: 'text'; text: string; thinking: string; activity?: string; plan?: StreamPreviewPlan | null; previewMeta?: StreamPreviewMeta | null }
+  | { type: 'artifact'; artifact: SnapshotArtifact }
   | { type: 'done'; taskId: string; sessionId: string | null; error?: string; incomplete?: boolean }
   | { type: 'queued'; taskId: string; position: number }
   | { type: 'cancelled'; taskId: string }
@@ -250,6 +272,10 @@ export interface StreamSnapshot {
   /** Latest token / context-window usage emitted by the driver during the turn. */
   previewMeta?: StreamPreviewMeta | null;
   error?: string;
+  /** Files delivered to the user during this turn (via `im_send_file`), in
+   *  delivery order. Lets a watching dashboard render them live; the durable
+   *  copy comes from the delivered-artifact manifest on the next transcript read. */
+  artifacts?: SnapshotArtifact[];
   /** Active human-in-the-loop interaction prompts. */
   interactions?: InteractionSnapshot[];
   /** Wall-clock ms when the active turn started streaming. Lets clients render
@@ -662,6 +688,14 @@ export class Bot {
         }
         break;
       }
+      case 'artifact': {
+        const snap = this.streamSnapshots.get(sessionKey);
+        if (snap) {
+          snap.artifacts = [...(snap.artifacts || []), event.artifact];
+          snap.updatedAt = now;
+        }
+        break;
+      }
       case 'done': {
         const prev = this.streamSnapshots.get(sessionKey);
         this.streamSnapshots.set(sessionKey, {
@@ -677,6 +711,7 @@ export class Bot {
           model: prev?.model ?? null,
           effort: prev?.effort ?? null,
           previewMeta: prev?.previewMeta ?? null,
+          artifacts: prev?.artifacts,
           startedAt: prev?.startedAt,
           queuedTaskIds: prev?.queuedTaskIds,
           updatedAt: now,
@@ -798,6 +833,60 @@ export class Bot {
 
   protected emitStreamCancelled(taskId: string, fallbackKey: string) {
     this.emitStream(this.liveSessionKey(taskId, fallbackKey), { type: 'cancelled', taskId });
+  }
+
+  /**
+   * Wrap a per-turn `im_send_file` callback so every artifact delivery is
+   * recorded to the session's durable manifest (agent/artifacts.ts) and
+   * mirrored live into the running turn's snapshot — on top of whatever
+   * terminal-specific push the caller supplied (`inner`, e.g. an IM chat
+   * upload). The returned callback is always safe to register, so the tool is
+   * available for dashboard / headless turns that have no `inner` (the
+   * dashboard serves the recorded copy over HTTP). Recording is best-effort and
+   * never propagates an error back into the delivery result.
+   */
+  private buildArtifactSendFile(
+    agent: Agent,
+    sessionKey: string | null,
+    cs: { sessionId?: string | null },
+    inner?: McpSendFileCallback,
+  ): McpSendFileCallback {
+    return async (filePath, sendOpts) => {
+      // Terminal-specific push first (IM chat). Dashboard / headless has no inner.
+      const result: McpSendFileResult = inner ? await inner(filePath, sendOpts) : { ok: true };
+      if (!result.ok) return result;
+      try {
+        // Resolve the freshest session id at delivery time — send_file fires
+        // late in a turn, after a pending→native promotion has normally already
+        // happened, so the manifest lands under the canonical id.
+        let sid = '';
+        if (sessionKey) {
+          const rt = this.getSessionRuntimeByKey(sessionKey, { allowAnyWorkdir: true });
+          if (rt?.sessionId) sid = rt.sessionId;
+        }
+        if (!sid && typeof cs.sessionId === 'string') sid = cs.sessionId;
+        if (!sid || isPendingSessionId(sid)) return result;
+
+        const kind = sendOpts?.kind === 'photo' ? 'photo' : 'document';
+        const record = deliverArtifact(agent, sid, filePath, { kind, caption: sendOpts?.caption });
+        if (record && sessionKey) {
+          this.emitStream(this.resolveSessionKey(sessionKey), {
+            type: 'artifact',
+            artifact: {
+              url: attachmentUrl(agent, sid, record.path, { downloadName: record.fileName }),
+              fileName: record.fileName,
+              fileSize: record.fileSize,
+              mime: record.fileMime,
+              kind: record.kind,
+              ...(record.caption ? { caption: record.caption } : {}),
+            },
+          });
+        }
+      } catch (e: any) {
+        this.warn(`[runStream] artifact record failed: ${e?.message || e}`);
+      }
+      return result;
+    };
   }
 
   private keepAliveProc: ReturnType<typeof spawn> | null = null;
@@ -2747,10 +2836,25 @@ export class Bot {
     // falls back to the agent's in-memory flag (IM /mode) when unspecified.
     // Default off — never read from a persisted config default.
     const workflowEnabled = cs.agent === 'claude' && (extras?.workflowEnabled ?? this.claudeWorkflowEnabled);
+
+    // ── Artifact delivery (terminal-agnostic) ──
+    // `im_send_file` is the single "hand a file to the user" verb. Whatever the
+    // caller wired as `mcpSendFile` (an IM channel push, or nothing for a
+    // dashboard / headless turn) is wrapped so every delivery ALSO records the
+    // file into the session's delivered-artifact manifest — the durable SSOT
+    // that survives reload + workspace cleanup and is servable over HTTP — and
+    // surfaces it live in the running turn's snapshot for any watching
+    // dashboard. Always provided, so the tool + delivery prompt light up even
+    // when there is no IM channel (the dashboard is the delivery surface then).
+    const deliverySessionKey = ('key' in cs && typeof cs.key === 'string') ? cs.key : null;
+    const wrappedSendFile = this.buildArtifactSendFile(cs.agent, deliverySessionKey, cs, mcpSendFile);
+
     const mcpSystemPrompt = appendExtraPrompt(
       appendExtraPrompt(
         appendExtraPrompt(
-          mcpSendFile ? buildMcpDeliveryPrompt() : '',
+          // Always-on: `wrappedSendFile` is provided for every turn (see above),
+          // so artifact delivery is available regardless of terminal.
+          buildMcpDeliveryPrompt(),
           onInteraction && cs.agent === 'claude' ? buildClaudeAskUserPrompt() : '',
         ),
         buildBrowserAutomationPrompt(browserEnabled),
@@ -2812,7 +2916,7 @@ export class Bot {
       // a Profile is bound).
       hermesModel: cs.agent === 'hermes' && resolvedModel ? resolvedModel : undefined,
       // MCP bridge
-      mcpSendFile,
+      mcpSendFile: wrappedSendFile,
       abortSignal,
       onInteraction,
       onSteerReady,

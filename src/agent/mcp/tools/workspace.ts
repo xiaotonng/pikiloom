@@ -1,8 +1,9 @@
 /**
  * tools/workspace.ts — Workspace file tools.
  *
- *   workspace_list_files — returns workspace path, staged files, and directory listing
- *   workspace_send_file  — sends a file back to the IM chat
+ *   im_list_files — returns workspace path, staged files, and directory listing
+ *   im_send_file  — delivers a file to the user via the active terminal
+ *                   (IM chat push and/or the dashboard attachment endpoint)
  */
 
 import fs from 'node:fs';
@@ -32,7 +33,7 @@ const tools: McpToolModule['tools'] = [
   },
   {
     name: 'im_send_file',
-    description: 'Send a file to the user in IM.',
+    description: 'Send a file to the user through the active terminal (IM chat or web dashboard). Use this to hand over screenshots, reports, archives, or generated assets — the file is delivered and stays retrievable even when the user is connected remotely. Prefer this over printing a local filesystem path, which a remote user cannot open.',
     inputSchema: {
       type: 'object' as const,
       properties: {

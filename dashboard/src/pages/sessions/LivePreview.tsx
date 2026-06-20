@@ -5,7 +5,8 @@ import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
 import { createMarkdownComponents, mdPlugins } from './markdown';
 import { lastNLines, classifyRunEnd } from './utils';
 import { cn, shortenModel } from '../../utils';
-import type { StreamPlan, StreamSubAgent, StreamPreviewMeta, StreamToolCall } from '../../types';
+import { FileChip } from './FileChip';
+import type { StreamPlan, StreamSubAgent, StreamPreviewMeta, StreamToolCall, SnapshotArtifact } from '../../types';
 
 export interface LiveStreamView {
   phase: 'streaming' | 'done';
@@ -22,6 +23,8 @@ export interface LiveStreamView {
    *  from the opening extended-thinking phase through every tool roundtrip;
    *  the TurnDivider header renders it as the "↑n" chip. */
   previewMeta?: StreamPreviewMeta | null;
+  /** Files delivered mid-turn via `im_send_file`, in delivery order. */
+  artifacts?: SnapshotArtifact[] | null;
 }
 
 export function liveStreamHasBody(stream: LiveStreamView): boolean {
@@ -30,7 +33,8 @@ export function liveStreamHasBody(stream: LiveStreamView): boolean {
     || !!(stream.activity && stream.activity.split('\n').filter(Boolean).length)
     || !!(stream.previewMeta?.toolCalls?.length)
     || hasPlan(stream.plan)
-    || !!(stream.subAgents && stream.subAgents.length);
+    || !!(stream.subAgents && stream.subAgents.length)
+    || !!(stream.artifacts && stream.artifacts.length);
 }
 
 /** True when the live preview will render any visible element (body or error tile). */
@@ -230,6 +234,28 @@ export function LivePreview({
         <div className="session-md text-[13.5px] leading-[1.75] text-fg-2">
           {responseMarkdown}
           {stream.phase === 'streaming' && <ThinkingDots className="ml-1 inline-flex align-text-bottom text-fg-4" />}
+        </div>
+      )}
+
+      {/* Delivered files — surfaced live as the agent hands them over, so a
+          remote user sees the artifact immediately rather than waiting for the
+          turn to finalize. Photos render inline; documents get a download chip.
+          The durable copy re-renders from the transcript after the turn ends. */}
+      {stream.artifacts && stream.artifacts.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {stream.artifacts.map((a, i) => (
+            a.kind === 'photo' ? (
+              <a key={i} href={a.url} target="_blank" rel="noreferrer" className="inline-block">
+                <img
+                  src={a.url}
+                  alt={a.caption || a.fileName}
+                  className="max-w-[400px] max-h-[300px] rounded-md border border-fg-6/50 object-contain hover:opacity-90 transition-opacity"
+                />
+              </a>
+            ) : (
+              <FileChip key={i} url={a.url} fileName={a.fileName} fileSize={a.fileSize} caption={a.caption} />
+            )
+          ))}
         </div>
       )}
 

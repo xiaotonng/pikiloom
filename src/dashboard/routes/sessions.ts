@@ -6,11 +6,13 @@ import { Hono } from 'hono';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { loadUserConfig } from '../../core/config/user-config.js';
 import {
   listAgents, listSkills,
-  decodeAttachmentPathParam, resolveAllowedAttachmentPath, rewriteImageBlocksForTransport,
-  type Agent, type SessionInfo, type SessionMessagesResult, type RichMessage,
+  decodeAttachmentPathParam, resolveAllowedAttachmentPath, rewriteAttachmentBlocksForTransport,
+  deliveredArtifactBlocks, mimeForArtifact,
+  type Agent, type SessionInfo, type SessionMessagesResult, type RichMessage, type MessageBlock,
 } from '../../agent/index.js';
 import { getSessionStatusForBot } from '../../bot/session-status.js';
 import { findPikiloomSession } from '../../agent/session.js';
@@ -520,30 +522,65 @@ app.post('/api/session-hub/session/messages', async (c) => {
       turnLimit: Number.isFinite(turnLimit) ? turnLimit : undefined,
       rich,
     });
-    return c.json(rewriteSessionImagesForDashboard(result, agent, sessionId));
+    return c.json(prepareSessionMessagesForDashboard(result, agent, sessionId));
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
   }
 });
 
-// Rewrite oversized inline image data URLs into attachment HTTP URLs so
-// dashboard JSON payloads stay compact. Small inline images pass through.
-function rewriteSessionImagesForDashboard(
+// Prepare a session message read for the dashboard:
+//   1. Rewrite on-disk image/file blocks into compact attachment HTTP URLs so a
+//      remote browser can fetch the bytes (inline data: images pass through).
+//   2. Append the session's delivered artifacts (files the agent handed the
+//      user via `im_send_file`) as a trailing assistant message, so they render
+//      and stay retrievable after a reload regardless of which terminal
+//      delivered them. Only added when this window includes the conversation
+//      tail (`!hasNewer`) to avoid duplicating across paginated reads.
+function prepareSessionMessagesForDashboard(
   result: SessionMessagesResult,
-  agent: string,
+  agent: Agent,
   sessionId: string,
 ): SessionMessagesResult {
-  if (!result.richMessages?.length) return result;
+  // Only operate in rich mode — a `rich:false` read returns plain text and must
+  // not gain a synthetic richMessages array.
+  if (result.richMessages === undefined) return result;
+
   const richMessages: RichMessage[] = result.richMessages.map(message => ({
     ...message,
-    blocks: rewriteImageBlocksForTransport(message.blocks, { agent, sessionId }),
+    blocks: rewriteAttachmentBlocksForTransport(message.blocks, { agent, sessionId }),
   }));
+
+  const includesTail = !result.window || !result.window.hasNewer;
+  if (includesTail) {
+    const delivered = rewriteAttachmentBlocksForTransport(
+      deliveredArtifactBlocks(agent, sessionId),
+      { agent, sessionId },
+    );
+    if (delivered.length) {
+      const text = deliveredSummaryText(delivered);
+      richMessages.push({ role: 'assistant', text, blocks: delivered });
+    }
+  }
+
+  if (!richMessages.length) return result;
   return { ...result, richMessages };
 }
 
-// Attachment endpoint — serves on-disk images referenced by RichMessage image
-// blocks via opaque base64url path tokens. The allowlist (see images.ts)
-// confines reads to a known set of agent-managed dirs + the session's workdir.
+/** Plain-text fallback for the delivered-artifacts message (IM tail / exports). */
+function deliveredSummaryText(blocks: MessageBlock[]): string {
+  const names = blocks
+    .map(b => b.fileName || (b.type === 'image' ? 'image' : 'file'))
+    .filter(Boolean);
+  if (!names.length) return '';
+  return names.length === 1 ? `Delivered: ${names[0]}` : `Delivered ${names.length} files: ${names.join(', ')}`;
+}
+
+// Attachment endpoint — serves on-disk images AND delivered files referenced by
+// RichMessage image/file blocks via opaque base64url path tokens. The allowlist
+// (see images.ts) confines reads to a known set of agent-managed dirs + the
+// session's workdir + the per-session delivered-artifacts dir. Streams the
+// bytes (no full-buffer) and supports Range so large artifacts (video,
+// archives) download/seek without pinning memory.
 app.get('/api/sessions/:agent/:id/attachment', async (c) => {
   const agent = c.req.param('agent') as Agent;
   const sessionId = decodeURIComponent(c.req.param('id'));
@@ -586,29 +623,77 @@ app.get('/api/sessions/:agent/:id/attachment', async (c) => {
   }
   if (!stat.isFile()) return c.json({ ok: false, error: 'not a file' }, 400);
 
-  const ext = path.extname(resolved).toLowerCase();
-  const mime = mimeForExtFallback(ext);
-  const bytes = await fs.promises.readFile(resolved);
-  // The path is hash-immutable for agent-managed dirs (`ig_<sha>.png`, …) and
-  // the session lifecycle keeps the file stable — long cache is safe.
-  return c.body(bytes, 200, {
+  const mime = mimeForArtifact(resolved);
+  const downloadName = sanitizeDownloadName(c.req.query('n'), resolved);
+  // Inline images so <img> renders them; everything else downloads with its
+  // pristine name. RFC 5987 filename* carries non-ASCII names safely.
+  const disposition = mime.startsWith('image/') ? 'inline' : 'attachment';
+  const asciiName = downloadName.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, "'");
+  const contentDisposition = `${disposition}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`;
+
+  // The path is stamp-unique for delivered artifacts and hash-immutable for
+  // agent-managed dirs (`ig_<sha>.png`, …); the session lifecycle keeps the
+  // file stable — long cache is safe.
+  const baseHeaders: Record<string, string> = {
     'Content-Type': mime,
-    'Content-Length': String(bytes.length),
+    'Content-Disposition': contentDisposition,
     'Cache-Control': 'private, max-age=31536000, immutable',
     'X-Content-Type-Options': 'nosniff',
+    'Accept-Ranges': 'bytes',
+  };
+
+  // Honor a single byte-range request (e.g. video seek / resumable download).
+  const range = parseByteRange(c.req.header('range'), stat.size);
+  if (range) {
+    const nodeStream = fs.createReadStream(resolved, { start: range.start, end: range.end });
+    return c.body(Readable.toWeb(nodeStream) as ReadableStream, 206, {
+      ...baseHeaders,
+      'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}`,
+      'Content-Length': String(range.end - range.start + 1),
+    });
+  }
+
+  const nodeStream = fs.createReadStream(resolved);
+  return c.body(Readable.toWeb(nodeStream) as ReadableStream, 200, {
+    ...baseHeaders,
+    'Content-Length': String(stat.size),
   });
 });
 
-function mimeForExtFallback(ext: string): string {
-  switch (ext.toLowerCase()) {
-    case '.png': return 'image/png';
-    case '.jpg':
-    case '.jpeg': return 'image/jpeg';
-    case '.gif': return 'image/gif';
-    case '.webp': return 'image/webp';
-    case '.svg': return 'image/svg+xml';
-    default: return 'application/octet-stream';
+/** Sanitize the optional `&n=` download-name hint; fall back to the basename. */
+function sanitizeDownloadName(raw: string | undefined, resolved: string): string {
+  const candidate = (raw || '').trim();
+  const name = candidate || path.basename(resolved);
+  // Strip path separators / control chars; the on-disk path is already
+  // validated — `n` only affects the Content-Disposition filename.
+  return name.replace(/[/\\\0\r\n]+/g, '_').replace(/^\.+/, '').slice(0, 200) || 'download';
+}
+
+/** Parse a single `bytes=start-end` range header against `size`; null if absent
+ *  or unsatisfiable (caller then serves the full body). */
+function parseByteRange(header: string | undefined, size: number): { start: number; end: number } | null {
+  if (!header || size <= 0) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m) return null;
+  const hasStart = m[1] !== '';
+  const hasEnd = m[2] !== '';
+  let start: number;
+  let end: number;
+  if (hasStart) {
+    start = parseInt(m[1], 10);
+    end = hasEnd ? parseInt(m[2], 10) : size - 1;
+  } else if (hasEnd) {
+    // Suffix range: last N bytes.
+    const suffix = parseInt(m[2], 10);
+    if (suffix <= 0) return null;
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    return null;
   }
+  end = Math.min(end, size - 1);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0) return null;
+  return { start, end };
 }
 
 app.post('/api/session-hub/migrate', async (c) => {

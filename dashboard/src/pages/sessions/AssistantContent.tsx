@@ -7,6 +7,7 @@ import { createMarkdownComponents, mdPlugins } from './markdown';
 import { lastNLines, summarizeToolResult, summarizeToolUse } from './utils';
 import { ImageLightbox } from './TurnView';
 import { SubAgentCard } from './LivePreview';
+import { FileChip } from './FileChip';
 import type { RichMessage, MessageBlock } from '../../types';
 
 /* ═══════════════════════════════════════════════════════════════
@@ -54,6 +55,7 @@ export function categorizeAssistantBlocks(blocks: MessageBlock[]): {
     || block.type === 'tool_use'
     || block.type === 'tool_result'
     || block.type === 'image'
+    || block.type === 'file'
     || block.type === 'sub_agent'
     || !!block.content.trim(),
   );
@@ -62,7 +64,7 @@ export function categorizeAssistantBlocks(blocks: MessageBlock[]): {
     thinkingBlocks: normalized.filter(b => b.type === 'thinking'),
     planBlocks: normalized.filter(b => b.type === 'plan' && hasPlan(b.plan)),
     subAgentBlocks: normalized.filter(b => b.type === 'sub_agent'),
-    outputBlocks: normalized.filter(b => b.type === 'text' || b.type === 'image'),
+    outputBlocks: normalized.filter(b => b.type === 'text' || b.type === 'image' || b.type === 'file'),
     noticeBlocks: normalized.filter(b => b.type === 'system_notice'),
   };
 }
@@ -239,10 +241,11 @@ function ImageFigure({
 export function OutputBlock({ blocks, t, workdir }: { blocks: MessageBlock[]; t: (k: string) => string; workdir?: string | null }) {
   const textBlocks = blocks.filter(b => b.type === 'text');
   const imageBlocks = blocks.filter(b => b.type === 'image');
+  const fileBlocks = blocks.filter(b => b.type === 'file');
   const text = textBlocks.map(b => b.content).filter(Boolean).join('\n\n');
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const markdownComponents = useMemo(() => createMarkdownComponents({ workdir }), [workdir]);
-  if (!text.trim() && imageBlocks.length === 0) return null;
+  if (!text.trim() && imageBlocks.length === 0 && fileBlocks.length === 0) return null;
   return (
     <>
       {text.trim() && (
@@ -256,6 +259,19 @@ export function OutputBlock({ blocks, t, workdir }: { blocks: MessageBlock[]; t:
         <div className="flex flex-wrap gap-3 mt-2">
           {imageBlocks.map((img, i) => (
             <ImageFigure key={i} block={img} onLightbox={setLightboxSrc} t={t} />
+          ))}
+        </div>
+      )}
+      {fileBlocks.length > 0 && (
+        <div className="flex flex-col gap-2 mt-2">
+          {fileBlocks.map((file, i) => (
+            <FileChip
+              key={i}
+              url={file.content}
+              fileName={file.fileName || 'file'}
+              fileSize={file.fileSize}
+              caption={file.fileCaption}
+            />
           ))}
         </div>
       )}

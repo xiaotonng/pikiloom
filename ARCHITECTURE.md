@@ -98,7 +98,12 @@ The dashboard is not just a setup page — it is the main local control plane fo
 Registered by `agent/mcp/session-server.ts`:
 
 - `im_list_files`
-- `im_send_file`
+- `im_send_file` — hands a file to the user via the **active terminal**. On an IM
+  channel it uploads to the chat; on the dashboard it is recorded to the
+  per-session delivered-artifact manifest (`agent/artifacts.ts`) and served over
+  HTTP by the attachment endpoint, so a remote browser can fetch it. Both paths
+  record the delivery, so a session watched from either terminal shows the same
+  artifacts (live via the stream snapshot, durably on reload).
 - `im_ask_user`
 
 Built-in MCP servers togglable from the Extensions tab:

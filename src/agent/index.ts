@@ -40,12 +40,13 @@ export type {
 } from './types.js';
 export { IMAGE_EXTS } from './types.js';
 
-// ── Re-export: image pipeline ──────────────────────────────────────────────
+// ── Re-export: attachment pipeline (images + delivered files) ───────────────
 export {
   attachAgentImage,
   attachInlineImage,
   materializeImage,
-  rewriteImageBlocksForTransport,
+  rewriteAttachmentBlocksForTransport,
+  attachmentUrl,
   resolveAllowedAttachmentPath,
   allowedAttachmentRoots,
   decodeAttachmentPathParam,
@@ -56,6 +57,16 @@ export {
   type MaterializedImage,
   type TransportContext,
 } from './images.js';
+
+// ── Re-export: delivered-artifact manifest ──────────────────────────────────
+export {
+  deliverArtifact,
+  readDeliveredArtifacts,
+  deliveredArtifactBlocks,
+  mimeForArtifact,
+  type DeliveredArtifact,
+  type ArtifactKind,
+} from './artifacts.js';
 
 // ── Re-export: utilities ────────────────────────────────────────────────────
 export {

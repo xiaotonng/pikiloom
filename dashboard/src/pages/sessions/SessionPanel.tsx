@@ -891,6 +891,7 @@ export const SessionPanel = memo(function SessionPanel({
                   turn={turn}
                   turnIndex={absoluteTurnIndex}
                   agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} t={t}
+                  workdir={workdir}
                   onResend={(txt) => {
                     scrollToBottomRef.current = true;
                     handleSendStart(txt);
@@ -956,7 +957,7 @@ export const SessionPanel = memo(function SessionPanel({
             {liveStream && liveStreamShouldRender(liveStream) && (
               <div className="mb-6">
                 <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} liveStartedAt={liveStream.phase === 'streaming' ? liveStream.startedAt ?? null : null} />
-                <LivePreview stream={liveStream} t={t} />
+                <LivePreview stream={liveStream} t={t} workdir={workdir} />
               </div>
             )}
             <div className="h-4" />

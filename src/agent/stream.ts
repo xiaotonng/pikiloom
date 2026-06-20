@@ -506,7 +506,7 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
   // Start MCP bridge for IM tools (when sendFile is available) and/or supplemental servers (browser, etc.)
   let bridge: import('./mcp/bridge.js').McpBridgeHandle | null = null;
   try {
-    const { startMcpBridge } = await import('./mcp/bridge.js');
+    const { startMcpBridge, redactMcpConfigForLog } = await import('./mcp/bridge.js');
     const sessionDir = path.dirname(session.workspacePath);
     bridge = await startMcpBridge({
       sessionDir,
@@ -525,7 +525,7 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       if (bridge.configPath) agentLog(`[mcp] bridge started on ${bridge.configPath}`);
       else if (bridge.mcpServers) agentLog(`[mcp] bridge registered with ${Object.keys(bridge.mcpServers).length} server(s)`);
       else agentLog('[mcp] bridge registered with codex');
-      try { agentLog(`[mcp] config content:\n${fs.readFileSync(bridge.configPath, 'utf-8')}`); } catch {};
+      try { if (bridge.configPath) agentLog(`[mcp] config content:\n${redactMcpConfigForLog(bridge.configPath)}`); } catch {};
     }
   } catch (e: any) {
     agentWarn(`[mcp] bridge start failed: ${e.message} — proceeding without MCP`);

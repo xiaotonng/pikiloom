@@ -1,17 +1,17 @@
-import { useState, memo, type ReactNode } from 'react';
+import { useMemo, useState, memo, type ReactNode } from 'react';
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { cn, getAgentMeta } from '../../utils';
 import { BrandIcon } from '../../components/BrandIcon';
-import { mdComponents, mdPlugins } from './markdown';
+import { createMarkdownComponents, mdPlugins } from './markdown';
 import { isContinuationSummary } from './utils';
 import { AssistantMsg, hasRenderableAssistant } from './AssistantContent';
 import type { MessageBlock, StreamPreviewMeta } from '../../types';
 import type { Turn } from './utils';
 
-export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, onResend, onEdit, onFork }: {
-  turn: Turn; turnIndex?: number; agent: string; meta: ReturnType<typeof getAgentMeta>; model?: string | null; effort?: string | null; t: (k: string) => string;
+export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork }: {
+  turn: Turn; turnIndex?: number; agent: string; meta: ReturnType<typeof getAgentMeta>; model?: string | null; effort?: string | null; t: (k: string) => string; workdir?: string | null;
   /** BYOK provider name shown on the assistant turn header — set when the
    *  agent is currently bound to a Profile. Saved turns lack this in their
    *  usage payload, so we accept it from the caller as a session-level prop. */
@@ -26,6 +26,7 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
   // the turn also contains an assistant response.
   const isSystemMsg = turn.user && isContinuationSummary(turn.user.text);
   const handleFork = onFork && typeof turnIndex === 'number' ? () => onFork(turnIndex) : undefined;
+  const markdownComponents = useMemo(() => createMarkdownComponents({ workdir }), [workdir]);
   // Skip the assistant header entirely when there's nothing to put under it —
   // a phantom header reads as "Claude said something invisible" to users.
   const showAssistant = !!turn.assistant && hasRenderableAssistant(turn.assistant);
@@ -37,7 +38,7 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
       )}
       {isSystemMsg && turn.user && !turn.assistant && (
         <div className="mb-4 px-4 py-3 rounded-lg bg-[rgba(255,255,255,0.02)] border border-edge/20 text-[12.5px] leading-[1.7] text-fg-4">
-          <ReactMarkdown remarkPlugins={mdPlugins} components={mdComponents}>
+          <ReactMarkdown remarkPlugins={mdPlugins} components={markdownComponents}>
             {turn.user.text}
           </ReactMarkdown>
         </div>
@@ -46,7 +47,7 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
         <>
           <TurnDivider agent={agent} meta={meta} model={model} effort={effort} providerName={providerName} previewMeta={turn.assistant!.usage ?? null} />
           <div className="mb-6">
-            <AssistantMsg message={turn.assistant!} t={t} />
+            <AssistantMsg message={turn.assistant!} t={t} workdir={workdir} />
           </div>
         </>
       )}

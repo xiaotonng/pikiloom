@@ -19,6 +19,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { loadUserConfig, saveUserConfig } from '../../core/config/user-config.js';
 import type { McpServerConfig } from '../../core/config/user-config.js';
+import { terminateProcessTree } from '../../core/process-control.js';
 import {
   getRecommendedMcpServers,
   type RecommendedMcpServer,
@@ -671,29 +672,38 @@ export async function checkMcpHealth(config: McpServerConfig, timeoutMs = 10_000
   return new Promise((resolve) => {
     const start = Date.now();
     let checkInterval: ReturnType<typeof setInterval> | null = null;
+    let settled = false;
 
     const cleanup = () => {
       if (checkInterval) { clearInterval(checkInterval); checkInterval = null; }
       clearTimeout(timer);
     };
+    const stopChildTree = () => {
+      terminateProcessTree(child, { signal: 'SIGTERM', forceSignal: 'SIGKILL', forceAfterMs: 1500 });
+    };
+    const finish = (result: McpHealthResult) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
 
     const child = spawn(config.command!, config.args || [], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...config.env },
+      detached: process.platform !== 'win32',
     });
 
     const timer = setTimeout(() => {
-      cleanup();
-      child.kill();
-      resolve({ ok: false, error: `timeout after ${timeoutMs}ms`, elapsedMs: Date.now() - start });
+      stopChildTree();
+      finish({ ok: false, error: `timeout after ${timeoutMs}ms`, elapsedMs: Date.now() - start });
     }, timeoutMs);
 
     let stdout = '';
     child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
 
     child.on('error', (err) => {
-      cleanup();
-      resolve({ ok: false, error: err.message, elapsedMs: Date.now() - start });
+      finish({ ok: false, error: err.message, elapsedMs: Date.now() - start });
     });
 
     const initRequest = JSON.stringify({
@@ -711,8 +721,8 @@ export async function checkMcpHealth(config: McpServerConfig, timeoutMs = 10_000
     try {
       child.stdin?.write(header + initRequest);
     } catch {
-      cleanup();
-      resolve({ ok: false, error: 'failed to write to stdin', elapsedMs: Date.now() - start });
+      stopChildTree();
+      finish({ ok: false, error: 'failed to write to stdin', elapsedMs: Date.now() - start });
       return;
     }
 
@@ -733,7 +743,7 @@ export async function checkMcpHealth(config: McpServerConfig, timeoutMs = 10_000
       try { child.stdin?.write(toolsHeader + toolsRequest); } catch { /* best-effort */ }
 
       setTimeout(() => {
-        child.kill();
+        stopChildTree();
         const tools: string[] = [];
         try {
           const jsonMatches = stdout.match(/\{[^{}]*"tools"\s*:\s*\[[\s\S]*?\]\s*[^{}]*\}/g);
@@ -752,9 +762,8 @@ export async function checkMcpHealth(config: McpServerConfig, timeoutMs = 10_000
           }
         } catch { /* best effort */ }
 
-        resolve({ ok: true, tools: tools.length ? tools : undefined, elapsedMs: Date.now() - start });
+        finish({ ok: true, tools: tools.length ? tools : undefined, elapsedMs: Date.now() - start });
       }, 1500);
     }, 100);
   });
 }
-

@@ -388,8 +388,8 @@ export const api = {
     json<{ ok: boolean; removed?: boolean; error?: string }>('/api/workspaces', { ...opts, method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: wsPath }) }),
 
   // Editor integration
-  openInEditor: (filePath: string, target?: OpenTarget) =>
-    post<{ ok: boolean; error?: string }>('/api/open-in-editor', { filePath, target }),
+  openInEditor: (filePath: string, target?: OpenTarget, basePath?: string | null) =>
+    post<{ ok: boolean; error?: string }>('/api/open-in-editor', { filePath, target, basePath }),
 
   // Session interaction
   sendSessionMessage: (

@@ -242,6 +242,62 @@ export const PEEKABOO_WARM_ARGV = ['-y', '-p', PEEKABOO_NPX_PACKAGE, 'peekaboo',
 
 let peekabooWarmStarted = false;
 
+const PEEKABOO_ENV_ALLOWLIST = [
+  'HOME',
+  'PATH',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+] as const;
+const PEEKABOO_DEFAULT_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+
+function cleanEnvString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('\0')) return null;
+  return trimmed;
+}
+
+/**
+ * Peekaboo only needs a normal user shell environment so npx can resolve/cache
+ * the package. Do not inherit the full pikiloom/agent environment here: it may
+ * contain provider API keys, channel tokens, OAuth bearer values, or database
+ * URLs that a GUI MCP server has no reason to see.
+ */
+export function buildPeekabooChildEnv(
+  env: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const safe: Record<string, string> = {};
+  for (const key of PEEKABOO_ENV_ALLOWLIST) {
+    const value = cleanEnvString(env[key]);
+    if (value) safe[key] = value;
+  }
+  safe.PATH ||= PEEKABOO_DEFAULT_PATH;
+  safe.HOME ||= os.homedir();
+  safe.PIKILOOM_MCP_SERVER = 'peekaboo';
+  safe.npm_config_yes = 'true';
+  return safe;
+}
+
+function peekabooEnvArgs(env: Record<string, string>): string[] {
+  return Object.entries(env).map(([key, value]) => `${key}=${value}`);
+}
+
+function buildPeekabooMcpServer(): RegisteredMcpServer {
+  const safeEnv = buildPeekabooChildEnv();
+  return {
+    name: 'peekaboo',
+    command: '/usr/bin/env',
+    args: ['-i', ...peekabooEnvArgs(safeEnv), 'npx', ...PEEKABOO_MCP_ARGV],
+  };
+}
+
 /**
  * Pre-warm the Peekaboo npx package so the agent's MCP server connects instantly.
  *
@@ -263,7 +319,11 @@ export function ensurePeekabooWarm(): void {
   if (process.platform !== 'darwin' || peekabooWarmStarted) return;
   peekabooWarmStarted = true;
   try {
-    const child = spawn('npx', PEEKABOO_WARM_ARGV, { stdio: 'ignore', detached: true });
+    const child = spawn('npx', PEEKABOO_WARM_ARGV, {
+      stdio: 'ignore',
+      detached: true,
+      env: buildPeekabooChildEnv(),
+    });
     // npx missing / spawn failure: clear the latch so a later call can retry.
     child.on('error', () => { peekabooWarmStarted = false; });
     child.unref();
@@ -293,11 +353,7 @@ export function buildSupplementalMcpServers(
   if (gui.peekabooEnabled && process.platform === 'darwin') {
     // Peekaboo — native macOS GUI automation via Accessibility + ScreenCaptureKit.
     // Run the dedicated MCP bin from the multi-bin @steipete/peekaboo package.
-    servers.push({
-      name: 'peekaboo',
-      command: 'npx',
-      args: [...PEEKABOO_MCP_ARGV],
-    });
+    servers.push(buildPeekabooMcpServer());
   }
   return servers;
 }
@@ -374,6 +430,34 @@ function extractBearerToken(headers?: Record<string, string>): string | null {
 function codexBearerEnvName(serverName: string): string {
   const safe = serverName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   return `PIKILOOM_MCP_BEARER_${safe || 'UNNAMED'}`;
+}
+
+const REDACTED = '[REDACTED]';
+const SENSITIVE_CONFIG_KEY_RE = /(authorization|bearer|token|secret|password|passwd|api[_-]?key|credential|cookie|session|connection[_-]?string|dsn)/i;
+const URL_PASSWORD_RE = /([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^@\s/]+)@/gi;
+const QUERY_SECRET_RE = /([?&](?:access_token|api[_-]?key|key|token|secret|password|passwd)=)[^&\s]+/gi;
+
+function redactStringForLog(key: string, value: string): string {
+  if (SENSITIVE_CONFIG_KEY_RE.test(key)) {
+    const bearer = /^\s*Bearer\s+/i.test(value);
+    return bearer ? `Bearer ${REDACTED}` : REDACTED;
+  }
+  return value
+    .replace(URL_PASSWORD_RE, `$1$2:${REDACTED}@`)
+    .replace(QUERY_SECRET_RE, `$1${REDACTED}`);
+}
+
+function redactForLog(value: unknown, key = ''): unknown {
+  if (typeof value === 'string') return redactStringForLog(key, value);
+  if (Array.isArray(value)) return value.map(item => redactForLog(item, key));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .map(([childKey, childValue]) => [childKey, redactForLog(childValue, childKey)]));
+}
+
+export function redactMcpConfigForLog(configPath: string): string {
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  return JSON.stringify(redactForLog(parsed), null, 2);
 }
 
 export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
@@ -516,6 +600,110 @@ function reapStalePlaywrightMcpProcesses(
     if (isOurDescendant(pid)) { spared.push(pid); continue; }
     try {
       process.kill(pid, 'SIGTERM');
+      reaped.push(pid);
+    } catch {
+      // Already dead — no-op.
+    }
+  }
+  return { reaped, spared };
+}
+
+// ---------------------------------------------------------------------------
+// Stale peekaboo-mcp reaper
+// ---------------------------------------------------------------------------
+
+function commandTokenBase(token: string): string {
+  return path.basename(token.replace(/^"+|"+$/g, '')).replace(/\.(?:cmd|exe)$/i, '').toLowerCase();
+}
+
+/**
+ * Pure matcher for stale-process hygiene. It intentionally targets the
+ * long-running MCP server only, not the quick cache warm (`peekaboo --version`).
+ */
+export function _matchPeekabooMcpProcessCommand(command: string): boolean {
+  if (!command || !command.includes('peekaboo-mcp')) return false;
+  const tokens = command.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  if (commandTokenBase(tokens[0]) === 'node' && (tokens[1] === '-e' || tokens[1] === '--eval')) return false;
+
+  const hasMcpBin = tokens.some(token =>
+    token === 'peekaboo-mcp'
+    || /(?:^|[\\/])peekaboo-mcp(?:$|\s)/.test(token)
+    || /(?:^|[\\/])peekaboo-mcp$/.test(token));
+  if (!hasMcpBin) return false;
+
+  const hasPackage = command.includes('@steipete/peekaboo')
+    || command.includes('@steipete\\peekaboo')
+    || command.includes('/@steipete/peekaboo/');
+  const launcher = commandTokenBase(tokens[0]);
+  const knownLauncher = launcher === 'env' || launcher === 'npx' || launcher === 'npm' || launcher === 'node' || launcher === 'peekaboo-mcp';
+  return hasPackage || knownLauncher;
+}
+
+function commandLooksLikeLiveMcpController(command: string): boolean {
+  if (!command) return false;
+  const text = command.toLowerCase();
+  if (/\bpikiloom\b/.test(text) || text.includes('pikiloom@')) return true;
+  const first = commandTokenBase(command.split(/\s+/)[0] || '');
+  return first === 'claude' || first === 'codex' || first === 'gemini' || first === 'hermes';
+}
+
+const PEEKABOO_REAP_THROTTLE_MS = 30_000;
+const PEEKABOO_REAP_FORCE_AFTER_MS = 2_000;
+let lastPeekabooReapAt = 0;
+
+function reapStalePeekabooMcpProcesses(): { reaped: number[]; spared: number[] } {
+  const reaped: number[] = [];
+  const spared: number[] = [];
+  if (process.platform !== 'darwin') return { reaped, spared };
+  if (Date.now() - lastPeekabooReapAt < PEEKABOO_REAP_THROTTLE_MS) return { reaped, spared };
+  lastPeekabooReapAt = Date.now();
+
+  const result = spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+  if (result.status !== 0) return { reaped, spared };
+
+  const ppidByPid = new Map<number, number>();
+  const commandByPid = new Map<number, string>();
+  const candidates: number[] = [];
+  const lines = String(result.stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    const m = line.match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const ppid = Number(m[2]);
+    if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
+    const command = m[3] || '';
+    ppidByPid.set(pid, ppid);
+    commandByPid.set(pid, command);
+    if (pid === process.pid) continue;
+    if (_matchPeekabooMcpProcessCommand(command)) candidates.push(pid);
+  }
+
+  const hasProtectedAncestor = (pid: number): boolean => {
+    let cur: number | undefined = pid;
+    for (let depth = 0; depth < 40 && cur != null && cur > 1; depth++) {
+      if (cur === process.pid) return true;
+      const command = commandByPid.get(cur) || '';
+      if (cur !== pid && commandLooksLikeLiveMcpController(command)) return true;
+      cur = ppidByPid.get(cur);
+    }
+    return false;
+  };
+
+  for (const pid of candidates) {
+    if (hasProtectedAncestor(pid)) { spared.push(pid); continue; }
+    try {
+      process.kill(pid, 'SIGTERM');
+      const forceTimer = setTimeout(() => {
+        try {
+          process.kill(pid, 0);
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Process already exited or cannot be signalled — no-op.
+        }
+      }, PEEKABOO_REAP_FORCE_AFTER_MS);
+      forceTimer.unref?.();
       reaped.push(pid);
     } catch {
       // Already dead — no-op.
@@ -673,7 +861,13 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
   // Peekaboo ships a native binary behind npx; warm its cache out-of-band so the
   // agent's MCP server connects instantly instead of hanging at "Still
   // connecting" on a cold first-run download (see ensurePeekabooWarm).
-  if (gui.peekabooEnabled) ensurePeekabooWarm();
+  if (gui.peekabooEnabled) {
+    ensurePeekabooWarm();
+    const { reaped, spared } = reapStalePeekabooMcpProcesses();
+    if (reaped.length) {
+      opts.onLog?.(`reaped ${reaped.length} stale peekaboo-mcp process(es): pid=${reaped.join(',')}${spared.length ? ` (spared active: ${spared.join(',')})` : ''}`);
+    }
+  }
   // Lazy browser lifecycle: probe an already-running managed Chrome via
   // <profileDir>/DevToolsActivePort and attach if reachable; otherwise leave
   // Chrome unlaunched and let playwright/mcp launch it with `--user-data-dir`

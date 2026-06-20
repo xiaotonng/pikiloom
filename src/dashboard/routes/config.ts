@@ -7,8 +7,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { loadUserConfig, saveUserConfig, applyUserConfig, hasUserConfigFile } from '../../core/config/user-config.js';
-import { expandTilde } from '../../core/platform.js';
+import { expandTilde, whichSync } from '../../core/platform.js';
 import { readGitStatus } from '../../core/git.js';
 import { isSetupReady } from '../../cli/onboarding.js';
 import {
@@ -97,7 +98,100 @@ function runOpenCommand(command: string, args: string[]) {
   }
 }
 
-function openPathWithTarget(filePath: string, target: OpenTarget, isDirectory: boolean) {
+export interface ResolvedOpenPath {
+  filePath: string;
+  line: number | null;
+  column: number | null;
+}
+
+function stripOpenPathWrapping(value: string): string {
+  let text = value.trim();
+  const pairs: Array<[string, string]> = [['`', '`'], ['"', '"'], ["'", "'"], ['<', '>']];
+  let changed = true;
+  while (changed && text.length >= 2) {
+    changed = false;
+    for (const [left, right] of pairs) {
+      if (text.startsWith(left) && text.endsWith(right)) {
+        text = text.slice(left.length, -right.length).trim();
+        changed = true;
+      }
+    }
+  }
+  return text;
+}
+
+function decodeOpenPathInput(raw: string): string {
+  const text = stripOpenPathWrapping(raw);
+  if (text.startsWith('file://')) {
+    try { return fileURLToPath(text); } catch { return decodeURI(text.slice('file://'.length)); }
+  }
+  if (text.startsWith('vscode://file/')) {
+    return decodeURI(`/${text.slice('vscode://file/'.length)}`);
+  }
+  return text;
+}
+
+function resolveOpenBasePath(basePath?: string | null): string {
+  const base = typeof basePath === 'string' && basePath.trim()
+    ? basePath.trim()
+    : runtime.getRuntimeWorkdir(loadUserConfig());
+  return path.resolve(expandTilde(base || process.cwd()));
+}
+
+function splitExistingLineSuffix(candidate: string): ResolvedOpenPath {
+  const normalized = path.normalize(candidate);
+  if (fs.existsSync(normalized)) return { filePath: normalized, line: null, column: null };
+
+  const match = /^(.*?)(?::(\d+)(?::(\d+))?)$/.exec(normalized);
+  if (!match || !match[1]) return { filePath: normalized, line: null, column: null };
+
+  const filePath = path.normalize(match[1]);
+  if (!fs.existsSync(filePath)) return { filePath: normalized, line: null, column: null };
+
+  return {
+    filePath,
+    line: Number(match[2]),
+    column: match[3] ? Number(match[3]) : null,
+  };
+}
+
+export function resolveOpenPathLocator(rawPath: string, basePath?: string | null): ResolvedOpenPath {
+  const decoded = decodeOpenPathInput(rawPath);
+  const expanded = expandTilde(decoded);
+  const absolute = path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(resolveOpenBasePath(basePath), expanded);
+  return splitExistingLineSuffix(absolute);
+}
+
+function editorGotoArg(filePath: string, location?: Pick<ResolvedOpenPath, 'line' | 'column'> | null): string | null {
+  if (!location?.line) return null;
+  return `${filePath}:${location.line}${location.column ? `:${location.column}` : ''}`;
+}
+
+function tryOpenCommand(command: string, args: string[]): boolean {
+  if (!whichSync(command)) return false;
+  try {
+    runOpenCommand(command, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryOpenVSCodeUrl(filePath: string, location?: Pick<ResolvedOpenPath, 'line' | 'column'> | null): boolean {
+  if (!location?.line) return false;
+  const suffix = `:${location.line}${location.column ? `:${location.column}` : ''}`;
+  try {
+    runOpenCommand('open', [`vscode://file${encodeURI(filePath)}${suffix}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function openPathWithTarget(filePath: string, target: OpenTarget, isDirectory: boolean, location?: Pick<ResolvedOpenPath, 'line' | 'column'> | null) {
+  const gotoArg = isDirectory ? null : editorGotoArg(filePath, location);
   if (process.platform === 'darwin') {
     switch (target) {
       case 'finder':
@@ -107,13 +201,17 @@ function openPathWithTarget(filePath: string, target: OpenTarget, isDirectory: b
         runOpenCommand('open', [filePath]);
         return;
       case 'cursor':
+        if (gotoArg && tryOpenCommand('cursor', ['-g', gotoArg])) return;
         runOpenCommand('open', ['-a', 'Cursor', filePath]);
         return;
       case 'windsurf':
+        if (gotoArg && tryOpenCommand('windsurf', ['-g', gotoArg])) return;
         runOpenCommand('open', ['-a', 'Windsurf', filePath]);
         return;
       case 'vscode':
       default:
+        if (gotoArg && tryOpenCommand('code', ['-g', gotoArg])) return;
+        if (gotoArg && tryOpenVSCodeUrl(filePath, location)) return;
         runOpenCommand('open', ['-a', 'Visual Studio Code', filePath]);
         return;
     }
@@ -122,10 +220,12 @@ function openPathWithTarget(filePath: string, target: OpenTarget, isDirectory: b
   if (process.platform === 'win32') {
     switch (target) {
       case 'cursor':
-        runOpenCommand('cursor', [filePath]);
+        if (gotoArg) runOpenCommand('cursor', ['-g', gotoArg]);
+        else runOpenCommand('cursor', [filePath]);
         return;
       case 'windsurf':
-        runOpenCommand('windsurf', [filePath]);
+        if (gotoArg) runOpenCommand('windsurf', ['-g', gotoArg]);
+        else runOpenCommand('windsurf', [filePath]);
         return;
       case 'finder':
       case 'default':
@@ -133,17 +233,20 @@ function openPathWithTarget(filePath: string, target: OpenTarget, isDirectory: b
         return;
       case 'vscode':
       default:
-        runOpenCommand('code', [filePath]);
+        if (gotoArg) runOpenCommand('code', ['-g', gotoArg]);
+        else runOpenCommand('code', [filePath]);
         return;
     }
   }
 
   switch (target) {
     case 'cursor':
-      runOpenCommand('cursor', [filePath]);
+      if (gotoArg) runOpenCommand('cursor', ['-g', gotoArg]);
+      else runOpenCommand('cursor', [filePath]);
       return;
     case 'windsurf':
-      runOpenCommand('windsurf', [filePath]);
+      if (gotoArg) runOpenCommand('windsurf', ['-g', gotoArg]);
+      else runOpenCommand('windsurf', [filePath]);
       return;
     case 'finder':
     case 'default':
@@ -151,7 +254,8 @@ function openPathWithTarget(filePath: string, target: OpenTarget, isDirectory: b
       return;
     case 'vscode':
     default:
-      runOpenCommand('code', [filePath]);
+      if (gotoArg) runOpenCommand('code', ['-g', gotoArg]);
+      else runOpenCommand('code', [filePath]);
       return;
   }
 }
@@ -508,12 +612,18 @@ app.post('/api/open-in-editor', async (c) => {
   try {
     const body = await c.req.json();
     const filePath = typeof body?.filePath === 'string' ? body.filePath.trim() : '';
+    const basePath = typeof body?.basePath === 'string' && body.basePath.trim()
+      ? body.basePath.trim()
+      : typeof body?.workdir === 'string' && body.workdir.trim()
+        ? body.workdir.trim()
+        : null;
     const target = isOpenTarget(body?.target) ? body.target : 'vscode';
     if (!filePath) return c.json({ ok: false, error: 'filePath is required' }, 400);
-    if (!fs.existsSync(filePath)) return c.json({ ok: false, error: 'Path not found' }, 404);
-    const stat = fs.statSync(filePath);
-    openPathWithTarget(filePath, target, stat.isDirectory());
-    return c.json({ ok: true });
+    const resolved = resolveOpenPathLocator(filePath, basePath);
+    if (!fs.existsSync(resolved.filePath)) return c.json({ ok: false, error: 'Path not found' }, 404);
+    const stat = fs.statSync(resolved.filePath);
+    openPathWithTarget(resolved.filePath, target, stat.isDirectory(), resolved);
+    return c.json({ ok: true, filePath: resolved.filePath, line: resolved.line, column: resolved.column });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     runtime.log(`[open-in-editor] failed: ${detail}`);

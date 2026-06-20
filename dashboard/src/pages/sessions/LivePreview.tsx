@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
-import { mdComponents, mdPlugins } from './markdown';
+import { createMarkdownComponents, mdPlugins } from './markdown';
 import { lastNLines, classifyRunEnd } from './utils';
 import { cn, shortenModel } from '../../utils';
 import type { StreamPlan, StreamSubAgent, StreamPreviewMeta, StreamToolCall } from '../../types';
@@ -118,9 +118,11 @@ function useThrottledValue<T>(value: T, intervalMs: number): T {
 export function LivePreview({
   stream,
   t,
+  workdir,
 }: {
   stream: LiveStreamView;
   t: (k: string) => string;
+  workdir?: string | null;
 }) {
   const showPlan = hasPlan(stream.plan);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -157,9 +159,10 @@ export function LivePreview({
   // streaming (and only when the text actually changes — not when activity /
   // thinking / tool rows update around it).
   const liveText = useThrottledValue(stream.text, stream.phase === 'streaming' ? STREAM_MARKDOWN_THROTTLE_MS : 0);
+  const markdownComponents = useMemo(() => createMarkdownComponents({ workdir }), [workdir]);
   const responseMarkdown = useMemo(
-    () => <ReactMarkdown remarkPlugins={mdPlugins} components={mdComponents}>{liveText}</ReactMarkdown>,
-    [liveText],
+    () => <ReactMarkdown remarkPlugins={mdPlugins} components={markdownComponents}>{liveText}</ReactMarkdown>,
+    [liveText, markdownComponents],
   );
 
   return (

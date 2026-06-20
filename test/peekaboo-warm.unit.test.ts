@@ -38,7 +38,9 @@ describe('Peekaboo npx warm', () => {
 
   it('spawns a detached warm once on darwin and is a process-singleton', () => {
     const original = process.platform;
+    const originalOpenAi = process.env.OPENAI_API_KEY;
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    process.env.OPENAI_API_KEY = 'sk-should-not-leak';
     try {
       spawnMock.mockClear();
       ensurePeekabooWarm();
@@ -48,8 +50,12 @@ describe('Peekaboo npx warm', () => {
       expect(cmd).toBe('npx');
       expect(args).toEqual(PEEKABOO_WARM_ARGV);
       expect(opts).toMatchObject({ detached: true, stdio: 'ignore' });
+      expect((opts.env as Record<string, string>).OPENAI_API_KEY).toBeUndefined();
+      expect((opts.env as Record<string, string>).PIKILOOM_MCP_SERVER).toBe('peekaboo');
     } finally {
       Object.defineProperty(process, 'platform', { value: original, configurable: true });
+      if (originalOpenAi == null) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAi;
     }
   });
 });

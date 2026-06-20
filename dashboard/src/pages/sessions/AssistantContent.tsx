@@ -1,9 +1,9 @@
-import { useState, useRef, useLayoutEffect } from 'react';
+import { useState, useRef, useLayoutEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from '../../utils';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
-import { mdComponents, mdPlugins } from './markdown';
+import { createMarkdownComponents, mdPlugins } from './markdown';
 import { lastNLines, summarizeToolResult, summarizeToolUse } from './utils';
 import { ImageLightbox } from './TurnView';
 import { SubAgentCard } from './LivePreview';
@@ -12,7 +12,7 @@ import type { RichMessage, MessageBlock } from '../../types';
 /* ═══════════════════════════════════════════════════════════════
    Assistant message — separated activity, thinking, output
    ═══════════════════════════════════════════════════════════════ */
-export function AssistantMsg({ message, t }: { message: RichMessage; t: (k: string) => string }) {
+export function AssistantMsg({ message, t, workdir }: { message: RichMessage; t: (k: string) => string; workdir?: string | null }) {
   const { activityBlocks, thinkingBlocks, planBlocks, subAgentBlocks, outputBlocks, noticeBlocks } = categorizeAssistantBlocks(message.blocks);
   const latestPlan = [...planBlocks].reverse().find(block => hasPlan(block.plan));
   const hasContent = activityBlocks.length > 0 || subAgentBlocks.length > 0 || !!latestPlan?.plan || thinkingBlocks.length > 0 || outputBlocks.length > 0 || noticeBlocks.length > 0;
@@ -25,7 +25,7 @@ export function AssistantMsg({ message, t }: { message: RichMessage; t: (k: stri
       ) : null)}
       {latestPlan?.plan && <PlanProgressCard plan={latestPlan.plan} t={t} className="max-w-[760px]" />}
       {thinkingBlocks.length > 0 && <ThinkingSection blocks={thinkingBlocks} t={t} />}
-      {outputBlocks.length > 0 && <OutputBlock blocks={outputBlocks} t={t} />}
+      {outputBlocks.length > 0 && <OutputBlock blocks={outputBlocks} t={t} workdir={workdir} />}
       {noticeBlocks.length > 0 && <SystemNoticeSection blocks={noticeBlocks} t={t} />}
     </div>
   );
@@ -236,17 +236,18 @@ function ImageFigure({
   );
 }
 
-export function OutputBlock({ blocks, t }: { blocks: MessageBlock[]; t: (k: string) => string }) {
+export function OutputBlock({ blocks, t, workdir }: { blocks: MessageBlock[]; t: (k: string) => string; workdir?: string | null }) {
   const textBlocks = blocks.filter(b => b.type === 'text');
   const imageBlocks = blocks.filter(b => b.type === 'image');
   const text = textBlocks.map(b => b.content).filter(Boolean).join('\n\n');
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const markdownComponents = useMemo(() => createMarkdownComponents({ workdir }), [workdir]);
   if (!text.trim() && imageBlocks.length === 0) return null;
   return (
     <>
       {text.trim() && (
         <div className="session-md text-[13.5px] leading-[1.75] text-fg-2">
-          <ReactMarkdown remarkPlugins={mdPlugins} components={mdComponents}>
+          <ReactMarkdown remarkPlugins={mdPlugins} components={markdownComponents}>
             {text}
           </ReactMarkdown>
         </div>

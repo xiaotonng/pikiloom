@@ -137,7 +137,12 @@ def check(channel: str, url: str, draft: str = "") -> dict:
                     break
 
     # 4. duplicate
-    if registry.seen(channel, url):
+    # The orchestrator records a draft before calling guard.py so variation
+    # checks can see the exact text. Let the current pending record through;
+    # block only terminal touchpoints from earlier runs.
+    key = registry.key_for(channel, url)
+    existing = [r for r in registry.load() if r.get("key") == key]
+    if any(r.get("status") not in ("drafted", "approved") for r in existing):
         reasons.append("duplicate: already in registry")
 
     rs = registry.repo_or_sub(channel, url)

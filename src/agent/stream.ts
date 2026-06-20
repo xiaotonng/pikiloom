@@ -287,6 +287,12 @@ export async function run(
     detached: process.platform !== 'win32',
   });
   agentLog(`[spawn] pid=${proc.pid}`);
+  proc.stdin?.on('error', (e: any) => {
+    // Some CLIs can exit after producing all output before we finish writing
+    // stdin. Treat EPIPE as a normal early-close race; the exit code/stdout
+    // still determine the stream result.
+    if (e?.code !== 'EPIPE') agentWarn(`[stdin] write failed: ${e?.message || e}`);
+  });
   const abortStream = () => {
     if (interrupted || proc.killed) return;
     interrupted = true;

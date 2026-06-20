@@ -279,6 +279,7 @@ The shape that truly matters: **You never have to leave your preferred environme
 |---|---|
 | `/start` | View entry info, the active agent, and your working directory |
 | `/sessions` | View, switch, or create new sessions |
+| `/digest` | Show a compact digest of recent sessions in the current workspace |
 | `/agents` | Switch the active Agent (Claude · Codex · Gemini · Hermes) |
 | `/models` | View and switch the model or reasoning effort for the session |
 | `/mode` | Toggle plan mode / reasoning effort |

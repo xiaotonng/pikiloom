@@ -41,6 +41,8 @@ import {
   resolveSkillPrompt,
   summarizePromptForStatus,
   handleGoalCommand,
+  getSessionsDigestData,
+  formatSessionsDigestText,
 } from '../../bot/commands.js';
 import {
   buildAgentsCommandView,
@@ -444,6 +446,11 @@ export class TelegramBot extends Bot {
 
   private async cmdSessions(ctx: TgContext) {
     await this.sendCommandView(ctx, await buildSessionsCommandView(this, ctx.chatId, 0, this.sessionsPageSize));
+  }
+
+  private async cmdDigest(ctx: TgContext) {
+    const data = await getSessionsDigestData(this, ctx.chatId);
+    await ctx.reply(formatSessionsDigestText(data));
   }
 
   private async cmdStatus(ctx: TgContext) {
@@ -1262,6 +1269,7 @@ export class TelegramBot extends Bot {
       switch (cmd) {
         case 'start':    await this.cmdStart(ctx); return;
         case 'sessions': await this.cmdSessions(ctx); return;
+        case 'digest': await this.cmdDigest(ctx); return;
         case 'agents':   await this.cmdAgents(ctx); return;
         case 'models':   await this.cmdModels(ctx); return;
         case 'mode':     await this.cmdMode(ctx); return;

@@ -296,6 +296,7 @@ Environment variables (per agent):
 
 Bot commands (available once running):
   /sessions   List or switch coding sessions
+  /digest     Show a compact digest of recent sessions
   /agents     List or switch AI agents
   /models     List or switch models
   /status     Bot status, uptime, and token usage

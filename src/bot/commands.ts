@@ -245,6 +245,24 @@ export interface SessionsPageData {
   sessions: SessionEntry[];
 }
 
+export interface SessionDigestEntry {
+  index: number;
+  agent: Agent;
+  title: string;
+  time: string;
+  runState: SessionEntry['runState'];
+  runDetail: string | null;
+  isCurrent: boolean;
+  sessionKey: string;
+}
+
+export interface SessionsDigestData {
+  workspaceName: string;
+  agentTotals: Record<string, number>;
+  total: number;
+  entries: SessionDigestEntry[];
+}
+
 export interface SessionTurnPreviewData {
   userText: string | null;
   assistantText: string | null;
@@ -329,6 +347,61 @@ export async function getSessionsPageData(bot: Bot, chatId: ChatId, page: number
     totalPages,
     sessions: entries,
   };
+}
+
+export async function getSessionsDigestData(
+  bot: Bot,
+  chatId: ChatId,
+  limit = 8,
+): Promise<SessionsDigestData> {
+  const pageData = await getSessionsPageData(bot, chatId, 0, Math.max(1, limit));
+  const entries: SessionDigestEntry[] = pageData.sessions.map((session, index) => ({
+    index: index + 1,
+    agent: session.agent,
+    title: session.title,
+    time: session.time,
+    runState: session.runState,
+    runDetail: session.runDetail,
+    isCurrent: session.isCurrent,
+    sessionKey: session.key,
+  }));
+  return {
+    workspaceName: pageData.workspaceName,
+    agentTotals: pageData.agentTotals,
+    total: pageData.total,
+    entries,
+  };
+}
+
+export function formatSessionsDigestText(data: SessionsDigestData): string {
+  if (!data.entries.length) {
+    return data.workspaceName
+      ? `No sessions in ${data.workspaceName} yet. Send a message to start.`
+      : 'No sessions yet. Send a message to start.';
+  }
+
+  const agentBits = Object.entries(data.agentTotals)
+    .map(([agent, count]) => `${agent}×${count}`)
+    .join(' · ');
+  const lines = [
+    `Session digest — ${data.workspaceName || 'workspace'} (${data.total} total${agentBits ? ` · ${agentBits}` : ''})`,
+    '',
+  ];
+
+  for (const entry of data.entries) {
+    const flags = [
+      entry.isCurrent ? 'current' : null,
+      entry.runState === 'running' ? 'running' : null,
+      entry.runState === 'incomplete' ? 'unfinished' : null,
+    ].filter(Boolean).join(', ');
+    const flagSuffix = flags ? ` [${flags}]` : '';
+    lines.push(`${entry.index}. ${entry.agent} · ${entry.title}${flagSuffix}`);
+    const detail = entry.runDetail ? ` · ${entry.runDetail}` : '';
+    lines.push(`   ${entry.time}${detail}`);
+  }
+
+  lines.push('', 'Switch: /sessions <#>  ·  Browse: /sessions');
+  return lines.join('\n');
 }
 
 export function extractLastSessionTurn(
@@ -683,9 +756,9 @@ export function resolveSkillPrompt(bot: Bot, chatId: ChatId, cmd: string, args: 
   const paths = getProjectSkillPaths(wd, skill.name);
   const skillFile = paths.claudeSkillFile || paths.sharedSkillFile || paths.agentsSkillFile;
   if (skillFile) {
-    prompt = `${workdirHint}Read the skill definition at \`${skillFile}\` and execute the instructions defined there.${suffix}`;
+    prompt = `${workdirHint}Read the skill definition at \`${relSkillPath(wd, skillFile)}\` and execute the instructions defined there.${suffix}`;
   } else {
-    const fallbackPath = `${wd}/.pikiloom/skills/${skill.name}/SKILL.md`;
+    const fallbackPath = relSkillPath(wd, path.join(wd, '.pikiloom', 'skills', skill.name, 'SKILL.md'));
     prompt = `${workdirHint}Read the skill definition at \`${fallbackPath}\` and execute the instructions defined there.${suffix}`;
   }
   return { prompt, skillName: skill.name };

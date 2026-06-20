@@ -31,6 +31,8 @@ import {
   getSkillsListData,
   getModelsListData,
   getSessionsPageData,
+  getSessionsDigestData,
+  formatSessionsDigestText,
   getStartData,
   getWorkspacesData,
 } from '../../bot/commands.js';
@@ -154,6 +156,7 @@ export class DingtalkBot extends Bot {
           '/switch [path] - Change workdir',
           '/workspaces [#] - Pick saved workspace',
           '/sessions [new|#] - List/switch sessions',
+          '/digest - Recent session digest',
           '/skills - List project skills',
           '/stop - Stop current task',
           '/restart - Restart pikiloom',
@@ -168,6 +171,7 @@ export class DingtalkBot extends Bot {
       case 'switch': await this.cmdSwitch(ctx, args); return true;
       case 'workspaces': await this.cmdWorkspaces(ctx, args); return true;
       case 'sessions': await this.cmdSessions(ctx, args); return true;
+      case 'digest': await this.cmdDigest(ctx); return true;
       case 'skills': await this.cmdSkills(ctx); return true;
       case 'stop': await this.cmdStop(ctx); return true;
       case 'restart': await this.cmdRestart(ctx); return true;
@@ -186,6 +190,11 @@ export class DingtalkBot extends Bot {
     }
     lines.push('', 'Ready. Send a message to start.');
     await ctx.reply(lines.join('\n'));
+  }
+
+  private async cmdDigest(ctx: DingtalkContext) {
+    const data = await getSessionsDigestData(this, ctx.chatId);
+    await ctx.reply(formatSessionsDigestText(data));
   }
 
   private async cmdStatus(ctx: DingtalkContext) {

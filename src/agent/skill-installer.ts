@@ -26,6 +26,15 @@ export interface SkillInstallOpts {
   skill?: string;
   /** Project working directory (required for project-scoped installs). */
   workdir?: string;
+  /**
+   * Default-branch HEAD commit SHA the skill is being pulled from. Recorded in
+   * the provenance ledger on success so the dashboard can later diff it against
+   * the remote and surface "update available". Resolved by the caller (the
+   * route layer owns GitHub access); omit when unknown.
+   */
+  sourceSha?: string | null;
+  /** Skill directory names pulled from this source, recorded for display. */
+  sourceNames?: string[];
 }
 
 export interface SkillInstallResult {
@@ -46,6 +55,114 @@ export interface SkillRemoveResult {
 const GLOBAL_SKILLS_DIR = path.join(os.homedir(), STATE_DIR_NAME, 'skills');
 const INSTALL_TIMEOUT_MS = 60_000;
 const REMOVE_TIMEOUT_MS = 10_000;
+
+// ---------------------------------------------------------------------------
+// Install ledger — provenance for update detection
+//
+// `npx skills add` drops skill directories but records no source or version, so
+// there's nothing to diff a local install against a moving remote. We keep a
+// sidecar ledger next to the skills (one per scope: global beside
+// ~/.pikiloom/skills, project beside <workdir>/.pikiloom/skills) mapping each
+// installed collection (its GitHub source) to the default-branch commit SHA it
+// was pulled from. The dashboard reads the live remote HEAD, diffs it against
+// the ledger to surface "update available", then re-runs install to advance it.
+//
+// The file is a hidden sibling of the skill dirs; skill discovery and removal
+// only ever touch named sub-directories, so it's invisible to both.
+// ---------------------------------------------------------------------------
+
+const SKILL_LEDGER_FILE = '.pikiloom-skills-ledger.json';
+
+export interface SkillLedgerEntry {
+  /** Original source as given to `skills add` (owner/repo or a full URL). */
+  source: string;
+  /** Default-branch HEAD SHA at install time; null when it couldn't be resolved. */
+  sha: string | null;
+  /** Epoch ms of the install/update that wrote this entry. */
+  installedAt: number;
+  /** Skill directory names pulled from this source, when known. */
+  names?: string[];
+}
+
+interface SkillLedger {
+  version: 1;
+  entries: Record<string, SkillLedgerEntry>;
+}
+
+interface LedgerScope { global?: boolean; workdir?: string }
+
+function ledgerPath(opts: LedgerScope): string | null {
+  if (opts.global) return path.join(GLOBAL_SKILLS_DIR, SKILL_LEDGER_FILE);
+  if (opts.workdir) return path.join(opts.workdir, STATE_DIR_NAME, 'skills', SKILL_LEDGER_FILE);
+  return null;
+}
+
+/** Normalize a source to a stable key: lowercase `owner/repo`, URL/.git stripped. */
+export function normalizeSkillSourceKey(source: string): string {
+  return String(source || '')
+    .trim()
+    .replace(/^https?:\/\/(www\.)?github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function readLedger(opts: LedgerScope): SkillLedger {
+  const p = ledgerPath(opts);
+  if (!p) return { version: 1, entries: {} };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
+      return { version: 1, entries: parsed.entries as Record<string, SkillLedgerEntry> };
+    }
+  } catch { /* missing or corrupt — treat as empty */ }
+  return { version: 1, entries: {} };
+}
+
+function writeLedger(ledger: SkillLedger, opts: LedgerScope): void {
+  const p = ledgerPath(opts);
+  if (!p) return;
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(ledger, null, 2));
+  } catch { /* best effort — provenance is non-critical */ }
+}
+
+/** Look up the recorded provenance for a source in the given scope. */
+export function getSkillLedgerEntry(source: string, opts: LedgerScope): SkillLedgerEntry | null {
+  const key = normalizeSkillSourceKey(source);
+  if (!key) return null;
+  return readLedger(opts).entries[key] || null;
+}
+
+/** Record (or refresh) the provenance for a source after a successful install/update. */
+export function recordSkillInstall(
+  source: string,
+  opts: LedgerScope & { sha?: string | null; names?: string[] },
+): void {
+  const key = normalizeSkillSourceKey(source);
+  if (!key) return;
+  const ledger = readLedger(opts);
+  const prev = ledger.entries[key];
+  ledger.entries[key] = {
+    source: source.trim(),
+    sha: opts.sha ?? prev?.sha ?? null,
+    installedAt: Date.now(),
+    names: opts.names && opts.names.length ? opts.names : prev?.names,
+  };
+  writeLedger(ledger, opts);
+}
+
+/** Drop a source's provenance — call when its skills are removed. */
+export function forgetSkillInstall(source: string, opts: LedgerScope): void {
+  const key = normalizeSkillSourceKey(source);
+  if (!key) return;
+  const ledger = readLedger(opts);
+  if (ledger.entries[key]) {
+    delete ledger.entries[key];
+    writeLedger(ledger, opts);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -133,6 +250,15 @@ export async function installSkill(source: string, opts: SkillInstallOpts = {}):
     const errorMsg = result.stderr.trim().split('\n').pop()?.trim() || 'installation failed';
     return { ok: false, error: errorMsg, output: result.stdout + result.stderr };
   }
+
+  // Record provenance so the dashboard can later detect remote updates. Scoped
+  // to where the skill landed; best-effort, never fails the install.
+  recordSkillInstall(source, {
+    global: isGlobal,
+    workdir,
+    sha: opts.sourceSha ?? null,
+    names: opts.sourceNames ?? (skill ? [skill] : undefined),
+  });
 
   return { ok: true, output: result.stdout };
 }

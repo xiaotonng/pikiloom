@@ -1,6 +1,6 @@
 {
   "name": "pikiloom",
-  "version": "0.4.21",
+  "version": "0.4.22",
   "description": "Put the world's smartest AI agents in your pocket. Command local Claude & Gemini via IM. | 让最好用的 IM 变成你电脑上的顶级 Agent 控制台",
   "type": "module",
   "bin": {
@@ -32,7 +32,8 @@
     "command": "set -ae && . ./.env && set +a && tsx src/cli/run.ts",
     "build:dashboard": "vite build --config dashboard/vite.config.ts",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && npm run build:dashboard && tsc",
+    "copy:pikichannel-web": "node -e \"require('fs').cpSync('src/pikichannel/web','dist/pikichannel/web',{recursive:true})\"",
+    "build": "npm run clean && npm run build:dashboard && tsc && npm run copy:pikichannel-web",
     "postbuild": "node -e \"require('fs').chmodSync('dist/cli/main.js',0o755)\"",
     "prepack": "npm run build",
     "test": "vitest run",
@@ -74,6 +75,7 @@
     "qrcode": "^1.5.4",
     "remark-breaks": "^4.0.0",
     "undici": "^7.22.0",
+    "werift": "^0.23.0",
     "which": "^6.0.1",
     "ws": "^8.18.0"
   },

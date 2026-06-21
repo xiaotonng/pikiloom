@@ -23,11 +23,10 @@ replied_issues.txt
 .pikiclaw/*
 !.pikiclaw/skills/
 !.pikiclaw/skills/**
-.pikiloom/*
-!.pikiloom/skills/
-!.pikiloom/skills/**
-
 # Never commit Python bytecode caches, even under skills/ — MUST stay after the
 # skills un-ignore above (gitignore is last-match-wins) or it gets re-included.
 **/__pycache__/
 *.pyc
+.pikiloom/*
+!.pikiloom/skills/
+!.pikiloom/skills/**

@@ -174,6 +174,12 @@ const AlertIcon = ({ size = 12 }: { size?: number }) => (
   </svg>
 );
 
+const UpdateIcon = ({ size = 12 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+);
+
 /**
  * Slugs we use for the built-in brands that ship as local SVGs (Claude, Codex,
  * Telegram icons, etc.). Anything else is resolved against the SimpleIcons CDN.
@@ -861,12 +867,14 @@ function skillCountSummary(item: SkillCatalogItem, locale: string): string {
 }
 
 function SkillConnectedCard({
-  item, locale, animationDelay, onClick,
+  item, locale, animationDelay, onClick, onUpdate, updating,
 }: {
   item: SkillCatalogItem;
   locale: string;
   animationDelay?: string;
   onClick: () => void;
+  onUpdate?: () => void;
+  updating?: boolean;
 }) {
   return (
     <button
@@ -887,10 +895,18 @@ function SkillConnectedCard({
                 </a>
               )}
             </div>
-            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-[var(--th-ok)] shrink-0"
-                  style={{ background: 'color-mix(in oklab, var(--th-ok) 12%, transparent)' }}>
-              <CheckCircleIcon size={10} />{skillCountSummary(item, locale)}
-            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {item.updateAvailable && (
+                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-[var(--th-warn)]"
+                      style={{ background: 'color-mix(in oklab, var(--th-warn) 14%, transparent)' }}>
+                  <UpdateIcon size={10} />{L(locale, '可更新', 'Update')}
+                </span>
+              )}
+              <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-[var(--th-ok)]"
+                    style={{ background: 'color-mix(in oklab, var(--th-ok) 12%, transparent)' }}>
+                <CheckCircleIcon size={10} />{skillCountSummary(item, locale)}
+              </span>
+            </div>
           </div>
           <div className="mt-0.5 truncate text-[11.5px] text-fg-5">{item.source}</div>
           <div className="mt-1 line-clamp-2 text-[11.5px] text-fg-4">
@@ -907,8 +923,27 @@ function SkillConnectedCard({
           )}
           {item.pushedAt && <span>{formatRelativeTime(item.pushedAt, locale)}</span>}
         </span>
-        <span className="text-fg-5 group-hover:text-primary transition-colors">
-          {L(locale, '管理 →', 'Manage →')}
+        <span className="flex items-center gap-2.5">
+          {item.updateAvailable && onUpdate && (
+            <span
+              role="button"
+              tabIndex={0}
+              aria-label={L(locale, '更新到最新', 'Update to latest')}
+              onClick={(e) => { e.stopPropagation(); if (!updating) onUpdate(); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault(); e.stopPropagation(); if (!updating) onUpdate();
+                }
+              }}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10.5px] font-semibold text-[var(--th-warn)] transition hover:brightness-110"
+              style={{ background: 'color-mix(in oklab, var(--th-warn) 14%, transparent)' }}
+            >
+              {updating ? <Spinner className="h-3 w-3" /> : <><UpdateIcon size={11} />{L(locale, '更新', 'Update')}</>}
+            </span>
+          )}
+          <span className="text-fg-5 group-hover:text-primary transition-colors">
+            {L(locale, '管理 →', 'Manage →')}
+          </span>
         </span>
       </div>
     </button>
@@ -1052,7 +1087,7 @@ function SkillDetailModal({
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [remotePartial, setRemotePartial] = useState(false);
   const [busyName, setBusyName] = useState<string | null>(null);
-  const [bulkBusy, setBulkBusy] = useState<'install' | 'remove' | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<'install' | 'remove' | 'update' | null>(null);
   const [query, setQuery] = useState('');
 
   useEffect(() => {
@@ -1142,6 +1177,19 @@ function SkillDetailModal({
     finally { setBulkBusy(null); }
   }, [item, scope, workdir, locale, toast, onChanged]);
 
+  const handleUpdateAll = useCallback(async () => {
+    if (!item) return;
+    setBulkBusy('update');
+    try {
+      const r = await api.updateSkill(item.source, scope === 'global', workdir);
+      if (r.ok) {
+        toast(L(locale, '已更新到最新版本', 'Updated to the latest version'), true);
+        onChanged();
+      } else toast(r.error || 'Failed', false);
+    } catch (e: any) { toast(e?.message || 'Failed', false); }
+    finally { setBulkBusy(null); }
+  }, [item, scope, workdir, locale, toast, onChanged]);
+
   const handleRemoveAll = useCallback(async () => {
     if (!item || !remoteSkills) return;
     setBulkBusy('remove');
@@ -1191,6 +1239,31 @@ function SkillDetailModal({
           </div>
         </div>
 
+        {item.updateAvailable && (
+          <div
+            className="flex items-start gap-2 rounded-lg px-3 py-2 text-[12px] text-fg-2"
+            style={{
+              background: 'color-mix(in oklab, var(--th-warn) 12%, transparent)',
+              border: '1px solid color-mix(in oklab, var(--th-warn) 30%, transparent)',
+            }}
+          >
+            <span className="mt-0.5 text-[var(--th-warn)]"><UpdateIcon size={13} /></span>
+            <div className="min-w-0">
+              <div className="font-semibold text-[var(--th-warn)]">{L(locale, '检测到新版本', 'A newer version is available')}</div>
+              <div className="mt-0.5 text-fg-4">
+                {L(locale,
+                  '远端仓库有更新，点击「更新到最新」拉取最新内容。',
+                  'The remote repo has moved ahead. Click "Update to latest" to pull the newest content.')}
+                {item.installedSha && item.latestSha && (
+                  <span className="ml-1 font-mono text-[11px] text-fg-5">
+                    {item.installedSha.slice(0, 7)} → {item.latestSha.slice(0, 7)}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="text-[12px] font-semibold text-fg-3">
@@ -1203,6 +1276,25 @@ function SkillDetailModal({
               )}
             </div>
             <div className="flex items-center gap-2">
+              {item.installed && (
+                <Button
+                  variant={item.updateAvailable ? 'primary' : 'outline'}
+                  size="sm"
+                  onClick={handleUpdateAll}
+                  disabled={bulkBusy !== null}
+                >
+                  {bulkBusy === 'update'
+                    ? <Spinner />
+                    : (
+                      <span className="inline-flex items-center gap-1">
+                        <UpdateIcon size={12} />
+                        {item.updateAvailable
+                          ? L(locale, '更新到最新', 'Update to latest')
+                          : L(locale, '重新拉取', 'Re-pull latest')}
+                      </span>
+                    )}
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -1721,6 +1813,7 @@ function SkillsCatalogSection({
   const [customOpen, setCustomOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [removingLocal, setRemovingLocal] = useState<string | null>(null);
+  const [updatingSource, setUpdatingSource] = useState<string | null>(null);
   const toast = useStore(s => s.toast);
 
   const items = data?.items || [];
@@ -1754,6 +1847,18 @@ function SkillsCatalogSection({
       } else toast(r.error || 'Failed', false);
     } catch (e: any) { toast(e?.message || 'Failed', false); }
     finally { setRemovingLocal(null); }
+  }, [scope, workdir, locale, toast, refresh]);
+
+  const handleUpdate = useCallback(async (item: SkillCatalogItem) => {
+    setUpdatingSource(item.source);
+    try {
+      const r = await api.updateSkill(item.source, scope === 'global', workdir);
+      if (r.ok) {
+        toast(L(locale, `${item.name} 已更新到最新`, `${item.name} updated to latest`), true);
+        void refresh();
+      } else toast(r.error || 'Failed', false);
+    } catch (e: any) { toast(e?.message || 'Failed', false); }
+    finally { setUpdatingSource(null); }
   }, [scope, workdir, locale, toast, refresh]);
   const groupedAvailable = useMemo(() => {
     const map = new Map<string, SkillCatalogItem[]>();
@@ -1814,6 +1919,8 @@ function SkillsCatalogSection({
                     locale={locale}
                     animationDelay={`${Math.min(i, 12) * 30}ms`}
                     onClick={() => setSelectedId(c.id)}
+                    onUpdate={() => void handleUpdate(c)}
+                    updating={updatingSource === c.source}
                   />
                 ))}
                 {localSkills.map((s, i) => (

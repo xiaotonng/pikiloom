@@ -260,6 +260,12 @@ export const api = {
       { source, global, skill, workdir },
       { timeoutMs: 90_000 },
     ),
+  updateSkill: (source: string, global?: boolean, workdir?: string) =>
+    post<{ ok: boolean; error?: string; output?: string; sha?: string | null }>(
+      '/api/extensions/skills/update',
+      { source, global, workdir },
+      { timeoutMs: 90_000 },
+    ),
   removeExtensionSkill: (name: string, global?: boolean, workdir?: string) =>
     post<{ ok: boolean; error?: string }>('/api/extensions/skills/remove', { name, global, workdir }),
   listRepoSkills: (source: string, opts?: ApiRequestOptions) =>

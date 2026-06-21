@@ -21,6 +21,7 @@ import {
   checkMcpHealth, getCachedHealth, cacheHealth,
   getRecommendedMcpServer,
   listSkills, installSkill, removeSkill,
+  recordSkillInstall, getSkillLedgerEntry,
   getRecommendedSkillRepos, searchSkillRepos, searchMcpServers,
   startAuthorization, completeAuthorization, deleteMcpToken, getMcpToken,
 } from '../../agent/index.js';
@@ -440,6 +441,18 @@ interface SkillCatalogItem {
   totalCount?: number;
   /** True when the remote listing was capped by GitHub Contents API. */
   partial?: boolean;
+  /** First-party packs float above the star-sorted list. */
+  pinned?: boolean;
+  /**
+   * True when this installed collection's recorded commit differs from the
+   * remote default-branch HEAD. Only meaningful for installed collections with
+   * known provenance; undefined otherwise.
+   */
+  updateAvailable?: boolean;
+  /** Commit SHA recorded at install time (provenance ledger). */
+  installedSha?: string | null;
+  /** Remote default-branch HEAD SHA at catalog-load time. */
+  latestSha?: string | null;
 }
 
 /**
@@ -666,6 +679,57 @@ async function fetchOneRepoMeta(source: string): Promise<RepoMeta | null> {
   } catch { return null; }
 }
 
+/**
+ * Default-branch HEAD commit SHA per source — the signal we diff installed
+ * skills against. Cached with a much shorter TTL than the star/pushedAt meta
+ * (10 min vs 24h) so "update available" stays close to real-time without
+ * hammering the API; we only fetch it for collections that are actually
+ * installed. Cache only on success so a transient null never sticks.
+ */
+const repoHeadShaCache = new Map<string, { value: string; cachedAt: number }>();
+const REPO_HEAD_SHA_TTL_MS = 10 * 60 * 1000;
+const repoHeadShaInflight = new Map<string, Promise<string | null>>();
+
+async function fetchRepoHeadSha(source: string): Promise<string | null> {
+  const parsed = parseSourceToOwnerRepo(source);
+  if (!parsed) return null;
+  const slug = `${parsed.owner}/${parsed.repo}`;
+
+  const cached = repoHeadShaCache.get(slug);
+  if (cached && Date.now() - cached.cachedAt < REPO_HEAD_SHA_TTL_MS) return cached.value;
+
+  const inflight = repoHeadShaInflight.get(slug);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5_000);
+      const token = await resolveGithubToken();
+      // `commits?per_page=1` returns the latest commit on the default branch
+      // without needing to know the branch name first.
+      const res = await fetch(`https://api.github.com/repos/${slug}/commits?per_page=1`, {
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'pikiloom-dashboard',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const sha = Array.isArray(data) && data[0]?.sha ? String(data[0].sha) : null;
+      if (sha) repoHeadShaCache.set(slug, { value: sha, cachedAt: Date.now() });
+      return sha;
+    } catch { return null; }
+  })().finally(() => repoHeadShaInflight.delete(slug));
+
+  repoHeadShaInflight.set(slug, promise);
+  return promise;
+}
+
 async function ensureRepoMeta(sources: string[]): Promise<void> {
   const now = Date.now();
   const stale = sources.filter(s => {
@@ -735,30 +799,58 @@ app.get('/api/extensions/skills/catalog', async (c) => {
   const installedByName = new Map<string, typeof scopedInstalled[number]>();
   for (const s of scopedInstalled) installedByName.set(s.name.toLowerCase(), s);
 
-  const items: SkillCatalogItem[] = filtered.map(repo => {
+  // Resolve each repo's installed sub-skills first (sync). Prefer the remote
+  // listing intersection over the static `repo.skills` hint — most catalog
+  // entries don't fill the hint, and the GitHub listing is authoritative.
+  const computeInstalledNames = (repo: typeof filtered[number]): string[] => {
+    const remote = remoteSkillsCache.get(repo.source)?.value;
+    if (remote) {
+      return remote.skills
+        .map(s => s.name)
+        .filter(name => installedByName.has(name.toLowerCase()));
+    }
+    const hints = (repo.skills || []).map(s => s.toLowerCase());
+    return scopedInstalled
+      .filter(s => hints.includes(s.name.toLowerCase()))
+      .map(s => s.name);
+  };
+  const perRepo = filtered.map(repo => ({ repo, installedNames: computeInstalledNames(repo) }));
+
+  // Update detection — only for installed collections (it's the only place the
+  // signal is meaningful, and it keeps API calls proportional to what's
+  // actually installed). Diff the live remote HEAD against the provenance
+  // ledger. For installs predating the ledger (e.g. via skills.sh) we baseline
+  // the current HEAD so future commits surface as updates, rather than
+  // fabricating one we can't prove.
+  const ledgerScope = scope === 'workspace' ? { workdir } : { global: true };
+  interface UpdateInfo { installedSha: string | null; latestSha: string | null; updateAvailable: boolean }
+  const updateBySource = new Map<string, UpdateInfo>();
+  await Promise.all(perRepo.map(async ({ repo, installedNames }) => {
+    if (installedNames.length === 0) return;
+    const latestSha = await fetchRepoHeadSha(repo.source).catch(() => null);
+    const entry = getSkillLedgerEntry(repo.source, ledgerScope);
+    let installedSha = entry?.sha ?? null;
+    if (!entry && latestSha) {
+      recordSkillInstall(repo.source, { ...ledgerScope, sha: latestSha, names: installedNames });
+      installedSha = latestSha;
+    }
+    updateBySource.set(repo.source, {
+      installedSha,
+      latestSha,
+      updateAvailable: !!(installedSha && latestSha && installedSha !== latestSha),
+    });
+  }));
+
+  const items: SkillCatalogItem[] = perRepo.map(({ repo, installedNames }) => {
     const meta = githubMetaCache.get(repo.source)?.value;
     const remote = remoteSkillsCache.get(repo.source)?.value;
     const owner = extractGithubOwner(repo.source);
     const iconUrl = repo.iconUrl
       ?? (owner ? `https://github.com/${owner}.png?size=80` : undefined);
-
-    // Prefer the remote-listing intersection over the static `repo.skills` hint
-    // — most catalog entries don't bother filling the hint, and the GitHub
-    // listing is authoritative when cached.
-    let installedSkillNames: string[];
-    if (remote) {
-      installedSkillNames = remote.skills
-        .map(s => s.name)
-        .filter(name => installedByName.has(name.toLowerCase()));
-    } else {
-      const hints = (repo.skills || []).map(s => s.toLowerCase());
-      installedSkillNames = scopedInstalled
-        .filter(s => hints.includes(s.name.toLowerCase()))
-        .map(s => s.name);
-    }
-    const firstMatch = installedSkillNames[0]
-      ? installedByName.get(installedSkillNames[0].toLowerCase())
+    const firstMatch = installedNames[0]
+      ? installedByName.get(installedNames[0].toLowerCase())
       : undefined;
+    const upd = updateBySource.get(repo.source);
 
     return {
       id: repo.id,
@@ -769,20 +861,27 @@ app.get('/api/extensions/skills/catalog', async (c) => {
       category: repo.category,
       recommendedScope: repo.recommendedScope,
       homepage: repo.homepage,
-      installed: installedSkillNames.length > 0,
+      installed: installedNames.length > 0,
       scope: firstMatch?.scope,
-      installedNames: installedSkillNames,
+      installedNames,
       stars: meta?.stars,
       pushedAt: meta?.pushedAt,
       iconUrl,
       totalCount: remote?.skills.length,
       partial: remote?.partial,
+      pinned: repo.pinned,
+      updateAvailable: upd?.updateAvailable,
+      installedSha: upd?.installedSha,
+      latestSha: upd?.latestSha,
     };
   });
 
-  // Authority = community popularity. Sort by stars desc, with no-data entries
-  // sinking to the bottom so the most-loved repos surface first.
-  items.sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1));
+  // Pinned first-party packs lead; then community popularity (stars desc, with
+  // no-data entries sinking to the bottom so the most-loved repos surface first).
+  items.sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    return (b.stars ?? -1) - (a.stars ?? -1);
+  });
 
   return c.json({ ok: true, items, installed });
 });
@@ -804,10 +903,41 @@ app.post('/api/extensions/skills/install', async (c) => {
       return c.json({ ok: false, error: 'valid workdir is required for project-scoped install' }, 400);
     }
 
-    const result = await installSkill(source.trim(), { global: isGlobal, skill, workdir });
+    // Resolve the remote HEAD so installSkill can record provenance for update
+    // detection. Best-effort — a failed lookup just installs without a baseline.
+    const sourceSha = await fetchRepoHeadSha(source.trim()).catch(() => null);
+    const result = await installSkill(source.trim(), { global: isGlobal, skill, workdir, sourceSha });
     return c.json(result);
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || 'installation failed' }, 500);
+  }
+});
+
+/**
+ * POST /api/extensions/skills/update — pull the latest version of an installed
+ * collection. Re-runs `skills add <source>` (no `-s`, so every skill from the
+ * source is refreshed) and advances the provenance ledger to the new HEAD.
+ */
+app.post('/api/extensions/skills/update', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { source, global: isGlobal, workdir: reqWorkdir } = body as {
+      source: string;
+      global?: boolean;
+      workdir?: string;
+    };
+    if (!source?.trim()) return c.json({ ok: false, error: 'source is required' }, 400);
+
+    const workdir = reqWorkdir || runtime.getRequestWorkdir();
+    if (!isGlobal && !isValidWorkdir(workdir)) {
+      return c.json({ ok: false, error: 'valid workdir is required for project-scoped update' }, 400);
+    }
+
+    const sourceSha = await fetchRepoHeadSha(source.trim()).catch(() => null);
+    const result = await installSkill(source.trim(), { global: isGlobal, workdir, sourceSha });
+    return c.json({ ...result, sha: sourceSha });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || 'update failed' }, 500);
   }
 });
 

@@ -711,6 +711,14 @@ export interface SkillCatalogItem {
   iconUrl?: string;
   totalCount?: number;
   partial?: boolean;
+  /** First-party packs float above the star-sorted list. */
+  pinned?: boolean;
+  /** True when the installed collection is behind the remote default branch. */
+  updateAvailable?: boolean;
+  /** Commit SHA recorded at install time. */
+  installedSha?: string | null;
+  /** Remote default-branch HEAD SHA at catalog-load time. */
+  latestSha?: string | null;
 }
 
 export interface RemoteSkillInfo {

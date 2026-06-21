@@ -132,6 +132,21 @@ export interface UserConfig {
   browserHeadless?: boolean;
   /** Peekaboo MCP for native macOS GUI control — toggled from the Extensions tab. */
   peekabooEnabled?: boolean;
+  /** pikichannel access token — provisioned on first run; remote (non-loopback)
+   *  clients must present it to connect. Rotate by clearing this field. */
+  pikichannelToken?: string;
+  /** Require the pikichannel token even from loopback (defense-in-depth). */
+  pikichannelStrictAuth?: boolean;
+  /** Stable NodeID dialed by remote clients over the rendezvous (NAT traversal).
+   *  Provisioned on first run. */
+  pikichannelNodeId?: string;
+  /** Rendezvous broker URL this host registers to for NAT traversal, e.g.
+   *  wss://broker.example.com/pikichannel/rendezvous. Unset = no NAT registration. */
+  pikichannelRendezvous?: string;
+  /** This host's public address (authority or ws(s)/http(s) URL) for DIRECT
+   *  remote access, e.g. 203.0.113.5:3940. When set, the connection code is a
+   *  direct one (no NAT hop). Unset = rely on rendezvous, or local only. */
+  pikichannelPublicHost?: string;
   /** Extension configuration — global MCP servers, OAuth tokens, and skills. */
   extensions?: {
     mcp?: Record<string, McpServerConfig>;

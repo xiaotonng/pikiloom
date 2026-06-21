@@ -174,7 +174,8 @@ export {
 
 export {
   installSkill, removeSkill, checkSkillUpdates, getGlobalSkillsDir,
-  type SkillInstallOpts, type SkillInstallResult, type SkillRemoveResult,
+  recordSkillInstall, getSkillLedgerEntry, forgetSkillInstall, normalizeSkillSourceKey,
+  type SkillInstallOpts, type SkillInstallResult, type SkillRemoveResult, type SkillLedgerEntry,
 } from './skill-installer.js';
 
 // ── Re-export: CLI extensions ───────────────────────────────────────────────

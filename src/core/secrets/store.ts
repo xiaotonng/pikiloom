@@ -3,7 +3,7 @@
  * If keychain is unavailable, callers fall back to inline-seal.
  */
 
-import { KEYCHAIN_SERVICE } from './ref.js';
+import { KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICES } from './ref.js';
 
 interface KeyringEntryLike {
   getPassword(): string | null;
@@ -43,15 +43,34 @@ export async function isKeychainAvailable(): Promise<boolean> {
 export async function readKeychain(account: string): Promise<string | null> {
   const mod = await loadKeyring();
   if (!mod) throw new Error('OS keychain unavailable (install @napi-rs/keyring)');
-  try {
-    const entry = new mod.Entry(KEYCHAIN_SERVICE, account);
-    const value = entry.getPassword();
-    return typeof value === 'string' && value.length > 0 ? value : null;
-  } catch (e: any) {
-    // keyring-rs returns NoEntry as an error — treat as missing
-    if (/NoEntry|no.such|not.found/i.test(e?.message || '')) return null;
-    throw e;
+  const readUnder = (service: string): string | null => {
+    try {
+      const entry = new mod.Entry(service, account);
+      const value = entry.getPassword();
+      return typeof value === 'string' && value.length > 0 ? value : null;
+    } catch (e: any) {
+      // keyring-rs returns NoEntry as an error — treat as missing
+      if (/NoEntry|no.such|not.found/i.test(e?.message || '')) return null;
+      throw e;
+    }
+  };
+
+  const current = readUnder(KEYCHAIN_SERVICE);
+  if (current != null) return current;
+
+  // Pre-rename fallback: recover orphaned items and migrate them forward so the
+  // legacy lookup only ever happens once per account.
+  for (const legacy of LEGACY_KEYCHAIN_SERVICES) {
+    const value = readUnder(legacy);
+    if (value == null) continue;
+    try {
+      new mod.Entry(KEYCHAIN_SERVICE, account).setPassword(value);
+    } catch {
+      // best-effort migration — return the recovered secret regardless
+    }
+    return value;
   }
+  return null;
 }
 
 export async function writeKeychain(account: string, value: string): Promise<void> {

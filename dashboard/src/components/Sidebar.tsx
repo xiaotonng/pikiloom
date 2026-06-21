@@ -1,10 +1,10 @@
 import { useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
-import { resolveAppStatusBadge } from '../app-status';
+import { getEndpoint } from '../endpoint';
 import { useStore } from '../store';
 import { createT } from '../i18n';
 import { getDashboardTabs } from '../tabs';
-import { Button, Dot, TabsList } from './ui';
+import { Button, TabsList } from './ui';
 import { HeaderUsage } from './HeaderUsage';
 import { cn } from '../utils';
 import wordmark from '../assets/logo-wordmark.png';
@@ -27,12 +27,13 @@ export function Sidebar({
   version,
   restartPhase,
   onRestartClick,
+  onConnectionClick,
 }: {
   version: string;
   restartPhase: RestartPhase;
   onRestartClick: () => void;
+  onConnectionClick: () => void;
 }) {
-  const state = useStore(s => s.state);
   const theme = useStore(s => s.theme);
   const setTheme = useStore(s => s.setTheme);
   const locale = useStore(s => s.locale);
@@ -40,7 +41,9 @@ export function Sidebar({
   const t = useMemo(() => createT(locale), [locale]);
 
   const tabs = getDashboardTabs(t);
-  const appStatus = resolveAppStatusBadge(state, t);
+  const ep = getEndpoint();
+  const connLabel = !ep ? t('conn.local') : ep.mode === 'direct' ? (ep.host || t('conn.direct')) : t('conn.remote');
+  const connRemote = !!ep;
 
   const busy = restartPhase === 'restarting' || restartPhase === 'reconnecting';
   const confirming = restartPhase === 'confirm';
@@ -87,10 +90,16 @@ export function Sidebar({
         {/* Right-side actions */}
         <div className="flex items-center gap-1 shrink-0">
           <HeaderUsage t={t} />
-          <div className="hidden items-center gap-1.5 rounded-full border border-[var(--edge-subtle)] bg-transparent px-2.5 py-1 text-[11px] text-fg-3 md:flex">
-            <Dot tone={appStatus.dotVariant} pulse={appStatus.dotPulse} />
-            <span className="font-medium">{appStatus.badgeContent}</span>
-          </div>
+          {/* Connection target — which machine this console controls. Click to
+              switch 本机 / 局域网 / 互联网 and to share this machine. */}
+          <Button variant="outline" size="sm" onClick={onConnectionClick} title={t('conn.title')} className="gap-1.5">
+            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', connRemote ? 'bg-[var(--brand)]' : 'bg-fg-5')} />
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+            <span className="hidden md:inline max-w-[150px] truncate">{connLabel}</span>
+          </Button>
           <Button
             variant={confirming ? 'secondary' : 'outline'}
             size="sm"

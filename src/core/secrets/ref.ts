@@ -18,6 +18,15 @@ export type CredentialRef =
 /** Stable service name used when writing to the OS keychain. */
 export const KEYCHAIN_SERVICE = 'pikiloom';
 
+/**
+ * Legacy keychain service names this build still reads from. The project was
+ * renamed (pikiclaw → pikiloom); credentials written under the old service are
+ * orphaned because lookups now use `KEYCHAIN_SERVICE`. `readKeychain` falls
+ * back to these on a miss and lazily re-writes the secret under the current
+ * service, so each orphaned item self-heals on first use.
+ */
+export const LEGACY_KEYCHAIN_SERVICES = ['pikiclaw'];
+
 export function isCredentialRef(value: unknown): value is CredentialRef {
   if (!value || typeof value !== 'object') return false;
   const r = value as { source?: unknown };

@@ -5,6 +5,7 @@ import { createT } from './i18n';
 import { Sidebar, type RestartPhase } from './components/Sidebar';
 import { Spinner, Toasts } from './components/ui';
 import { api } from './api';
+import { getEndpoint } from './endpoint';
 import { getDashboardTabMeta, type DashboardTab } from './tabs';
 import { cn } from './utils';
 
@@ -22,6 +23,7 @@ const DingtalkModal = lazy(async () => ({ default: (await import('./components/M
 const WeComModal = lazy(async () => ({ default: (await import('./components/Modals')).WeComModal }));
 const WorkdirModal = lazy(async () => ({ default: (await import('./components/Modals')).WorkdirModal }));
 const BrowserSetupModal = lazy(async () => ({ default: (await import('./components/Modals')).BrowserSetupModal }));
+const ConnectionModal = lazy(async () => ({ default: (await import('./components/ConnectionModal')).ConnectionModal }));
 
 type ModalState =
   | null
@@ -33,7 +35,8 @@ type ModalState =
   | { type: 'dingtalk' }
   | { type: 'wecom' }
   | { type: 'workdir' }
-  | { type: 'browser-setup' };
+  | { type: 'browser-setup' }
+  | { type: 'connection' };
 
 function locationToTab(pathname: string): DashboardTab {
   const map: Record<string, DashboardTab> = {
@@ -97,6 +100,17 @@ export function App() {
   useEffect(() => {
     if (tab === 'sessions') setSessionsTabReady(true);
   }, [tab]);
+
+  // Client mode: when this SPA isn't pointed at a host AND no local server backs
+  // it (a standalone-hosted client, or ?client=1), open the Connection panel so
+  // the user can paste a connection code. Normal local dashboards skip this.
+  useEffect(() => {
+    if (getEndpoint()) return; // already pointed at a host
+    let isClient = false;
+    try { isClient = new URL(window.location.href).searchParams.get('client') === '1'; } catch { /* ignore */ }
+    if (isClient) { setModal({ type: 'connection' }); return; }
+    fetch('/pikichannel/status').then(r => { if (!r.ok) setModal({ type: 'connection' }); }).catch(() => setModal({ type: 'connection' }));
+  }, []);
 
   // Agent usage (rate-limit windows) ages out in minutes, but `agentStatus`
   // otherwise only refreshes on user interaction — a dashboard left open
@@ -177,6 +191,7 @@ export function App() {
           version={version}
           restartPhase={restartPhase}
           onRestartClick={onRestartClick}
+          onConnectionClick={() => setModal({ type: 'connection' })}
         />
 
         <main className="flex-1 overflow-hidden">
@@ -240,6 +255,7 @@ export function App() {
           {modal.type === 'wecom' && <WeComModal open onClose={closeModal} />}
           {modal.type === 'browser-setup' && <BrowserSetupModal open onClose={closeModal} onSaved={() => reload()} />}
           {modal.type === 'workdir' && <WorkdirModal open onClose={closeModal} />}
+          {modal.type === 'connection' && <ConnectionModal open onClose={closeModal} />}
         </Suspense>
       )}
       <Toasts items={toasts} />

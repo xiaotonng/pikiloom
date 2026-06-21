@@ -32,6 +32,18 @@ import type { RecommendedSkillRepo } from '../agent/mcp/registry.js';
 export const SKILL_REPOS: RecommendedSkillRepo[] = [
   // ── Official / first-party ────────────────────────────────────────────────
   {
+    id: 'pikiloom-skills',
+    name: 'Pikiloom Skills',
+    description: 'First-party Pikiloom skills — image generation, recorded demo videos, and the embeddable tech-intel signal pipeline',
+    descriptionZh: 'Pikiloom 官方技能 — 生图、产品导览视频、可嵌入的 tech-intel 信号流水线',
+    source: 'xiaotonng/pikiloom-skills',
+    category: 'productivity',
+    recommendedScope: 'both',
+    homepage: 'https://github.com/xiaotonng/pikiloom-skills',
+    // First-party pack: keep it at the top even before it accrues stars.
+    pinned: true,
+  },
+  {
     id: 'anthropics-skills',
     name: 'Anthropic Skills',
     description: 'Official skill collection from Anthropic',

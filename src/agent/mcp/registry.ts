@@ -100,6 +100,12 @@ export interface RecommendedSkillRepo {
    * to the GitHub owner's avatar derived from `source`.
    */
   iconUrl?: string;
+  /**
+   * Float this entry above the star-sorted list. Reserved for first-party packs
+   * (e.g. pikiloom's own skills) that we want surfaced even with a cold star
+   * count. Community entries leave this unset and sort purely by popularity.
+   */
+  pinned?: boolean;
 }
 
 export interface McpSearchResult {

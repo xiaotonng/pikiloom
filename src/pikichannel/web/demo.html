@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pikichannel · pluggable transport demo</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #131922; --panel2: #0e141c; --line: #1f2733;
+    --ink: #e6edf3; --dim: #8b97a7; --accent: #29d3c2; --accent2: #3b82f6;
+    --warn: #f0883e; --bad: #f85149; --good: #3fb950;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); height: 100vh; display: flex; flex-direction: column; font-size: 13px; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .brand { font-weight: 700; color: var(--accent); letter-spacing: .5px; }
+  .brand small { color: var(--dim); font-weight: 400; margin-left: 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { background: var(--panel); color: var(--dim); border: 0; padding: 6px 12px; cursor: pointer; font: inherit; }
+  .seg button.on { background: var(--accent); color: #04121a; font-weight: 700; }
+  .btn { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 6px 14px; cursor: pointer; font: inherit; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+  .stats { margin-left: auto; display: flex; gap: 14px; align-items: center; color: var(--dim); flex-wrap: wrap; }
+  .stat b { color: var(--ink); font-weight: 600; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); display: inline-block; }
+  .dot.open { background: var(--good); } .dot.connecting { background: var(--warn); } .dot.closed { background: var(--bad); }
+  main { flex: 1; display: grid; grid-template-columns: 250px 1fr; min-height: 0; }
+  aside { border-right: 1px solid var(--line); overflow-y: auto; background: var(--panel2); }
+  .sess { padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .sess:hover { background: var(--panel); } .sess.sel { background: var(--panel); border-left: 3px solid var(--accent); }
+  .sess .k { color: var(--dim); font-size: 11px; } .sess .t { margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: var(--line); color: var(--dim); }
+  .badge.streaming { background: #10303a; color: var(--accent); } .badge.done { background: #16301c; color: var(--good); } .badge.queued { background: #2a2410; color: var(--warn); }
+  section.view { display: flex; flex-direction: column; min-height: 0; }
+  .scroll { flex: 1; overflow-y: auto; padding: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .card h4 { margin: 0 0 8px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  .meta { display: flex; gap: 14px; color: var(--dim); flex-wrap: wrap; margin-bottom: 10px; }
+  .meta b { color: var(--ink); }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; line-height: 1.5; }
+  .prompt { color: var(--accent2); }
+  .reason { color: var(--dim); } details summary { cursor: pointer; color: var(--dim); }
+  .step { padding: 2px 0; } .step.completed { color: var(--good); } .step.inProgress { color: var(--accent); } .step.pending { color: var(--dim); }
+  .tool { border-left: 2px solid var(--line); padding: 2px 0 2px 8px; margin: 3px 0; color: var(--dim); }
+  .tool b { color: var(--ink); }
+  .interaction { border: 1px solid var(--accent); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .choice { display: inline-block; margin: 4px 6px 0 0; }
+  footer { border-top: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 10px; align-items: flex-end; }
+  textarea { flex: 1; background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; resize: none; height: 46px; }
+  select, input { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+  .empty { color: var(--dim); text-align: center; margin-top: 60px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">pikichannel <small>pluggable agent transport — live demo</small></div>
+  <div class="seg" id="seg">
+    <button data-k="websocket" class="on">WebSocket</button>
+    <button data-k="webrtc">WebRTC (P2P)</button>
+  </div>
+  <input id="endpoint" placeholder="host (blank = this machine)" title="Direct target, e.g. 192.168.1.5:3940 — for a reachable host." style="width:130px" />
+  <input id="rdv" placeholder="rendezvous (NAT)" title="Broker ws(s):// URL for NAT traversal, e.g. wss://broker/pikichannel/rendezvous" style="width:140px" />
+  <input id="node" placeholder="nodeId (NAT)" title="The host's NodeID to dial through the rendezvous." style="width:110px" />
+  <input id="token" placeholder="token (remote)" title="Access token — required for remote/NAT clients. Get it from the local dashboard / GET /pikichannel/pair." style="width:120px" />
+  <button class="btn primary" id="connect">Connect</button>
+  <button class="btn" id="disconnect">Disconnect</button>
+  <div class="stats">
+    <span class="stat"><span class="dot" id="dot"></span> <b id="state">idle</b></span>
+    <span class="stat">via <b id="via">—</b></span>
+    <span class="stat">RTT <b id="rtt">—</b></span>
+    <span class="stat">frames <b id="frames">0/0</b></span>
+    <span class="stat">bytes <b id="bytes">0/0</b></span>
+    <span class="stat">host <b id="host">—</b></span>
+  </div>
+</header>
+<main>
+  <aside id="sessions"></aside>
+  <section class="view">
+    <div class="scroll" id="view"><div class="empty">Connect, then send a prompt to start a session.<br/>Flip the transport toggle and reconnect to compare WebSocket vs WebRTC carrying the identical protocol.</div></div>
+    <footer>
+      <select id="agent" title="agent (blank = host default)">
+        <option value="">default agent</option>
+        <option value="claude">claude</option>
+        <option value="codex">codex</option>
+        <option value="gemini">gemini</option>
+        <option value="hermes">hermes</option>
+      </select>
+      <textarea id="composer" placeholder="Type a prompt — Enter to send to a NEW session (or the selected one), Shift+Enter for newline"></textarea>
+      <button class="btn primary" id="send">Send</button>
+      <button class="btn" id="stop">Stop</button>
+      <button class="btn" id="tunnel" title="Call /api/agents on the connected host over the channel (control-plane tunnel)">Tunnel /api/agents</button>
+    </footer>
+  </section>
+</main>
+
+<script type="module">
+import '/pikichannel/sdk.js';
+
+const $ = (id) => document.getElementById(id);
+let client = null;
+let kind = 'websocket';
+let selected = null;
+
+// transport toggle
+$('seg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  kind = b.dataset.k;
+  for (const x of $('seg').children) x.classList.toggle('on', x === b);
+});
+
+$('connect').onclick = async () => {
+  if (client) client.disconnect();
+  client = new window.Pikichannel.Client({
+    transport: kind,
+    host: $('endpoint').value.trim() || undefined,
+    rendezvous: $('rdv').value.trim() || undefined,
+    nodeId: $('node').value.trim() || undefined,
+    token: $('token').value.trim() || undefined,
+  });
+  wire(client);
+  try { await client.connect(); client.subscribeAll(); }
+  catch (err) { /* status reflects failure */ }
+};
+$('disconnect').onclick = () => { if (client) client.disconnect(); };
+
+// Control-plane tunnel demo: manage the connected host over the channel.
+$('tunnel').onclick = async () => {
+  if (!client || client.state !== 'open') { alert('Not connected'); return; }
+  try {
+    const res = await client.request('GET', '/api/agents');
+    const data = res.json();
+    const names = (data.agents || []).map((a) => a.agent + (a.installed ? '' : '(missing)')).join(', ');
+    $('view').innerHTML = '';
+    $('view').appendChild(card('Control-plane tunnel · GET /api/agents (via channel, no REST exposure)',
+      preEl('status ' + res.status + '\nagents: ' + (names || '(none)'))));
+  } catch (e) { alert('tunnel failed: ' + e.message); }
+};
+
+$('send').onclick = sendPrompt;
+$('composer').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
+});
+$('stop').onclick = () => { if (client && selected) client.stop(selected); };
+
+function sendPrompt() {
+  if (!client || client.state !== 'open') { alert('Not connected'); return; }
+  const text = $('composer').value.trim();
+  if (!text) return;
+  client.prompt({ prompt: text, sessionKey: selected || undefined, agent: $('agent').value || undefined });
+  $('composer').value = '';
+}
+
+function wire(c) {
+  c.on('status', renderStats);
+  c.on('welcome', (host) => { $('host').textContent = (host && host.name + ' ' + host.version) || '—'; renderSessions(); });
+  c.on('sessions', renderSessions);
+  c.on('session', (snap) => { if (!selected) selected = snap.sessionKey; renderSessions(); if (snap.sessionKey === selected) renderView(snap); });
+  c.on('accepted', (a) => { selected = a.sessionKey; renderSessions(); });
+  c.on('error', (e) => { console.warn('pikichannel error', e); });
+}
+
+function renderStats() {
+  if (!client) return;
+  const s = client.stats();
+  $('state').textContent = s.state;
+  $('dot').className = 'dot ' + s.state;
+  $('via').textContent = (s.host && s.host.transport) || s.transport;
+  $('rtt').textContent = s.rtt == null ? '—' : (s.rtt + ' ms');
+  $('frames').textContent = s.framesIn + '/' + s.framesOut;
+  $('bytes').textContent = s.bytesIn + '/' + s.bytesOut;
+}
+
+function renderSessions() {
+  if (!client) return;
+  const el = $('sessions');
+  const keys = Array.from(client.sessions.keys());
+  if (!keys.length) { el.innerHTML = '<div class="empty" style="margin-top:20px">no active sessions</div>'; return; }
+  el.innerHTML = '';
+  for (const k of keys) {
+    const snap = client.sessions.get(k);
+    const div = document.createElement('div');
+    div.className = 'sess' + (k === selected ? ' sel' : '');
+    div.onclick = () => { selected = k; renderSessions(); renderView(client.sessions.get(k)); };
+    const phase = (snap && snap.phase) || 'idle';
+    div.innerHTML = '<div class="k">' + esc(k) + '</div><div class="t">' + esc((snap && (snap.prompt || snap.text)) || '(new)') + '</div>';
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + phase; badge.textContent = phase;
+    div.querySelector('.k').appendChild(document.createTextNode(' ')); div.querySelector('.k').appendChild(badge);
+    el.appendChild(div);
+  }
+}
+
+function renderView(snap) {
+  const v = $('view');
+  if (!snap) { v.innerHTML = '<div class="empty">no snapshot</div>'; return; }
+  const frag = document.createElement('div');
+
+  const meta = document.createElement('div'); meta.className = 'meta';
+  meta.innerHTML = 'phase <b>' + esc(snap.phase) + '</b> · agent <b>' + esc(snap.agent || '—') + '</b> · model <b>' + esc(snap.model || '—') + '</b> · effort <b>' + esc(snap.effort || '—') + '</b>';
+  if (snap.usage) meta.innerHTML += ' · ctx <b>' + (snap.usage.contextPercent != null ? snap.usage.contextPercent + '%' : '—') + '</b> · out <b>' + (snap.usage.turnOutputTokens || snap.usage.outputTokens || 0) + '</b> tok';
+  frag.appendChild(meta);
+
+  if (snap.prompt) frag.appendChild(card('Prompt', preEl(snap.prompt, 'prompt')));
+  if (snap.interactions && snap.interactions.length) snap.interactions.forEach((it) => frag.appendChild(interactionEl(it)));
+  if (snap.text) frag.appendChild(card('Response', preEl(snap.text)));
+  if (snap.reasoning) { const d = document.createElement('details'); d.innerHTML = '<summary>Thinking</summary>'; d.appendChild(preEl(snap.reasoning, 'reason')); frag.appendChild(card('Reasoning', d)); }
+  if (snap.plan && snap.plan.steps && snap.plan.steps.length) frag.appendChild(card('Plan', planEl(snap.plan)));
+  if (snap.toolCalls && snap.toolCalls.length) frag.appendChild(card('Tool calls', toolsEl(snap.toolCalls)));
+  else if (snap.activity) frag.appendChild(card('Activity', preEl(snap.activity, 'reason')));
+  if (snap.subAgents && snap.subAgents.length) frag.appendChild(card('Sub-agents', preEl(snap.subAgents.map((s) => '• ' + (s.kind || '?') + ': ' + (s.description || '') + ' [' + s.status + ']').join('\n'), 'reason')));
+  if (snap.artifacts && snap.artifacts.length) frag.appendChild(card('Artifacts', artifactsEl(snap.artifacts)));
+  if (snap.error) frag.appendChild(card('Error', preEl(snap.error)));
+
+  v.innerHTML = ''; v.appendChild(frag);
+}
+
+function card(title, body) { const c = document.createElement('div'); c.className = 'card'; const h = document.createElement('h4'); h.textContent = title; c.appendChild(h); c.appendChild(body); return c; }
+function preEl(text, cls) { const p = document.createElement('pre'); if (cls) p.className = cls; p.textContent = String(text); return p; }
+function planEl(plan) { const d = document.createElement('div'); if (plan.explanation) d.appendChild(preEl(plan.explanation, 'reason')); plan.steps.forEach((s) => { const r = document.createElement('div'); r.className = 'step ' + s.status; r.textContent = (s.status === 'completed' ? '✓ ' : s.status === 'inProgress' ? '▶ ' : '○ ') + s.text; d.appendChild(r); }); return d; }
+function toolsEl(tools) { const d = document.createElement('div'); tools.forEach((t) => { const r = document.createElement('div'); r.className = 'tool'; r.innerHTML = '<b>' + esc(t.name) + '</b> ' + esc(t.summary || '') + ' <span class="badge ' + (t.status === 'done' ? 'done' : t.status === 'failed' ? 'queued' : 'streaming') + '">' + t.status + '</span>'; d.appendChild(r); }); return d; }
+function artifactsEl(arts) { const d = document.createElement('div'); arts.forEach((a) => { const r = document.createElement('div'); const link = document.createElement('a'); link.href = a.url; link.target = '_blank'; link.textContent = a.fileName + ' (' + a.mime + ', ' + a.fileSize + 'B)'; r.appendChild(link); d.appendChild(r); }); return d; }
+function interactionEl(it) {
+  const d = document.createElement('div'); d.className = 'interaction';
+  const q = it.questions && it.questions[it.currentIndex || 0];
+  d.innerHTML = '<b>' + esc(it.title || 'Agent asks') + '</b>' + (it.hint ? '<div class="reason">' + esc(it.hint) + '</div>' : '');
+  if (q) {
+    const qt = document.createElement('div'); qt.style.margin = '6px 0'; qt.textContent = q.text; d.appendChild(qt);
+    if (q.choices && q.choices.length) {
+      q.choices.forEach((c) => { const b = document.createElement('button'); b.className = 'btn choice'; b.textContent = c.label; b.onclick = () => client.interact(it.promptId, 'select', c.label); d.appendChild(b); });
+    } else {
+      const inp = document.createElement('input'); inp.placeholder = 'type answer + Enter'; inp.style.width = '60%';
+      inp.onkeydown = (e) => { if (e.key === 'Enter') { client.interact(it.promptId, 'text', inp.value); inp.value = ''; } };
+      d.appendChild(inp);
+    }
+    const skip = document.createElement('button'); skip.className = 'btn choice'; skip.textContent = 'skip'; skip.onclick = () => client.interact(it.promptId, 'skip'); d.appendChild(skip);
+  }
+  return d;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+</script>
+</body>
+</html>

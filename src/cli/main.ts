@@ -23,6 +23,7 @@ import { hasConfiguredChannelToken, resolveConfiguredChannels } from './channels
 import { ChannelSupervisor } from './channel-supervisor.js';
 import { listAgents } from '../agent/index.js';
 import { startDashboard, type DashboardServer } from '../dashboard/server.js';
+import { buildServerCode } from '../pikichannel/code.js';
 import { buildSetupGuide, collectSetupState, hasReadyAgent, isSetupReady } from './onboarding.js';
 import {
   buildRestartCommand,
@@ -197,6 +198,7 @@ function parseArgs(argv: string[]) {
       case '--doctor': args.doctor = true; break;
       case '--setup': args.setup = true; break;
       case '--no-dashboard': args.noDashboard = true; break;
+      case '--server': args.server = true; break;
       case '--dashboard-port': args.dashboardPort = parseInt(it.next().value ?? '', 10); break;
       case '--daemon': args.daemon = true; break;
       case '--no-daemon': args.daemon = false; break;
@@ -258,6 +260,7 @@ Options:
   --timeout <seconds>       Max seconds per agent request  [default: ${DEFAULT_RUN_TIMEOUT_S}]
   --doctor                  Run setup checks and exit
   --setup                   Run the interactive setup wizard
+  --server                  Headless server: keep the host running, don't open a browser, print a connection code
   --no-daemon               Disable watchdog (auto-restart on crash is ON by default)
   --no-dashboard            Skip the web dashboard
   --dashboard-port <port>   Dashboard port  [default: 3939]
@@ -549,13 +552,16 @@ async function runSetupPhase(
     // terminal: launchd-spawned bots, Docker/headless server runs, or when
     // the user explicitly set PIKILOOM_OPEN_BROWSER=0.
     const openBrowser =
-      !process.env[FROM_LAUNCHD_ENV]
+      !args.server
+      && !process.env[FROM_LAUNCHD_ENV]
       && !envBool('PIKILOOM_DOCKER', false)
       && envBool('PIKILOOM_OPEN_BROWSER', true);
     dashboard = await startDashboard({
       port: args.dashboardPort || 3939,
       open: openBrowser,
     });
+
+    if (args.server) printServerConnectionCode(dashboard);
 
     if (needsSetup) {
       const ctx = { userConfig, configOverrides, args };
@@ -586,6 +592,28 @@ async function runSetupPhase(
   }
 
   return { dashboard, userConfig, channels, channel };
+}
+
+/** Print the shareable connection code for `--server` (headless) mode. */
+function printServerConnectionCode(dashboard: DashboardServer): void {
+  const c = loadUserConfig();
+  const sc = buildServerCode({
+    token: process.env.PIKICHANNEL_TOKEN || c.pikichannelToken,
+    nodeId: c.pikichannelNodeId,
+    publicHost: process.env.PIKICHANNEL_PUBLIC_HOST || c.pikichannelPublicHost,
+    rendezvous: process.env.PIKICHANNEL_RENDEZVOUS || c.pikichannelRendezvous,
+  });
+  const ts = new Date().toTimeString().slice(0, 8);
+  process.stdout.write(`\n[pikiloom ${ts}] server mode — host running, browser not opened\n`);
+  process.stdout.write(`  local console:  ${dashboard.url}\n`);
+  if (sc.mode === 'none') {
+    process.stdout.write('  to let others connect: set a public address (env PIKICHANNEL_PUBLIC_HOST,\n');
+    process.stdout.write('     or the dashboard 连接 → 分享 panel), or enable internet access, then restart.\n\n');
+  } else {
+    process.stdout.write(`  connection code (${sc.mode === 'direct' ? 'direct → ' : 'NAT via '}${sc.detail}):\n`);
+    process.stdout.write(`    ${sc.code}\n`);
+    process.stdout.write('  paste it into a client → 连接 → 互联网/局域网.\n\n');
+  }
 }
 
 /* ── Phase: post-setup validation ─────────────────────────────────── */

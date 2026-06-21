@@ -10,7 +10,6 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import path from 'node:path';
 import fs from 'node:fs';
 import { exec } from 'node:child_process';
-import { WebSocketServer, type WebSocket } from 'ws';
 import configRoutes from './routes/config.js';
 import agentRoutes, { preloadAgentStatus } from './routes/agents.js';
 import sessionRoutes from './routes/sessions.js';
@@ -18,10 +17,11 @@ import extensionRoutes from './routes/extensions.js';
 import cliRoutes from './routes/cli.js';
 import modelsRoutes from './routes/models.js';
 import localModelsRoutes from './routes/local-models.js';
-import { runtime, type DashboardEvent } from './runtime.js';
+import { runtime } from './runtime.js';
 import { registerProcessRuntime } from '../core/process-control.js';
 import { VERSION } from '../core/version.js';
 import type { Bot } from '../bot/bot.js';
+import { mountPikichannel, type PikichannelHandle } from '../pikichannel/server.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,80 +45,11 @@ export interface DashboardServer {
 // ---------------------------------------------------------------------------
 
 const DASHBOARD_PORT_RETRY_LIMIT = 10;
-const WS_KEEPALIVE_MS = 25_000;
 
-// ---------------------------------------------------------------------------
-// WebSocket push layer (replaces SSE)
-// ---------------------------------------------------------------------------
-
-interface WsHandle {
-  /** Forcibly close every WebSocket client so the HTTP server can shut down. */
-  closeAllClients(): void;
-}
-
-function attachWebSocketServer(httpServer: http.Server): WsHandle {
-  const wss = new WebSocketServer({ noServer: true });
-  const clients = new Set<WebSocket>();
-
-  httpServer.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    if (url.pathname !== '/ws') {
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req);
-    });
-  });
-
-  wss.on('connection', (ws) => {
-    clients.add(ws);
-
-    const keepalive = setInterval(() => {
-      if (ws.readyState === ws.OPEN) ws.ping();
-    }, WS_KEEPALIVE_MS);
-
-    ws.on('message', (raw) => {
-      try {
-        const msg = JSON.parse(String(raw));
-        if (msg?.type === 'ping') {
-          ws.send(JSON.stringify({ type: 'pong' }));
-        }
-      } catch { /* ignore malformed messages */ }
-    });
-
-    ws.on('close', () => {
-      clients.delete(ws);
-      clearInterval(keepalive);
-    });
-
-    ws.on('error', () => {
-      clients.delete(ws);
-      clearInterval(keepalive);
-    });
-  });
-
-  const onEvent = (event: DashboardEvent) => {
-    const data = JSON.stringify(event);
-    for (const ws of clients) {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(data);
-      }
-    }
-  };
-  runtime.events.on('dashboard-event', onEvent);
-
-  const closeAllClients = () => {
-    runtime.events.off('dashboard-event', onEvent);
-    for (const ws of clients) ws.close();
-    clients.clear();
-    wss.close();
-  };
-
-  httpServer.on('close', closeAllClients);
-
-  return { closeAllClients };
-}
+// The dashboard's live push transport is pikichannel (`/pikichannel/ws`) — the
+// same universal channel mobile/web clients use. There is no separate dashboard
+// WebSocket layer anymore; the pikichannel adapter subscribes to the runtime
+// 'dashboard-event' bus directly, so the SPA and remote clients share one stack.
 
 // ---------------------------------------------------------------------------
 // Server
@@ -146,6 +77,17 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
   app.route('/', cliRoutes);
   app.route('/', modelsRoutes);
   app.route('/', localModelsRoutes);
+
+  // -- pikichannel: pluggable agent-session transport (WebSocket + WebRTC) --
+  // Mounted BEFORE the static catch-all so its routes (demo page, browser SDK,
+  // status) win. Returns a handle whose upgrade router is attached per HTTP
+  // server below. Failure here must not block the dashboard, so it is guarded.
+  let pikichannel: PikichannelHandle | null = null;
+  try {
+    pikichannel = await mountPikichannel(app);
+  } catch (err) {
+    runtime.warn(`[pikichannel] mount failed: ${(err as Error)?.message || err}`);
+  }
 
   // -- Static files: serve dashboard build output --
   // Resolve path relative to this file's location (src/ or dist/)
@@ -195,7 +137,6 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
 
   // -- Process runtime registration --
   let nodeServer: http.Server | null = null;
-  let wsHandle: WsHandle | null = null;
 
   const RESTART_CLOSE_TIMEOUT_MS = 3000;
 
@@ -203,9 +144,9 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
     label: 'dashboard',
     prepareForRestart: () => new Promise<void>(resolve => {
       if (!nodeServer) { resolve(); return; }
-      // Close all WebSocket clients first — otherwise server.close() hangs
-      // waiting for persistent connections to end.
-      wsHandle?.closeAllClients();
+      // Tear down pikichannel peers first — otherwise server.close() hangs
+      // waiting for the persistent WebSocket/datachannel connections to end.
+      pikichannel?.stop();
       const timer = setTimeout(resolve, RESTART_CLOSE_TIMEOUT_MS);
       nodeServer.close(() => { clearTimeout(timer); resolve(); });
     }),
@@ -229,8 +170,13 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
         const requestListener = getRequestListener(app.fetch);
         const server = http.createServer(requestListener);
 
-        // Attach WebSocket BEFORE listening — ensures upgrade events are captured
-        wsHandle = attachWebSocketServer(server);
+        // Single WebSocket-upgrade dispatcher (attached before listening so no
+        // upgrade is missed): pikichannel owns `/pikichannel/*` — its WS data
+        // channel and WebRTC signaling. Anything else is rejected.
+        server.on('upgrade', (req, socket, head) => {
+          if (pikichannel?.handleUpgrade(req, socket, head)) return;
+          socket.destroy();
+        });
 
         server.listen(port, () => {
           if (settled) return;

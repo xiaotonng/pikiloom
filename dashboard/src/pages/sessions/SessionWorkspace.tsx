@@ -521,26 +521,48 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     useCallback((event) => {
       const key = event.key;
       if (!key) return;
+      const live = normalizeLiveSessionState(key, event.snapshot ?? null);
       setLiveSessionStates(prev => {
-        const next: Record<string, LiveSessionState> = {};
-        const cutoff = Date.now() - LIVE_SESSION_STATE_MAX_AGE_MS;
-        for (const [entryKey, entry] of Object.entries(prev)) {
-          if (entry.updatedAt >= cutoff) next[entryKey] = entry;
-        }
-
-        const live = normalizeLiveSessionState(key, event.snapshot ?? null);
+        // Stream ended (null snapshot). Keep the entry as phase 'done' so the
+        // sidebar doesn't flash back to the stale sessionsMap 'running' state
+        // before the sessions-changed API refresh completes. No-op once 'done'.
         if (!live) {
-          // Stream ended (null snapshot).  Don't delete the entry — keep it as
-          // phase 'done' so the sidebar doesn't flash back to the stale
-          // sessionsMap 'running' state before the sessions-changed API
-          // refresh completes.  The 15-min TTL handles eventual cleanup.
-          const prev = next[key];
-          if (prev && prev.phase !== 'done') {
-            next[key] = { ...prev, phase: 'done', updatedAt: Date.now() };
-          }
-          return next;
+          const cur = prev[key];
+          if (!cur || cur.phase === 'done') return prev;
+          return { ...prev, [key]: { ...cur, phase: 'done', updatedAt: Date.now() } };
         }
 
+        // ── Hot path: coalesce per-token churn ──────────────────────────────
+        // This map feeds ONLY the sidebar row + the open slot's `session` prop
+        // (via applyLiveSessionState) and the pending-stub dedup — none of which
+        // depend on `updatedAt`. A streaming turn keeps phase 'streaming' for its
+        // whole life, so without this guard every token delta minted a new map,
+        // recomputed `filteredByWs`, re-rendered every sidebar row, and flipped
+        // each slot's `session` identity (busting SessionPanel's memo) — the whole
+        // 2k-line shell reconciled tens of times a second, which reads as flicker.
+        // Bail when nothing the sidebar renders changed; the active panel still
+        // streams via its own per-session 'stream-update' subscription.
+        const renderEqual = (a?: LiveSessionState, b?: LiveSessionState) =>
+          !!a && !!b
+          && a.phase === b.phase
+          && a.resolvedKey === b.resolvedKey
+          && a.sessionId === b.sessionId
+          && a.incomplete === b.incomplete
+          && a.error === b.error;
+        const primaryUnchanged = renderEqual(prev[key], live);
+        const resolvedUnchanged = live.resolvedKey === key
+          || renderEqual(prev[live.resolvedKey], { ...live, key: live.resolvedKey });
+        if (primaryUnchanged && resolvedUnchanged) return prev;
+
+        // A render-relevant field changed (new run, phase flip, promotion, error).
+        // Rebuild — aging out only stale *done* entries; a still-active stream is
+        // never evicted (its `updatedAt` is intentionally frozen by the bail above).
+        const cutoff = Date.now() - LIVE_SESSION_STATE_MAX_AGE_MS;
+        const next: Record<string, LiveSessionState> = {};
+        for (const [entryKey, entry] of Object.entries(prev)) {
+          if (entry.phase === 'done' && entry.updatedAt < cutoff) continue;
+          next[entryKey] = entry;
+        }
         next[key] = live;
         if (live.resolvedKey !== key) {
           next[live.resolvedKey] = { ...live, key: live.resolvedKey };

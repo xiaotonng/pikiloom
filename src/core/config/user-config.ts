@@ -147,6 +147,19 @@ export interface UserConfig {
    *  remote access, e.g. 203.0.113.5:3940. When set, the connection code is a
    *  direct one (no NAT hop). Unset = rely on rendezvous, or local only. */
   pikichannelPublicHost?: string;
+  /** Cloudflare Realtime TURN — the TURN app's Key ID (the `$TURN_KEY_ID` in the
+   *  credentials endpoint). When paired with pikichannelTurnApiToken, the host
+   *  mints SHORT-LIVED TURN credentials so WebRTC relays through Cloudflare when
+   *  direct hole-punching fails (symmetric NAT / CGNAT). Unset = STUN only.
+   *  Env override: PIKICHANNEL_TURN_KEY_ID. */
+  pikichannelTurnKeyId?: string;
+  /** Cloudflare Realtime TURN — the API token (secret) used to mint credentials.
+   *  Stays server-side; only the minted TTL'd credentials reach the peer
+   *  connection, never this token. Env override: PIKICHANNEL_TURN_API_TOKEN. */
+  pikichannelTurnApiToken?: string;
+  /** TTL (seconds) for minted TURN credentials. Default 86400 (24h); must exceed
+   *  a single session's expected duration. Env override: PIKICHANNEL_TURN_TTL. */
+  pikichannelTurnTtl?: number;
   /** Extension configuration — global MCP servers, OAuth tokens, and skills. */
   extensions?: {
     mcp?: Record<string, McpServerConfig>;

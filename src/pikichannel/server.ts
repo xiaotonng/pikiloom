@@ -24,6 +24,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { writeScopedLog } from '../core/logging.js';
 import { loadUserConfig, updateUserConfig } from '../core/config/user-config.js';
 import { PikichannelHost } from './host.js';
+import { prewarmTurn, turnStatus } from './turn.js';
 import { PikiloomSessionSource, type RequestForwarder } from './adapter-pikiloom.js';
 import { WebSocketTransport } from './transports/websocket-host.js';
 import { RendezvousBroker } from './rendezvous-broker.js';
@@ -38,6 +39,7 @@ export interface PikichannelHandle {
     ok: boolean; transports: string[]; peers: number; authedPeers: number;
     webrtc: boolean; webrtcError: string | null; authRequired: boolean; strict: boolean;
     nodeId: string; rendezvous: string | null; publicHost: string | null; registered: boolean; broker: { hosts: number; sessions: number };
+    turn: { turn: boolean; provider: 'cloudflare' | 'manual' | null; relay: boolean; expiresAt: number | null };
   };
   stop(): void;
 }
@@ -137,6 +139,11 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
     webrtcError = (err as Error)?.message || String(err);
     log(`webrtc transport unavailable: ${webrtcError}`);
   }
+
+  // Pre-mint Cloudflare TURN credentials (if configured) so the first WebRTC
+  // connection already has a relay to fall back to. Best-effort, non-blocking;
+  // no creds → no-op, and the answerer resolves STUN until/unless minting lands.
+  void prewarmTurn();
 
   // -- Rendezvous broker (NAT traversal): always mounted (no werift dep), so any
   //    reachable pikiloom can broker signaling for NAT'd peers. Relays signaling
@@ -244,6 +251,7 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
       publicHost: currentPublicHost || null,
       registered: !!rendezvousHost,
       broker: broker.stats,
+      turn: turnStatus(),
     };
   }
 

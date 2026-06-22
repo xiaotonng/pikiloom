@@ -9,27 +9,26 @@
  *     peers dial OUTBOUND — the NAT-traversal path.
  *
  * Once the datachannel opens the bytes are pure P2P (DTLS-encrypted); signaling
- * only brokers the handshake. `getIceServers()` is the STUN/TURN config hook:
- * STUN by default, TURN added via PIKICHANNEL_ICE_SERVERS for symmetric NAT.
+ * only brokers the handshake. `getIceServers()` is the STUN/TURN config hook —
+ * see turn.ts: STUN by default, Cloudflare-minted short-lived TURN (or a manual
+ * PIKICHANNEL_ICE_SERVERS override) when configured, for symmetric-NAT / CGNAT
+ * relay fallback.
  */
 
 import { RTCPeerConnection, type RTCDataChannel } from 'werift';
 import { BaseConnection, type ChannelConnection } from '../transport.js';
+import { getCachedIceServers, toWeriftIceServers, type IceServer } from '../turn.js';
 
 let connCounter = 0;
 
 /**
- * ICE servers for hole-punching. STUN alone covers most NATs; add a TURN relay
- * for symmetric-NAT reliability via:
- *   PIKICHANNEL_ICE_SERVERS='[{"urls":"stun:stun.l.google.com:19302"},
- *     {"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]'
+ * ICE servers for the werift answerer, reduced to exactly what werift consumes
+ * (one STUN + one UDP TURN — see {@link toWeriftIceServers}). The resolution
+ * policy lives in turn.ts: a manual PIKICHANNEL_ICE_SERVERS override, else cached
+ * Cloudflare-minted short-lived credentials, else plain STUN.
  */
-export function getIceServers(): Array<{ urls: string; username?: string; credential?: string }> {
-  const raw = process.env.PIKICHANNEL_ICE_SERVERS;
-  if (raw) {
-    try { const v = JSON.parse(raw); if (Array.isArray(v) && v.length) return v; } catch { /* fall through to default */ }
-  }
-  return [{ urls: 'stun:stun.l.google.com:19302' }];
+export function getIceServers(): IceServer[] {
+  return toWeriftIceServers(getCachedIceServers());
 }
 
 function coerceFrame(data: unknown): string {

@@ -24,7 +24,10 @@
 
 export const PROTOCOL_VERSION = 1;
 
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+// The browser keeps plain STUN (no secrets). Relay fallback rides the host's
+// TURN: the host (answerer) trickles its Cloudflare relay candidate, which the
+// browser reaches outbound — so no browser-side TURN credential is needed.
+const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' }];
 
 // Resolve the ws(s):// base for a target host. `host` may be a bare authority
 // ("192.168.1.5:3940"), a full ws(s)/http(s) URL, or empty (same origin). This

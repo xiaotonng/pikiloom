@@ -24,6 +24,16 @@ const SESSION_PAGE_TURNS = 12;
 const TOP_LOAD_THRESHOLD_PX = 160;
 const BOTTOM_STICK_THRESHOLD_PX = 96;
 
+// Stable empty references for the snapshot-derived queue/interaction arrays.
+// applyStreamSnapshot runs on every token delta; minting a fresh `[]` each time
+// gave these setters a new identity per delta, so React never bailed and the
+// memo'd InputComposer (which takes queuedTaskIds/queuedTasks) re-rendered on
+// every token even when no queue exists — the common case during a normal turn.
+// A shared constant lets useState's Object.is bail-out kick in.
+const EMPTY_TASK_IDS: string[] = [];
+const EMPTY_QUEUED_TASKS: Array<{ taskId: string; prompt: string }> = [];
+const EMPTY_INTERACTIONS: InteractionSnapshot[] = [];
+
 /* ── Stale-while-revalidate: persist last-known history across mount/unmount ── */
 const MAX_HISTORY_SNAPSHOTS = 20;
 const historySnapshots = new Map<string, TurnHistoryWindow>();
@@ -429,9 +439,9 @@ export const SessionPanel = memo(function SessionPanel({
     }
     setStreamPhase(state.phase);
     setStreamTaskId(state.taskId || null);
-    setQueuedTaskIds(state.queuedTaskIds && state.queuedTaskIds.length ? state.queuedTaskIds : []);
-    setQueuedTasks(state.queuedTasks && state.queuedTasks.length ? state.queuedTasks : []);
-    setInteractions(Array.isArray(state.interactions) && state.interactions.length ? state.interactions : []);
+    setQueuedTaskIds(state.queuedTaskIds && state.queuedTaskIds.length ? state.queuedTaskIds : EMPTY_TASK_IDS);
+    setQueuedTasks(state.queuedTasks && state.queuedTasks.length ? state.queuedTasks : EMPTY_QUEUED_TASKS);
+    setInteractions(Array.isArray(state.interactions) && state.interactions.length ? state.interactions : EMPTY_INTERACTIONS);
     if (state.phase === 'streaming') {
       // Steer handoff: a previous task just ended ('done' triggered loadLatestTurns
       // and armed clearLiveStreamOnLoadRef). The new task's initial snapshot carries
@@ -559,6 +569,13 @@ export const SessionPanel = memo(function SessionPanel({
     });
     prevPhaseRef.current = state.phase;
   }, [clearPending, clearPendingQueuedSends, loadLatestTurns, session.sessionId, session.agent, onSessionChange, workdir]);
+
+  // Stable indirection so effects can invoke the latest applyStreamSnapshot
+  // WITHOUT listing it as a dependency. It changes identity on every parent
+  // render (the slot passes a fresh inline `onSessionChange`, which flows into
+  // this callback's deps), so any effect that depends on it re-runs constantly.
+  const applyStreamSnapshotRef = useRef(applyStreamSnapshot);
+  applyStreamSnapshotRef.current = applyStreamSnapshot;
 
   const requestStreamPolling = useCallback(() => {
     localStreamPendingRef.current = true;
@@ -693,10 +710,17 @@ export const SessionPanel = memo(function SessionPanel({
   useEffect(() => {
     let mounted = true;
     void api.getSessionStreamState(session.agent || '', session.sessionId).then(res => {
-      if (mounted) applyStreamSnapshot(res.state);
+      if (mounted) applyStreamSnapshotRef.current(res.state);
     }).catch(() => {});
     return () => { mounted = false; };
-  }, [applyStreamSnapshot, session.agent, session.sessionId, streamPollNonce]);
+    // applyStreamSnapshot is deliberately NOT a dependency. It changes identity
+    // on every parent render (inline onSessionChange prop), and re-running this
+    // REST seed-fetch per render raced the WS-driven liveStream: a stale/NULL
+    // snapshot arriving mid-stream toggled the live preview off then on — the
+    // back-and-forth "回到上一个状态再闪到下一个" flicker. Seed once per session and
+    // on explicit re-poll (streamPollNonce); WS drives every subsequent update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.agent, session.sessionId, streamPollNonce]);
 
   /* ── Refresh stream state after WS reconnect (covers missed events) ── */
   useDashboardReconnect(useCallback(() => {

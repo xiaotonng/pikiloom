@@ -150,6 +150,13 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     } catch { /* network blip — leave previous snapshot in place */ }
   }, []);
 
+  // Eager-load the model layer on mount so the composer chip can resolve a BYOK
+  // profile binding immediately. Without this, a fresh session's chip falls back
+  // to the agent's native model (e.g. claude-opus) until the cascade is first
+  // opened — even though the bound profile is what actually runs (display-only
+  // bug: the spawn already uses the binding).
+  useEffect(() => { void refreshModelLayer(); }, [refreshModelLayer]);
+
   useEffect(() => { if (storeAgents?.length) setAgents(storeAgents); }, [storeAgents]);
   useEffect(() => { attachmentsRef.current = imageAttachments; }, [imageAttachments]);
 
@@ -694,8 +701,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   // id when there's no Profile (native auth) or when the user named the
   // Profile identical to its modelId.
   const displayModelLabel = displayProfile
-    && displayProfile.name.trim().toLowerCase() !== displayProfile.modelId.trim().toLowerCase()
-    ? displayProfile.name
+    ? (displayProfile.name.trim().toLowerCase() !== displayProfile.modelId.trim().toLowerCase()
+        ? displayProfile.name
+        : shortenModel(displayProfile.modelId))
     : shortModel;
 
   // Plain-text fallback used as the button tooltip when the user hovers.

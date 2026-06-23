@@ -30,7 +30,6 @@ import {
 } from '../../browser-profile.js';
 import {
   requestProcessRestart,
-  getActiveTaskCount,
 } from '../../core/process-control.js';
 import {
   getPermissionsStatus,
@@ -429,14 +428,6 @@ app.post('/api/open-preferences', async (c) => {
 });
 
 app.post('/api/restart', (c) => {
-  const activeTasks = getActiveTaskCount();
-  if (activeTasks > 0) {
-    return c.json({
-      ok: false,
-      activeTasks,
-      error: `${activeTasks} task(s) still running — can't restart. Wait for them to finish or stop them, then retry.`,
-    }, 409);
-  }
   setTimeout(() => {
     void requestProcessRestart({ log: message => runtime.log(message) });
   }, 50);

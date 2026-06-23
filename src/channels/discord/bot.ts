@@ -520,7 +520,6 @@ export class DiscordBot extends Bot {
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'discord',
-      getActiveTaskCount: () => this.activeTasks.size,
       prepareForRestart: () => this.cleanupRuntimeForExit(),
     });
     this.installSignalHandlers();

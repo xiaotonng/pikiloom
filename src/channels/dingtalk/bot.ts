@@ -520,7 +520,6 @@ export class DingtalkBot extends Bot {
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'dingtalk',
-      getActiveTaskCount: () => this.activeTasks.size,
       prepareForRestart: () => this.cleanupRuntimeForExit(),
     });
     this.installSignalHandlers();

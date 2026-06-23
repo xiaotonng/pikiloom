@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { pathContainsSegment } from './platform.js';
 import { STATE_DIR_NAME } from './constants.js';
 
@@ -54,7 +54,6 @@ interface RestartStateFile {
 
 export interface ProcessRuntimeRegistration {
   label?: string;
-  getActiveTaskCount?: () => number;
   prepareForRestart?: () => void | Promise<void>;
   buildRestartEnv?: () => Record<string, string>;
 }
@@ -63,7 +62,6 @@ export interface ProcessRestartResult {
   ok: boolean;
   restarting: boolean;
   error: string | null;
-  activeTasks: number;
 }
 
 interface ProcessRestartOptions {
@@ -149,12 +147,64 @@ export function getRegisteredRuntimeCount(): number {
   return runtimes.size;
 }
 
-export function getActiveTaskCount(): number {
-  let total = 0;
-  for (const runtime of runtimes.values()) {
-    total += Math.max(0, runtime.getActiveTaskCount?.() || 0);
+function readProcessParentMap(): Map<number, number[]> {
+  const children = new Map<number, number[]>();
+  try {
+    const rows: Array<{ pid: number; ppid: number }> = [];
+    if (process.platform === 'win32') {
+      const out = execFileSync('wmic', ['process', 'get', 'ParentProcessId,ProcessId'], { encoding: 'utf8', windowsHide: true });
+      for (const line of out.split(/\r?\n/)) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+        if (m) rows.push({ ppid: Number(m[1]), pid: Number(m[2]) });
+      }
+    } else {
+      const out = execFileSync('ps', ['-Ao', 'pid=,ppid='], { encoding: 'utf8' });
+      for (const line of out.split('\n')) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+        if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]) });
+      }
+    }
+    for (const { pid, ppid } of rows) {
+      const list = children.get(ppid);
+      if (list) list.push(pid);
+      else children.set(ppid, [pid]);
+    }
+  } catch {}
+  return children;
+}
+
+function collectDescendantPids(rootPid: number): number[] {
+  const children = readProcessParentMap();
+  const descendants: number[] = [];
+  const seen = new Set<number>([rootPid]);
+  const stack = [rootPid];
+  while (stack.length) {
+    const current = stack.pop() as number;
+    for (const child of children.get(current) || []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      descendants.push(child);
+      stack.push(child);
+    }
   }
-  return total;
+  return descendants;
+}
+
+export async function killChildProcesses(rootPid = process.pid, opts: { graceMs?: number; log?: (message: string) => void } = {}): Promise<number> {
+  const pids = collectDescendantPids(rootPid);
+  if (!pids.length) return 0;
+  opts.log?.(`restart: terminating ${pids.length} child process(es) before restart`);
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+  const graceMs = opts.graceMs ?? 1500;
+  if (graceMs > 0) await new Promise(resolve => setTimeout(resolve, graceMs));
+  for (const pid of pids) {
+    if (isProcessAlive(pid)) {
+      try { process.kill(pid, 'SIGKILL'); } catch {}
+    }
+  }
+  return pids.length;
 }
 
 export function createRestartStateFilePath(ownerPid = process.pid): string {
@@ -256,22 +306,7 @@ function spawnReplacementProcess(bin: string, args: string[], env: Record<string
 
 export async function requestProcessRestart(opts: ProcessRestartOptions = {}): Promise<ProcessRestartResult> {
   if (restartInFlight) {
-    return {
-      ok: true,
-      restarting: true,
-      error: null,
-      activeTasks: 0,
-    };
-  }
-
-  const activeTasks = getActiveTaskCount();
-  if (activeTasks > 0) {
-    return {
-      ok: false,
-      restarting: false,
-      error: `${activeTasks} task(s) still running. Wait for them to finish or try again.`,
-      activeTasks,
-    };
+    return { ok: true, restarting: true, error: null };
   }
 
   restartInFlight = true;
@@ -281,6 +316,7 @@ export async function requestProcessRestart(opts: ProcessRestartOptions = {}): P
   try {
     const extraEnv = collectRestartEnv();
     await prepareRuntimesForRestart(log);
+    await killChildProcesses(process.pid, { log });
 
     if (process.env.PIKILOOM_DAEMON_CHILD === '1') {
       const restartStateFile = process.env[PROCESS_RESTART_STATE_FILE_ENV];
@@ -290,22 +326,17 @@ export async function requestProcessRestart(opts: ProcessRestartOptions = {}): P
       }
       log?.('restart: handing off to daemon supervisor');
       exit(PROCESS_RESTART_EXIT_CODE);
-      return { ok: true, restarting: true, error: null, activeTasks: 0 };
+      return { ok: true, restarting: true, error: null };
     }
 
     const { bin, args } = buildRestartCommand(opts.argv || process.argv.slice(2), opts.restartCmd);
     log?.(`restart: spawning \`${bin} ${args.join(' ')}\``);
     spawnReplacementProcess(bin, args, buildRestartEnvForSpawn(extraEnv), log);
     exit(0);
-    return { ok: true, restarting: true, error: null, activeTasks: 0 };
+    return { ok: true, restarting: true, error: null };
   } catch (err) {
     restartInFlight = false;
-    return {
-      ok: false,
-      restarting: false,
-      error: err instanceof Error ? err.message : String(err),
-      activeTasks: 0,
-    };
+    return { ok: false, restarting: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

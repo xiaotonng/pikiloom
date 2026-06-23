@@ -528,7 +528,6 @@ export class WeComBot extends Bot {
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'wecom',
-      getActiveTaskCount: () => this.activeTasks.size,
       prepareForRestart: () => this.cleanupRuntimeForExit(),
     });
     this.installSignalHandlers();

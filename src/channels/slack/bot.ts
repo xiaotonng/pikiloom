@@ -531,7 +531,6 @@ export class SlackBot extends Bot {
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'slack',
-      getActiveTaskCount: () => this.activeTasks.size,
       prepareForRestart: () => this.cleanupRuntimeForExit(),
     });
     this.installSignalHandlers();

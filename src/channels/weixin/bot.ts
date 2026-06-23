@@ -952,7 +952,6 @@ export class WeixinBot extends Bot {
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'weixin',
-      getActiveTaskCount: () => this.activeTasks.size,
       prepareForRestart: () => this.cleanupRuntimeForExit(),
     });
     this.installSignalHandlers();

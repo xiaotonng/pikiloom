@@ -1256,7 +1256,6 @@ export class TelegramBot extends Bot {
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'telegram',
-      getActiveTaskCount: () => this.activeTasks.size,
       prepareForRestart: () => this.cleanupRuntimeForExit(),
       buildRestartEnv: () => this.buildRestartEnv(),
     });

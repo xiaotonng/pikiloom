@@ -1226,7 +1226,6 @@ export class FeishuBot extends Bot {
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({
       label: 'feishu',
-      getActiveTaskCount: () => this.activeTasks.size,
       prepareForRestart: () => this.cleanupRuntimeForExit(),
       buildRestartEnv: () => this.buildRestartEnv(),
     });

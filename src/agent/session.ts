@@ -620,9 +620,17 @@ export function importFilesIntoWorkspace(workspacePath: string, files: string[])
   const imported: string[] = [];
   const realWorkspace = fs.realpathSync(workspacePath);
   for (const filePath of files) {
-    const sourcePath = path.resolve(filePath);
-    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) continue;
-    let relPath = path.relative(realWorkspace, sourcePath);
+    const resolved = path.resolve(filePath);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) continue;
+    // Resolve symlinks on the source too — realWorkspace is already realpath'd,
+    // so comparing it against a merely path.resolve'd source makes a file that
+    // ALREADY lives in the workspace look "outside" whenever a path component is
+    // a symlink (macOS /tmp → /private/tmp, or an iCloud-synced ~/Desktop). That
+    // mis-detection re-copies an already-staged attachment under a collision
+    // name, so the same image lands in the prompt TWICE and renders twice.
+    // realpath'ing both sides keeps the in-workspace check symlink-safe.
+    const sourcePath = fs.realpathSync(resolved);
+    const relPath = path.relative(realWorkspace, sourcePath);
     if (relPath && !relPath.startsWith('..') && !path.isAbsolute(relPath)) {
       imported.push(relPath.split(path.sep).join(path.posix.sep));
       continue;

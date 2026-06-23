@@ -13,6 +13,25 @@ export interface TurnHistoryWindow {
   hasOlder: boolean;
 }
 
+/**
+ * Collapse a user message to the form the agent transcript persists it in.
+ * The Claude loader normalizes the stored user text with `/\s+/ → ' '` + trim,
+ * but the optimistic `pendingPrompt` keeps the raw text the user typed. The
+ * SessionPanel dedup (optimistic bubble vs. the loaded server turn) compares by
+ * text, so a multi-line message — whose raw newlines survive in pendingPrompt
+ * but are collapsed in the loaded turn — would fail the equality check and
+ * render BOTH bubbles (the "图片显示两次" double). Comparing on this normalized
+ * form keeps the dedup whitespace-insensitive.
+ */
+export function normalizeUserText(text: string | null | undefined): string {
+  return (text || '').replace(/\s+/g, ' ').trim();
+}
+
+/** True when two user messages match after transcript whitespace normalization. */
+export function sameUserText(a: string | null | undefined, b: string | null | undefined): boolean {
+  return normalizeUserText(a) === normalizeUserText(b);
+}
+
 export function normalizeTurnHistory(result: SessionMessagesResult): TurnHistoryWindow {
   const richMessages = result.richMessages?.length
     ? result.richMessages

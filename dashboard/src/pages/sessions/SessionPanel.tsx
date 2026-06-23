@@ -17,6 +17,7 @@ import {
   normalizeTurnHistory,
   mergeOlderHistory,
   mergeLatestHistory,
+  sameUserText,
   type Turn,
   type TurnHistoryWindow,
 } from './utils';
@@ -864,7 +865,7 @@ export const SessionPanel = memo(function SessionPanel({
     if (!pendingImageUrls.length || !rawTurns.length) return false;
     const last = rawTurns[rawTurns.length - 1];
     if (!last.user) return false;
-    if ((last.user.text?.trim() || '') !== (pendingPrompt || '').trim()) return false;
+    if (!sameUserText(last.user.text, pendingPrompt)) return false;
     const serverImages = last.user.blocks.filter(b => b.type === 'image').length;
     return serverImages < pendingImageUrls.length;
   }, [rawTurns, pendingPrompt, pendingImageUrls.length]);
@@ -895,7 +896,7 @@ export const SessionPanel = memo(function SessionPanel({
     const liveText = (liveStream.text || '').trim();
     const lastAssistantText = last.assistant.text?.trim() || '';
     const isStreamingTurn = streamPrompt != null
-      ? last.user?.text?.trim() === streamPrompt.trim()
+      ? sameUserText(last.user?.text, streamPrompt)
       : !!lastAssistantText && !!liveText
         && (liveText.startsWith(lastAssistantText) || lastAssistantText.startsWith(liveText));
     if (!isStreamingTurn) return result;
@@ -985,7 +986,7 @@ export const SessionPanel = memo(function SessionPanel({
             {(pendingPrompt || pendingImageUrls.length > 0)
               && (optimisticBridgesImages
                   || !(pendingPrompt && rawTurns.length > 0
-                       && rawTurns[rawTurns.length - 1]?.user?.text?.trim() === pendingPrompt.trim())) && (
+                       && sameUserText(rawTurns[rawTurns.length - 1]?.user?.text, pendingPrompt))) && (
               <div className="session-turn">
                 <UserBubble text={pendingPrompt || ''} blocks={pendingImageUrls.map(u => ({ type: 'image' as const, content: u }))} t={t} />
                 {!liveStream && (
@@ -1003,7 +1004,7 @@ export const SessionPanel = memo(function SessionPanel({
                 case for IM / API / another-tab sends. */}
             {liveStream && liveStreamShouldRender(liveStream) && !pendingPrompt && liveStream.question
               && !(rawTurns.length > 0
-                   && rawTurns[rawTurns.length - 1]?.user?.text?.trim() === liveStream.question.trim()) && (
+                   && sameUserText(rawTurns[rawTurns.length - 1]?.user?.text, liveStream.question)) && (
               <div className="session-turn">
                 <UserBubble text={liveStream.question} t={t} />
               </div>

@@ -1,9 +1,3 @@
-/**
- * Platform detection helpers.
- *
- * macOS permission checks, terminal detection, JXA scripts, and other OS-level utilities.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -12,10 +6,6 @@ import {
   DASHBOARD_PERMISSION_TIMEOUTS,
   DASHBOARD_PERMISSION_CACHE_TTL_MS,
 } from '../core/constants.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface PermissionStatus { granted: boolean; checkable: boolean; detail: string }
 
@@ -30,18 +20,10 @@ export interface PermissionRequestResult {
   error?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Permission pane URLs (macOS)
-// ---------------------------------------------------------------------------
-
 const permissionPaneUrls: Record<DashboardPermissionKey, string> = {
   screenRecording: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
   fullDiskAccess: 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
 };
-
-// ---------------------------------------------------------------------------
-// JXA helpers
-// ---------------------------------------------------------------------------
 
 function runJxa(script: string, timeout = DASHBOARD_PERMISSION_TIMEOUTS.jxaDefault): string | null {
   try {
@@ -85,10 +67,6 @@ function openPermissionSettings(permission: DashboardPermissionKey): boolean {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Permission checks
-// ---------------------------------------------------------------------------
-
 export function checkPermissions(): Record<string, PermissionStatus> {
   const r: Record<string, PermissionStatus> = {};
   if (process.platform !== 'darwin') {
@@ -110,16 +88,6 @@ export function checkPermissions(): Record<string, PermissionStatus> {
   return r;
 }
 
-// ---------------------------------------------------------------------------
-// Cached probes for the polling dashboard
-// ---------------------------------------------------------------------------
-
-// `/api/state` is polled (~1.5s while a channel validates) and both probes below
-// spawn subprocesses — checkPermissions() runs screencapture + an `ls` shell,
-// detectHostTerminalApp() runs a `ps` process-tree walk — so they must never run
-// per request. The host terminal is fixed for the process lifetime; permission
-// grants change rarely, so a short TTL is plenty and requestPermission()
-// invalidates the cache so a user-driven grant surfaces on the next poll.
 let permissionsCache: { at: number; value: Record<string, PermissionStatus> } | null = null;
 let hostTerminalAppCache: { value: string | null } | null = null;
 
@@ -138,7 +106,7 @@ export function getHostTerminalApp(): string | null {
 }
 
 export function requestPermission(permission: DashboardPermissionKey): PermissionRequestResult {
-  permissionsCache = null; // a request can change grant state — force the next poll to re-probe
+  permissionsCache = null;
   if (process.platform !== 'darwin') {
     return {
       ok: false,
@@ -189,17 +157,9 @@ export function isValidPermissionKey(value: string): value is DashboardPermissio
   return value in permissionPaneUrls;
 }
 
-// ---------------------------------------------------------------------------
-// Terminal detection
-// ---------------------------------------------------------------------------
-
-/** Walk the process tree upward to find the host terminal / IDE that launched pikiloom. Works on macOS and Linux. */
 export function detectHostTerminalApp(): string | null {
   if (process.platform !== 'darwin' && process.platform !== 'linux') return null;
   try {
-    // Patterns to match in the comm/exe name (case-insensitive on Linux where names vary)
-    // macOS: Terminal, iTerm2, Warp; Linux: gnome-terminal, konsole, xfce4-terminal, xterm, tilix, foot, sakura, terminology
-    // Cross-platform: Alacritty, kitty, WezTerm, Hyper, VS Code, Cursor, Windsurf
     const patterns = [
       'Terminal', 'iTerm', 'Warp',
       'Alacritty', 'alacritty', 'kitty', 'WezTerm', 'wezterm', 'Hyper',
@@ -213,18 +173,14 @@ export function detectHostTerminalApp(): string | null {
     ).trim();
     if (!output) return null;
     const base = path.basename(output);
-    // Map comm name → human-readable display name
     const nameMap: [string, string][] = [
-      // macOS
       ['iTerm', 'iTerm2'],
       ['Code Helper', 'VS Code'],
       ['Cursor Helper', 'Cursor'],
       ['Windsurf Helper', 'Windsurf'],
-      // Cross-platform IDE wrappers (Linux uses "code" binary directly)
       ['code', 'VS Code'],
       ['cursor', 'Cursor'],
       ['windsurf', 'Windsurf'],
-      // Terminal emulators
       ['gnome-terminal', 'GNOME Terminal'],
       ['xfce4-terminal', 'Xfce Terminal'],
       ['Terminal', 'Terminal'],
@@ -252,4 +208,3 @@ export function detectHostTerminalApp(): string | null {
     return null;
   }
 }
-

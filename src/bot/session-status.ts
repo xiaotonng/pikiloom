@@ -1,7 +1,3 @@
-/**
- * Runtime session status helpers for dashboard polling.
- */
-
 import { isRunningSessionStale } from '../agent/index.js';
 import type { Bot, ChatState, SessionInfo, SessionRuntime } from './bot.js';
 
@@ -10,14 +6,12 @@ type SessionLookupChat = Pick<ChatState, 'agent' | 'sessionId' | 'activeSessionK
 type SessionLookupRuntimeBot = Pick<Bot, 'sessionStates' | 'chats'>;
 type SessionLookupInfo = Pick<SessionInfo, 'agent' | 'sessionId' | 'running' | 'runState' | 'runUpdatedAt' | 'runPid'>;
 
-/** Age threshold used when the owning PID is unknown or unverifiable. */
-const STALE_RUNNING_AGE_MS = 30 * 60_000; // 30 minutes
+const STALE_RUNNING_AGE_MS = 30 * 60_000;
 
 export interface SessionStatusResult {
   runtime: SessionRuntime | null;
   isCurrent: boolean;
   isRunning: boolean;
-  /** True when the persisted record claims 'running' but is actually orphaned (no live process, no runtime). */
   isStale: boolean;
 }
 

@@ -1,14 +1,3 @@
-/**
- * Tests for the unified human-in-the-loop interaction flow.
- *
- * Covers:
- *   1. AgentInteraction creation from Codex driver format
- *   2. Bot.createInteractionHandler wiring (IM + Dashboard paths)
- *   3. SSE event emission (interaction / interaction-resolved)
- *   4. Public interaction API on Bot (select, text, skip, cancel)
- *   5. Dashboard submitSessionTask auto-wiring
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/agent/index.ts', async importOriginal => {
@@ -39,8 +28,6 @@ afterEach(() => {
   restoreEnv(envSnapshot);
 });
 
-// ---- helpers ----------------------------------------------------------------
-
 function buildTestInteraction(overrides: Partial<AgentInteraction> = {}): AgentInteraction {
   return {
     kind: 'user-input',
@@ -69,14 +56,11 @@ function buildTestInteraction(overrides: Partial<AgentInteraction> = {}): AgentI
   };
 }
 
-// ---- tests ------------------------------------------------------------------
-
 describe('Bot interaction handler via submitSessionTask (dashboard path)', () => {
   it('creates interaction prompts and resolves via select, cancel, and freeform text APIs', async () => {
     const doStreamMock = vi.mocked(doStream);
     const events: StreamEvent[] = [];
 
-    // --- select: creates interaction prompts, emits SSE events, resolves via selectOption ---
     doStreamMock.mockImplementationOnce(async (opts) => {
       const interactionPromise = opts.onInteraction?.(buildTestInteraction());
       expect(interactionPromise).toBeInstanceOf(Promise);
@@ -123,7 +107,6 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     expect(bot.getStreamSnapshot('codex:sess-interaction')?.interactions).toBeUndefined();
     expect(bot.interactionPrompt(promptId)).toBeNull();
 
-    // --- cancel: cancels interaction and rejects the agent promise ---
     doStreamMock.mockImplementationOnce(async (opts) => {
       try {
         await opts.onInteraction?.(buildTestInteraction());
@@ -153,7 +136,6 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     }
     expect(bot2.getStreamSnapshot('codex:sess-cancel')?.phase).toBe('done');
 
-    // --- freeform text: handles freeform text submission through the public API ---
     const freeformInteraction = buildTestInteraction({
       questions: [{ id: 'q1', header: 'Question', prompt: 'Enter your API key:', secret: true, allowFreeform: true }],
     });
@@ -187,7 +169,6 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
   it('handles dashboard "Other" path, rejects disallowed freeform, and resolves via skip', async () => {
     const doStreamMock = vi.mocked(doStream);
 
-    // --- options+freeform: accepts custom freeform answer on an options question (dashboard "Other" path) ---
     const optionsWithFreeform = buildTestInteraction({
       questions: [{
         id: 'q1', header: 'Question', prompt: 'Pick one, or type your own:',
@@ -221,7 +202,6 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     }
     expect(bot4.getStreamSnapshot('codex:sess-other')?.phase).toBe('done');
 
-    // --- reject freeform: rejects freeform text on an options question that disallows freeform ---
     doStreamMock.mockImplementationOnce(async (opts) => {
       const response = await opts.onInteraction?.(buildTestInteraction());
       expect(response).toEqual({ answers: { q1: { answers: ['Allow'] } } });
@@ -248,7 +228,6 @@ describe('Bot interaction handler via submitSessionTask (dashboard path)', () =>
     }
     expect(bot5.getStreamSnapshot('codex:sess-noff')?.phase).toBe('done');
 
-    // --- skip: handles skip via the public API ---
     doStreamMock.mockImplementationOnce(async (opts) => {
       const response = await opts.onInteraction?.(buildTestInteraction());
       expect(response).toEqual({ answers: { q1: { answers: [] } } });
@@ -285,7 +264,6 @@ describe('Bot.runStream interaction handler (IM path)', () => {
       expect(opts.onInteraction).toBeDefined();
 
       const response = await opts.onInteraction?.(buildTestInteraction());
-      // Verify the response shape
       expect(response).toEqual({
         answers: { q1: { answers: ['Deny'] } },
       });
@@ -300,12 +278,10 @@ describe('Bot.runStream interaction handler (IM path)', () => {
     const cs = bot.chat(1);
     cs.agent = 'codex';
 
-    // Simulate the IM path: provide onInteraction to runStream
     const interactionHandler = (bot as any).createInteractionHandler(1, 'task-im');
 
     const resultPromise = bot.runStream('do something', cs, [], () => {}, undefined, undefined, undefined, interactionHandler);
 
-    // Wait for the interaction prompt to appear
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
       const prompt = (bot as any).pendingHumanLoopPrompt(1);
@@ -313,12 +289,10 @@ describe('Bot.runStream interaction handler (IM path)', () => {
       await new Promise(r => setTimeout(r, 10));
     }
 
-    // Find and answer the prompt
     const prompt = (bot as any).pendingHumanLoopPrompt(1);
     expect(prompt).toBeTruthy();
     expect(prompt.title).toBe('User Input Required');
 
-    // Select an option (Deny)
     const selectResult = (bot as any).humanLoopSelectOption(prompt.promptId, 'Deny');
     expect(selectResult.completed).toBe(true);
 
@@ -338,8 +312,6 @@ describe('dashboard chats skip IM-side renderInteractionPrompt', () => {
     });
 
     const renderSpy = vi.fn(async () => {
-      // Simulate an IM subclass whose channel SDK (e.g. Feishu/axios) rejects
-      // `chatId='dashboard'` with a 400 — the bug this test guards against.
       throw new Error('Request failed with status code 400');
     });
 
@@ -356,7 +328,6 @@ describe('dashboard chats skip IM-side renderInteractionPrompt', () => {
       sessionId: 'sess-dash-skip',
       workdir: process.env.PIKILOOM_WORKDIR!,
       prompt: 'do work',
-      // No chatId — defaults to the dashboard sentinel.
     });
     expect(submitted.ok).toBe(true);
 

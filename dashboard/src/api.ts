@@ -39,12 +39,6 @@ export interface SessionSendRequestOptions extends ApiRequestOptions {
   attachments?: File[];
   model?: string | null;
   effort?: string | null;
-  /**
-   * When sent with an empty/pending sessionId because the user just switched
-   * agent, these point at the live session of the agent they switched away
-   * from. The backend reads that session, compacts it, and prepends the seed
-   * to this turn's prompt — see `compactForHandover` in src/agent/handover.ts.
-   */
   previousAgent?: string | null;
   previousSessionId?: string | null;
 }
@@ -199,7 +193,6 @@ export const api = {
   setupBrowser: (opts?: ApiRequestOptions) =>
     post<BrowserSetupResponse>('/api/browser/setup', {}, { timeoutMs: 120_000, ...opts }),
 
-  // MCP Extensions — catalog-first surface
   getMcpCatalog: (workdir?: string, scope?: 'global' | 'workspace' | 'both') => {
     const params = new URLSearchParams();
     if (workdir) params.set('workdir', workdir);
@@ -231,7 +224,6 @@ export const api = {
   searchMcp: (query: string) =>
     json<{ ok: boolean; results: McpSearchResult[] }>(`/api/extensions/mcp/search?q=${encodeURIComponent(query)}`),
 
-  // MCP OAuth
   startMcpOAuth: (catalogId: string) =>
     post<{ ok: boolean; authUrl?: string; state?: string; error?: string }>(
       '/api/extensions/mcp/oauth/start',
@@ -244,7 +236,6 @@ export const api = {
       { catalogId },
     ),
 
-  // Skills — catalog-first surface
   getSkillsCatalog: (workdir: string | undefined, scope?: 'global' | 'workspace' | 'both', opts?: ApiRequestOptions) => {
     const params = new URLSearchParams();
     if (workdir) params.set('workdir', workdir);
@@ -276,14 +267,12 @@ export const api = {
   searchExtensionSkills: (query: string) =>
     json<{ ok: boolean; results: any[] }>(`/api/extensions/skills/search?q=${encodeURIComponent(query)}`),
 
-  // Skills (legacy)
   getSkills: (workdir: string, opts?: ApiRequestOptions) =>
     json<{ ok: boolean; skills: SkillInfo[]; error?: string }>(
       `/api/session-hub/skills?workdir=${encodeURIComponent(workdir)}`,
       { timeoutMs: 5_000, ...opts },
     ),
 
-  // CLI tools — catalog + auth lifecycle
   getCliCatalog: (opts?: ApiRequestOptions) =>
     json<{ ok: boolean; items: CliCatalogItem[]; error?: string }>(
       '/api/extensions/cli/catalog',
@@ -323,12 +312,9 @@ export const api = {
       { timeoutMs: 15_000 },
     ),
 
-  // Local model backends (Ollama / mlx-lm) — auto-attach on probe; no manual
-  // connect step. See src/dashboard/routes/local-models.ts for the contract.
   probeLocalModels: (opts?: ApiRequestOptions) =>
     json<LocalModelsProbeResponse>('/api/local-models/probe', { timeoutMs: 8_000, ...opts }),
 
-  // Session hub
   getWorkspaces: () => json<{ ok: boolean; workspaces: WorkspaceEntry[] }>('/api/workspaces'),
   getWorkspaceSessions: (workdir: string, opts?: ApiRequestOptions) =>
     post<SessionHubResult>('/api/session-hub/sessions', { workdir }, opts),
@@ -393,11 +379,9 @@ export const api = {
   removeWorkspace: (wsPath: string, opts?: ApiRequestOptions) =>
     json<{ ok: boolean; removed?: boolean; error?: string }>('/api/workspaces', { ...opts, method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: wsPath }) }),
 
-  // Editor integration
   openInEditor: (filePath: string, target?: OpenTarget, basePath?: string | null) =>
     post<{ ok: boolean; error?: string }>('/api/open-in-editor', { filePath, target, basePath }),
 
-  // Session interaction
   sendSessionMessage: (
     workdir: string,
     agent: string,
@@ -453,11 +437,6 @@ export const api = {
       { method: 'POST', body, timeoutMs: 30_000, ...opts },
     );
   },
-  /**
-   * Fork a session at `atTurn` and queue a new prompt against the freshly
-   * created child. Returns the queued task plus the child's pending sessionKey
-   * so the caller can navigate the UI into the new session immediately.
-   */
   forkSession: (
     workdir: string,
     agent: string,
@@ -486,12 +465,6 @@ export const api = {
       { taskId },
       opts,
     ),
-  /**
-   * Stop the running stream AND cancel every queued task for a session.
-   * Backed by `bot.stopAllSessionTasks`; takes (agent, sessionId) so it works
-   * even in the small window after `sendSessionMessage` where the client
-   * hasn't received the streamTaskId yet.
-   */
   stopSession: (agent: string, sessionId: string, opts?: ApiRequestOptions) =>
     post<{ ok: boolean; interrupted?: boolean; cancelledQueued?: number; error?: string }>(
       '/api/session-hub/session/stop',
@@ -505,15 +478,12 @@ export const api = {
       opts,
     ),
 
-  /** Poll current streaming state for a session. */
   getSessionStreamState: (agent: string, sessionId: string, opts?: ApiRequestOptions) =>
     json<{ ok: boolean; state: StreamSnapshot | null }>(
       `/api/session-hub/session/stream-state?agent=${encodeURIComponent(agent)}&sessionId=${encodeURIComponent(sessionId)}`,
       { timeoutMs: 5_000, ...opts },
     ),
 
-  // Human-in-the-loop interaction (im_ask_user / Codex requestUserInput)
-  /** Pick a predefined option as the answer to the current question. */
   interactionSelectOption: (
     promptId: string,
     value: string,
@@ -525,21 +495,18 @@ export const api = {
       { value, requestFreeform: !!requestFreeform },
       opts,
     ),
-  /** Submit freeform text as the answer to the current question. */
   interactionSubmitText: (promptId: string, text: string, opts?: ApiRequestOptions) =>
     post<{ ok: boolean; completed?: boolean; advanced?: boolean; error?: string }>(
       `/api/interaction/${encodeURIComponent(promptId)}/text`,
       { text },
       opts,
     ),
-  /** Skip the current question (mark as answered with no value). */
   interactionSkip: (promptId: string, opts?: ApiRequestOptions) =>
     post<{ ok: boolean; completed?: boolean; advanced?: boolean; error?: string }>(
       `/api/interaction/${encodeURIComponent(promptId)}/skip`,
       {},
       opts,
     ),
-  /** Cancel the prompt entirely — the agent receives an error. */
   interactionCancel: (promptId: string, opts?: ApiRequestOptions) =>
     post<{ ok: boolean; cancelled?: boolean; error?: string }>(
       `/api/interaction/${encodeURIComponent(promptId)}/cancel`,
@@ -548,13 +515,10 @@ export const api = {
     ),
 };
 
-/** Snapshot of the latest streaming state for a session (returned by polling endpoint). */
 export interface StreamSnapshot {
   phase: 'queued' | 'streaming' | 'done';
   taskId: string;
-  /** Task IDs queued behind the currently displayed one, in enqueue order. */
   queuedTaskIds?: string[];
-  /** Per-queued-task prompt previews (same order as queuedTaskIds). */
   queuedTasks?: Array<{ taskId: string; prompt: string }>;
   text?: string;
   thinking?: string;
@@ -562,10 +526,7 @@ export interface StreamSnapshot {
   plan?: StreamPlan | null;
   sessionId?: string | null;
   error?: string;
-  /** Active human-in-the-loop interaction prompts (im_ask_user / Codex user-input). */
   interactions?: InteractionSnapshot[];
-  /** Wall-clock ms when the active turn started streaming — drives the live
-   *  elapsed-time chip in the turn header. */
   startedAt?: number;
   updatedAt: number;
 }

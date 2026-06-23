@@ -1,21 +1,9 @@
 #!/usr/bin/env npx tsx
-/**
- * End-to-end interaction verification script.
- *
- * Starts a real dashboard + bot, submits a task that triggers a human-in-the-loop
- * interaction, then responds via REST API — exactly how the dashboard frontend would.
- *
- * Run:  npx tsx test/verify-interaction-e2e.ts
- */
 
 import fs from 'node:fs';
 import { Bot } from '../src/bot/bot.ts';
 import { startDashboard, type DashboardServer } from '../src/dashboard/server.ts';
 import type { AgentInteraction, StreamResult } from '../src/agent/index.ts';
-
-// ---------------------------------------------------------------------------
-// Setup env before anything else
-// ---------------------------------------------------------------------------
 
 const TMP = '/tmp/pikiloom-e2e-interaction';
 fs.mkdirSync(`${TMP}/workdir`, { recursive: true });
@@ -23,10 +11,6 @@ fs.writeFileSync(`${TMP}/setting.json`, '{}');
 process.env.PIKILOOM_CONFIG = `${TMP}/setting.json`;
 process.env.PIKILOOM_WORKDIR = `${TMP}/workdir`;
 process.env.DEFAULT_AGENT = 'codex';
-
-// ---------------------------------------------------------------------------
-// Create a Bot subclass that patches runStream to inject interaction
-// ---------------------------------------------------------------------------
 
 class TestBot extends Bot {
   async runStream(...args: Parameters<Bot['runStream']>): Promise<StreamResult> {
@@ -97,10 +81,6 @@ class TestBot extends Bot {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 const PORT = 13941;
 const BASE = `http://localhost:${PORT}`;
 
@@ -114,20 +94,14 @@ async function json(url: string, opts?: RequestInit) {
   return res.json();
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 let dashboard: DashboardServer | null = null;
 
 try {
-  // Step 1
   console.log('━━━ Step 1: Starting Bot + Dashboard ━━━');
   const bot = new TestBot();
   dashboard = await startDashboard({ port: PORT, bot });
   console.log(`   Dashboard at ${dashboard.url}`);
 
-  // Step 2
   console.log('\n━━━ Step 2: Submitting task via POST /api/session-hub/session/send ━━━');
   const sendResult = await json(`${BASE}/api/session-hub/session/send`, {
     method: 'POST',
@@ -141,7 +115,6 @@ try {
   console.log('   Response:', JSON.stringify(sendResult));
   if (!sendResult.ok) throw new Error(`Submit failed: ${sendResult.error}`);
 
-  // Step 3
   console.log('\n━━━ Step 3: Polling GET /api/session-hub/session/stream-state ━━━');
   let promptId: string | null = null;
   for (let i = 0; i < 100 && !promptId; i++) {
@@ -156,13 +129,11 @@ try {
   }
   if (!promptId) throw new Error('Timeout: no interaction appeared');
 
-  // Step 4
   console.log('\n━━━ Step 4: GET /api/interaction/:promptId ━━━');
   const detail = await json(`${BASE}/api/interaction/${promptId}`);
   console.log('   Prompt:', JSON.stringify(detail, null, 2));
   if (!detail.prompt) throw new Error('Prompt detail is null');
 
-  // Step 5
   console.log('\n━━━ Step 5: POST /api/interaction/:promptId/select {value: "allow"} ━━━');
   const selectResult = await json(`${BASE}/api/interaction/${promptId}/select`, {
     method: 'POST',
@@ -171,7 +142,6 @@ try {
   console.log('   Result:', JSON.stringify(selectResult));
   if (!selectResult.ok || !selectResult.completed) throw new Error('Select failed');
 
-  // Step 6
   console.log('\n━━━ Step 6: Waiting for task to complete... ━━━');
   let finalState: any = null;
   for (let i = 0; i < 100 && !finalState; i++) {
@@ -184,13 +154,11 @@ try {
   console.log('   text:', finalState.text);
   console.log('   interactions:', finalState.interactions ?? '(none)');
 
-  // Step 7
   console.log('\n━━━ Step 7: Verify prompt is cleaned up ━━━');
   const after = await json(`${BASE}/api/interaction/${promptId}`);
   console.log('   Prompt after resolve:', JSON.stringify(after));
   if (after.prompt !== null) throw new Error('Prompt should be null after resolve');
 
-  // Done
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(' ALL PASSED — full interaction chain verified:');
   console.log('   1. Dashboard submits task     (POST /api/.../send)');

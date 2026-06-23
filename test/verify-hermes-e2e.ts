@@ -1,27 +1,4 @@
 #!/usr/bin/env npx tsx
-/**
- * End-to-end Hermes ACP verification.
- *
- * Spawns the real `hermes acp` process and exercises the full driver path:
- *   1. New session — initialize → session/new → set_model → set_session_mode → session/prompt
- *   2. Resume    — initialize → session/load (with replay drain) → set_model → session/prompt
- *
- * Reports per-step results to stdout. Exits non-zero if any step fails.
- *
- * Skip conditions (exits 0 with message):
- *   - `hermes` not on PATH
- *   - HERMES_E2E_SKIP=1
- *   - The model in ~/.hermes/config.yaml is known to refuse (we report it as
- *     informational rather than failing the test, since that's outside our
- *     control).
- *
- * Run:  npx tsx test/verify-hermes-e2e.ts
- *
- * Optional env vars:
- *   HERMES_E2E_PROMPT   — override the test prompt (default "Reply only with: OK")
- *   HERMES_E2E_MODEL    — override model id sent via set_model (e.g. openrouter:anthropic/claude-haiku-4.5)
- *   HERMES_E2E_TIMEOUT  — per-prompt timeout in seconds (default 60)
- */
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -92,7 +69,6 @@ async function main() {
 
   const steps: StepResult[] = [];
 
-  // Step 1: brand new session
   console.log('Step 1: new session — initialize → session/new → set_model → set_session_mode → prompt');
   let firstSession: string | null = null;
   try {
@@ -107,11 +83,9 @@ async function main() {
   }
 
   if (firstSession) {
-    // Step 2: resume the same session — exercises session/load + replay drain.
     console.log('\nStep 2: resume session — initialize → session/load (drain) → set_model → prompt');
     try {
       const r = await runTurn({ prompt: 'Reply only with: OK2', sessionId: firstSession, workdir, model, effort: 'low' }, timeoutS);
-      // The replay drain test: the message must NOT echo the previous turn.
       const polluted = r.message?.includes('OK\n') || r.message?.toLowerCase()?.includes('reply only with: ok');
       const passed = !!r.message && r.sessionId === firstSession && !polluted;
       steps.push({ name: 'resume-session', ok: passed && r.error == null, detail: fmt(r) + (polluted ? ' [POLLUTED]' : ''), result: r });
@@ -124,10 +98,8 @@ async function main() {
     steps.push({ name: 'resume-session', ok: false, detail: 'skipped — no session id from step 1' });
   }
 
-  // Cleanup
   try { rmSync(workdir, { recursive: true, force: true }); } catch {}
 
-  // Report
   console.log('\n=== Summary ===');
   let failed = 0;
   for (const s of steps) {
@@ -136,7 +108,6 @@ async function main() {
     if (!s.ok) failed++;
   }
 
-  // Distinguish "model refusal" (informational, exit 0) from real failures.
   const refusalOnly = steps.every(s => {
     if (s.ok) return true;
     const msg = s.result?.message?.toLowerCase() || '';

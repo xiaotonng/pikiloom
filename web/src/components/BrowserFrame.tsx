@@ -1,12 +1,6 @@
 import type { CSSProperties } from 'react';
 import { cn } from '@/lib/utils';
 
-/**
- * Wraps a raw app screenshot in a clean macOS-style browser window. The original
- * captures include real browser chrome (tab strip + address bar) at the top;
- * `cropTop` (fraction of image height) clips that off via CSS so only the app
- * content shows inside our own stylized frame. Non-destructive + responsive.
- */
 export default function BrowserFrame({
   src,
   video,

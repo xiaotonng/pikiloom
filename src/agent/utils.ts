@@ -1,8 +1,3 @@
-/**
- * Pure utility functions shared across the agent layer.
- * No filesystem or session state side effects.
- */
-
 import fs from 'node:fs';
 import type {
   StreamPreviewMeta,
@@ -84,7 +79,6 @@ export function normalizeStreamPreviewPlan(value: unknown): StreamPreviewPlan | 
   };
 }
 
-/** Parse a TodoWrite tool input into a StreamPreviewPlan. */
 export function parseTodoWriteAsPlan(input: any): StreamPreviewPlan | null {
   if (!input || typeof input !== 'object') return null;
   const rawTodos = Array.isArray(input.todos) ? input.todos : [];
@@ -106,11 +100,6 @@ export function parseTodoWriteAsPlan(input: any): StreamPreviewPlan | null {
 
 export function normalizeActivityLine(text: string): string { return text.replace(/\s+/g, ' ').trim(); }
 
-// The activity feed is only ever rendered as a tail — downstream previews trim
-// it to ~900 chars (trimActivityForPreview) and the final reply to ~1600 — yet
-// every tool event rebuilds `s.activity = recentActivity.join('\n')`. A 500-line
-// cap made that rejoin effectively O(n²) over a tool-heavy turn for history no
-// view ever shows; 80 lines comfortably covers the largest consumer.
 export function pushRecentActivity(lines: string[], line: string, maxLines = 80) {
   const cleaned = normalizeActivityLine(line);
   if (!cleaned) return;
@@ -127,10 +116,6 @@ export function firstNonEmptyLine(text: string): string {
   return '';
 }
 
-// MCP tool results carry structured content blocks (e.g. screenshot returns
-// `[{type:'image',...}, {type:'text', text:'Saved as ...'}]`). Coerce that to
-// plain text by keeping only the `type:'text'` blocks; otherwise `String([{…}])`
-// silently becomes the literal "[object Object]" in activity summaries.
 export function coerceToolResultText(value: unknown): string {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) {
@@ -174,24 +159,6 @@ export function joinErrorMessages(errors: unknown[] | null | undefined): string 
   return errors.map(error => normalizeErrorMessage(error)).filter(Boolean).join('; ').trim();
 }
 
-/**
- * Detect Claude Code's synthetic "API Error: …" assistant message. When the
- * upstream Anthropic API returns a transient error (529 Overloaded, 5xx, gateway
- * timeouts, …), the Claude CLI swallows it and replaces the assistant turn with
- * a single `text` block whose body is literally `API Error: <reason>`. The
- * turn's stop_reason still claims `end_turn`, so the driver can't distinguish
- * it from a normal short reply without inspecting the text.
- *
- * Heuristics — keep them tight so real prose mentioning "API Error" doesn't
- * trip the detector:
- *  - exact prefix "API Error: "
- *  - total length ≤ 200 chars (the synthetic line is always short)
- *  - no newlines (legit prose containing "API Error" virtually always wraps)
- *
- * Returns the trimmed reason (e.g. "Overloaded", "Internal server error") when
- * matched, otherwise null. Callers decide whether the reason is retryable —
- * `looksRetryable` answers that.
- */
 export function detectClaudeApiError(text: string | null | undefined): string | null {
   if (!text) return null;
   const trimmed = text.trim();
@@ -200,36 +167,12 @@ export function detectClaudeApiError(text: string | null | undefined): string | 
   return m ? m[1].trim() : null;
 }
 
-/**
- * Retryable Claude Code API errors — transient upstream conditions that
- * usually clear within seconds. Non-retryable conditions (auth, quota,
- * context length) fall through and surface to the user immediately.
- */
 export function isRetryableClaudeApiError(reason: string): boolean {
   const r = reason.toLowerCase();
   if (/rate limit|rate limited|quota|usage limit|session limit/i.test(r)) return false;
   return /overloaded|overload|timeout|timed out|500|502|503|504|529|temporar|gateway|connection|network|internal (server )?error/i.test(r);
 }
 
-/**
- * Detect Claude Code's "selected model is unavailable" notice — emitted when
- * the requested `--model` id is disabled / not provisioned for the account (a
- * 404 model_not_found). Its delivery differs by mode:
- *   - `-p`/stream-json: a `<synthetic>` assistant event carrying
- *     `error:"model_not_found"` plus the banner text, and a `result` event with
- *     `is_error` — both reach the parser.
- *   - TUI: the banner is *only* painted to the PTY screen. It is never written
- *     to the transcript JSONL and fires no Stop hook (verified 2026-06-13), so
- *     the screen scrape is the sole signal and the turn would otherwise hang
- *     until the stall watchdog (3–10 min).
- *
- * Matching is whitespace-insensitive on purpose: the TUI renders the banner
- * character-by-character with cursor positioning, so after ANSI stripping the
- * words lose their spaces and wrap arbitrarily ("issuewiththeselectedmodel").
- * Collapsing whitespace on both sides makes the match survive that rendering.
- * Callers compose the user-facing message via `claudeModelErrorMessage` with
- * the concrete model id they hold.
- */
 export function detectClaudeModelError(text: string | null | undefined): boolean {
   if (!text) return false;
   const collapsed = text.replace(/\s+/g, '').toLowerCase();
@@ -237,7 +180,6 @@ export function detectClaudeModelError(text: string | null | undefined): boolean
     || collapsed.includes('maynotexistoryoumaynothaveaccess');
 }
 
-/** User-facing message for an unavailable / no-access model (see {@link detectClaudeModelError}). */
 export function claudeModelErrorMessage(model: string | null | undefined): string {
   const id = (model || '').trim();
   return `The selected model${id ? ` (${id})` : ''} is unavailable — it may not exist, or this account doesn't have access to it. Switch to a different model in pikiloom settings.`;
@@ -277,20 +219,16 @@ export function computeContext(s: {
   return { contextUsedTokens: used, contextPercent: pct };
 }
 
-/** Max structured tool calls carried per preview emit (most recent win). */
 const PREVIEW_TOOL_CALLS_MAX = 40;
 
 export function buildStreamPreviewMeta(s: {
   inputTokens: number | null; outputTokens: number | null;
   cachedInputTokens: number | null; cacheCreationInputTokens: number | null;
   contextWindow: number | null; contextUsedTokens?: number | null;
-  /** Output tokens from this turn's already-finished LLM calls (folded in
-   *  when a new call resets the per-call counter). */
   turnOutputTokensBase?: number | null;
   byokProviderName?: string | null;
   subAgents?: ReadonlyMap<string, StreamSubAgent> | null;
   generatingImages?: number;
-  /** Claude drivers: tool registry + insertion order for expandable rows. */
   claudeToolsById?: ReadonlyMap<string, { name: string; summary: string; input?: string | null; result?: string | null; status?: 'running' | 'done' | 'failed' }> | null;
   claudeToolCallOrder?: readonly string[] | null;
 }): StreamPreviewMeta {
@@ -300,7 +238,6 @@ export function buildStreamPreviewMeta(s: {
     cachedInputTokens: s.cachedInputTokens,
     contextUsedTokens: ctx.contextUsedTokens, contextPercent: ctx.contextPercent,
   };
-  // Turn-cumulative output: finished calls' total + the in-flight call.
   const turnOutput = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
   if (turnOutput > 0) meta.turnOutputTokens = turnOutput;
   if (s.byokProviderName) meta.providerName = s.byokProviderName;
@@ -325,12 +262,6 @@ export function buildStreamPreviewMeta(s: {
   return meta;
 }
 
-/**
- * Bounded, human-readable input detail for a live tool-call row. Bash shows
- * the raw command (the summary already carries the description); everything
- * else gets compact JSON. Returns null when there's nothing beyond the
- * summary worth expanding.
- */
 export function previewToolCallInput(name: string, input: any, max = 500): string | null {
   if (input == null) return null;
   if (String(name) === 'Bash') {
@@ -344,11 +275,6 @@ export function previewToolCallInput(name: string, input: any, max = 500): strin
   } catch { return null; }
 }
 
-/**
- * Bounded text preview of a tool result. Accepts the JSONL tool_result
- * `content` (string | block array) or a hook `tool_response` (string |
- * object). Extracts text blocks where present, falls back to compact JSON.
- */
 export function previewToolCallResult(content: any, max = 500): string | null {
   if (content == null) return null;
   if (typeof content === 'string') return clipText(content.trim(), max) || null;
@@ -361,7 +287,6 @@ export function previewToolCallResult(content: any, max = 500): string | null {
     return text ? clipText(text, max) : null;
   }
   if (typeof content === 'object') {
-    // Hook tool_response commonly nests the payload under `content` / `result`.
     if (content.content != null && content.content !== content) {
       const nested = previewToolCallResult(content.content, max);
       if (nested) return nested;
@@ -381,7 +306,6 @@ function clipText(text: string, max: number): string {
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
-// Claude tool use helpers (used by driver-claude.ts)
 export function summarizeClaudeToolUse(name: string, input: any): string {
   const tool = String(name || '').trim() || 'Tool';
   const description = shortValue(input?.description, 120);
@@ -395,10 +319,6 @@ export function summarizeClaudeToolUse(name: string, input: any): string {
     case 'WebSearch': { const q = shortValue(input?.query, 120); return q ? `Search web: ${q}` : 'Search web'; }
     case 'TodoWrite': return 'Update plan';
     case 'AskUserQuestion': {
-      // Claude's built-in clarify tool. The CLI in `-p` mode self-resolves it
-      // with an error and degrades to a plain-text question in the same turn —
-      // we just surface the question text in the activity panel so users see
-      // what was asked.
       const qs = Array.isArray(input?.questions) ? input.questions : [];
       const first = qs[0];
       const q = shortValue(first?.question || input?.question, 120);
@@ -411,7 +331,6 @@ export function summarizeClaudeToolUse(name: string, input: any): string {
       return c ? `Run shell: ${c}` : 'Run shell command';
     }
     default: {
-      // MCP tools come through as `mcp__<server>__<tool>` — unwrap common pikiloom tools
       const mcpMatch = tool.match(/^mcp__[^_]+__(.+)$/);
       const bare = mcpMatch ? mcpMatch[1] : tool;
       if (bare === 'im_send_file') {
@@ -448,7 +367,6 @@ export function summarizeClaudeToolResult(
   return `${summary} -> ${shortValue(detail, 120)}`;
 }
 
-// Usage helpers (used by drivers)
 export function roundPercent(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
@@ -548,7 +466,6 @@ export function stripInjectedPrompts(text: string): string {
     const idx = text.indexOf(m);
     if (idx >= 0) text = text.slice(0, idx).trim();
   }
-  // Strip Codex IDE context prefix ("# Context from my IDE setup: ...")
   if (text.startsWith('# Context from')) {
     const tag = '## My request for Codex:\n';
     const idx = text.indexOf(tag);
@@ -565,19 +482,8 @@ export const SESSION_PREVIEW_IGNORED_USER_PATTERNS = [
 export const SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE = /\[Image:[^\]]+\]/gi;
 export const SESSION_PREVIEW_FILE_PLACEHOLDER_RE = /\[Attached file:[^\]]+\]/gi;
 
-/**
- * Claude TUI mode prepends `@/abs/path/file.ext` mentions to the prompt as
- * positional argv (see `src/agent/drivers/claude-tui.ts`) — that's how the TUI
- * ingests local image files. The mentions end up baked into the JSONL user
- * `content` string verbatim. This regex captures them so:
- *   - the dashboard's user bubble (via `getClaudeSessionMessages`) can lift
- *     them into structured `image` blocks for thumbnail rendering;
- *   - session-list previews don't surface a long absolute path.
- * Whitespace-free paths only — matches what `claude-tui.ts` emits.
- */
 export const CLAUDE_AT_MENTION_IMAGE_RE = /(^|\s)@(\/[^\s@\n]+\.(?:png|jpe?g|gif|webp|svg))(?=\s|$)/gi;
 
-/** Pull the absolute paths out of every image-mention in `text`. */
 export function extractClaudeAtMentionImagePaths(text: string): string[] {
   if (!text) return [];
   const out: string[] = [];
@@ -585,8 +491,6 @@ export function extractClaudeAtMentionImagePaths(text: string): string[] {
   return out;
 }
 
-/** Remove image @-mentions from `text` while preserving the leading boundary
- *  character (start-of-string or whitespace) so adjacent content stays joinable. */
 export function stripClaudeAtMentionImages(text: string): string {
   if (!text) return text;
   return text.replace(CLAUDE_AT_MENTION_IMAGE_RE, (_full, leading) => leading || '');
@@ -608,18 +512,6 @@ export function isPendingSessionId(sessionId: string | null | undefined): boolea
   return typeof sessionId === 'string' && sessionId.startsWith('pending_');
 }
 
-/**
- * Update a stream-state's session id and notify the caller in one step.
- *
- * Drivers used to assign `s.sessionId = ev.session_id ?? s.sessionId` at every
- * place the CLI surfaced an id, then leave promotion until `finalizeStreamResult`
- * at end-of-stream. That meant an early abort (before the result line) or a
- * mid-stream rotation (Claude `--resume` rewriting the session id) was invisible
- * to the bot runtime — leaving the runtime stuck on a pending id, or letting a
- * later insertion land on a phantom session. Routing through this helper makes
- * every observed id change propagate immediately to `opts.onSessionId`, which
- * in bot.ts wires straight into `promoteSessionRuntime`.
- */
 export function emitSessionIdUpdate(
   s: { sessionId: any; _emitSessionId?: ((id: string) => void) | null },
   rawId: unknown,
@@ -628,23 +520,9 @@ export function emitSessionIdUpdate(
   const trimmed = rawId.trim();
   if (!trimmed || trimmed === s.sessionId) return;
   s.sessionId = trimmed;
-  try { s._emitSessionId?.(trimmed); } catch { /* listeners must not break the stream loop */ }
+  try { s._emitSessionId?.(trimmed); } catch {  }
 }
 
-/**
- * Canonical session-list display title used by *every* surface (IM channels
- * + dashboard). The order is intentional:
- *
- *   1. `title` — set ONCE from the original user prompt that started the
- *      session. Stable; never overwritten by sub-agent or tool prompts.
- *   2. `lastQuestion` — most recent user message. Fallback only, because for
- *      Claude this can be a Task-tool sub-agent prompt and we don't want
- *      sub-agent text leaking into the title.
- *   3. `sessionId` — last-resort identifier.
- *
- * The dashboard frontend (`dashboard/src/utils.ts`) mirrors this order — keep
- * the two in sync.
- */
 export function sessionListDisplayTitle(
   session: Pick<SessionInfo, 'title' | 'lastQuestion' | 'sessionId'>,
 ): string {

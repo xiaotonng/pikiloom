@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { createT } from '../../i18n';
 import { useStore } from '../../store';
 import { buildHostMetricItems, formatHostSummary, SystemInfoList } from '../../components/SystemInfoPanel';
+import { ClientConnectionPanel, ServerConfigPanel } from '../../components/ConnectionModal';
 import { Button } from '../../components/ui';
 import { SectionCard } from '../shared';
 import { PermissionsTab } from '../permissions/PermissionsTab';
@@ -49,6 +50,14 @@ export function SystemTab({
         </div>
 
         <SystemInfoList items={buildHostMetricItems(host, t)} loading={!host} />
+      </SectionCard>
+
+      <SectionCard className="!p-3.5">
+        <ClientConnectionPanel />
+      </SectionCard>
+
+      <SectionCard className="!p-3.5">
+        <ServerConfigPanel />
       </SectionCard>
 
       <SectionCard className="space-y-2 !p-3.5">

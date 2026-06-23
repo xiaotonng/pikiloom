@@ -1,21 +1,3 @@
-/**
- * Hermes ACP driver tests.
- *
- * Strategy: spawn a tiny Python script that speaks JSON-RPC over stdio and
- * mimics the responses `hermes acp` would give for the ACP methods we use.
- * That lets us exercise `doHermesStream` end-to-end (spawn → init → new →
- * set_model → set_session_mode → prompt → close) without depending on a
- * real Hermes installation in CI.
- *
- * Each scenario builds the responder dynamically so we can simulate:
- *   - happy path (assistant chunks + end_turn)
- *   - history-replay-then-prompt for session resume (drain pollutes)
- *   - safety refusal (short "I'm sorry" reply)
- *
- * Each test is wrapped in a tiny shim that monkey-patches AcpClient's
- * spawn target to `python3 <responder.py>` so we don't need `hermes` on PATH.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -141,13 +123,7 @@ afterEach(() => {
 });
 
 async function runDriver(scenario: Scenario, opts: Partial<StreamOpts> = {}): Promise<{ result: StreamResult; deltas: string[]; activities: string[]; capturedPrompt: any }> {
-  // Dynamic import so vi.resetModules() above gives us a fresh module graph.
   const { doHermesStream } = await import('../src/agent/drivers/hermes.ts');
-  // Patch the AcpClient spawn command via env: AcpClient invokes whatever we
-  // pass for `command` + `args`. We monkey-patch by reaching inside the
-  // module after import — drivers/hermes.ts hard-codes 'hermes' / ['acp'].
-  // Easier: replace `hermes` on PATH by prepending tmpDir/bin/hermes that
-  // execs python3 responder.py.
   const binDir = path.join(tmpDir, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
   const shim = path.join(binDir, 'hermes');
@@ -190,7 +166,6 @@ async function runDriver(scenario: Scenario, opts: Partial<StreamOpts> = {}): Pr
 
 describe('Hermes ACP driver', () => {
   it('handles happy path, resume, refusals, images, tool-call chains, and missing sessions', async () => {
-    // --- streams a happy-path turn end-to-end ---
     {
       const { result, deltas } = await runDriver({
         promptChunks: ['Hi! ', 'How can I ', 'help you today?'],
@@ -202,12 +177,10 @@ describe('Hermes ACP driver', () => {
       expect(result.sessionId).toBe('sess-test-001');
       expect(result.stopReason).toBe('end_turn');
       expect(result.error).toBeNull();
-      // The streaming callback should have fired multiple times with growing text.
       expect(deltas.length).toBeGreaterThanOrEqual(3);
       expect(deltas[deltas.length - 1]).toBe('Hi! How can I help you today?');
     }
 
-    // --- does not pollute reply with replay chunks on session resume ---
     {
       const { result } = await runDriver(
         {
@@ -224,7 +197,6 @@ describe('Hermes ACP driver', () => {
       expect(result.message).not.toContain('OLD-ASSISTANT');
     }
 
-    // --- flags model safety refusals so the user knows it is the model, not pikiloom ---
     {
       const { result } = await runDriver({
         promptChunks: ["I'm sorry, but I cannot assist with that request."],
@@ -237,7 +209,6 @@ describe('Hermes ACP driver', () => {
       expect(result.stopReason).toBe('end_turn');
     }
 
-    // --- still surfaces a non-refusal short reply as a successful turn ---
     {
       const { result } = await runDriver({
         promptChunks: ['ok'],
@@ -248,9 +219,7 @@ describe('Hermes ACP driver', () => {
       expect(result.error).toBeNull();
     }
 
-    // --- forwards image attachments as ACP image content blocks ---
     {
-      // Stage a tiny PNG so the driver has a real file to read + base64-encode.
       const pngBytes = Buffer.from([
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
         0x00, 0x00, 0x00, 0x00,
@@ -269,16 +238,11 @@ describe('Hermes ACP driver', () => {
       expect(imageBlocks).toHaveLength(1);
       expect(imageBlocks[0].mimeType).toBe('image/png');
       expect(imageBlocks[0].data).toBe(pngBytes.toString('base64'));
-      // The user's text still rides along after the image.
       const textBlocks = capturedPrompt.filter((b: any) => b?.type === 'text');
       expect(textBlocks.map((b: any) => b.text)).toContain('你好');
     }
 
-    // --- accumulates the tool-call chain in activity instead of overwriting per tool ---
     {
-      // Three tools fire in sequence; each completes before the next starts.
-      // The pre-fix behaviour wiped activity on every completion, so users only
-      // saw "in-flight title or empty". Now we keep the whole chain visible.
       const { activities } = await runDriver({
         promptChunks: ['Done.'],
         stopReason: 'end_turn',
@@ -298,12 +262,10 @@ describe('Hermes ACP driver', () => {
       expect(final).toContain('Grep bar done');
       expect(final).toContain('Edit baz.py');
       expect(final).toContain('Edit baz.py failed');
-      // And the chain should be ordered: start ▸ done ▸ next start ▸ next done...
       expect(final.indexOf('Read foo.py')).toBeLessThan(final.indexOf('Grep bar'));
       expect(final.indexOf('Grep bar')).toBeLessThan(final.indexOf('Edit baz.py'));
     }
 
-    // --- keeps going when session/load returns null (session not in DB) ---
     {
       const { result } = await runDriver(
         {

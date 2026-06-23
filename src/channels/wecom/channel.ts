@@ -1,32 +1,3 @@
-/**
- * WeChat Work / 企业微信 智能机器人 channel transport — Smart Bot WebSocket.
- *
- * Endpoint:   wss://openws.work.weixin.qq.com
- * Frame envelope:
- *   { cmd, headers: { req_id }, body }
- *   responses omit `cmd` and may carry { errcode, errmsg }
- *
- * Outbound:
- *   - aibot_subscribe { bot_id, secret }              — auth + register
- *   - ping                                              — heartbeat (30s)
- *   - aibot_respond_msg (stream, finish=true)         — reply to a callback
- *   - aibot_send_msg (markdown)                        — proactive send
- *
- * Inbound:
- *   - aibot_msg_callback { msgid, chatid, chattype, from.userid, msgtype, text/voice/image/file/mixed/quote }
- *
- * Caveats:
- *   - text/voice messages are dispatched as text. Image/file/mixed payloads
- *     reference encrypted URLs that require a separate corp-secret + AES key
- *     to download — out of scope for this minimal transport.
- *   - The protocol has no edit primitive. editMessage is a no-op.
- *   - Plain text messages may be sent via aibot_respond_msg (in conversation,
- *     when we still hold the original req_id) or aibot_send_msg (proactive
- *     send to a known chatid). We use the original req_id for the first
- *     reply and switch to aibot_send_msg for follow-up messages in the same
- *     conversation (e.g. streaming result deliveries).
- */
-
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import {
@@ -46,7 +17,6 @@ export interface WeComOpts {
   botSecret: string;
   endpoint?: string;
   workdir?: string;
-  /** Optional userId allowlist. */
   allowedUserIds?: Set<string>;
 }
 
@@ -60,11 +30,10 @@ export interface WeComFrom {
 }
 
 export interface WeComContext {
-  chatId: string;          // conversation key (chatid for groups, userid for 1:1)
-  messageId: string;        // wecom msgid
+  chatId: string;
+  messageId: string;
   chatType: 'single' | 'group' | string;
   from: WeComFrom;
-  /** Original req_id from the inbound callback — usable for one stream reply. */
   reqId: string;
   reply: (text: string, opts?: SendOpts) => Promise<string | null>;
   editReply: (msgId: string, text: string, opts?: SendOpts) => Promise<void>;
@@ -91,15 +60,12 @@ function describeError(err: unknown): string {
 }
 
 interface ChatMeta {
-  /** Most recent inbound req_id. We consume it on the first reply (since
-   *  aibot_respond_msg with stream/finish=true is one-shot). */
   pendingReqId: string | null;
 }
 
 export class WeComChannel extends Channel {
   override readonly capabilities = {
     ...DEFAULT_CHANNEL_CAPABILITIES,
-    // Smart Bot WS protocol has no edit primitive.
   };
 
   readonly knownChats = new Set<string>();
@@ -117,15 +83,12 @@ export class WeComChannel extends Channel {
   private reqSeq = 0;
   private readonly chatMeta = new Map<string, ChatMeta>();
 
-  /** req_id -> deferred ack handler. */
   private readonly pendingAcks = new Map<string, { resolve: () => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
-  /** Dedup by msgid. */
   private readonly seenMsgIds = new Set<string>();
   private readonly seenMsgQueue: string[] = [];
   private static readonly SEEN_CAP = 256;
 
-  /** Subscribe ack waiter — only set during initial handshake. */
   private subscribeAck: ((err: Error | null) => void) | null = null;
 
   private readonly internalEmitter = new EventEmitter();
@@ -143,10 +106,6 @@ export class WeComChannel extends Channel {
 
   onMessage(handler: WeComMessageHandler) { this.messageHandlers.add(handler); return this; }
   onError(handler: WeComErrorHandler) { this.errorHandlers.add(handler); return this; }
-
-  // ========================================================================
-  // Lifecycle
-  // ========================================================================
 
   async connect(): Promise<BotInfo> {
     const shortId = this.botId.length > 12 ? `${this.botId.slice(0, 6)}...${this.botId.slice(-4)}` : this.botId;
@@ -178,9 +137,6 @@ export class WeComChannel extends Channel {
         this.emitError(err instanceof Error ? err : new Error(describeError(err)));
       }
       if (!this.running) break;
-      // A connection that survived >2 heartbeats counts as "healthy session
-      // ended" → reset backoff and reconnect quickly. Anything shorter is
-      // treated as a failed attempt that advances exponential backoff.
       const wasLongLived = Date.now() - connectedAt > 2 * WC_HEARTBEAT_MS;
       const delayMs = wasLongLived
         ? (health.recordSuccess(), WECOM_LIMITS.initialRetryDelay)
@@ -199,10 +155,6 @@ export class WeComChannel extends Channel {
     this.listenResolve?.();
     this.listenResolve = null;
   }
-
-  // ========================================================================
-  // Single-connection lifecycle
-  // ========================================================================
 
   private runConnection(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -263,7 +215,6 @@ export class WeComChannel extends Channel {
         this.subscribeAck = null;
         reject(err instanceof Error ? err : new Error(describeError(err)));
       });
-      // Defensive timeout — server should ack within seconds.
       const timer = setTimeout(() => {
         if (!this.subscribeAck) return;
         const ack = this.subscribeAck;
@@ -297,10 +248,6 @@ export class WeComChannel extends Channel {
     this.heartbeatTimer = null;
   }
 
-  // ========================================================================
-  // Frame dispatch
-  // ========================================================================
-
   private handleFrame(frame: WsFrame) {
     const cmd = frame.cmd || '';
     const reqId = frame.headers?.req_id || '';
@@ -313,7 +260,6 @@ export class WeComChannel extends Channel {
       return;
     }
     if (!cmd) {
-      // Response frame; route by req_id prefix.
       if (reqId.startsWith('ping')) {
         this.missedPong = 0;
         return;
@@ -424,10 +370,6 @@ export class WeComChannel extends Channel {
     }
   }
 
-  // ========================================================================
-  // Outgoing primitives
-  // ========================================================================
-
   async send(chatId: number | string, text: string, _opts?: SendOpts): Promise<string | null> {
     const chat = String(chatId);
     const trimmed = (text || '').trim() || '(empty)';
@@ -439,7 +381,6 @@ export class WeComChannel extends Channel {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]!;
-      // First chunk: prefer aibot_respond_msg if we hold a fresh req_id.
       if (i === 0 && replyReqId) {
         const streamId = this.makeReqId('stream');
         const frame = {
@@ -451,7 +392,6 @@ export class WeComChannel extends Channel {
           },
         };
         await this.writeFrame(frame);
-        // The server treats the req_id as consumed after stream finish=true.
         if (meta) meta.pendingReqId = null;
         lastReqId = replyReqId;
         continue;
@@ -473,20 +413,13 @@ export class WeComChannel extends Channel {
   }
 
   async editMessage(_chatId: number | string, _msgId: number | string, _text: string, _opts?: SendOpts): Promise<void> {
-    // No edit primitive in the Smart Bot WS protocol.
   }
 
   async deleteMessage(_chatId: number | string, _msgId: number | string): Promise<void> {
-    // No delete primitive.
   }
 
   async sendTyping(_chatId: number | string, _opts?: SendOpts): Promise<void> {
-    // No typing indicator.
   }
-
-  // ========================================================================
-  // Frame writing helpers
-  // ========================================================================
 
   private writeFrame(frame: any): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -506,7 +439,6 @@ export class WeComChannel extends Channel {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(reqId);
-        // Fall back to non-blocking on timeout to avoid deadlocks.
         this.debug(`[ws] ack timeout req_id=${reqId} — proceeding`);
         resolve();
       }, timeoutMs);

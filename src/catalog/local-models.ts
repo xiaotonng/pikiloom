@@ -1,40 +1,18 @@
-/**
- * Local model catalog — curated set of coding-friendly open models that
- * pikiloom recommends for self-hosted backends (Ollama / mlx-lm).
- *
- * Per-backend identifier rules:
- *   - `ollamaTag`  — entry exists in Ollama's library
- *   - `mlxModel`   — HuggingFace repo under `mlx-community/` (Apple Silicon)
- *   Either field is optional; the dashboard filters by backend before display.
- *
- * Sizing rules of thumb (Q4 quants on disk):
- *   weights_gb   ≈ params_b × 0.6
- *   min_ram_gb   ≈ weights_gb × 1.5 + 4   // KV cache + OS headroom
- *
- * `minRamGb` is conservative on purpose.
- */
-
 export interface LocalModelEntry {
   id: string;
   name: string;
   publisher: string;
-  /** Approximate parameter count in billions; TOTAL for MoE (RAM tracks total). */
   paramsB: number;
-  /** Approx weight footprint at Q4 (GB on disk + memory baseline). */
   sizeGb: number;
-  /** Conservative minimum unified-memory recommendation (GB). */
   minRamGb: number;
   description: string;
   descriptionZh: string;
-  /** Ollama library tag (https://ollama.com/library/<tag>). */
   ollamaTag?: string;
-  /** HuggingFace path under `mlx-community/` for Apple Silicon mlx-lm server. */
   mlxModel?: string;
   homepage?: string;
 }
 
 export const LOCAL_MODELS: LocalModelEntry[] = [
-  // ── Tier A: 16 GB Macs ─────────────────────────────────────────────────────
   {
     id: 'qwen2.5-coder-7b',
     name: 'Qwen2.5-Coder 7B',
@@ -73,7 +51,6 @@ export const LOCAL_MODELS: LocalModelEntry[] = [
     homepage: 'https://ai.google.dev/gemma',
   },
 
-  // ── Tier B: 24-32 GB sweet spot ────────────────────────────────────────────
   {
     id: 'deepseek-coder-v2-lite',
     name: 'DeepSeek-Coder V2 Lite',
@@ -99,7 +76,6 @@ export const LOCAL_MODELS: LocalModelEntry[] = [
     homepage: 'https://huggingface.co/microsoft/phi-4',
   },
 
-  // ── Tier S: 36+ GB unified memory ──────────────────────────────────────────
   {
     id: 'qwen2.5-coder-32b',
     name: 'Qwen2.5-Coder 32B',

@@ -1,17 +1,3 @@
-/**
- * session-hub.ts — Unified session management service.
- *
- * THE canonical interface for all session operations across pikiloom.
- * Upper-layer code (bot, dashboard, CLI) should import session functions
- * from here, not from code-agent.ts directly.
- *
- * Responsibilities:
- *   - Cross-agent / workspace-scoped session queries
- *   - Session metadata management (status, notes, links, classification)
- *   - Migration, export/import orchestration
- *   - Workspace registry (delegates to user-config)
- */
-
 import path from 'node:path';
 import {
   getSessions as _getSessions,
@@ -22,7 +8,7 @@ import {
   exportSession as _exportSession,
   importSession as _importSession,
   findPikiloomSession,
-  updateSessionMeta,
+  updateSessionMeta, resolveCanonicalSessionId, getSessionPromotions,
   deleteAgentSession as _deleteAgentSession,
   type DeleteAgentSessionOpts, type DeleteAgentSessionResult,
   collapseSkillPrompt,
@@ -41,22 +27,15 @@ import {
   type WorkspaceEntry,
 } from '../core/config/user-config.js';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export type UserStatus = 'inbox' | 'active' | 'review' | 'done' | 'parked';
 
-/** Flexible query options — supports single-agent, multi-agent, or all-agent queries. */
 export interface SessionQueryOpts {
   workdir: string;
-  /** Single agent, array of agents, or omit for all installed agents. */
   agent?: Agent | Agent[];
   limit?: number;
   userStatus?: UserStatus[];
 }
 
-/** Unified query result — superset of the old SessionListResult. */
 export interface SessionQueryResult {
   ok: boolean;
   workdir: string;
@@ -64,16 +43,14 @@ export interface SessionQueryResult {
   sessions: WorkspaceSessionInfo[];
   statusCounts: Record<UserStatus | 'unknown', number>;
   total: number;
-  /** Per-agent errors, empty when all succeeded */
   errors: string[];
+  promotions: Record<string, string>;
 }
 
-/** Session info enriched with workspace context. */
 export interface WorkspaceSessionInfo extends SessionInfo {
   workspaceName: string;
 }
 
-/** Overview of a single workspace (sidebar / all-workspaces view). */
 export interface WorkspaceOverview {
   workspace: WorkspaceEntry;
   attentionCount: number;
@@ -81,7 +58,6 @@ export interface WorkspaceOverview {
   lastActivityAt: string | null;
 }
 
-/** Patch object for session metadata updates. */
 export interface SessionPatch {
   userStatus?: UserStatus | null;
   userNote?: string | null;
@@ -98,7 +74,6 @@ export interface MigrateResult {
   error: string | null;
 }
 
-// Re-export types that callers commonly need alongside session-hub functions
 export type {
   Agent, SessionInfo, SessionClassification, TailMessage, RichMessage, MessageBlock,
   SessionTailResult, SessionMessagesOpts, SessionMessagesResult,
@@ -106,23 +81,11 @@ export type {
   MigrateSessionOpts, WorkspaceEntry, SessionListResult, SessionRunState,
 };
 
-// ---------------------------------------------------------------------------
-// Resolve user status
-// ---------------------------------------------------------------------------
-
-/**
- * Compute the effective user status for a session.
- * Priority: explicit userStatus > derived from classification > inbox.
- */
 export function resolveUserStatus(session: Pick<SessionInfo, 'userStatus' | 'classification'>): UserStatus {
   if (session.userStatus) return session.userStatus as UserStatus;
   if (session.classification) return _deriveStatusFromOutcome(session.classification.outcome);
   return 'inbox';
 }
-
-// ---------------------------------------------------------------------------
-// Unified session query
-// ---------------------------------------------------------------------------
 
 function normalizeAgents(agent?: Agent | Agent[]): Agent[] {
   if (!agent) return allDriverIds().filter(a => hasDriver(a));
@@ -130,12 +93,6 @@ function normalizeAgents(agent?: Agent | Agent[]): Agent[] {
   return list.filter(a => hasDriver(a));
 }
 
-/**
- * Query sessions — the single entry point for all session listing.
- *
- * Handles single-agent, multi-agent, and all-agent queries with optional
- * status filtering and limits. Returns workspace-enriched results.
- */
 export async function querySessions(opts: SessionQueryOpts): Promise<SessionQueryResult> {
   const resolvedWorkdir = path.resolve(opts.workdir);
   const ws = findWorkspace(resolvedWorkdir);
@@ -162,25 +119,21 @@ export async function querySessions(opts: SessionQueryOpts): Promise<SessionQuer
     }
   }
 
-  // Sort by most recent activity
   allSessions.sort((a, b) => {
     const aTime = a.runUpdatedAt || a.createdAt || '';
     const bTime = b.runUpdatedAt || b.createdAt || '';
     return Date.parse(bTime) - Date.parse(aTime);
   });
 
-  // Filter by userStatus
   if (opts.userStatus?.length) {
     const allowed = new Set<string>(opts.userStatus);
     allSessions = allSessions.filter(s => allowed.has(resolveUserStatus(s)));
   }
 
-  // Apply limit
   if (opts.limit && opts.limit > 0) {
     allSessions = allSessions.slice(0, opts.limit);
   }
 
-  // Count statuses
   const statusCounts: Record<string, number> = { inbox: 0, active: 0, review: 0, done: 0, parked: 0, unknown: 0 };
   for (const s of allSessions) {
     const status = resolveUserStatus(s);
@@ -195,12 +148,9 @@ export async function querySessions(opts: SessionQueryOpts): Promise<SessionQuer
     statusCounts: statusCounts as Record<UserStatus | 'unknown', number>,
     total: allSessions.length,
     errors,
+    promotions: getSessionPromotions(resolvedWorkdir),
   };
 }
-
-// ---------------------------------------------------------------------------
-// Session detail queries
-// ---------------------------------------------------------------------------
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
 const MIME_BY_EXT: Record<string, string> = {
@@ -208,12 +158,6 @@ const MIME_BY_EXT: Record<string, string> = {
   '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
 };
 
-/** Build image MessageBlocks from a session record's `lastUserAttachments`
- *  (relative paths under `workspacePath`). Used by fallback paths so the
- *  dashboard can still render the user's image bubble while the agent CLI
- *  has not yet flushed the turn to its own session file. Non-image
- *  attachments are skipped — the fallback is text-first and doesn't try to
- *  reconstruct generic file references. */
 function imageBlocksFromManagedRecord(record: { workspacePath: string; lastUserAttachments?: string[] }): MessageBlock[] {
   const attachments = record.lastUserAttachments;
   if (!attachments?.length) return [];
@@ -224,8 +168,6 @@ function imageBlocksFromManagedRecord(record: { workspacePath: string; lastUserA
     const abs = path.isAbsolute(rel) ? rel : path.join(record.workspacePath, rel);
     blocks.push({
       type: 'image',
-      // `file://` sentinel — `rewriteAttachmentBlocksForTransport` (dashboard
-      // response layer) converts it to a proper /attachment URL.
       content: `file://${abs}`,
       imagePath: abs,
       imageMime: MIME_BY_EXT[ext] || 'application/octet-stream',
@@ -234,16 +176,6 @@ function imageBlocksFromManagedRecord(record: { workspacePath: string; lastUserA
   return blocks;
 }
 
-/**
- * Build a 1-2 message fallback transcript from the pikiloom session record
- * for runs that crashed before the agent could write its own transcript file
- * (e.g. gemini auth failure, codex spawn failure). Without this the dashboard
- * detail panel would render blank for clearly-failed sessions.
- *
- * Returns both plain `messages` (text only — legacy callers) and full
- * `richMessages` (text + image blocks) so the dashboard's first-turn image
- * bubble survives the period before the agent CLI flushes its session file.
- */
 interface ManagedFallback {
   messages: TailMessage[];
   richMessages: RichMessage[];
@@ -286,23 +218,21 @@ function managedFallbackContent(opts: SessionTailOpts): ManagedFallback | null {
   return { messages, richMessages };
 }
 
-/** Get recent messages from a session (tail). */
 export async function querySessionTail(opts: SessionTailOpts): Promise<SessionTailResult> {
-  const result = await _getSessionTail(opts);
+  const opts2 = withCanonicalSessionId(opts);
+  const result = await _getSessionTail(opts2);
   if (!result.ok || !result.messages.length) {
-    const fallback = tailFallbackFromManagedRecord(opts);
+    const fallback = tailFallbackFromManagedRecord(opts2);
     if (fallback) return fallback;
   }
   return result;
 }
 
-/**
- * Replace canonical skill-execution expansions in a user message with the
- * `/skillname` shorthand the user originally typed. The expanded text is what
- * the agent CLI consumed and persisted; we collapse on read so the dashboard
- * chat shows the slash command instead of the long instruction we synthesized
- * for dispatch. Non-user messages and non-skill prompts pass through unchanged.
- */
+function withCanonicalSessionId<T extends { agent: Agent; sessionId: string; workdir: string }>(opts: T): T {
+  const canonical = resolveCanonicalSessionId(opts.workdir, opts.agent, opts.sessionId);
+  return canonical === opts.sessionId ? opts : { ...opts, sessionId: canonical };
+}
+
 function collapseSkillPromptsInResult(result: SessionMessagesResult): SessionMessagesResult {
   if (!result.ok) return result;
   const messages = result.messages.map(m => {
@@ -314,9 +244,6 @@ function collapseSkillPromptsInResult(result: SessionMessagesResult): SessionMes
     if (m.role !== 'user') return m;
     const collapsed = collapseSkillPrompt(m.text);
     if (!collapsed) return m;
-    // The user's text content lives in one or more `text` blocks; collapse any
-    // whose individual content also matches the expansion. Non-text blocks
-    // (images, attachments) pass through untouched.
     const blocks = m.blocks.map(b => {
       if (b.type !== 'text') return b;
       const blockCollapsed = collapseSkillPrompt(b.content);
@@ -327,22 +254,20 @@ function collapseSkillPromptsInResult(result: SessionMessagesResult): SessionMes
   return { ...result, messages, richMessages };
 }
 
-/** Get full session messages (with optional turn filtering). */
 export async function querySessionMessages(opts: SessionMessagesOpts & { agent: Agent }): Promise<SessionMessagesResult> {
-  const result = await _getSessionMessages(opts);
+  const opts2 = withCanonicalSessionId(opts);
+  const result = await _getSessionMessages(opts2);
   if (!result.ok || !result.messages.length) {
     const fb = managedFallbackContent({
-      agent: opts.agent,
-      sessionId: opts.sessionId,
-      workdir: opts.workdir,
+      agent: opts2.agent,
+      sessionId: opts2.sessionId,
+      workdir: opts2.workdir,
     });
     if (fb) {
       const totalTurns = fb.messages.filter(m => m.role === 'user').length;
       return collapseSkillPromptsInResult({
         ok: true,
         messages: fb.messages.map(m => ({ role: m.role, text: m.text })),
-        // Always emit richMessages so the dashboard can render image blocks
-        // for the first user turn while the agent CLI is still spinning up.
         richMessages: fb.richMessages,
         totalTurns,
         error: null,
@@ -352,18 +277,11 @@ export async function querySessionMessages(opts: SessionMessagesOpts & { agent: 
   return collapseSkillPromptsInResult(result);
 }
 
-// ---------------------------------------------------------------------------
-// Workspace overviews
-// ---------------------------------------------------------------------------
-
-/** Overview of all registered workspaces — designed for dashboard sidebar. */
 export async function getWorkspaceOverviews(): Promise<WorkspaceOverview[]> {
   const workspaces = loadWorkspaces();
   const agents = allDriverIds().filter(a => hasDriver(a));
 
   return Promise.all(workspaces.map(async (ws): Promise<WorkspaceOverview> => {
-    // Fan the agents out in parallel — each _getSessions is independent I/O, and
-    // running them serially made one slow agent stall the whole workspace card.
     const summaries = await Promise.all(agents.map(async (agent) => {
       try {
         const result = await _getSessions({ agent, workdir: ws.path });
@@ -396,25 +314,14 @@ export async function getWorkspaceOverviews(): Promise<WorkspaceOverview[]> {
   }));
 }
 
-// ---------------------------------------------------------------------------
-// Session metadata
-// ---------------------------------------------------------------------------
-
-/** Update session metadata (status, note, classification, migration links). */
 export function updateSession(workdir: string, agent: Agent, sessionId: string, patch: SessionPatch): boolean {
   return updateSessionMeta(workdir, agent, sessionId, patch);
 }
 
-/**
- * Delete a session. Re-exports the agent-layer primitive so dashboard routes
- * stay in the bot/ layer for layering consistency. See
- * {@link DeleteAgentSessionOpts}.
- */
 export function deleteSession(opts: DeleteAgentSessionOpts): Promise<DeleteAgentSessionResult> {
   return _deleteAgentSession(opts);
 }
 
-/** Link two sessions together (bidirectional). */
 export function linkSessions(
   workdir: string,
   a: { agent: Agent; sessionId: string },
@@ -429,20 +336,11 @@ export function linkSessions(
   return updatedA || updatedB;
 }
 
-// ---------------------------------------------------------------------------
-// Classification
-// ---------------------------------------------------------------------------
-
-/** Auto-classify a session based on stream result. */
 export function classifySession(
   result: Pick<StreamResult, 'ok' | 'incomplete' | 'error' | 'stopReason' | 'message' | 'activity'>,
 ): SessionClassification {
   return _classifySession(result);
 }
-
-// ---------------------------------------------------------------------------
-// Export / Import / Migration
-// ---------------------------------------------------------------------------
 
 export function exportSession(opts: ExportSessionOpts): Promise<ExportSessionResult> {
   return _exportSession(opts);
@@ -452,7 +350,6 @@ export function importSession(opts: ImportSessionOpts): ImportSessionResult {
   return _importSession(opts);
 }
 
-/** Build migration context from source session for injection into target agent. */
 export async function buildMigrationContext(opts: MigrateSessionOpts): Promise<MigrateResult> {
   try {
     const messagesResult = await _getSessionMessages({
@@ -491,9 +388,5 @@ export async function buildMigrationContext(opts: MigrateSessionOpts): Promise<M
     return { ok: false, contextInjected: '', messageCount: 0, error: e.message };
   }
 }
-
-// ---------------------------------------------------------------------------
-// Workspace registry (delegates to user-config)
-// ---------------------------------------------------------------------------
 
 export { loadWorkspaces, addWorkspace, removeWorkspace, renameWorkspace, reorderWorkspaces, updateWorkspace, findWorkspace };

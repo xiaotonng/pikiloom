@@ -1,10 +1,3 @@
-/**
- * CLI detector — checks whether a CLI binary is on PATH, what version it is,
- * and whether the user is already signed in.
- *
- * Results are cached with a short TTL so catalog rendering stays snappy.
- */
-
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,10 +18,6 @@ export interface CliStatus {
 
 const DETECT_TTL_MS = 30_000;
 const cache = new Map<string, CliStatus>();
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function runArgv(argv: string[], timeoutMs: number): Promise<{ ok: boolean; stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
@@ -63,7 +52,7 @@ function which(binary: string): string | null {
       try {
         const stat = fs.statSync(candidate);
         if (stat.isFile()) return candidate;
-      } catch { /* next */ }
+      } catch {  }
     }
   }
   return null;
@@ -73,7 +62,6 @@ function extractVersion(stdout: string, stderr: string): string | undefined {
   const text = (stdout || stderr).trim();
   if (!text) return undefined;
   const firstLine = text.split(/\r?\n/, 1)[0].trim();
-  // Common patterns: "gh version 2.56.0 (...)" / "1.2.3" / "aws-cli/2.x ..."
   const m = firstLine.match(/\b(\d+\.\d+(?:\.\d+)?(?:[-.+][0-9A-Za-z.]+)?)\b/);
   return m ? m[1] : firstLine.slice(0, 80);
 }
@@ -84,10 +72,6 @@ function trimDetail(s: string): string | undefined {
   const first = text.split(/\r?\n/, 1)[0].trim();
   return first.slice(0, 200);
 }
-
-// ---------------------------------------------------------------------------
-// Public
-// ---------------------------------------------------------------------------
 
 export function getCachedCliStatus(id: string): CliStatus | undefined {
   const cached = cache.get(id);
@@ -111,7 +95,6 @@ export async function detectCli(cli: RecommendedCli): Promise<CliStatus> {
     return status;
   }
 
-  // Installed — read version, best-effort.
   let version: string | undefined;
   if (cli.versionArgv && cli.versionArgv.length) {
     const v = await runArgv(cli.versionArgv, 5_000);
@@ -127,8 +110,6 @@ export async function detectCli(cli: RecommendedCli): Promise<CliStatus> {
   }
 
   const result = await runArgv(cli.auth.statusArgv, 6_000);
-  // Some CLIs (gcloud) report success via exit 0 but emit empty output when no
-  // account is configured — fall back to a content check when declared.
   const patternOk = !cli.auth.statusReadyPattern
     || new RegExp(cli.auth.statusReadyPattern).test(result.stdout);
   const state: CliState = (result.ok && patternOk) ? 'ready' : 'installed_not_auth';
@@ -141,14 +122,12 @@ export async function detectCli(cli: RecommendedCli): Promise<CliStatus> {
   return status;
 }
 
-/** Best-effort platform key for picking install commands. */
 export function currentPlatform(): 'darwin' | 'linux' | 'win' {
   if (process.platform === 'darwin') return 'darwin';
   if (process.platform === 'win32') return 'win';
   return 'linux';
 }
 
-/** Where AWS credentials go for the `token` auth flow. */
 export function awsCredentialsPath(): string {
   return path.join(os.homedir(), '.aws', 'credentials');
 }

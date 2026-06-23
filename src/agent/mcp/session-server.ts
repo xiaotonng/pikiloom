@@ -1,21 +1,3 @@
-/**
- * mcp-session-server.ts — MCP server process for pikiloom session bridge.
- *
- * Spawned by the agent CLI (claude/codex/gemini) via --mcp-config or codex mcp add.
- * Communicates with the agent over stdio using the MCP protocol (JSON-RPC 2.0).
- *
- * Supports two stdio transports (auto-detected from first byte):
- *   - Content-Length framing (Claude, Gemini — standard MCP/LSP)
- *   - Newline-delimited JSON (Codex)
- *
- * Context is injected via environment variables:
- *   MCP_WORKSPACE_PATH — absolute path to the session workspace
- *   MCP_STAGED_FILES   — JSON array of staged file relative paths
- *   MCP_CALLBACK_URL   — HTTP URL for the pikiloom callback server
- *
- * Tools are defined in src/tools/ — each module exports definitions + handlers.
- */
-
 import path from 'node:path';
 import { createRetainedLogSink, writeScopedLog, type LogLevel } from '../../core/logging.js';
 import type { McpToolModule, ToolContext } from './tools/types.js';
@@ -23,10 +5,6 @@ import { workspaceTools } from './tools/workspace.js';
 import { goalTools } from './tools/goal.js';
 import { awaitResumeTools } from './tools/await-resume.js';
 import { askUserTools } from './tools/ask-user.js';
-
-// ---------------------------------------------------------------------------
-// Logging — writes to stderr + file so it doesn't interfere with stdio MCP transport
-// ---------------------------------------------------------------------------
 
 const _logSink = (() => {
   try {
@@ -53,10 +31,6 @@ function summarizeArgs(args: unknown, max = 200): string {
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
-// ---------------------------------------------------------------------------
-// Context from environment
-// ---------------------------------------------------------------------------
-
 const ctx: ToolContext = {
   workspace: process.env.MCP_WORKSPACE_PATH || '',
   workdir: process.env.MCP_WORKDIR || undefined,
@@ -68,13 +42,6 @@ const ctx: ToolContext = {
 
 log(`started workspace=${ctx.workspace} stagedFiles=${ctx.stagedFiles.length} callbackUrl=${ctx.callbackUrl ? 'set' : 'MISSING'}`);
 
-// ---------------------------------------------------------------------------
-// Tool registry — collect all tool modules
-// ---------------------------------------------------------------------------
-
-// `MCP_TOOLS_AVAILABLE` lists tool families the bridge has wired up. Codex
-// has a native `/goal` implementation and native user-input, so it skips
-// `goalTools` and never receives `ask-user` via the bridge.
 const AVAILABLE = new Set(
   (process.env.MCP_TOOLS_AVAILABLE || '').split(',').map(s => s.trim()).filter(Boolean),
 );
@@ -83,16 +50,12 @@ const IS_CODEX = process.env.MCP_AGENT === 'codex';
 const TOOL_MODULES: McpToolModule[] = [
   ...(AVAILABLE.has('workspace') ? [workspaceTools] : []),
   ...(IS_CODEX ? [] : [goalTools]),
-  // Codex parks/resumes via its own native goal machinery; the pikiloom
-  // awaiting marker is for the `claude -p`-style drivers whose turn process
-  // exits at `result`.
   ...(IS_CODEX ? [] : [awaitResumeTools]),
   ...(AVAILABLE.has('ask-user') ? [askUserTools] : []),
 ];
 
 const ALL_TOOLS = TOOL_MODULES.flatMap(m => m.tools);
 
-/** Lookup: tool name → module that handles it. */
 const TOOL_HANDLERS = new Map<string, McpToolModule>();
 for (const mod of TOOL_MODULES) {
   for (const t of mod.tools) {
@@ -100,11 +63,6 @@ for (const mod of TOOL_MODULES) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// MCP protocol — auto-detect transport format
-// ---------------------------------------------------------------------------
-
-/** 'framed' = Content-Length (Claude/Gemini), 'ndjson' = newline-delimited (Codex) */
 let transport: 'framed' | 'ndjson' | null = null;
 
 function send(msg: object) {
@@ -124,10 +82,6 @@ function respondError(id: unknown, code: number, message: string) {
   send({ jsonrpc: '2.0', id, error: { code, message } });
 }
 
-// ---------------------------------------------------------------------------
-// Stdio reader — auto-detecting Content-Length framed vs NDJSON
-// ---------------------------------------------------------------------------
-
 let buffer = '';
 
 function processFramed() {
@@ -142,7 +96,7 @@ function processFramed() {
     if (buffer.length < bodyStart + len) break;
     const body = buffer.slice(bodyStart, bodyStart + len);
     buffer = buffer.slice(bodyStart + len);
-    try { handleMessage(JSON.parse(body)); } catch { /* ignore parse errors */ }
+    try { handleMessage(JSON.parse(body)); } catch {  }
   }
 }
 
@@ -153,7 +107,7 @@ function processNdjson() {
     const line = buffer.slice(0, newlineIdx).trim();
     buffer = buffer.slice(newlineIdx + 1);
     if (!line) continue;
-    try { handleMessage(JSON.parse(line)); } catch { /* ignore parse errors */ }
+    try { handleMessage(JSON.parse(line)); } catch {  }
   }
 }
 
@@ -173,10 +127,6 @@ process.stdin.on('data', (chunk: string) => {
   processBuffer();
 });
 process.stdin.on('end', () => process.exit(0));
-
-// ---------------------------------------------------------------------------
-// Message dispatcher
-// ---------------------------------------------------------------------------
 
 function handleMessage(msg: any) {
   const { id, method, params } = msg;

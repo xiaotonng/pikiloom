@@ -1,14 +1,3 @@
-/**
- * bot-commands.ts — channel-agnostic command data layer.
- *
- * Each function returns structured data objects that any IM renderer can consume.
- * No rendering, no HTML, no platform-specific formatting.
- *
- * Usage from a channel-specific bot (e.g. bot-telegram.ts, bot-feishu.ts):
- *   const data = await getSessionsPageData(bot, chatId, 0);
- *   const rendered = renderSessionsPage(data); // channel-specific renderer
- */
-
 import path from 'node:path';
 import fs from 'node:fs';
 import type { Bot, ChatId, Agent, SessionInfo, SessionRuntime, ChatState, StreamResult } from './bot.js';
@@ -26,10 +15,6 @@ import { getSessionStatusForChat } from './session-status.js';
 import { loadWorkspaces } from '../core/config/user-config.js';
 import { VERSION } from '../core/version.js';
 import { readGitStatus, type GitStatus } from '../core/git.js';
-
-// ---------------------------------------------------------------------------
-// Welcome / Start
-// ---------------------------------------------------------------------------
 
 export interface AgentDetail {
   agent: Agent;
@@ -68,10 +53,6 @@ export function getStartData(bot: Bot, chatId: ChatId): StartData {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Workspaces (Dashboard-curated quick-pick list)
-// ---------------------------------------------------------------------------
-
 export interface WorkspaceQuickPick {
   path: string;
   name: string;
@@ -104,21 +85,6 @@ export function getWorkspacesData(bot: Bot, chatId: ChatId): WorkspacesData {
   return { currentWorkdir, workspaces };
 }
 
-// ---------------------------------------------------------------------------
-// Goal — channel-agnostic /goal command dispatch
-// ---------------------------------------------------------------------------
-
-/**
- * Handle /goal <args> for a chat. Returns a human-readable status line for
- * the IM renderer to send back. Returns null when there is no active session
- * for the chat (caller renders its own "pick a session first" message).
- *
- * Per-agent routing:
- *   - codex → native `thread/goal/*` RPC (state machine + budget + pause/resume)
- *   - claude → native `/goal <condition>` slash command (Stop hook continuation,
- *              auto-clear on completion, no budget / no pause/resume)
- *   - others → pikiloom's portable goal.json with continuation injection
- */
 export async function handleGoalCommand(bot: Bot, chatId: ChatId, rawArgs: string): Promise<string | null> {
   const session = bot.selectedSession(chatId);
   if (!session || !session.sessionId) return null;
@@ -214,17 +180,8 @@ function truncate(text: string, max: number): string {
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
-// ---------------------------------------------------------------------------
-// Sessions
-// ---------------------------------------------------------------------------
-
-// Title resolution lives in `agent/utils.ts:sessionListDisplayTitle` so the IM
-// channels and the dashboard agree on which field wins (always the original
-// `title`, never a sub-agent's `lastQuestion`).
-
 export interface SessionEntry {
   key: string;
-  /** Owning agent of this session — multi-agent IM lists need this per row. */
   agent: Agent;
   title: string;
   time: string;
@@ -235,9 +192,7 @@ export interface SessionEntry {
 }
 
 export interface SessionsPageData {
-  /** Workspace name resolved by querySessions (basename of workdir when unnamed). */
   workspaceName: string;
-  /** Per-agent totals across the whole workspace — useful for header chips. */
   agentTotals: Record<string, number>;
   total: number;
   page: number;
@@ -299,9 +254,6 @@ export function summarizeSessionRun(session: Pick<SessionInfo, 'running' | 'runS
 
 export async function getSessionsPageData(bot: Bot, chatId: ChatId, page: number, pageSize = 5): Promise<SessionsPageData> {
   const cs = bot.chat(chatId);
-  // Workspace-wide: drop the cs.agent filter so the list matches what the
-  // dashboard shows for this workspace (all installed agents, sorted by
-  // most-recent activity).
   const res = await bot.fetchSessions(undefined, bot.chatWorkdir(chatId));
   const sessions = res.ok ? res.sessions : [];
   const total = sessions.length;
@@ -441,24 +393,15 @@ export async function getSessionTurnPreviewData(
   return extractLastSessionTurn(tail.messages);
 }
 
-// ---------------------------------------------------------------------------
-// Agents
-// ---------------------------------------------------------------------------
-
 export interface AgentEntry {
   agent: string;
-  /** Short, human-readable display name (e.g. "Claude Code"). */
   label: string;
   installed: boolean;
-  /** Raw `--version` output from the CLI (may include name + extra metadata). */
   version: string | null;
-  /** Just the semver if extractable, else equals `version`. */
   versionShort: string | null;
   path: string | null;
   isCurrent: boolean;
-  /** Bound provider name (BYOK), null when running native CLI auth. */
   boundProvider: string | null;
-  /** Bound model id (BYOK), null when not bound. */
   boundModel: string | null;
 }
 
@@ -479,14 +422,6 @@ function agentDisplayLabel(agentId: string): string {
     || agentId.charAt(0).toUpperCase() + agentId.slice(1);
 }
 
-/**
- * Pull the first semver-ish token out of a CLI `--version` string. Falls back
- * to the original string when no semver is present.
- *
- *   "2.1.132 (Claude Code v2.1.132)"  → "2.1.132"
- *   "Hermes Agent v0.12.0 (2026.4.30)" → "0.12.0"
- *   "codex-cli 0.128.0"                → "0.128.0"
- */
 function shortVersion(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const m = raw.match(/\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?/);
@@ -515,10 +450,6 @@ export function getAgentsListData(bot: Bot, chatId: ChatId): AgentsListData {
     }),
   };
 }
-
-// ---------------------------------------------------------------------------
-// Skills
-// ---------------------------------------------------------------------------
 
 export interface SkillEntryData {
   name: string;
@@ -552,23 +483,12 @@ export function getSkillsListData(bot: Bot, chatId: ChatId): SkillsListData {
   return { agent: cs.agent, workdir: bot.chatWorkdir(chatId), skills };
 }
 
-// ---------------------------------------------------------------------------
-// Models
-// ---------------------------------------------------------------------------
-
 export interface ModelEntry {
   id: string;
   alias: string | null;
   isCurrent: boolean;
-  /**
-   * Grouping for the unified /models picker — `'native'` runs through the
-   * agent CLI's own auth, the others through a BYOK Profile. Default is
-   * `'native'` when omitted, preserving the pre-union picker behaviour.
-   */
   group?: 'native' | 'cloud' | 'local';
-  /** Profile id when this row is a BYOK entry. */
   profileId?: string | null;
-  /** Provider display name for non-native entries. */
   providerName?: string | null;
 }
 
@@ -584,7 +504,6 @@ export interface ModelsListData {
   sources: string[];
   note: string | null;
   models: ModelEntry[];
-  /** null when agent doesn't support effort (e.g. gemini) */
   effort: { current: string; levels: EffortEntry[] } | null;
 }
 
@@ -619,9 +538,6 @@ const EFFORT_LEVELS: Record<string, { id: string; label: string }[]> = {
     { id: 'high', label: 'High' },
     { id: 'xhigh', label: 'Very High' },
     { id: 'max', label: 'Max' },
-    // Synthetic top rung: "max depth + multi-agent Workflow orchestration", the
-    // same bundle as Claude's `ultracode` mode. Not a real --effort value — the
-    // bot decomposes it into (effort=max, workflow=on) at apply time.
     { id: 'ultra', label: 'Ultra' },
   ],
   codex: [
@@ -640,8 +556,6 @@ const EFFORT_LEVELS: Record<string, { id: string; label: string }[]> = {
 };
 
 function buildEffortData(bot: Bot, agent: Agent): ModelsListData['effort'] {
-  // Display value folds workflow into the synthetic `ultra` rung — see
-  // Bot.effortSelectionForAgent.
   const currentEffort = bot.effortSelectionForAgent(agent);
   if (!currentEffort) return null;
   const levels = EFFORT_LEVELS[agent];
@@ -657,11 +571,6 @@ export async function getModelsListData(bot: Bot, chatId: ChatId): Promise<Model
   const currentModel = bot.modelForAgent(cs.agent);
   const activeProfileId = bot.activeProfileIdForAgent(cs.agent);
   const res = await bot.fetchModels(cs.agent, bot.chatWorkdir(chatId));
-  // Match priority:
-  //   - if a Profile is bound, only the row carrying that profileId is current
-  //     (two Profiles can share a modelId, so id-equality alone is ambiguous);
-  //   - otherwise only `'native'` rows are eligible to match against the
-  //     user-config model id.
   return {
     agent: cs.agent,
     currentModel,
@@ -686,10 +595,6 @@ export async function getModelsListData(bot: Bot, chatId: ChatId): Promise<Model
   };
 }
 
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
-
 export interface StatusData {
   version: string;
   uptime: number;
@@ -705,7 +610,6 @@ export interface StatusData {
   running: { prompt: string; startedAt: number } | null;
   stats: { totalTurns: number; totalInputTokens: number; totalOutputTokens: number; totalCachedTokens: number };
   usage: any;
-  /** Git status of the workdir, or null when it isn't a git repo. */
   git: GitStatus | null;
 }
 
@@ -723,19 +627,11 @@ export async function getStatusDataAsync(bot: Bot, chatId: ChatId): Promise<Stat
   };
 }
 
-// ---------------------------------------------------------------------------
-// Host
-// ---------------------------------------------------------------------------
-
 export type HostData = ReturnType<Bot['getHostData']>;
 
 export function getHostDataSync(bot: Bot): HostData {
   return bot.getHostData();
 }
-
-// ---------------------------------------------------------------------------
-// Skill routing
-// ---------------------------------------------------------------------------
 
 export { SKILL_CMD_PREFIX, indexSkillsByCommand };
 
@@ -763,10 +659,6 @@ export function resolveSkillPrompt(bot: Bot, chatId: ChatId, cmd: string, args: 
   }
   return { prompt, skillName: skill.name };
 }
-
-// ---------------------------------------------------------------------------
-// Extensions
-// ---------------------------------------------------------------------------
 
 export interface ExtensionSummaryData {
   mcpCount: number;
@@ -796,9 +688,5 @@ export function getExtensionSummaryData(bot: Bot, chatId: ChatId): ExtensionSumm
     })),
   };
 }
-
-// ---------------------------------------------------------------------------
-// Re-export commonly used helpers for convenience
-// ---------------------------------------------------------------------------
 
 export { summarizePromptForStatus, fmtTokens, fmtUptime, fmtBytes, VERSION };

@@ -1,37 +1,7 @@
-/**
- * pikichannel-sdk.js — the reference browser client SDK (vanilla ESM, zero deps).
- *
- * This is the embeddable client: drop it into any web app (or wrap it in a
- * WebView for mobile) and you get a live, bidirectional agent session over
- * either transport. It mirrors the L2 protocol in src/pikichannel/protocol.ts —
- * keep the message `type` literals in lockstep with that file.
- *
- * Layering mirrors the host:
- *   - Transport (L1): WsTransport | RtcTransport — both expose connect/send and
- *     onopen/onmessage/onclose. The client is blind to which one it holds.
- *   - Client (L2): PikichannelClient — speaks the protocol, keeps a reactive
- *     `sessions` store, exposes prompt/stop/steer/interact, and emits events.
- *
- * Public surface:
- *   const c = new Pikichannel.Client({ transport: 'websocket' | 'webrtc' })
- *   c.on('status'|'welcome'|'session'|'sessions'|'accepted'|'error', cb)
- *   await c.connect(); c.subscribeAll();
- *   c.prompt({ prompt, sessionKey?, agent?, model?, effort? })
- *   c.stop(key) / c.steer(taskId) / c.recall(taskId) / c.interact(promptId, action, value)
- *   c.sessions  // Map<sessionKey, UniversalSnapshot>
- *   c.stats()   // { transport, state, rtt, framesIn, framesOut, bytesIn, bytesOut }
- */
-
 export const PROTOCOL_VERSION = 1;
 
-// The browser keeps plain STUN (no secrets). Relay fallback rides the host's
-// TURN: the host (answerer) trickles its Cloudflare relay candidate, which the
-// browser reaches outbound — so no browser-side TURN credential is needed.
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' }];
 
-// Resolve the ws(s):// base for a target host. `host` may be a bare authority
-// ("192.168.1.5:3940"), a full ws(s)/http(s) URL, or empty (same origin). This
-// is what makes a client repointable: pass `host` to talk to a different node.
 function wsBase(host) {
   const loc = window.location;
   const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -41,10 +11,6 @@ function wsBase(host) {
   if (/^http:\/\//.test(host)) return 'ws://' + host.slice('http://'.length).replace(/\/$/, '');
   return proto + '//' + host.replace(/\/$/, '');
 }
-
-// ---------------------------------------------------------------------------
-// L1 transports (browser side)
-// ---------------------------------------------------------------------------
 
 class WsTransport {
   constructor(base) {
@@ -66,16 +32,12 @@ class WsTransport {
   isOpen() { return !!this.ws && this.ws.readyState === WebSocket.OPEN; }
 }
 
-// The browser is always the WebRTC offerer (creates the datachannel + offer).
-// Two signaling paths share the same PC setup:
-//   - direct:     SDP/ICE over `${base}/pikichannel/signal` (reachable host).
-//   - rendezvous: dial a NodeID through a broker both peers reach (NAT traversal).
 class RtcTransport {
   constructor(cfg) {
     this.kind = 'webrtc';
     this.base = cfg.base;
-    this.rendezvous = cfg.rendezvous || null; // broker ws(s):// URL
-    this.nodeId = cfg.nodeId || null;         // host NodeID to dial
+    this.rendezvous = cfg.rendezvous || null;
+    this.nodeId = cfg.nodeId || null;
     this.pc = null; this.dc = null; this.signal = null;
     this.onopen = null; this.onmessage = null; this.onclose = null; this.onerror = null;
   }
@@ -103,7 +65,6 @@ class RtcTransport {
     this.signal = signal;
 
     if (useRendezvous) {
-      // NAT path: dial the NodeID through the broker; signaling is relayed.
       let sessionId = null;
       pc.onicecandidate = (e) => { if (e.candidate && sessionId && signal.readyState === WebSocket.OPEN) signal.send(JSON.stringify({ t: 'signal', sessionId, data: { kind: 'candidate', candidate: e.candidate.toJSON() } })); };
       signal.onopen = () => signal.send(JSON.stringify({ t: 'dial', nodeId: this.nodeId }));
@@ -123,7 +84,6 @@ class RtcTransport {
       };
       signal.onerror = () => this.onerror && this.onerror(new Error('rendezvous socket error'));
     } else {
-      // Direct path: SDP/ICE straight to the reachable host.
       pc.onicecandidate = (e) => { if (e.candidate && signal.readyState === WebSocket.OPEN) signal.send(JSON.stringify({ kind: 'candidate', candidate: e.candidate.toJSON() })); };
       signal.onmessage = async (m) => {
         let msg; try { msg = JSON.parse(m.data); } catch (e) { return; }
@@ -152,7 +112,6 @@ function makeTransport(kind, cfg) {
   return new WsTransport(cfg.base);
 }
 
-// Mirror of applySnapshotPatch() in src/pikichannel/protocol.ts — keep in lockstep.
 function applyPatch(prev, patch) {
   if (patch.full) return patch.full;
   const next = prev ? Object.assign({}, prev) : { phase: 'idle', updatedAt: 0 };
@@ -162,28 +121,23 @@ function applyPatch(prev, patch) {
   return next;
 }
 
-// ---------------------------------------------------------------------------
-// L2 client
-// ---------------------------------------------------------------------------
-
 export class PikichannelClient {
   constructor(opts) {
     opts = opts || {};
-    this.rendezvous = opts.rendezvous || null; // broker URL for NAT traversal
-    this.nodeId = opts.nodeId || null;         // host NodeID to dial via the broker
-    // A rendezvous dial implies WebRTC (the broker only brokers P2P signaling).
+    this.rendezvous = opts.rendezvous || null;
+    this.nodeId = opts.nodeId || null;
     this.transportKind = (this.rendezvous && this.nodeId) ? 'webrtc' : (opts.transport === 'webrtc' ? 'webrtc' : 'websocket');
     this.token = opts.token || null;
-    this.endpoint = opts.host || null;       // target node authority/URL (null = same origin)
-    this._base = wsBase(this.endpoint);       // resolved ws(s):// base
+    this.endpoint = opts.host || null;
+    this._base = wsBase(this.endpoint);
     this.transport = null;
-    this.state = 'idle'; // idle | connecting | open | closed
-    this.host = null;     // HostInfo from welcome
-    this.sessions = new Map(); // sessionKey -> UniversalSnapshot (reconstructed from patches)
-    this.sessionMetas = []; // SessionMeta[]
-    this._seqs = new Map(); // sessionKey -> last applied seq (gap detection)
+    this.state = 'idle';
+    this.host = null;
+    this.sessions = new Map();
+    this.sessionMetas = [];
+    this._seqs = new Map();
     this._listeners = new Map();
-    this._pending = new Map(); // request id -> {resolve,reject} (control-plane tunnel)
+    this._pending = new Map();
     this._reqSeq = 0;
     this._pingTimer = null;
     this._rtt = null;
@@ -191,7 +145,6 @@ export class PikichannelClient {
     this._pendingResolve = null;
   }
 
-  // -- event emitter --
   on(type, cb) {
     let set = this._listeners.get(type);
     if (!set) { set = new Set(); this._listeners.set(type, set); }
@@ -203,7 +156,6 @@ export class PikichannelClient {
 
   _setState(state) { this.state = state; this._emit('status', this.stats()); }
 
-  // -- lifecycle --
   connect() {
     return new Promise((resolve, reject) => {
       this._pendingResolve = resolve;
@@ -221,7 +173,6 @@ export class PikichannelClient {
       t.onmessage = (data) => this._onFrame(data);
       t.onclose = () => { this._stopPing(); this._failPending('connection closed'); this._setState('closed'); this._emit('close', null); };
       t.onerror = (err) => { this._emit('error', { message: err && err.message ? err.message : 'transport error' }); if (this._pendingResolve) { reject(err); this._pendingResolve = null; } };
-      // resolve connect() on welcome
       const off = this.on('welcome', () => { off(); if (this._pendingResolve) { this._pendingResolve(this.host); this._pendingResolve = null; } });
       Promise.resolve(t.connect()).catch((e) => { this._emit('error', { message: e && e.message ? e.message : 'connect failed' }); reject(e); });
     });
@@ -229,7 +180,6 @@ export class PikichannelClient {
 
   disconnect() { this._stopPing(); if (this.transport) this.transport.close(); this._setState('closed'); }
 
-  // -- outbound commands --
   subscribeAll() { this._send({ type: 'subscribe', sessionKey: '*' }); }
   subscribe(sessionKey) { this._send({ type: 'subscribe', sessionKey: sessionKey }); }
   unsubscribe(sessionKey) { this._send({ type: 'unsubscribe', sessionKey: sessionKey }); }
@@ -247,12 +197,6 @@ export class PikichannelClient {
     this._send({ type: 'interact', promptId: promptId, action: action, value: value, requestFreeform: requestFreeform });
   }
 
-  /**
-   * Control-plane HTTP over the channel — full management of the connected host
-   * WITHOUT it exposing REST publicly (no CORS, rides the authenticated channel).
-   * Only `/api/*` is allowed by the host. Resolves with a fetch-like response:
-   * { status, ok, headers, text(), json(), base64(), bytes() }.
-   */
   request(method, path, opts) {
     opts = opts || {};
     let body = opts.body;
@@ -271,7 +215,6 @@ export class PikichannelClient {
     this._pending.clear();
   }
 
-  // -- inbound --
   _onFrame(data) {
     this._stats.framesIn++;
     this._stats.bytesIn += (data && data.length) ? data.length : 0;
@@ -289,8 +232,8 @@ export class PikichannelClient {
         const lastSeq = this._seqs.get(key);
         const contiguous = lastSeq === undefined || msg.seq === lastSeq + 1 || !!msg.patch.full;
         if (!msg.patch.full && (prev === null || !contiguous)) {
-          this.getSnapshot(key); // missing baseline or seq gap → ask for a full resync
-          break;                  // don't apply a delta we can't anchor
+          this.getSnapshot(key);
+          break;
         }
         const next = applyPatch(prev, msg.patch);
         this.sessions.set(key, next);

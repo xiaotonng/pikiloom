@@ -1,7 +1,3 @@
-/**
- * Telegram workdir browser for interactive directory navigation.
- */
-
 import path from 'node:path';
 import { listSubdirs } from '../../bot/bot.js';
 import type { WorkspacesData } from '../../bot/commands.js';

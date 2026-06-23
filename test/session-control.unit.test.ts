@@ -24,7 +24,6 @@ describe('session-control', () => {
   });
 
   it('queues tasks and surfaces stream state, cancel, and steer through public bot methods', async () => {
-    // queues dashboard tasks through the public bot API
     {
       const submitSessionTask = vi.fn(() => ({ ok: true, queued: true, taskId: 'task-1', sessionKey: 'codex:sess-1' }));
       getBotRefMock.mockReturnValue({ submitSessionTask });
@@ -44,17 +43,14 @@ describe('session-control', () => {
         sessionId: 'sess-1',
         prompt: 'check',
         attachments: ['/tmp/a.png'],
-        // Threaded on every send (even when false) — see session-control.ts.
         workflowEnabled: false,
       });
       expect(result).toEqual({ ok: true, queued: true, taskId: 'task-1', sessionKey: 'codex:sess-1' });
     }
 
-    // Reset between dynamic imports to avoid module cache cross-contamination.
     vi.clearAllMocks();
     vi.resetModules();
 
-    // surfaces stream state, cancel, and steer through public bot methods
     {
       const cancelTask = vi.fn(() => ({ cancelled: true, interrupted: false, task: {} }));
       const steerTask = vi.fn(async () => ({ steered: true, interrupted: true, task: {} }));

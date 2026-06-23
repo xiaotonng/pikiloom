@@ -1,25 +1,3 @@
-/**
- * Persistent thread goal — pikiloom's portable analog of Codex CLI's `/goal`.
- *
- * One goal per session, stored alongside session.json. The model can mark it
- * complete; everything else (set / pause / resume / clear / budget) is user or
- * runtime controlled, mirroring Codex's asymmetric state machine.
- *
- * Layout:
- *   <sessionRoot>/goal.json      — persisted state
- *
- * State transitions:
- *   ──────────►  active                            (user sets a new objective)
- *   active      ──►  paused             (user paused / turn interrupted)
- *   paused      ──►  active             (user resumed)
- *   active      ──►  budget_limited     (token budget crossed)
- *   active      ──►  complete           (model marks complete after audit)
- *
- *   `paused`, `budget_limited`, `complete` are non-active — no continuation
- *   will fire for them. `complete` and `budget_limited` are terminal in the
- *   sense that we never auto-reactivate them; the user must set a new goal.
- */
-
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,20 +21,11 @@ export interface ThreadGoal {
 const GOAL_FILE = 'goal.json';
 const MAX_OBJECTIVE_CHARS = 4000;
 
-/** Hard ceiling on continuation turns when no token budget is set. */
 export const DEFAULT_MAX_CONTINUATIONS = 50;
-
-// ---------------------------------------------------------------------------
-// Paths
-// ---------------------------------------------------------------------------
 
 export function sessionGoalPath(workdir: string, agent: Agent, sessionId: string): string {
   return path.join(workdir, '.pikiloom', 'sessions', agent, sessionId, GOAL_FILE);
 }
-
-// ---------------------------------------------------------------------------
-// State CRUD
-// ---------------------------------------------------------------------------
 
 export function readGoal(workdir: string, agent: Agent, sessionId: string): ThreadGoal | null {
   const file = sessionGoalPath(workdir, agent, sessionId);
@@ -84,10 +53,6 @@ export function clearGoal(workdir: string, agent: Agent, sessionId: string): voi
   const file = sessionGoalPath(workdir, agent, sessionId);
   try { fs.rmSync(file, { force: true }); } catch {}
 }
-
-// ---------------------------------------------------------------------------
-// Operations
-// ---------------------------------------------------------------------------
 
 export function setGoal(
   workdir: string,
@@ -137,22 +102,11 @@ export function completeGoal(workdir: string, agent: Agent, sessionId: string): 
   return writeGoal(workdir, agent, sessionId, { ...goal, status: 'complete' });
 }
 
-// ---------------------------------------------------------------------------
-// Accounting
-// ---------------------------------------------------------------------------
-
-/** What a turn just consumed. */
 export interface TurnUsage {
   tokens: number;
   seconds: number;
 }
 
-/**
- * Update token + wall-clock usage after a turn ends, applying budget enforcement.
- * Returns the resulting goal plus a flag for whether the runtime should inject
- * the budget-limit steering prompt for the next turn (used at the *moment* the
- * budget is crossed, exactly once per goal).
- */
 export function accountTurn(
   workdir: string,
   agent: Agent,
@@ -190,10 +144,6 @@ export function bumpContinuationCount(workdir: string, agent: Agent, sessionId: 
   });
 }
 
-// ---------------------------------------------------------------------------
-// Continuation eligibility
-// ---------------------------------------------------------------------------
-
 export interface ContinuationDecision {
   shouldContinue: boolean;
   reason: string;
@@ -211,12 +161,6 @@ export function shouldContinueAfterTurn(
   }
   return { shouldContinue: true, reason: 'active' };
 }
-
-// ---------------------------------------------------------------------------
-// Prompts — adapted from openai/codex codex-rs/core/templates/goals/*.md
-// (Apache-2.0 / MIT). Tool name swapped from `update_goal` to `goal_update` to
-// match pikiloom's MCP namespace.
-// ---------------------------------------------------------------------------
 
 const CONTINUATION_TEMPLATE = `Continue working toward the active thread goal.
 
@@ -286,10 +230,6 @@ export function renderBudgetLimitPrompt(goal: ThreadGoal): string {
     token_budget: goal.tokenBudget != null ? String(goal.tokenBudget) : 'none',
   });
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function renderTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {

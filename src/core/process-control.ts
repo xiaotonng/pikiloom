@@ -1,7 +1,3 @@
-/**
- * Process lifecycle: restart coordination, watchdog, and process tree termination.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +10,6 @@ export const PROCESS_RESTART_STATE_FILE_ENV = 'PIKILOOM_RESTART_STATE_FILE';
 
 const DAEMON_PID_FILENAME = 'pikiloom.pid';
 
-/** Path to the daemon PID file used by `pikiloom stop`. */
 export function getDaemonPidFilePath(): string {
   return path.join(os.homedir(), STATE_DIR_NAME, DAEMON_PID_FILENAME);
 }
@@ -41,7 +36,6 @@ export function readDaemonPidFile(): number | null {
   }
 }
 
-/** True if a process with `pid` is currently running (POSIX kill -0 / win32 tasklist). */
 export function isProcessAlive(pid: number): boolean {
   if (!pid || pid <= 0) return false;
   try {
@@ -49,7 +43,6 @@ export function isProcessAlive(pid: number): boolean {
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
-    // EPERM means the process exists but we cannot signal it — still alive.
     return code === 'EPERM';
   }
 }
@@ -128,7 +121,6 @@ export function getDefaultRestartCmd(): string {
     const parts = isTsxLoader ? ['tsx', argv1] : process.argv.slice(0, 2);
     return parts.map(arg => arg.includes(' ') ? `"${arg}"` : arg).join(' ');
   }
-  // Running from an installed package (e.g. npm install -g) — reuse the same entry point
   if (argv1.endsWith('.js') && (argv1.includes('pikiloom') || argv1.includes('pikiloom'))) {
     const nodeBin = argv0.includes(' ') ? `"${argv0}"` : argv0;
     const entry = argv1.includes(' ') ? `"${argv1}"` : argv1;
@@ -249,7 +241,6 @@ function buildRestartEnvForSpawn(extraEnv: Record<string, string>) {
 }
 
 function spawnReplacementProcess(bin: string, args: string[], env: Record<string, string>, log?: (message: string) => void) {
-  // npx/npx.cmd needs shell resolution; node.exe does not
   const needsShell = process.platform === 'win32' && !bin.endsWith('node.exe');
   const child = spawn(needsShell ? `"${bin}"` : bin, args, {
     stdio: 'inherit',

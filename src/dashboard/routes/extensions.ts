@@ -1,17 +1,3 @@
-/**
- * Dashboard API routes for extension management — MCP servers and skills.
- *
- * Catalog-first design: GET /catalog returns a unified list of recommended
- * registry entries merged with the user's installed servers, each tagged with
- * a single `state` field. The frontend uses that state to render the right CTA
- * (Install / Authorize / Enable / Disable / Remove).
- *
- * OAuth endpoints:
- *   POST /oauth/start    — kicks off auth-code flow, returns auth URL + state
- *   GET  /oauth/callback — provider redirects here; exchanges code for tokens
- *   POST /oauth/revoke   — clears stored tokens for a server
- */
-
 import { Hono } from 'hono';
 import { execFile } from 'node:child_process';
 import {
@@ -32,11 +18,6 @@ import { runtime } from '../runtime.js';
 import path from 'node:path';
 import fs from 'node:fs';
 
-/**
- * Builtin catalog entries don't live in `extensions.mcp` — they're toggled by
- * a top-level config flag. Each catalogId maps to one flag; add a branch when
- * registering a new builtin.
- */
 function setBuiltinEnabled(catalogId: string, enabled: boolean): boolean {
   if (catalogId === 'pikiloom-browser') {
     saveUserConfig({ ...loadUserConfig(), browserEnabled: enabled });
@@ -44,9 +25,6 @@ function setBuiltinEnabled(catalogId: string, enabled: boolean): boolean {
   }
   if (catalogId === 'peekaboo') {
     saveUserConfig({ ...loadUserConfig(), peekabooEnabled: enabled });
-    // Warm the npx package the moment Peekaboo is enabled so it's downloaded
-    // before the first session — otherwise the agent hits a cold cache and
-    // hangs at "Still connecting". Disabling is a no-op.
     if (enabled) ensurePeekabooWarm();
     return true;
   }
@@ -62,17 +40,10 @@ function isValidWorkdir(dir: string | undefined | null): dir is string {
 }
 
 function getCallbackRedirectUri(c: { req: { url: string } }): string {
-  // Build from the current request so the URL matches whatever port/origin
-  // the dashboard is actually served on (dev, prod, custom port, etc.).
   const origin = new URL(c.req.url).origin;
   return `${origin}/api/extensions/mcp/oauth/callback`;
 }
 
-// ---------------------------------------------------------------------------
-// MCP — unified catalog
-// ---------------------------------------------------------------------------
-
-/** GET /api/extensions/mcp/catalog — Unified recommended + installed list with state. */
 app.get('/api/extensions/mcp/catalog', (c) => {
   const workdir = c.req.query('workdir') || runtime.getRequestWorkdir();
   const scopeParam = c.req.query('scope');
@@ -83,13 +54,6 @@ app.get('/api/extensions/mcp/catalog', (c) => {
   return c.json({ ok: true, items });
 });
 
-/**
- * POST /api/extensions/mcp/install
- * Install a recommended registry entry. Body:
- *   { catalogId, scope, workdir?, credentials?, enable? }
- * Missing credentials for mcp-oauth servers is fine — they'll surface as
- * `needs_auth` in the catalog, and the UI should call /oauth/start next.
- */
 app.post('/api/extensions/mcp/install', async (c) => {
   try {
     const body = await c.req.json();
@@ -114,7 +78,6 @@ app.post('/api/extensions/mcp/install', async (c) => {
       return c.json({ ok, enabled: ok && enable !== false });
     }
 
-    // Don't enable yet for mcp-oauth if no token exists — user still needs to authorize.
     let shouldEnable = enable;
     if (rec.auth.type === 'mcp-oauth' && !getMcpToken(rec.id)) shouldEnable = false;
     if (rec.auth.type === 'credentials') {
@@ -141,10 +104,6 @@ app.post('/api/extensions/mcp/install', async (c) => {
   }
 });
 
-/**
- * POST /api/extensions/mcp/toggle
- * Enable/disable an installed server by its installed key.
- */
 app.post('/api/extensions/mcp/toggle', async (c) => {
   try {
     const body = await c.req.json();
@@ -175,7 +134,6 @@ app.post('/api/extensions/mcp/toggle', async (c) => {
   }
 });
 
-/** POST /api/extensions/mcp/update — patch config fields (credentials, url, etc.). */
 app.post('/api/extensions/mcp/update', async (c) => {
   try {
     const body = await c.req.json();
@@ -201,7 +159,6 @@ app.post('/api/extensions/mcp/update', async (c) => {
   }
 });
 
-/** POST /api/extensions/mcp/remove — uninstall. Also clears any OAuth tokens. */
 app.post('/api/extensions/mcp/remove', async (c) => {
   try {
     const body = await c.req.json();
@@ -232,7 +189,6 @@ app.post('/api/extensions/mcp/remove', async (c) => {
   }
 });
 
-/** POST /api/extensions/mcp/custom — add a user-defined server not in the registry. */
 app.post('/api/extensions/mcp/custom', async (c) => {
   try {
     const body = await c.req.json();
@@ -262,7 +218,6 @@ app.post('/api/extensions/mcp/custom', async (c) => {
   }
 });
 
-/** POST /api/extensions/mcp/health — health check with 10-min cache per catalogId. */
 app.post('/api/extensions/mcp/health', async (c) => {
   try {
     const body = await c.req.json();
@@ -283,7 +238,6 @@ app.post('/api/extensions/mcp/health', async (c) => {
   }
 });
 
-/** GET /api/extensions/mcp/search — search community MCP servers (fallback path). */
 app.get('/api/extensions/mcp/search', async (c) => {
   const query = c.req.query('q') || '';
   const parsed = parseInt(c.req.query('limit') || '20', 10);
@@ -296,11 +250,6 @@ app.get('/api/extensions/mcp/search', async (c) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// MCP — OAuth
-// ---------------------------------------------------------------------------
-
-/** POST /api/extensions/mcp/oauth/start — returns authUrl the client should open. */
 app.post('/api/extensions/mcp/oauth/start', async (c) => {
   try {
     const body = await c.req.json();
@@ -329,7 +278,6 @@ app.post('/api/extensions/mcp/oauth/start', async (c) => {
   }
 });
 
-/** GET /api/extensions/mcp/oauth/callback — browser landing page for the provider redirect. */
 app.get('/api/extensions/mcp/oauth/callback', async (c) => {
   const code = c.req.query('code') || '';
   const state = c.req.query('state') || '';
@@ -398,7 +346,6 @@ app.get('/api/extensions/mcp/oauth/callback', async (c) => {
   }
 });
 
-/** POST /api/extensions/mcp/oauth/revoke — clear stored tokens. */
 app.post('/api/extensions/mcp/oauth/revoke', async (c) => {
   try {
     const body = await c.req.json();
@@ -410,10 +357,6 @@ app.post('/api/extensions/mcp/oauth/revoke', async (c) => {
     return c.json({ ok: false, error: e?.message || 'internal error' }, 500);
   }
 });
-
-// ---------------------------------------------------------------------------
-// Skills
-// ---------------------------------------------------------------------------
 
 interface SkillCatalogItem {
   id: string;
@@ -427,98 +370,43 @@ interface SkillCatalogItem {
   installed: boolean;
   scope?: 'global' | 'project';
   installedNames: string[];
-  /** GitHub stars — undefined when the metadata fetch hasn't completed or failed. */
   stars?: number;
-  /** ISO timestamp of the repo's most recent push. */
   pushedAt?: string;
-  /** Brand logo URL — explicit `iconUrl` from the manifest, else GitHub owner avatar. */
   iconUrl?: string;
-  /**
-   * Total number of skills discovered in the remote repo. Undefined while the
-   * GitHub Contents listing is cold or has failed — frontend re-fetches via
-   * /skills/list when the detail modal opens.
-   */
   totalCount?: number;
-  /** True when the remote listing was capped by GitHub Contents API. */
   partial?: boolean;
-  /** First-party packs float above the star-sorted list. */
   pinned?: boolean;
-  /**
-   * True when this installed collection's recorded commit differs from the
-   * remote default-branch HEAD. Only meaningful for installed collections with
-   * known provenance; undefined otherwise.
-   */
   updateAvailable?: boolean;
-  /** Commit SHA recorded at install time (provenance ledger). */
   installedSha?: string | null;
-  /** Remote default-branch HEAD SHA at catalog-load time. */
   latestSha?: string | null;
 }
 
-/**
- * Extract the GitHub owner slug from a skill `source`. Accepts both the
- * compact `owner/repo` form and full `https://github.com/owner/repo[...]`
- * URLs. Returns null when the source doesn't look like a GitHub reference,
- * in which case the dashboard falls back to a letter avatar.
- */
 function extractGithubOwner(source: string): string | null {
   if (!source) return null;
   const cleaned = source.trim().replace(/^https?:\/\/(www\.)?github\.com\//i, '');
   const owner = cleaned.split('/')[0]?.trim();
   if (!owner) return null;
-  // GitHub usernames: alphanumerics + single hyphens, 1–39 chars.
   return /^[a-z0-9](?:[a-z0-9-]{0,38})$/i.test(owner) ? owner : null;
 }
 
-/**
- * In-memory cache of GitHub repo metadata for skill catalog entries. We use
- * stars as the authority signal — popular repos float to the top — and
- * `pushedAt` to surface staleness. A single 24-hour TTL is enough; if the
- * dashboard reloads more often we serve cached data instantly.
- *
- * The fetch is best-effort: rate limits or network failures leave the catalog
- * intact (just without star counts), so the page never breaks because of
- * GitHub being down.
- */
 interface RepoMeta { stars: number; pushedAt: string }
 const githubMetaCache = new Map<string, { value: RepoMeta; cachedAt: number }>();
 const GITHUB_META_TTL_MS = 24 * 60 * 60 * 1000;
 let githubMetaInflight: Promise<void> | null = null;
 
-/**
- * Remote skill listings — cached per source. Each entry is the list of
- * directories under the repo that contain a SKILL.md file. Same TTL as the
- * stars cache (24h); on miss the catalog response simply omits totalCount and
- * the modal triggers a fresh fetch when opened.
- */
 export interface RemoteSkillInfo {
   name: string;
-  /** First non-empty line of the SKILL.md description frontmatter, when cheap to read. */
   description?: string;
-  /** Path under the repo (e.g. "skills/mcp-builder"). For Open-on-GitHub links. */
   path: string;
 }
 interface RemoteSkillsResult {
   skills: RemoteSkillInfo[];
-  /** True when the GitHub Contents listing was capped (we didn't paginate beyond ~1000). */
   partial: boolean;
 }
 const remoteSkillsCache = new Map<string, { value: RemoteSkillsResult; cachedAt: number }>();
 const REMOTE_SKILLS_TTL_MS = 24 * 60 * 60 * 1000;
 const remoteSkillsInflight = new Map<string, Promise<RemoteSkillsResult | null>>();
 
-/**
- * Resolve a GitHub API token without making the user export anything. Order:
- *   1. `GITHUB_TOKEN` env var (explicit override wins).
- *   2. `gh auth token` — pikiloom recommends `gh` in its CLI catalog, so any
- *      user who's set up the CLI extensions has a token already. Cached for
- *      10 minutes since tokens rarely rotate; on rotation the next refresh
- *      picks it up automatically.
- *
- * Returns null when neither path works (gh missing or not signed in). In that
- * case GitHub Contents calls fall back to the 60 req/h unauth limit, which is
- * still enough for most casual users.
- */
 let githubTokenCache: { value: string; resolvedAt: number } | null = null;
 let githubTokenInflight: Promise<string | null> | null = null;
 const GITHUB_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -528,11 +416,6 @@ async function resolveGithubToken(): Promise<string | null> {
   if (githubTokenCache && Date.now() - githubTokenCache.resolvedAt < GITHUB_TOKEN_TTL_MS) {
     return githubTokenCache.value;
   }
-  // Singleflight: if a probe is already in flight, await its result instead of
-  // spawning N parallel `gh` subprocesses. The 14-source catalog warm-up used
-  // to race here and one keyring lock-contention failure would poison the
-  // cache for the next 10 minutes. We also only cache on success — a null
-  // result just falls through to the next caller's probe.
   if (githubTokenInflight) return githubTokenInflight;
   githubTokenInflight = (async () => {
     const value = await new Promise<string | null>((resolve) => {
@@ -587,15 +470,6 @@ async function fetchGithubContents(owner: string, repo: string, path: string): P
   } catch { return null; }
 }
 
-/**
- * Discover skills inside a remote repo. Tries the two common layouts:
- *   1. `<repo>/skills/<name>/SKILL.md`   (Anthropic-style)
- *   2. `<repo>/<name>/SKILL.md`          (flat layout)
- *
- * Returns a deduplicated list of subdirectory names that look like skills.
- * Best-effort — a missing SKILL.md inside a subdir just gets included if the
- * subdir name matches sensible conventions, since some repos lazy-load.
- */
 async function listRemoteSkillsFromGithub(source: string): Promise<RemoteSkillsResult | null> {
   const cached = remoteSkillsCache.get(source);
   if (cached && Date.now() - cached.cachedAt < REMOTE_SKILLS_TTL_MS) return cached.value;
@@ -608,7 +482,6 @@ async function listRemoteSkillsFromGithub(source: string): Promise<RemoteSkillsR
     if (!parsed) return null;
     const { owner, repo } = parsed;
 
-    // Look for skills/ subdir first; fall back to root if absent.
     let listing = await fetchGithubContents(owner, repo, 'skills');
     let basePath = 'skills';
     if (!listing || listing.length === 0) {
@@ -619,16 +492,11 @@ async function listRemoteSkillsFromGithub(source: string): Promise<RemoteSkillsR
 
     const directories = listing.filter(e => e.type === 'dir' && !e.name.startsWith('.'));
 
-    // To keep one repo from costing 100+ subsequent fetches (verifying SKILL.md
-    // inside each subdir), we skip the per-skill verification and instead
-    // accept any directory under the resolved base as a candidate skill. This
-    // matches how `npx skills add` itself enumerates targets.
     const skills: RemoteSkillInfo[] = directories.map(d => ({
       name: d.name,
       path: d.path,
     }));
 
-    // Some repos return >1000 entries; GitHub's contents endpoint caps there.
     const partial = directories.length >= 1000;
     const result: RemoteSkillsResult = { skills, partial };
     remoteSkillsCache.set(source, { value: result, cachedAt: Date.now() });
@@ -639,7 +507,6 @@ async function listRemoteSkillsFromGithub(source: string): Promise<RemoteSkillsR
   return promise;
 }
 
-/** GET /api/extensions/skills/list?source=owner/repo — list a repo's available skills. */
 app.get('/api/extensions/skills/list', async (c) => {
   const source = c.req.query('source')?.trim();
   if (!source) return c.json({ ok: false, error: 'source is required', skills: [] }, 400);
@@ -656,7 +523,6 @@ app.get('/api/extensions/skills/list', async (c) => {
 });
 
 async function fetchOneRepoMeta(source: string): Promise<RepoMeta | null> {
-  // Accept either `owner/repo` or a full GitHub URL.
   const slug = source.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '');
   if (!/^[^/]+\/[^/]+$/.test(slug)) return null;
   try {
@@ -679,13 +545,6 @@ async function fetchOneRepoMeta(source: string): Promise<RepoMeta | null> {
   } catch { return null; }
 }
 
-/**
- * Default-branch HEAD commit SHA per source — the signal we diff installed
- * skills against. Cached with a much shorter TTL than the star/pushedAt meta
- * (10 min vs 24h) so "update available" stays close to real-time without
- * hammering the API; we only fetch it for collections that are actually
- * installed. Cache only on success so a transient null never sticks.
- */
 const repoHeadShaCache = new Map<string, { value: string; cachedAt: number }>();
 const REPO_HEAD_SHA_TTL_MS = 10 * 60 * 1000;
 const repoHeadShaInflight = new Map<string, Promise<string | null>>();
@@ -706,8 +565,6 @@ async function fetchRepoHeadSha(source: string): Promise<string | null> {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5_000);
       const token = await resolveGithubToken();
-      // `commits?per_page=1` returns the latest commit on the default branch
-      // without needing to know the branch name first.
       const res = await fetch(`https://api.github.com/repos/${slug}/commits?per_page=1`, {
         signal: controller.signal,
         headers: {
@@ -747,7 +604,6 @@ async function ensureRepoMeta(sources: string[]): Promise<void> {
   try { await githubMetaInflight; } finally { githubMetaInflight = null; }
 }
 
-/** GET /api/extensions/skills/catalog — unified recommended + installed skills view. */
 app.get('/api/extensions/skills/catalog', async (c) => {
   const workdir = c.req.query('workdir') || runtime.getRequestWorkdir();
   const scopeParam = c.req.query('scope');
@@ -755,7 +611,6 @@ app.get('/api/extensions/skills/catalog', async (c) => {
     ? scopeParam
     : undefined;
 
-  // Workspace view requires a workdir; global view can use the global skills dir without one.
   if (scope === 'workspace' && !workdir) {
     return c.json({ ok: false, error: 'workdir is required', items: [], installed: [] }, 400);
   }
@@ -769,28 +624,19 @@ app.get('/api/extensions/skills/catalog', async (c) => {
     return repo.recommendedScope === scope || repo.recommendedScope === 'both';
   });
 
-  // Best-effort GitHub metadata. We don't await on a cold cache here so the
-  // first paint isn't blocked by GitHub latency — if results are still cold,
-  // they'll appear on the next refresh (the dashboard already does SWR).
   const sources = filtered.map(r => r.source);
   const allCached = sources.every(s => githubMetaCache.has(s));
   if (allCached) {
-    // Cheap path: nothing to fetch, just return.
   } else {
-    await ensureRepoMeta(sources).catch(() => { /* non-fatal */ });
+    await ensureRepoMeta(sources).catch(() => {  });
   }
 
-  // Fire-and-forget warm-up for the remote-skills listing on any source we
-  // haven't seen yet. On the first ever catalog load this won't return totals,
-  // but the SWR refresh on the dashboard picks them up moments later.
   for (const s of sources) {
     if (!remoteSkillsCache.has(s) && !remoteSkillsInflight.has(s)) {
-      void listRemoteSkillsFromGithub(s).catch(() => { /* non-fatal */ });
+      void listRemoteSkillsFromGithub(s).catch(() => {  });
     }
   }
 
-  // Build a lookup keyed by installed-skill name (lowercased) so we can quickly
-  // mark a repo's remote skills as installed. Scope-filter once up front.
   const scopedInstalled = scope === 'global'
     ? installed.filter(s => s.scope === 'global')
     : scope === 'workspace'
@@ -799,9 +645,6 @@ app.get('/api/extensions/skills/catalog', async (c) => {
   const installedByName = new Map<string, typeof scopedInstalled[number]>();
   for (const s of scopedInstalled) installedByName.set(s.name.toLowerCase(), s);
 
-  // Resolve each repo's installed sub-skills first (sync). Prefer the remote
-  // listing intersection over the static `repo.skills` hint — most catalog
-  // entries don't fill the hint, and the GitHub listing is authoritative.
   const computeInstalledNames = (repo: typeof filtered[number]): string[] => {
     const remote = remoteSkillsCache.get(repo.source)?.value;
     if (remote) {
@@ -816,12 +659,6 @@ app.get('/api/extensions/skills/catalog', async (c) => {
   };
   const perRepo = filtered.map(repo => ({ repo, installedNames: computeInstalledNames(repo) }));
 
-  // Update detection — only for installed collections (it's the only place the
-  // signal is meaningful, and it keeps API calls proportional to what's
-  // actually installed). Diff the live remote HEAD against the provenance
-  // ledger. For installs predating the ledger (e.g. via skills.sh) we baseline
-  // the current HEAD so future commits surface as updates, rather than
-  // fabricating one we can't prove.
   const ledgerScope = scope === 'workspace' ? { workdir } : { global: true };
   interface UpdateInfo { installedSha: string | null; latestSha: string | null; updateAvailable: boolean }
   const updateBySource = new Map<string, UpdateInfo>();
@@ -876,8 +713,6 @@ app.get('/api/extensions/skills/catalog', async (c) => {
     };
   });
 
-  // Pinned first-party packs lead; then community popularity (stars desc, with
-  // no-data entries sinking to the bottom so the most-loved repos surface first).
   items.sort((a, b) => {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
     return (b.stars ?? -1) - (a.stars ?? -1);
@@ -886,7 +721,6 @@ app.get('/api/extensions/skills/catalog', async (c) => {
   return c.json({ ok: true, items, installed });
 });
 
-/** POST /api/extensions/skills/install — install a skill via npx skills add. */
 app.post('/api/extensions/skills/install', async (c) => {
   try {
     const body = await c.req.json();
@@ -903,8 +737,6 @@ app.post('/api/extensions/skills/install', async (c) => {
       return c.json({ ok: false, error: 'valid workdir is required for project-scoped install' }, 400);
     }
 
-    // Resolve the remote HEAD so installSkill can record provenance for update
-    // detection. Best-effort — a failed lookup just installs without a baseline.
     const sourceSha = await fetchRepoHeadSha(source.trim()).catch(() => null);
     const result = await installSkill(source.trim(), { global: isGlobal, skill, workdir, sourceSha });
     return c.json(result);
@@ -913,11 +745,6 @@ app.post('/api/extensions/skills/install', async (c) => {
   }
 });
 
-/**
- * POST /api/extensions/skills/update — pull the latest version of an installed
- * collection. Re-runs `skills add <source>` (no `-s`, so every skill from the
- * source is refreshed) and advances the provenance ledger to the new HEAD.
- */
 app.post('/api/extensions/skills/update', async (c) => {
   try {
     const body = await c.req.json();
@@ -941,7 +768,6 @@ app.post('/api/extensions/skills/update', async (c) => {
   }
 });
 
-/** POST /api/extensions/skills/remove — remove an installed skill. */
 app.post('/api/extensions/skills/remove', async (c) => {
   try {
     const body = await c.req.json();
@@ -960,7 +786,6 @@ app.post('/api/extensions/skills/remove', async (c) => {
   }
 });
 
-/** GET /api/extensions/skills/search — search community skills. */
 app.get('/api/extensions/skills/search', async (c) => {
   const query = c.req.query('q') || '';
   try {

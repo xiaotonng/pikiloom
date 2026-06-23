@@ -28,7 +28,6 @@ describe('browser-supervisor', () => {
   });
 
   it('coalesces concurrent ensure() calls, reuses cache, re-prepares after invalidate, and probe() works', async () => {
-    // Helper: healthy fetch stub used across sub-scenarios
     const makeHealthyFetch = () => vi.fn(async (input: any) => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.endsWith('/json/version')) return new Response(JSON.stringify({ webSocketDebuggerUrl: 'ws://x' }), { status: 200 });
@@ -36,7 +35,6 @@ describe('browser-supervisor', () => {
       return new Response('', { status: 404 });
     });
 
-    // coalesces concurrent ensure() calls into a single prepare invocation
     prepareMock.mockResolvedValue({ profileDir: '/tmp/profile', closedPids: [], cdpEndpoint: 'http://127.0.0.1:39222', connectionMode: 'launch' });
     vi.stubGlobal('fetch', makeHealthyFetch());
     const [a, b, c] = await Promise.all([
@@ -49,25 +47,20 @@ describe('browser-supervisor', () => {
     expect(b.cdpEndpoint).toBe('http://127.0.0.1:39222');
     expect(c.cdpEndpoint).toBe('http://127.0.0.1:39222');
 
-    // reuses the cached endpoint across calls instead of relaunching Chrome
-    // (still cached from above — prepareMock stays at 1)
     await supervisor.ensureManagedBrowser();
     await supervisor.ensureManagedBrowser();
     expect(prepareMock).toHaveBeenCalledTimes(1);
 
-    // re-prepares after invalidate() drops the cache
     supervisor.invalidateManagedBrowser();
     prepareMock.mockResolvedValue({ profileDir: '/tmp/profile', closedPids: [], cdpEndpoint: 'http://127.0.0.1:39222', connectionMode: 'attach' });
     vi.stubGlobal('fetch', makeHealthyFetch());
     await supervisor.ensureManagedBrowser();
     expect(prepareMock).toHaveBeenCalledTimes(2);
 
-    // probe() returns the cached endpoint after a successful ensure()
     const probe = await supervisor.probeManagedBrowser();
     expect(probe.cdpEndpoint).toBe('http://127.0.0.1:39222');
-    expect(prepareMock).toHaveBeenCalledTimes(2); // no extra prepare for probe
+    expect(prepareMock).toHaveBeenCalledTimes(2);
 
-    // probe() does not trigger Chrome launch when nothing is cached
     supervisor._resetManagedBrowserSupervisor();
     prepareMock.mockReset();
     forceCloseMock.mockReset();
@@ -80,7 +73,6 @@ describe('browser-supervisor', () => {
   it('detects unhealthy CDP endpoints: /json timeout and non-array response both trigger re-prepare', async () => {
     prepareMock.mockResolvedValue({ profileDir: '/tmp/profile', closedPids: [], cdpEndpoint: 'http://127.0.0.1:39222', connectionMode: 'attach' });
 
-    // /json/version alone as unhealthy when /json times out (stuck CDP dispatcher)
     let jsonShouldHang = false;
     vi.stubGlobal('fetch', vi.fn((input: any, init?: any) => {
       const url = typeof input === 'string' ? input : input.url;
@@ -111,7 +103,6 @@ describe('browser-supervisor', () => {
       vi.useRealTimers();
     }
 
-    // Reset between sub-scenarios
     supervisor._resetManagedBrowserSupervisor();
     prepareMock.mockReset();
     prepareMock.mockResolvedValue({ profileDir: '/tmp/profile', closedPids: [], cdpEndpoint: 'http://127.0.0.1:39222', connectionMode: 'attach' });
@@ -119,7 +110,6 @@ describe('browser-supervisor', () => {
     forceCloseMock.mockResolvedValue([]);
     vi.unstubAllGlobals();
 
-    // /json returning a non-array (e.g. error HTML) as unhealthy
     let jsonReturnsHtml = false;
     vi.stubGlobal('fetch', vi.fn(async (input: any) => {
       const url = typeof input === 'string' ? input : input.url;
@@ -151,7 +141,6 @@ describe('browser-supervisor', () => {
       return new Response('', { status: 404 });
     });
 
-    // restartManagedBrowser invokes forceClose and clears the cache
     prepareMock.mockResolvedValue({ profileDir: '/tmp/profile', closedPids: [], cdpEndpoint: 'http://127.0.0.1:39222', connectionMode: 'attach' });
     vi.stubGlobal('fetch', makeHealthyFetch());
 
@@ -165,8 +154,6 @@ describe('browser-supervisor', () => {
     await supervisor.ensureManagedBrowser();
     expect(prepareMock).toHaveBeenCalledTimes(2);
 
-    // restartManagedBrowser is throttled within the cooldown window
-    // (reset first to get a clean throttle window)
     supervisor._resetManagedBrowserSupervisor();
     prepareMock.mockReset();
     forceCloseMock.mockReset();
@@ -178,7 +165,6 @@ describe('browser-supervisor', () => {
     await supervisor.restartManagedBrowser('third');
     expect(forceCloseMock).toHaveBeenCalledTimes(1);
 
-    // concurrent restartManagedBrowser calls share a single in-flight force-close
     supervisor._resetManagedBrowserSupervisor();
     forceCloseMock.mockReset();
     let resolveForce: (() => void) | null = null;
@@ -194,7 +180,6 @@ describe('browser-supervisor', () => {
     await Promise.all([ra, rb, rc]);
     expect(forceCloseMock).toHaveBeenCalledTimes(1);
 
-    // PIKILOOM_BROWSER_CDP_URL: bypasses local launch and attaches to remote endpoint
     supervisor._resetManagedBrowserSupervisor();
     prepareMock.mockReset();
     forceCloseMock.mockReset();
@@ -226,7 +211,6 @@ describe('browser-supervisor', () => {
       delete process.env.PIKILOOM_BROWSER_CDP_URL;
     }
 
-    // PIKILOOM_BROWSER_CDP_URL: reports unavailable when remote endpoint is unreachable
     supervisor._resetManagedBrowserSupervisor();
     prepareMock.mockReset();
     vi.unstubAllGlobals();

@@ -13,21 +13,10 @@ export interface TurnHistoryWindow {
   hasOlder: boolean;
 }
 
-/**
- * Collapse a user message to the form the agent transcript persists it in.
- * The Claude loader normalizes the stored user text with `/\s+/ → ' '` + trim,
- * but the optimistic `pendingPrompt` keeps the raw text the user typed. The
- * SessionPanel dedup (optimistic bubble vs. the loaded server turn) compares by
- * text, so a multi-line message — whose raw newlines survive in pendingPrompt
- * but are collapsed in the loaded turn — would fail the equality check and
- * render BOTH bubbles (the "图片显示两次" double). Comparing on this normalized
- * form keeps the dedup whitespace-insensitive.
- */
 export function normalizeUserText(text: string | null | undefined): string {
   return (text || '').replace(/\s+/g, ' ').trim();
 }
 
-/** True when two user messages match after transcript whitespace normalization. */
 export function sameUserText(a: string | null | undefined, b: string | null | undefined): boolean {
   return normalizeUserText(a) === normalizeUserText(b);
 }
@@ -89,9 +78,6 @@ export function groupIntoTurns(msgs: RichMessage[]): Turn[] {
   let cur: Turn = { user: null, assistant: null };
   for (const m of msgs) {
     if (m.role === 'user') {
-      // Continuation summaries mid-assistant should not start a new turn —
-      // they are system-injected (context compression / interruption markers)
-      // and the subsequent assistant blocks belong to the same logical response.
       if (cur.assistant && isContinuationSummary(m.text)) continue;
       if (cur.user || cur.assistant) { turns.push(cur); cur = { user: null, assistant: null }; }
       cur.user = m;
@@ -102,9 +88,6 @@ export function groupIntoTurns(msgs: RichMessage[]): Turn[] {
   return turns;
 }
 
-/** Top-level XML wrappers Claude Code injects into role=user events for
- *  conversation infrastructure (background tasks, system reminders, IDE state,
- *  persisted-output truncations, etc.). Never render as a user bubble. */
 const SYSTEM_INJECTED_USER_TAGS = new Set([
   'task-notification', 'system-reminder', 'persisted-output',
   'local-command-stdout', 'local-command-caveat', 'local-command-stderr',
@@ -112,8 +95,6 @@ const SYSTEM_INJECTED_USER_TAGS = new Set([
   'analysis', 'case_id', 'tool-use-id', 'output-file',
 ]);
 
-/** Inline phrase markers that identify Claude's auto-generated continuation
- *  summaries (injected as role=user when a thread is compacted). */
 const CONTINUATION_MARKERS = [
   'continued from a previous',
   'summary below covers',
@@ -122,10 +103,6 @@ const CONTINUATION_MARKERS = [
   'Key Technical Concepts',
 ];
 
-/** Detect continuation/summary messages and system-injected events that Claude
- *  stores as role=user but never originated from the human. Detection is based
- *  on explicit tag/marker signatures only — never length — so legitimately long
- *  user content (pasted logs, code, pikiloom's `<handover>` seed) still renders. */
 export function isContinuationSummary(text: string): boolean {
   const trimmed = text.trim();
   const leading = trimmed.match(/^<([a-z][a-z0-9_-]*)\b/i);
@@ -139,20 +116,6 @@ export function lastNLines(text: string, n: number): string {
   return lines.slice(-n).join('\n');
 }
 
-/** How a turn ended, derived from its detail string.
- *  - 'interrupted': the user pressed stop — intentional, not a failure.
- *  - 'incomplete':  timed out / hit max tokens — ran out of room, not a crash.
- *  - 'error':       a genuine failure worth flagging.
- *  Drives whether the end-of-turn marker renders neutral (interrupted/incomplete)
- *  or rose-tinted (error), and how much space it takes.
- *
- *  The detail strings come from the backend and are NOT localized:
- *    - `incompleteRunDetail()` in src/agent/session.ts → `session.runDetail`
- *      ("Interrupted by user." / "Timed out before completion." / "Stopped
- *       before completion: max tokens reached.")
- *    - the driver `result.error` in src/agent/drivers/*.ts → live `stream.error`
- *      (claude-tui emits the same "Interrupted by user." / "Timed out after Ns…").
- *  Keep these matchers in lock-step with those producers. */
 export type RunEndKind = 'interrupted' | 'incomplete' | 'error';
 export function classifyRunEnd(detail: string | null | undefined): RunEndKind {
   const d = String(detail || '').trim().toLowerCase();

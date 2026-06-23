@@ -1,7 +1,3 @@
-/**
- * Menu command definitions and skill-to-command mapping.
- */
-
 import type { SkillInfo } from '../agent/index.js';
 import type { MenuCommand } from '../channels/base.js';
 

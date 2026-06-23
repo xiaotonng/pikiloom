@@ -1,14 +1,3 @@
-/**
- * One-time backward-compat shims for the project rename.
- *
- * The orchestrator shipped as `pikiclaw` and is now `pikiloom`. Both run once at
- * process startup — BEFORE any config is read or any lock / PID file is taken —
- * so existing `pikiclaw` installs keep their settings, credentials, managed
- * browser profile and skills with zero user action.
- *
- * Remove this file (and the LEGACY_* constants) a couple of releases after the
- * rename has propagated.
- */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,12 +8,6 @@ import {
   LEGACY_ENV_PREFIXES,
 } from './constants.js';
 
-/**
- * Mirror every legacy-prefixed env var (`PIKICLAW_*`) onto the matching
- * `PIKILOOM_*` name when the new name is unset. Covers user-set vars (shell
- * profiles, docker-compose, systemd units) AND internal ones a still-old parent
- * process may have set across an upgrade boundary.
- */
 export function hydrateLegacyEnv(): void {
   for (const legacy of LEGACY_ENV_PREFIXES) {
     for (const [key, value] of Object.entries(process.env)) {
@@ -36,14 +19,6 @@ export function hydrateLegacyEnv(): void {
   }
 }
 
-/**
- * Migrate the legacy state dir (`~/.pikiclaw`) → `~/.pikiloom`, exactly once.
- *
- * No-op when the new dir already exists (migrated or fresh install) or no legacy
- * dir is present (brand-new user). A same-volume rename is atomic; on a
- * cross-device failure we fall back to a recursive copy and deliberately leave
- * the old dir in place so a partial/failed copy can never lose user data.
- */
 export function migrateLegacyStateDir(): void {
   try {
     const home = os.homedir();
@@ -55,12 +30,10 @@ export function migrateLegacyStateDir(): void {
       try {
         fs.renameSync(prev, next);
       } catch {
-        // Cross-device or in-use: copy and keep the original as a safety net.
         fs.cpSync(prev, next, { recursive: true });
       }
-      return; // migrated from the newest available legacy dir
+      return;
     }
   } catch {
-    // Best-effort only — never block startup on migration.
   }
 }

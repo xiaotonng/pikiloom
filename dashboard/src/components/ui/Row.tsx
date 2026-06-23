@@ -1,79 +1,13 @@
 import { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
 import { cn } from '../../utils';
 
-/**
- * Row family — canonical "data list" layout primitive.
- *
- * Why this exists & shape decisions:
- *
- *   1. Cross-row column alignment was the #1 visual bug of the previous design.
- *      Per-cell stacked labels (label-on-top + value-below) gave every cell a
- *      different height, and `items-center` then placed values at different y
- *      coordinates row-by-row. The fix is a **table mental model**: every
- *      primary cell is *single-line*; secondary text falls into an optional
- *      full-width `<Row.Description>` slot that spans the whole row below the
- *      primary line. The grid has a fixed `min-height` so even a row with no
- *      description holds the column baseline.
- *
- *   2. Column labels live on `<Row.Header>` at the top of a `<RowGroup>`,
- *      NOT inside each cell. Linear's March 2026 refresh did the same — one
- *      header row, dense data rows below.
- *
- *   3. The column tracks are declared on the `<RowGroup>` (so a Header + N
- *      Rows share the same grid). When a single Row is rendered outside a
- *      group, it carries its own grid template.
- *
- * Composition:
- *   <RowGroup>
- *     <Row.Header columns={['Channel', 'Status', 'Summary', '']} />
- *     <Row>
- *       <Row.Lead icon={...} title="Telegram" subtitle="Bot token + allowlist" />
- *       <Row.Status>
- *         <StatusPill state="idle" label="未接入" />
- *       </Row.Status>
- *       <Row.Field>未配置 Bot Token</Row.Field>
- *       <Row.Action>
- *         <Button>去配置</Button>
- *       </Row.Action>
- *       <Row.Description>Telegram bot token is not configured.</Row.Description>
- *     </Row>
- *     …
- *   </RowGroup>
- */
-
 const ROW_GRID_VAR = '--row-grid';
 
-/**
- * Column tracks: lead | status | summary | action.
- *
- *   - Lead and status are **fixed-width** so column 3 (summary) starts at
- *     the same x coordinate across every row. Using `auto` or `fr` for
- *     these tracks lets each row measure independently (every <Row> is its
- *     own grid container), which makes the summary column visibly drift
- *     left/right row-by-row.
- *   - Summary takes the remaining space via `minmax(0,1fr)`; the `0` min
- *     lets long values truncate instead of forcing horizontal scroll.
- *   - Action is `auto` so the button hugs the right edge.
- */
 const DEFAULT_GRID = '260px 120px minmax(0,1fr) auto';
 
-/**
- * Tailwind v4 JIT scans source files for literal class names. Building the
- * grid-cols utility via template-literal interpolation (e.g.
- * `lg:grid-cols-[var(${ROW_GRID_VAR},${DEFAULT_GRID})]`) produces a runtime
- * string the scanner never sees, so the rule is silently dropped from the
- * compiled CSS and the table layout never activates. Keep this as a single
- * static literal — Tailwind converts `_` into spaces inside arbitrary values
- * so the fallback list still parses correctly.
- */
 const GRID_COLS_CLASS =
   'lg:grid-cols-[var(--row-grid,260px_120px_minmax(0,1fr)_auto)]';
 
-/* ─────────────────────────────────────────────────────────────
- * RowGroup — vertical stack of Rows sharing one bordered shell and
- * one grid template. All children render with the same column tracks
- * so the columns visually align top-to-bottom.
- * ─────────────────────────────────────────────────────────── */
 export function RowGroup({
   children,
   className,
@@ -81,8 +15,6 @@ export function RowGroup({
 }: {
   children: ReactNode;
   className?: string;
-  /** Custom column tracks (CSS grid-template-columns value). Defaults to
-   *  the canonical 4-column [lead | status | field | action] layout. */
   columns?: string;
 }) {
   return (
@@ -99,9 +31,6 @@ export function RowGroup({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * Section — labelled group with optional description and right slot.
- * ─────────────────────────────────────────────────────────── */
 export function Section({
   title,
   description,
@@ -137,16 +66,6 @@ export function Section({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * Row — single data line. Grid:
- *   lg: 4 columns, items-center, min-h-[64px]
- *   below lg: stack vertically with the same children in order.
- *
- * The breakpoint is `lg` (≥1024px) rather than `xl` because the
- * dashboard content area is capped at `max-w-[1120px]` — using `xl`
- * (≥1280px) means the table layout never activated inside the
- * dashboard's own container at common laptop viewports.
- * ─────────────────────────────────────────────────────────── */
 interface RowComposition {
   Lead: typeof RowLead;
   Field: typeof RowField;
@@ -158,8 +77,6 @@ interface RowComposition {
 
 interface RowProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
-  /** Inline mode = no own border / bg. Default true so most rows live inside
-   *  a RowGroup; pass false to render a standalone bordered row. */
   inline?: boolean;
 }
 
@@ -172,8 +89,6 @@ const RowImpl = forwardRef<HTMLDivElement, RowProps>(function Row(
       ref={ref}
       className={cn(
         'grid gap-x-5 gap-y-2 px-4 py-3 min-h-[64px]',
-        // Inherit the column tracks from the enclosing RowGroup. Fallback
-        // to the canonical 4-track grid if the row stands alone.
         GRID_COLS_CLASS,
         'lg:items-center',
         'transition-[background] duration-200 hover:bg-[var(--surface-3)]',
@@ -191,13 +106,10 @@ const RowImpl = forwardRef<HTMLDivElement, RowProps>(function Row(
 
 export const Row = RowImpl as typeof RowImpl & RowComposition;
 
-/* ─────── Row.Header — column-label header row ─────── */
 function RowHeader({
   columns,
   className,
 }: {
-  /** Labels in column order. Use empty string for columns without a label
-   *  (e.g. the action column). Length should match RowGroup's column count. */
   columns: ReactNode[];
   className?: string;
 }) {
@@ -224,7 +136,6 @@ function RowHeader({
 }
 Row.Header = RowHeader;
 
-/* ─────── Row.Lead — identity column (icon + title + subtitle) ─────── */
 function RowLead({
   icon,
   title,
@@ -238,7 +149,6 @@ function RowLead({
   subtitle?: ReactNode;
   badge?: ReactNode;
   className?: string;
-  /** false → icon renders edge-to-edge (use for brand logos). */
   iconWrap?: boolean;
 }) {
   return (
@@ -268,14 +178,6 @@ function RowLead({
 }
 Row.Lead = RowLead;
 
-/* ─────── Row.Field — single-line value column.
- *
- * The `label` prop is preserved for backward compat with `SettingRowField`,
- * but the recommended pattern is to drop labels and rely on `<Row.Header>`
- * at the top of the group. When `label` IS passed, it renders ABOVE the
- * value (legacy two-line cell) — every row in a group must pass a label
- * (or none) to keep columns aligned.
- * ─────────────────────────────────────────────── */
 function RowField({
   label,
   children,
@@ -307,7 +209,6 @@ function RowField({
 }
 Row.Field = RowField;
 
-/* ─────── Row.Status — slot for a StatusPill or Badge ─────── */
 function RowStatus({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className={cn('flex shrink-0 items-center', className)}>
@@ -317,7 +218,6 @@ function RowStatus({ children, className }: { children: ReactNode; className?: s
 }
 Row.Status = RowStatus;
 
-/* ─────── Row.Action — right-aligned actions (Button, IconButton) ─────── */
 function RowAction({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className={cn('flex shrink-0 items-center gap-2 justify-start lg:justify-end', className)}>
@@ -327,12 +227,6 @@ function RowAction({ children, className }: { children: ReactNode; className?: s
 }
 Row.Action = RowAction;
 
-/* ─────── Row.Description — full-width secondary line below the grid.
- *
- * Spans every column. Wraps freely. Use for status detail messages,
- * error messages, multi-line summaries — anything that would otherwise
- * inflate a cell and break column alignment.
- * ─────────────────────────────────────────── */
 function RowDescription({
   children,
   className,
@@ -345,7 +239,7 @@ function RowDescription({
       className={cn(
         'col-span-full lg:col-span-full',
         'text-[12.5px] leading-relaxed text-fg-4',
-        'pl-12', // indent past the lead icon
+        'pl-12',
         '-mt-1',
         className,
       )}

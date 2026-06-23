@@ -39,7 +39,6 @@ function trimFileToken(value: string): { text: string; trailing: string } {
   while (text.length > 1) {
     const last = text[text.length - 1];
     if (!last || !/[),.;!?]/.test(last)) break;
-    // Preserve numeric line/column suffixes (`file.ts:12`, `file.ts:12:3`).
     if (last === '.' && /^\.[A-Za-z0-9_-]+$/.test(text)) break;
     trailing = last + trailing;
     text = text.slice(0, -1);
@@ -47,9 +46,6 @@ function trimFileToken(value: string): { text: string; trailing: string } {
   return { text, trailing };
 }
 
-// A locator is a real path — rooted, relative-prefixed, or containing a directory
-// segment. Bare file names (`package.json`, `SKILL.md`) are intentionally NOT locators:
-// they are ambiguous (which one?) and linkifying every mention buries output in noise.
 export function isFileLocator(value: string): boolean {
   const text = trimFileToken(value).text;
   if (!text || isWebUrl(text)) return false;
@@ -93,7 +89,6 @@ function FileLink({ locator, workdir, children }: { locator: string; workdir?: s
   );
 }
 
-/* ── Copy button for fenced code blocks ── */
 export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => { navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {}); };
@@ -147,7 +142,6 @@ export function createMarkdownComponents(options: MarkdownRenderOptions = {}): R
       const text = String(children).replace(/\n$/, '');
       const langMatch = /language-(\w+)/.exec(className || '');
 
-      // Inline code (no language class, no embedded newlines)
       if (!langMatch && !className && !text.includes('\n')) {
         if (isFileLocator(text)) {
           return (
@@ -166,7 +160,6 @@ export function createMarkdownComponents(options: MarkdownRenderOptions = {}): R
         return <code className={cn('px-1.5 py-[1px] rounded text-[12px] font-mono border', classifyCode(text))}>{text}</code>;
       }
 
-      // Fenced code block
       const lang = langMatch?.[1] || '';
       return (
         <div className="rounded-lg overflow-hidden border border-edge/30 bg-[rgba(0,0,0,0.25)] my-3 not-prose">

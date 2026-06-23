@@ -1,56 +1,3 @@
-/**
- * Telegram channel — Telegram Bot API comms with Telegram-specific hooks.
- *
- * ┌─ Lifecycle ─────────────────────────────────────────────────────────────┐
- * │  connect()          — getMe, 获取 bot 信息 (id, username, displayName) │
- * │  listen()           — 启动 long-polling 循环，持续接收更新              │
- * │  disconnect()       — 停止 polling，中断进行中的请求                    │
- * │  drain()            — 跳过所有积压的旧更新，返回跳过数量               │
- * ├─ 发送 (bot → user) ────────────────────────────────────────────────────┤
- * │  send(chatId, text, opts?)         — 发送文本，支持 HTML/Markdown、     │
- * │                                      回复引用、inline keyboard，       │
- * │                                      超长自动分片 (4096 上限)          │
- * │  editMessage(chatId, msgId, text)  — 编辑已发送消息 (流式输出模拟)     │
- * │  deleteMessage(chatId, msgId)      — 删除消息                          │
- * │  sendPhoto(chatId, photo, opts?)   — 发送图片 (Buffer)，支持 caption   │
- * │  sendDocument(chatId, content, filename, opts?) — 发送文件              │
- * │  sendTyping(chatId)                — 发送"正在输入"状态                │
- * │  answerCallback(callbackId, text?) — 响应 inline 按钮回调              │
- * ├─ 菜单管理 ─────────────────────────────────────────────────────────────┤
- * │  setMenu(commands)  — 注册底部菜单命令 (全局 + knownChats 级别)，      │
- * │                       同时 setChatMenuButton 让菜单按钮可见            │
- * │  clearMenu()        — 删除所有命令，重置菜单按钮为默认                 │
- * ├─ 接收 (user → bot) — Hook 注册 ────────────────────────────────────────┤
- * │  onCommand(handler)  — /command args，自动解析命令名和参数；            │
- * │                        无 handler 时 fallthrough 到 onMessage          │
- * │  onMessage(handler)  — 聚合消息 { text, files[] }；                    │
- * │                        图片/文档自动下载到 workdir，提供本地路径        │
- * │  onCallback(handler) — inline keyboard 按钮点击                        │
- * │  onError(handler)    — polling / handler 错误                          │
- * ├─ Handler Context (ctx) ────────────────────────────────────────────────┤
- * │  chatId / messageId / from (id, username, firstName)                   │
- * │  reply(text, opts)            — 直接回复当前消息                       │
- * │  editReply(msgId, text, opts) — 编辑之前的消息                         │
- * │  answerCallback(text?)        — 响应 callback query (仅 callback)      │
- * │  channel                      — channel 实例，可调高级方法             │
- * │  raw                          — 原始 Telegram update 对象              │
- * ├─ 智能行为 ─────────────────────────────────────────────────────────────┤
- * │  knownChats        — 自动记录所有交互过的 chatId，setMenu 自动遍历     │
- * │  消息聚合           — photo/document 自动下载，统一为 { text, files[] } │
- * │  群组过滤           — 群聊默认只响应 @mention / 回复 bot 的消息        │
- * │  Chat 白名单        — allowedChatIds 限制只处理特定聊天                │
- * │  解析失败降级       — HTML 解析失败自动去掉 parseMode 重试             │
- * │  超长消息分片       — 超过 4096 字符按换行符自动分片发送               │
- * └────────────────────────────────────────────────────────────────────────┘
- *
- * Standalone usage:
- *   const ch = new TelegramChannel({ token: 'BOT_TOKEN', workdir: '/tmp' });
- *   await ch.connect();
- *   ch.onCommand((cmd, args, ctx) => ctx.reply(`Got /${cmd} ${args}`));
- *   ch.onMessage((msg, ctx) => ctx.reply(`Echo: ${msg.text} (files: ${msg.files.length})`));
- *   await ch.listen();
- */
-
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -71,48 +18,32 @@ import { ChannelHealth } from '../health.js';
 import { formatScopedLogLine, shouldLog, writeScopedLog, type LogLevel } from '../../core/logging.js';
 import { recordKnownChatId } from '../../core/config/user-config.js';
 
-// ---------------------------------------------------------------------------
-// Proxy support — automatically respects HTTPS_PROXY / HTTP_PROXY / NO_PROXY
-// ---------------------------------------------------------------------------
 setGlobalDispatcher(new EnvHttpProxyAgent());
 
 export { TelegramChannel };
 
-// ---------------------------------------------------------------------------
-// Telegram-specific types
-// ---------------------------------------------------------------------------
-
-/** Aggregated message: text + downloaded file paths. */
 export interface TgMessage {
   text: string;
-  files: string[];      // local file paths (auto-downloaded from photo/document)
+  files: string[];
 }
 
-/** Sender info. */
 export interface TgFrom {
   id: number;
   username?: string;
   firstName?: string;
 }
 
-/** Context passed to every handler — provides reply helpers + metadata. */
 export interface TgContext {
   chatId: number;
   messageId: number;
   from: TgFrom;
-  /** Send a reply to this message. Returns the sent message ID. */
   reply: (text: string, opts?: SendOpts) => Promise<number | null>;
-  /** Edit a previous message (e.g. the placeholder). */
   editReply: (msgId: number, text: string, opts?: SendOpts) => Promise<void>;
-  /** Answer a callback query. */
   answerCallback: (text?: string) => Promise<void>;
-  /** The channel instance, for advanced ops (sendDocument, api, etc.). */
   channel: TelegramChannel;
-  /** Raw Telegram update for escape-hatch access. */
   raw: any;
 }
 
-/** Callback context — extends TgContext with callback-specific fields. */
 export interface TgCallbackContext extends TgContext {
   callbackId: string;
 }
@@ -122,13 +53,8 @@ export type MessageHandler  = (msg: TgMessage, ctx: TgContext) => Promise<any> |
 export type CallbackHandler = (data: string, ctx: TgCallbackContext) => Promise<any> | any;
 export type ErrorHandler    = (err: Error) => void;
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
 export interface TelegramOpts {
   token: string;
-  /** Working directory for temp file downloads. */
   workdir?: string;
   pollTimeout?: number;
   apiTimeout?: number;
@@ -267,10 +193,6 @@ function isPollingConflictError(err: unknown): boolean {
   return msg.startsWith('Telegram polling conflict:');
 }
 
-// ---------------------------------------------------------------------------
-// TelegramChannel
-// ---------------------------------------------------------------------------
-
 class TelegramChannel extends Channel {
   override readonly capabilities = {
     ...DEFAULT_CHANNEL_CAPABILITIES,
@@ -281,9 +203,6 @@ class TelegramChannel extends Channel {
     sendImage: true,
   };
 
-  /** Implementation of Channel.sendImage — wraps sendPhoto with an explicit
-   *  byte buffer + MIME. Used by the bot's final-reply dispatcher for image
-   *  MessageBlocks produced by the agent. */
   override async sendImage(
     chatId: number | string,
     bytes: Buffer,
@@ -318,10 +237,8 @@ class TelegramChannel extends Channel {
   private _hCallback: CallbackHandler | null = null;
   private _hError: ErrorHandler | null = null;
 
-  /** Chat IDs seen from incoming updates. */
   readonly knownChats = new Set<number>();
 
-  /** Cached menu commands for applying to newly discovered chats. */
   private _menuCommands: { command: string; description: string }[] | null = null;
 
   constructor(opts: TelegramOpts) {
@@ -336,16 +253,10 @@ class TelegramChannel extends Channel {
     if (opts.botUsername) this.bot = { id: 0, username: opts.botUsername, displayName: '' };
   }
 
-  // ---- Telegram-specific hook registration ----------------------------------
-
   onCommand(h: CommandHandler)   { this._hCommand = h; }
   onMessage(h: MessageHandler)   { this._hMessage = h; }
   onCallback(h: CallbackHandler) { this._hCallback = h; }
   onError(h: ErrorHandler)       { this._hError = h; }
-
-  // ========================================================================
-  // Lifecycle
-  // ========================================================================
 
   async connect(): Promise<BotInfo> {
     let delay = 2000;
@@ -442,10 +353,6 @@ class TelegramChannel extends Channel {
     }
   }
 
-  // ========================================================================
-  // Outgoing primitives (Channel interface)
-  // ========================================================================
-
   private _applyThreadId(payload: Record<string, any>, opts?: ThreadedOpts) {
     if (opts?.messageThreadId != null) payload.message_thread_id = opts.messageThreadId;
   }
@@ -504,7 +411,7 @@ class TelegramChannel extends Channel {
       const s = String(exc).toLowerCase();
       if (s.includes('not modified') || s.includes("can't be edited")) return;
       if (opts.parseMode && (s.includes("can't parse") || s.includes('bad request'))) {
-        delete p.parse_mode; try { await this.api('editMessageText', p); } catch { /* ignore */ }
+        delete p.parse_mode; try { await this.api('editMessageText', p); } catch {  }
       }
     }
   }
@@ -524,7 +431,7 @@ class TelegramChannel extends Channel {
   }
 
   async deleteMessage(chatId: number | string, msgId: number | string) {
-    try { await this.api('deleteMessage', { chat_id: chatId, message_id: msgId }); } catch { /* ignore */ }
+    try { await this.api('deleteMessage', { chat_id: chatId, message_id: msgId }); } catch {  }
   }
 
   async sendTyping(chatId: number | string, opts: SendOpts = {}) {
@@ -532,10 +439,6 @@ class TelegramChannel extends Channel {
     this._applyThreadId(payload, opts);
     await this.api('sendChatAction', payload).catch(() => {});
   }
-
-  // ========================================================================
-  // Telegram-specific outgoing
-  // ========================================================================
 
   async answerCallback(callbackId: string, text?: string) {
     if (text) this._logOutgoingText('answerCallbackQuery', `callback_id=${callbackId}`, text);
@@ -651,8 +554,6 @@ class TelegramChannel extends Channel {
     });
   }
 
-  /** Set bottom menu commands and ensure the menu button is visible.
-   *  Automatically applies to all known chats (from incoming updates). */
   override async setMenu(commands: MenuCommand[]) {
     this._menuCommands = commands;
     await this.api('setMyCommands', { commands });
@@ -662,7 +563,6 @@ class TelegramChannel extends Channel {
     }
   }
 
-  /** Track a chat ID; apply menu on first discovery and persist for restart. */
   private _trackChat(chatId: number) {
     if (this.knownChats.has(chatId)) return;
     this.knownChats.add(chatId);
@@ -670,7 +570,6 @@ class TelegramChannel extends Channel {
     this._applyMenuToChat(chatId).catch(() => {});
   }
 
-  /** Apply cached menu commands to a single chat. */
   private async _applyMenuToChat(chatId: number) {
     if (!this._menuCommands) return;
     await this.api('setMyCommands', {
@@ -683,7 +582,6 @@ class TelegramChannel extends Channel {
     }).catch(() => {});
   }
 
-  /** Remove all bot commands and reset menu button to default. */
   override async clearMenu() {
     this._menuCommands = null;
     await this.api('deleteMyCommands', {}).catch(() => {});
@@ -694,7 +592,6 @@ class TelegramChannel extends Channel {
     }
   }
 
-  /** Drain pending updates (call before listen to skip stale messages). */
   async drain(): Promise<number> {
     const data = await this.api('getUpdates', { offset: -1, timeout: 0 });
     const results = data.result || [];
@@ -702,7 +599,6 @@ class TelegramChannel extends Channel {
     return results.length;
   }
 
-  /** Get the chat ID from the most recent incoming message (useful for 1v1 bot setup). */
   async getRecentChatId(): Promise<number | null> {
     const data = await this.api('getUpdates', { offset: -1, timeout: 0 });
     const results = data.result || [];
@@ -711,7 +607,6 @@ class TelegramChannel extends Channel {
     return u.message?.chat?.id ?? u.callback_query?.message?.chat?.id ?? null;
   }
 
-  /** Download a Telegram file to a local path. Returns the local path. */
   async downloadFile(fileId: string, destFilename?: string): Promise<string> {
     const meta = await this.api('getFile', { file_id: fileId });
     const filePath = meta.result.file_path;
@@ -732,7 +627,6 @@ class TelegramChannel extends Channel {
       fs.writeFileSync(localPath, buf);
     }
 
-    // Check downloaded file size
     const stat = fs.statSync(localPath);
     if (stat.size > FILE_MAX_BYTES) {
       fs.rmSync(localPath, { force: true });
@@ -741,10 +635,6 @@ class TelegramChannel extends Channel {
 
     return localPath;
   }
-
-  // ========================================================================
-  // Low-level API
-  // ========================================================================
 
   async api(method: string, payload?: any): Promise<any> {
     const timeout = method === 'getUpdates' ? (this.pollTimeout + 10) * 1000 : this.apiTimeout * 1000;
@@ -770,10 +660,6 @@ class TelegramChannel extends Channel {
     }
     return data;
   }
-
-  // ========================================================================
-  // Internal: dispatch
-  // ========================================================================
 
   private async _dispatch(update: any) {
     const key = this._queueKey(update);
@@ -803,7 +689,6 @@ class TelegramChannel extends Channel {
   }
 
   private async _dispatchNow(update: any) {
-    // callback query
     if (update.callback_query) {
       const cq = update.callback_query;
       const chatId = cq.message?.chat?.id;
@@ -818,7 +703,6 @@ class TelegramChannel extends Channel {
       return;
     }
 
-    // message
     const raw = update.message || update.edited_message;
     if (!raw || !raw.chat?.id) return;
     const chatId = raw.chat.id;
@@ -832,7 +716,6 @@ class TelegramChannel extends Channel {
     const from: TgFrom = { id: raw.from?.id, username: raw.from?.username, firstName: raw.from?.first_name };
     const ctx = this._makeCtx(chatId, raw.message_id, from, raw);
 
-    // command — if no command handler registered, fall through to message handler
     const entities = raw.entities || [];
     const cmdEntity = entities.find((e: any) => e.type === 'bot_command' && e.offset === 0);
     if (cmdEntity) {
@@ -846,12 +729,10 @@ class TelegramChannel extends Channel {
       }
     }
 
-    // message (text + files aggregation)
     if (!this._hMessage) return;
     const text = this._cleanMention(raw.text || raw.caption || '');
     const files: string[] = [];
 
-    // download photo
     if (raw.photo?.length) {
       const best = raw.photo[raw.photo.length - 1];
       this._debug(`[recv] downloading photo file_id=${best.file_id} size=${best.width}x${best.height}`);
@@ -862,7 +743,6 @@ class TelegramChannel extends Channel {
       } catch (e: any) { this._log(`[recv] photo download failed: ${e}`, 'warn'); this._hError?.(e); }
     }
 
-    // download document
     if (raw.document) {
       const origName = raw.document.file_name || `doc_${raw.message_id}`;
       this._debug(`[recv] downloading document "${origName}" file_id=${raw.document.file_id}`);
@@ -876,10 +756,6 @@ class TelegramChannel extends Channel {
     this._debug(`[dispatch] -> onMessage text="${text.slice(0, 80)}" files=${files.length} chat=${chatId}`);
     await this._hMessage({ text, files }, ctx);
   }
-
-  // ========================================================================
-  // Internal: helpers
-  // ========================================================================
 
   private _makeCtx(chatId: number, messageId: number, from: any, raw: any): TgContext {
     const messageThreadId = typeof raw?.message_thread_id === 'number' ? raw.message_thread_id : undefined;

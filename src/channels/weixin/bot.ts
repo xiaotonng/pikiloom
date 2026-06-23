@@ -1,7 +1,3 @@
-/**
- * WeChat bot orchestration.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -71,11 +67,6 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? 'unknown error');
 }
 
-/**
- * Plain-text echo of a resolved human-loop prompt — WeChat doesn't render
- * markdown or cards, so we keep the format minimal and obviously distinct
- * from a regular agent reply.
- */
 function buildInteractionEchoPlain(summary: ResolvedHumanLoopAnswers): string | null {
   if (summary.status === 'cancelled') return '⊘ Prompt cancelled.';
   if (!summary.rows.length) return null;
@@ -190,9 +181,6 @@ export class WeixinBot extends Bot {
     const command = rawCommand?.toLowerCase() || '';
     const args = rest.join(' ').trim();
 
-    // `/cancel` aborts any pending command-UI / im_ask_user prompt for this
-    // chat. Special-cased before the auto-cancel below so a bare `/cancel`
-    // doesn't get treated as the start of a new interactive command.
     if (command === 'cancel' || command === 'quit') {
       const pending = this.pendingHumanLoopPrompt(ctx.chatId);
       if (pending) {
@@ -203,8 +191,6 @@ export class WeixinBot extends Bot {
       return true;
     }
 
-    // Auto-clear any stale picker before starting a new interactive command
-    // so the user isn't trapped behind a forgotten `/agent` / `/models` etc.
     const pendingPrompt = this.pendingHumanLoopPrompt(ctx.chatId);
     if (pendingPrompt) {
       this.humanLoopCancel(pendingPrompt.promptId, 'Cancelled — new command issued.');
@@ -345,9 +331,6 @@ export class WeixinBot extends Bot {
 
   private async cmdAgent(ctx: WeixinContext, args: string) {
     if (args) {
-      // Power-user shortcut: `/agent claude` switches directly without the
-      // interactive picker — same behaviour as before, preserved for muscle
-      // memory and scripted flows.
       try {
         const agent = normalizeAgent(args);
         this.switchAgentForChat(ctx.chatId, agent);
@@ -362,9 +345,6 @@ export class WeixinBot extends Bot {
 
   private async cmdModels(ctx: WeixinContext, args: string) {
     if (args) {
-      // Power-user shortcut: `/models <number|name>` switches directly. Skips
-      // the multi-step picker (model + effort + Apply) used by the interactive
-      // path; effort stays unchanged.
       const d = await getModelsListData(this, ctx.chatId);
       const idx = parseInt(args, 10);
       let modelId: string | null = null;
@@ -435,7 +415,6 @@ export class WeixinBot extends Bot {
 
     const trimmed = args.trim();
     if (trimmed) {
-      // Power-user shortcut: `/workspaces <#>` switches directly.
       const idx = parseInt(trimmed, 10);
       if (Number.isNaN(idx) || idx < 1 || idx > data.workspaces.length) {
         await ctx.reply(`Workspace #${trimmed} not found. Use /workspaces to list.`);
@@ -451,10 +430,6 @@ export class WeixinBot extends Bot {
       return;
     }
 
-    // Interactive picker — there is no `command-ui` builder for workspaces
-    // (Telegram/Feishu render this via channel-local helpers), so we open a
-    // tailored human-loop prompt here. Disabled rows for missing paths are
-    // marked so users see them but can't pick.
     const taskId = `wxcmd-ws-${Date.now().toString(36)}`;
     const promptLines: string[] = [
       '【Workspaces】',
@@ -536,8 +511,6 @@ export class WeixinBot extends Bot {
     }
     const idx = parseInt(arg, 10);
     if (!isNaN(idx) && idx >= 1) {
-      // Power-user shortcut: `/sessions <#>` jumps directly using the same
-      // first-100 lookup the old text flow used.
       const d = await getSessionsPageData(this, ctx.chatId, 0, 100);
       const target = d.sessions[idx - 1];
       if (target) {
@@ -554,8 +527,6 @@ export class WeixinBot extends Bot {
       await ctx.reply(`Session #${idx} not found.`);
       return;
     }
-    // Interactive list with pagination — `executeCommandAction` returns the
-    // next page as a fresh view, so the loop re-renders without leaving.
     await this.runCommandUiLoop(ctx, () => buildSessionsCommandView(this, ctx.chatId, 0));
   }
 
@@ -612,12 +583,6 @@ export class WeixinBot extends Bot {
     await this.channel.send(chatId, text);
   }
 
-  /**
-   * Format a human-in-the-loop prompt as plain text for WeChat (no card / button
-   * support on personal accounts). Options are numbered so the user can either
-   * reply with the number or freeform text — both are routed back through the
-   * same handler in `handleMessage`.
-   */
   private formatHumanLoopPromptText(prompt: HumanLoopPromptState): string {
     const question = currentHumanLoopQuestion(prompt);
     const lines: string[] = [];
@@ -644,17 +609,10 @@ export class WeixinBot extends Bot {
     return lines.join('\n');
   }
 
-  /**
-   * IM presenter for programmatic submissions (e.g. /goal-driven turns).
-   * WeChat has no edit / card primitive, so streaming preview isn't possible
-   * — the result is just posted once when the turn completes, mirroring
-   * handleMessage's plain-text path.
-   */
   protected override async createImTaskPresenter(opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
     const chatId = String(opts.chatId);
     return {
       onText: () => {
-        // No streaming render in WeChat — text accumulates and is sent once.
       },
       onSuccess: async (result) => {
         await this.sendResult(chatId, result);
@@ -679,11 +637,6 @@ export class WeixinBot extends Bot {
     }
   }
 
-  /**
-   * WeChat has no message-edit primitive, so the original prompt text stays
-   * frozen in chat history. The echo message is the only way to record the
-   * decision — keep it short and prefix-marked so it's easy to skim.
-   */
   protected override async onInteractionAnswered(
     prompt: HumanLoopPromptState,
     summary: ResolvedHumanLoopAnswers,
@@ -697,11 +650,6 @@ export class WeixinBot extends Bot {
     }
   }
 
-  /**
-   * If the incoming text looks like an option number (e.g. "1", "2.", "③"),
-   * resolve it against the current question's options. Otherwise return null
-   * and let the freeform path take over.
-   */
   private parseHumanLoopOptionPick(text: string, prompt: HumanLoopPromptState): string | null {
     const question = currentHumanLoopQuestion(prompt);
     if (!question?.options?.length) return null;
@@ -714,15 +662,6 @@ export class WeixinBot extends Bot {
     return opt?.value || opt?.label || null;
   }
 
-  // ---- Command-UI adapter (numbered-text fallback for non-card IMs) -------
-  //
-  // Telegram / Feishu render `CommandSelectionView` as tap-able button cards.
-  // WeChat (personal accounts) can't render cards, so we flatten each view's
-  // button rows into a numbered text prompt and let the user reply with a
-  // digit. Re-uses the SAME `executeCommandAction` data layer — no parallel
-  // logic — so `/agents` / `/models` / `/sessions` / `/skills` / `/mode`
-  // behave identically across channels, just rendered differently.
-
   private decorateCommandButtonLabel(button: CommandActionButton): string {
     let label = button.label.trim();
     if (button.state === 'current' || button.primary) label += ' ✓';
@@ -731,11 +670,6 @@ export class WeixinBot extends Bot {
     return label;
   }
 
-  /**
-   * Render a `CommandSelectionView` as plain WeChat text: title + meta lines +
-   * detailed item list (when present) + numbered button list. Always ends with
-   * "回复编号选择" so the user knows what to do next.
-   */
   private formatCommandViewText(view: CommandSelectionView, buttons: CommandActionButton[]): string {
     const lines: string[] = [];
     lines.push(`【${view.title}】`);
@@ -769,12 +703,6 @@ export class WeixinBot extends Bot {
     return parts.join('\n');
   }
 
-  /**
-   * Open one prompt for a `CommandSelectionView` and resolve once the user
-   * picks an option (or cancels). The picked CommandAction is executed via the
-   * shared `executeCommandAction` so the side effects (state mutations,
-   * notices) match every other channel exactly.
-   */
   private async promptCommandView(ctx: WeixinContext, view: CommandSelectionView): Promise<CommandActionResult | null> {
     const buttons = view.rows.flat();
     if (!buttons.length) {
@@ -831,13 +759,6 @@ export class WeixinBot extends Bot {
     });
   }
 
-  /**
-   * Multi-step command flow driver. Some views (notably `/models`'s "select
-   * model → set effort → Apply") return another `CommandSelectionView` from
-   * `executeCommandAction` rather than a terminal notice; this loop keeps
-   * re-prompting until we hit a notice / skill / noop / cancellation. Capped
-   * at 12 iterations to guard against pathological loops.
-   */
   private async runCommandUiLoop(ctx: WeixinContext, viewBuilder: () => Promise<CommandSelectionView> | CommandSelectionView): Promise<void> {
     let view: CommandSelectionView | null = await Promise.resolve(viewBuilder());
     let safety = 12;
@@ -852,9 +773,6 @@ export class WeixinBot extends Bot {
           await ctx.reply(this.formatCommandNotice(result.notice));
           return;
         case 'skill':
-          // Dispatch the resolved skill prompt back through the regular task
-          // pipeline (same machinery as a typed message), so the agent picks
-          // it up with the right session + workspace.
           await ctx.reply(`Running /${result.skillName}…`);
           await this.dispatchUserPrompt(ctx, result.prompt, []);
           return;
@@ -866,11 +784,6 @@ export class WeixinBot extends Bot {
     if (safety <= 0) await ctx.reply('Command UI loop terminated (too many steps).');
   }
 
-  /**
-   * Submit a user-authored prompt through the same path `handleMessage` uses
-   * for natural-language messages. Lets the command-UI loop forward a resolved
-   * `/skill` expansion as if the user had typed it.
-   */
   private async dispatchUserPrompt(ctx: WeixinContext, text: string, files: string[]): Promise<void> {
     const session = this.resolveSession(ctx.chatId, text, files);
     const prompt = buildPrompt(text, files);
@@ -938,8 +851,6 @@ export class WeixinBot extends Bot {
       return;
     }
 
-    // Active human-in-the-loop prompt takes priority — text-only replies are
-    // routed back to the pending question (option-number pick OR freeform).
     const pendingPrompt = this.pendingHumanLoopPrompt(ctx.chatId);
     if (pendingPrompt && text && !msg.files.length) {
       const optionValue = this.parseHumanLoopOptionPick(text, pendingPrompt);
@@ -951,7 +862,6 @@ export class WeixinBot extends Bot {
         return;
       }
       if (result.completed) {
-        // Closing message comes from onInteractionAnswered — no extra reply.
       } else if (result.advanced) {
         const next = this.humanLoopPrompt(pendingPrompt.promptId);
         if (next) await this.channel.send(ctx.chatId, this.formatHumanLoopPromptText(next));

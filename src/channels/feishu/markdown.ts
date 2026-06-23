@@ -1,7 +1,3 @@
-/**
- * Feishu markdown adaptation helpers.
- */
-
 function isGfmTableRow(line: string): boolean {
   return /^\|.+\|$/.test(line.trim());
 }
@@ -25,7 +21,6 @@ function adaptLine(line: string): string {
   next = next.replace(/^#{1,6}\s+/, '**');
   if (next.startsWith('**') && !next.endsWith('**')) next = `${next}**`;
   next = next.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 <$2>');
-  // Strip inline backtick code — Feishu renders them with heavy styling
   next = next.replace(/`([^`\n]+)`/g, '$1');
   return next;
 }
@@ -86,7 +81,6 @@ export function adaptMarkdownForFeishu(markdown: string): string {
       continue;
     }
 
-    // Pass GFM tables through — rendered natively with card schema 2.0
     if (i + 1 < lines.length && isGfmTableRow(lines[i]) && isGfmTableSeparator(lines[i + 1])) {
       while (i < lines.length && isGfmTableRow(lines[i])) {
         out.push(lines[i]);

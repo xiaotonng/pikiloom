@@ -1,7 +1,3 @@
-/**
- * Codex CLI driver: HTTP server management, streaming, human-in-the-loop.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawn } from 'node:child_process';
@@ -17,7 +13,6 @@ import {
   mimeForExt,
   type ModelListOpts, type ModelListResult, type ModelInfo,
   type UsageOpts, type UsageResult, type UsageWindowInfo,
-  // shared helpers
   agentLog, agentWarn,
   buildStreamPreviewMeta, pushRecentActivity, normalizeActivityLine,
   firstNonEmptyLine, shortValue, numberOrNull,
@@ -37,10 +32,6 @@ import {
   SESSION_RUNNING_THRESHOLD_MS,
 } from '../../core/constants.js';
 import { getHome } from '../../core/platform.js';
-
-// ---------------------------------------------------------------------------
-// App-server JSON-RPC client
-// ---------------------------------------------------------------------------
 
 const CODEX_APPSERVER_SPAWN_TIMEOUT_MS = _CODEX_APPSERVER_SPAWN_TIMEOUT_MS;
 
@@ -75,9 +66,6 @@ export class CodexAppServer {
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => { this.kill(); resolve(false); }, CODEX_APPSERVER_SPAWN_TIMEOUT_MS);
       const args = ['app-server'];
-      // Always enable codex's native /goal feature so pikiloom can route through
-      // codex's own `thread/goal/*` RPC + continuation engine. User-supplied -c
-      // overrides win.
       const overrides = this.configOverrides.some(entry => /^features\.goals\s*=/.test(entry))
         ? this.configOverrides
         : [...this.configOverrides, 'features.goals=true'];
@@ -133,16 +121,12 @@ export class CodexAppServer {
       proc.on('close', () => {
         this.ready = false;
         this.proc = null;
-        // Resolve any pending RPC calls so callers don't hang forever
         for (const [id, cb] of this.pending) {
           cb({ error: { message: 'process exited before responding' } });
         }
         this.pending.clear();
       });
 
-      // Declare experimentalApi so `thread/goal/*` is reachable. Codex 0.130+
-      // gates these RPCs behind that capability — without it, every goal call
-      // returns "requires experimentalApi capability".
       this.call('initialize', {
         clientInfo: { name: 'pikiloom', version: '0.2.0' },
         capabilities: { experimentalApi: true },
@@ -221,7 +205,6 @@ export class CodexAppServer {
   }
 }
 
-/** Singleton app-server for shared operations (sessions, models, usage). */
 let _sharedServer: CodexAppServer | null = null;
 function getSharedServer(): CodexAppServer {
   if (!_sharedServer) _sharedServer = new CodexAppServer();
@@ -232,18 +215,6 @@ export function shutdownCodexServer(): void {
   _sharedServer?.kill();
   _sharedServer = null;
 }
-
-// ---------------------------------------------------------------------------
-// Native /goal RPC bridge — `thread/goal/*` is exposed by codex app-server
-// when `features.goals=true` (we always set that). pikiloom treats codex's
-// SQLite + continuation engine as the source of truth for codex sessions.
-//
-// Wire format (camelCase per codex-rs/app-server-protocol/schema/typescript/v2):
-//   thread/goal/set    { threadId, objective?, status?, tokenBudget? }  → ThreadGoal
-//   thread/goal/get    { threadId }                                     → ThreadGoal | null
-//   thread/goal/clear  { threadId }                                     → ()
-//   Status enum: "active" | "paused" | "budgetLimited" | "complete"
-// ---------------------------------------------------------------------------
 
 export type CodexGoalStatus = 'active' | 'paused' | 'budgetLimited' | 'complete';
 
@@ -282,7 +253,6 @@ function unwrapGoal(raw: any): CodexThreadGoal | null {
   };
 }
 
-/** Set / replace the active goal on a codex thread. Codex auto-starts a continuation turn if it is idle. */
 export async function setCodexGoal(opts: {
   threadId: string;
   objective?: string;
@@ -327,18 +297,10 @@ export async function resumeCodexGoal(threadId: string) {
   return setCodexGoal({ threadId, status: 'active' });
 }
 
-// ---------------------------------------------------------------------------
-// Effort mapping
-// ---------------------------------------------------------------------------
-
 const EFFORT_MAP: Record<string, string> = {
   low: 'low', medium: 'medium', high: 'high', min: 'minimal', max: 'xhigh',
 };
 function mapEffort(effort: string): string { return EFFORT_MAP[effort] ?? effort; }
-
-// ---------------------------------------------------------------------------
-// Tool call helpers
-// ---------------------------------------------------------------------------
 
 interface CodexActiveToolCall { kind: string; summary: string; }
 interface PendingCodexAssistantMessage {
@@ -518,20 +480,10 @@ function formatCodexPlanSummary(plan: StreamPreviewPlan): string {
   return lines.join('\n').trim();
 }
 
-/**
- * Resolve the on-disk path Codex writes generated images to. Format:
- *   `$CODEX_HOME/generated_images/<sessionId>/<call_id>.png`
- *
- * The developer-message Codex injects when its built-in `image_gen` tool fires
- * documents this convention (`Generated images are saved to … as …/<id>.png`).
- * We honour `$CODEX_HOME`; the SKILL.md prescribes `.png` as the only output
- * format for the built-in tool.
- */
 function codexImagePathFor(sessionId: string, callId: string): string {
   return path.join(codexHome(), 'generated_images', sessionId, `${callId}.png`);
 }
 
-/** Build an image MessageBlock from a Codex `image_generation_call` payload. */
 function buildCodexImageBlock(sessionId: string, payload: any, phase?: 'commentary' | 'final_answer'): MessageBlock | null {
   const callId = typeof payload?.id === 'string' ? payload.id
     : typeof payload?.call_id === 'string' ? payload.call_id
@@ -539,23 +491,9 @@ function buildCodexImageBlock(sessionId: string, payload: any, phase?: 'commenta
   if (!callId) return null;
   const filePath = codexImagePathFor(sessionId, callId);
   const caption = typeof payload?.revised_prompt === 'string' ? payload.revised_prompt : undefined;
-  return attachAgentImage({ imagePath: filePath, caption, phase });
+  return attachAgentImage({ imagePath: filePath, caption, captionKind: 'prompt', phase });
 }
 
-/**
- * Idempotently push the image MessageBlock for a Codex `image_gen` call to the
- * stream state. Returns true if a block was emitted on this invocation.
- *
- * Codex emits image_generation_call across several inconsistent paths depending
- * on the app-server build: `item/started`, `item/completed`, and
- * `rawResponseItem/completed` may all fire — or some may be skipped (we've seen
- * runs where only `image_generation_end` lands and the response item is frozen
- * at status="generating", so no completion notification ever arrives). This
- * helper lets every code path call into one place; the pendingImageGen map is
- * the source of truth for "not yet emitted." On success we drop the pending
- * entry and decrement the in-flight counter; on miss (file not yet on disk) we
- * leave the entry so a later event — or the turn-end drain — can retry.
- */
 function tryEmitCodexImageBlock(s: CodexStreamState, callId: string, revisedPrompt?: string): boolean {
   if (!callId || !s.sessionId) return false;
   const pending = s.pendingImageGen.get(callId);
@@ -752,10 +690,6 @@ function buildCodexPreviewText(s: {
   return commentary || finalText;
 }
 
-// ---------------------------------------------------------------------------
-// Token usage
-// ---------------------------------------------------------------------------
-
 function buildCodexCumulativeUsage(raw: any): CodexCumulativeUsage | null {
   if (!raw || typeof raw !== 'object') return null;
   const input = numberOrNull(raw.inputTokens, raw.input_tokens);
@@ -777,7 +711,6 @@ function buildCodexContextUsage(raw: any): number | null {
   return null;
 }
 
-
 function applyCodexTokenUsage(
   s: {
     inputTokens: number | null;
@@ -786,7 +719,6 @@ function applyCodexTokenUsage(
     cacheCreationInputTokens: number | null;
     contextWindow: number | null;
     contextUsedTokens: number | null;
-    /** When set, codex-advertised model_context_window updates are ignored. */
     byokContextWindow?: number | null;
     codexCumulative: CodexCumulativeUsage | null;
   },
@@ -814,10 +746,6 @@ function applyCodexTokenUsage(
     if (lastOutput == null) s.outputTokens = prev ? Math.max(0, total.output - prev.output) : total.output;
     if (lastCached == null) s.cachedInputTokens = prev ? Math.max(0, total.cached - prev.cached) : total.cached;
   }
-  // NOTE: do NOT set s.contextUsedTokens from cumulative totals —
-  // those counters span the full thread, not the current turn. Use the per-turn
-  // `last` usage only. `cached_input_tokens` is already a subset of
-  // `input_tokens`, so adding it again inflates the context percentage.
   if (!s.byokContextWindow) {
     const contextWindow = numberOrNull(
       info.modelContextWindow,
@@ -828,10 +756,6 @@ function applyCodexTokenUsage(
     if (contextWindow != null && contextWindow > 0) s.contextWindow = contextWindow;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Turn input
-// ---------------------------------------------------------------------------
 
 export function buildCodexTurnInput(prompt: string, attachments: string[]): any[] {
   const input: any[] = [];
@@ -846,10 +770,6 @@ export function buildCodexTurnInput(prompt: string, attachments: string[]): any[
   input.push({ type: 'text', text: prompt });
   return input;
 }
-
-// ---------------------------------------------------------------------------
-// Stream state
-// ---------------------------------------------------------------------------
 
 interface CodexStreamState {
   sessionId: string | null;
@@ -866,25 +786,13 @@ interface CodexStreamState {
   cacheCreationInputTokens: number | null;
   contextWindow: number | null;
   contextUsedTokens: number | null;
-  /** When set, ignore codex-advertised model_context_window updates. */
   byokContextWindow: number | null;
-  /** BYOK provider display name surfaced in preview meta + IM footers. */
   byokProviderName: string | null;
   codexCumulative: CodexCumulativeUsage | null;
   turnId: string | null;
   turnStatus: string | null;
   turnError: string | null;
   messagePhases: Map<string, string>;
-  /**
-   * Item IDs whose final-answer text we've already absorbed via deltas. When
-   * `item/completed` fires for a final_answer that *did* stream incrementally,
-   * `s.text` already holds the content and we skip the append in
-   * handleCompletedAgentMessage. For messages that arrive as a single
-   * `item/completed` (no preceding deltas), the itemId is absent here so we
-   * append the completed text and emit — without this the preview stays empty
-   * until the turn-end backfill in doCodexStream, which is exactly the
-   * "answer only shows up after everything finishes" bug.
-   */
   deltaSeenForItem: Set<string>;
   commentaryByItem: Map<string, string>;
   commentaryParts: string[];
@@ -894,21 +802,12 @@ interface CodexStreamState {
   recentFailures: string[];
   completedCommands: number;
   plan: StreamPreviewPlan | null;
-  /** Image blocks emitted this turn by Codex's built-in `image_gen` tool. */
   imageBlocks: MessageBlock[];
-  /** call_id → revised_prompt while an image is generating. Lets us emit the
-   *  block on `image_generation_end` even if the live payload lacked the
-   *  prompt (some Codex versions only emit it on `_start`). */
   pendingImageGen: Map<string, { revisedPrompt?: string }>;
-  /** Count of image generations currently in flight (start - end). Surfaced
-   *  to the live preview as `meta.generatingImages` so renderers can show a
-   *  "Generating image…" chip while the actual block has yet to land. */
   generatingImages: number;
 }
 
 function createCodexStreamState(opts: StreamOpts): CodexStreamState {
-  // BYOK: lock in the provider-cached context window so codex's own (often
-  // wrong, model-dependent) `model_context_window` reports get ignored later.
   const byokWindow = opts.byokContextWindow && opts.byokContextWindow > 0
     ? opts.byokContextWindow
     : null;
@@ -955,10 +854,6 @@ function codexErrorResult(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stream notification handler (extracted from doCodexStream)
-// ---------------------------------------------------------------------------
-
 function handleCodexNotification(
   method: string, params: any,
   s: CodexStreamState, opts: StreamOpts,
@@ -970,7 +865,6 @@ function handleCodexNotification(
 ): void {
   if (Date.now() > deadline) return;
   if (params.threadId !== s.sessionId) {
-    // Only turn/started and model/rerouted are checked below; all others already filter on threadId.
     if (method !== 'turn/started' && method !== 'model/rerouted') return;
     if (params.threadId !== s.sessionId) return;
   }
@@ -1042,10 +936,6 @@ function handleItemStarted(item: any, s: CodexStreamState, emit: () => void): vo
     const toolCall = summarizeCodexToolCall(item);
     if (toolCall) { s.activeToolCalls.set(item.id, toolCall); emit(); }
   }
-  // Codex's built-in `image_gen` tool surfaces as a distinct item type. Track
-  // the in-flight count so renderers can show "Generating image…" while the
-  // bytes are being written. Item id naming differs across Codex versions
-  // (`imageGenerationCall` / `image_generation_call`); accept either form.
   if (item.id && (item.type === 'imageGenerationCall' || item.type === 'image_generation_call')) {
     if (!s.pendingImageGen.has(item.id)) s.generatingImages++;
     s.pendingImageGen.set(item.id, {
@@ -1053,11 +943,6 @@ function handleItemStarted(item: any, s: CodexStreamState, emit: () => void): vo
         : typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
     });
     pushRecentActivity(s.recentNarrative, 'Generating image...');
-    // Some codex builds never fire a "completed" event for image_generation_call
-    // (rollout shows the item frozen at status="generating"). The PNG is on
-    // disk by the time item/started lands, so try an opportunistic emit here;
-    // tryEmit is a no-op when the file isn't ready yet — handleItemCompleted /
-    // rawResponseItem/completed / the turn-end drain will pick it up later.
     tryEmitCodexImageBlock(s, item.id);
     emit();
   }
@@ -1117,17 +1002,10 @@ function handleRawResponseItemCompleted(item: any, s: CodexStreamState, emit: ()
       return;
     }
   }
-  // image_generation_call: Codex's built-in image_gen has just finished writing
-  // the file at $CODEX_HOME/generated_images/<sessionId>/<id>.png. Read it into
-  // an image MessageBlock so the bot's final-reply path can dispatch it to IM
-  // channels and the dashboard renders it inline.
   if (item?.type === 'image_generation_call' || item?.type === 'imageGenerationCall') {
     const callId = typeof item.id === 'string' ? item.id
       : typeof item.call_id === 'string' ? item.call_id : '';
     if (callId) {
-      // Merge revised_prompt from this event with anything we stashed earlier —
-      // different Codex builds attach it on different events. Idempotent helper
-      // handles the dedupe against item/started + handleItemCompleted paths.
       const revisedPrompt = typeof item.revised_prompt === 'string' ? item.revised_prompt
         : typeof item.revisedPrompt === 'string' ? item.revisedPrompt
         : undefined;
@@ -1148,12 +1026,6 @@ function handleCompletedAgentMessage(item: any, s: CodexStreamState, emit: () =>
     const text = item.text?.trim();
     if (text) {
       s.msgs.push(text);
-      // When Codex emits the final-answer body without intervening deltas
-      // (short replies, certain provider configs), `s.text` is empty and the
-      // preview would stay blank until doCodexStream's turn-end backfill.
-      // Append the completed body now so the live stream catches up. The
-      // delta-seen set tells us whether we'd be duplicating content already
-      // accumulated via item/agentMessage/delta.
       const alreadyStreamed = item.id && s.deltaSeenForItem.has(item.id);
       if (!alreadyStreamed) {
         s.text = s.text.trim() ? `${s.text.trim()}\n\n${text}` : text;
@@ -1208,10 +1080,6 @@ function handleTurnPlanUpdated(params: any, s: CodexStreamState, emit: () => voi
   emit();
 }
 
-// ---------------------------------------------------------------------------
-// Stream request handler (extracted from doCodexStream)
-// ---------------------------------------------------------------------------
-
 async function handleCodexRequest(
   method: string, params: any, requestId: string,
   s: CodexStreamState, opts: StreamOpts,
@@ -1235,10 +1103,6 @@ async function handleCodexRequest(
   return defaultAgentInteractionResponse(interaction);
 }
 
-// ---------------------------------------------------------------------------
-// Stream via app-server
-// ---------------------------------------------------------------------------
-
 export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
   const start = Date.now();
   const srv = new CodexAppServer();
@@ -1257,9 +1121,6 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
         if (opts.codexExtraArgs[i] === '-c' && opts.codexExtraArgs[i + 1]) config.push(opts.codexExtraArgs[++i]);
       }
     }
-    // Enable codex's native `/goal` feature so `thread/goal/*` RPCs work and
-    // the model gets the native `create_goal` / `update_goal` / `get_goal`
-    // tools + continuation engine. User-provided -c overrides win.
     if (!config.some(entry => /^features\.goals\s*=/.test(entry))) {
       config.push('features.goals=true');
     }
@@ -1306,7 +1167,6 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
       }
     };
 
-    // thread/start or thread/resume
     let threadResp: any;
     const threadParams = {
       cwd: opts.workdir,
@@ -1339,7 +1199,6 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
     }
     agentLog(`[codex-rpc] thread ready: id=${s.sessionId} model=${s.model}`);
 
-    // turn/start
     const input = buildCodexTurnInput(opts.prompt, opts.attachments || []);
     const deadline = start + opts.timeout * 1000;
 
@@ -1381,9 +1240,6 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
       s.turnError = s.turnError || 'Interrupted by user.';
       agentWarn(`[codex-rpc] abort requested thread=${s.sessionId || '?'} turn=${s.turnId || '?'}`);
       if (s.turnId && s.sessionId) {
-        // Send turn/interrupt and wait for Codex to acknowledge before settling.
-        // Don't kill the process here — let the finally block handle it after
-        // Codex has had time to persist the interrupted session state.
         srv.call('turn/interrupt', { threadId: s.sessionId, turnId: s.turnId }, 5_000)
           .finally(() => settleTurnDone?.());
       } else {
@@ -1394,7 +1250,6 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
     if (opts.abortSignal?.aborted) abortStream();
     opts.abortSignal?.addEventListener('abort', abortStream, { once: true });
 
-    // Log equivalent CLI command for reproducibility
     const cliParts = ['codex'];
     if (opts.codexModel) cliParts.push('--model', opts.codexModel);
     if (opts.codexFullAccess) cliParts.push('--full-access');
@@ -1430,11 +1285,6 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
 
     if (!s.text.trim() && s.msgs.length) s.text = s.msgs.join('\n\n');
     if (!s.thinking.trim() && s.thinkParts.length) s.thinking = s.thinkParts.join('\n\n');
-    // Drain any image_gen calls that started but never received a completion
-    // event. We've observed runs where the response_item stays at
-    // status="generating" and no `rawResponseItem/completed` fires — the PNG
-    // is on disk, we just never got told to emit it. Try once at turn end;
-    // tryEmit is a no-op for already-emitted entries.
     for (const callId of [...s.pendingImageGen.keys()]) {
       tryEmitCodexImageBlock(s, callId);
     }
@@ -1469,11 +1319,6 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sessions
-// ---------------------------------------------------------------------------
-
-/** Load title index from ~/.codex/session_index.jsonl (deduped, last entry wins). */
 function loadCodexSessionIndex(): Map<string, { threadName: string; updatedAt: string }> {
   const home = getHome();
   if (!home) return new Map();
@@ -1487,13 +1332,12 @@ function loadCodexSessionIndex(): Map<string, { threadName: string; updatedAt: s
       try {
         const entry = JSON.parse(line);
         if (entry.id) map.set(entry.id, { threadName: entry.thread_name || '', updatedAt: entry.updated_at || '' });
-      } catch { /* skip */ }
+      } catch {  }
     }
-  } catch { /* skip */ }
+  } catch {  }
   return map;
 }
 
-/** Scan ~/.codex/sessions/ rollout files to find sessions matching the given workdir. */
 function extractCodexTailQA(filePath: string): { lastQuestion: string | null; lastAnswer: string | null; lastMessageText: string | null } {
   const lines = readTailLines(filePath, 128 * 1024);
   let lastQuestion: string | null = null;
@@ -1517,7 +1361,7 @@ function extractCodexTailQA(filePath: string): { lastQuestion: string | null; la
           lastMessageText = shortValue(text, 500);
         }
       }
-    } catch { /* skip */ }
+    } catch {  }
   }
   return { lastQuestion, lastAnswer, lastMessageText };
 }
@@ -1547,12 +1391,6 @@ function readCodexSessionHead(filePath: string): { sessionId: string; cwd: strin
   }
 }
 
-// Per-file cache of the head meta + tail Q&A. getNativeCodexSessions walks the
-// whole y/m/d rollout tree and reads each file's 8KB head (to filter by cwd) on
-// every list request AND per workspace×agent in the overview fan-out. Keyed by
-// (mtime,size): unchanged rollouts — including other workspaces' files passed
-// while filtering — are never re-read. `running` depends on Date.now() so it is
-// recomputed per call, not cached.
 const nativeCodexContentCache = new Map<string, {
   mtimeMs: number;
   size: number;
@@ -1569,9 +1407,6 @@ function getNativeCodexSessions(workdir: string, limit?: number): SessionInfo[] 
   const resolvedWorkdir = path.resolve(workdir);
   const titleIndex = loadCodexSessionIndex();
 
-  // Collect rollout files across the year/month/day tree, newest-first, then read
-  // bodies only as far as needed: `limit` applies to a recency-sorted merge
-  // downstream, so older rollouts can't surface in a top-`limit` view.
   const files: { filePath: string; stat: fs.Stats }[] = [];
   const walkDir = (dir: string) => {
     let entries: fs.Dirent[];
@@ -1580,7 +1415,7 @@ function getNativeCodexSessions(workdir: string, limit?: number): SessionInfo[] 
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) { walkDir(fullPath); continue; }
       if (!entry.name.startsWith('rollout-') || !entry.name.endsWith('.jsonl')) continue;
-      try { files.push({ filePath: fullPath, stat: fs.statSync(fullPath) }); } catch { /* skip */ }
+      try { files.push({ filePath: fullPath, stat: fs.statSync(fullPath) }); } catch {  }
     }
   };
   walkDir(sessionsDir);
@@ -1591,8 +1426,6 @@ function getNativeCodexSessions(workdir: string, limit?: number): SessionInfo[] 
   for (const { filePath, stat } of files) {
     let cached = nativeCodexContentCache.get(filePath);
     if (!cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
-      // First line can be very large (base_instructions), so read a head chunk
-      // and extract session_meta via regex instead of a full JSON parse.
       const meta = readCodexSessionHead(filePath);
       const matches = !!meta && !meta.isSubagent && path.resolve(meta.cwd) === resolvedWorkdir;
       cached = { mtimeMs: stat.mtimeMs, size: stat.size, meta, tailQA: matches ? extractCodexTailQA(filePath) : null };
@@ -1697,9 +1530,6 @@ function getCodexSessionTailFromRollout(opts: SessionTailOpts): SessionTailResul
 
 function getCodexSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
-  // Merge pikiloom-tracked sessions with native Codex sessions
-  // Canonical record→SessionInfo mapper (single source of truth) — see claude.ts.
-  // Hand-rolling dropped thinkingEffort/workflowEnabled/profileId from the merge.
   const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'codex').map(managedRecordToSessionInfo);
   const nativeSessions = getNativeCodexSessions(resolvedWorkdir, limit);
   const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
@@ -1745,17 +1575,12 @@ async function getCodexSessionTail(opts: SessionTailOpts): Promise<SessionTailRe
   return getCodexSessionTailFromRollout(opts);
 }
 
-// ---------------------------------------------------------------------------
-// Session messages (full content)
-// ---------------------------------------------------------------------------
-
 async function getCodexSessionMessages(opts: SessionMessagesOpts): Promise<SessionMessagesResult> {
   if (opts.rich) {
     const rolloutResult = getCodexSessionMessagesFromRollout(opts);
     if (rolloutResult.ok) return rolloutResult;
   }
 
-  // Try RPC first
   const srv = getSharedServer();
   if (await srv.ensureRunning()) {
     try {
@@ -1772,14 +1597,13 @@ async function getCodexSessionMessages(opts: SessionMessagesOpts): Promise<Sessi
               for (const c of (item.content ?? [])) {
                 if (c.type === 'text' && c.text) parts.push(c.text);
                 else if (c.type === 'localImage' && c.path) {
-                  // Read the image file if it still exists
                   try {
                     if (fs.existsSync(c.path) && fs.statSync(c.path).size <= 4 * 1024 * 1024) {
                       const ext = path.extname(c.path).toLowerCase();
                       const data = fs.readFileSync(c.path).toString('base64');
                       blocks.push({ type: 'image', content: `data:${mimeForExt(ext)};base64,${data}` });
                     }
-                  } catch { /* skip unreadable images */ }
+                  } catch {  }
                 }
               }
               if (parts.length || blocks.length) {
@@ -1808,10 +1632,9 @@ async function getCodexSessionMessages(opts: SessionMessagesOpts): Promise<Sessi
           return applyTurnWindow(allMsgs, opts, richMsgs);
         }
       }
-    } catch { /* fall through to rollout */ }
+    } catch {  }
   }
 
-  // Fallback: read full rollout file
   return getCodexSessionMessagesFromRollout(opts);
 }
 
@@ -1939,9 +1762,6 @@ function getCodexSessionMessagesFromRollout(opts: SessionMessagesOpts): SessionM
         continue;
       }
 
-      // image_generation_call: Codex's built-in `image_gen` tool — surface the
-      // file on disk as an image block so historical sessions render images
-      // (not just text). Path: $CODEX_HOME/generated_images/<sessionId>/<id>.png
       if (payload.type === 'image_generation_call' || payload.type === 'imageGenerationCall') {
         const block = buildCodexImageBlock(opts.sessionId, payload);
         if (block) {
@@ -1975,11 +1795,7 @@ function getCodexSessionMessagesFromRollout(opts: SessionMessagesOpts): SessionM
   }
 }
 
-// ---------------------------------------------------------------------------
-// Models (with TTL cache + stale fallback)
-// ---------------------------------------------------------------------------
-
-const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
 let modelCache: { result: ModelListResult; fetchedAt: number } | null = null;
 
@@ -1990,7 +1806,6 @@ function pushModel(models: ModelInfo[], seen: Set<string>, id: string, alias: st
   models.push({ id: cleanId, alias: alias?.trim() || null });
 }
 
-/** Merge currentModel into a cached result so the selected model always appears first. */
 function withCurrentModel(cached: ModelListResult, currentModel: string | null | undefined): ModelListResult {
   if (!currentModel?.trim()) return cached;
   const cm = currentModel.trim();
@@ -1999,12 +1814,10 @@ function withCurrentModel(cached: ModelListResult, currentModel: string | null |
 }
 
 async function discoverCodexModels(opts: ModelListOpts): Promise<ModelListResult> {
-  // Return cached result if still fresh
   if (modelCache && Date.now() - modelCache.fetchedAt < MODEL_CACHE_TTL_MS) {
     return withCurrentModel(modelCache.result, opts.currentModel);
   }
 
-  // Try fetching fresh
   const srv = getSharedServer();
   if (!(await srv.ensureRunning())) {
     if (modelCache) return withCurrentModel(modelCache.result, opts.currentModel);
@@ -2031,10 +1844,6 @@ async function discoverCodexModels(opts: ModelListOpts): Promise<ModelListResult
   modelCache = { result, fetchedAt: Date.now() };
   return result;
 }
-
-// ---------------------------------------------------------------------------
-// Usage
-// ---------------------------------------------------------------------------
 
 function getCodexStateDbPath(home: string): string | null {
   const root = path.join(home, '.codex');
@@ -2066,9 +1875,6 @@ function getCodexUsageFromStateDb(home: string): UsageResult | null {
   if (!dbPath) return null;
   try {
     const query = "SELECT ts || '|' || message FROM logs WHERE message LIKE '%codex.rate_limits%' ORDER BY ts DESC LIMIT 1;";
-    // stdio: 'pipe' keeps sqlite3 stderr ("no such table", "unable to open") out
-    // of pikiloom's own stderr — this probe is best-effort and the catch below
-    // already swallows failures.
     const out = execSync(`sqlite3 -noheader ${Q(dbPath)} ${Q(query)}`, { encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     if (!out) return null;
     const sep = out.indexOf('|');
@@ -2160,10 +1966,6 @@ export async function getCodexUsageLive(): Promise<UsageResult> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Driver
-// ---------------------------------------------------------------------------
-
 class CodexDriver implements AgentDriver {
   readonly id = 'codex';
   readonly cmd = 'codex';
@@ -2203,12 +2005,6 @@ class CodexDriver implements AgentDriver {
   shutdown() { shutdownCodexServer(); }
 }
 
-/**
- * Locate and remove the codex rollout file backing a session. Codex stores
- * sessions under `~/.codex/sessions/<year>/<month>/<day>/rollout-<...>.jsonl`,
- * keyed by `meta.sessionId` inside the file rather than the filename — so we
- * walk the tree and match on the parsed head metadata, scoped to `workdir`.
- */
 async function deleteNativeCodexSession(workdir: string, sessionId: string): Promise<string[]> {
   const home = getHome();
   if (!home || !sessionId) return [];
@@ -2234,7 +2030,7 @@ async function deleteNativeCodexSession(workdir: string, sessionId: string): Pro
         fs.rmSync(full, { force: true });
         removed.push(full);
         return true;
-      } catch { /* skip */ }
+      } catch {  }
     }
     return false;
   };

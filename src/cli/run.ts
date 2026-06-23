@@ -1,12 +1,4 @@
 #!/usr/bin/env node
-/**
- * run.ts — Standalone CLI commands for pikiloom.
- *
- * Usage:
- *   npm run command -- status
- *   npm run command -- claude-models
- *   npm run command -- codex-models
- */
 
 import { ensureGitignore, formatThinkingForDisplay, DEFAULT_RUN_TIMEOUT_S } from '../bot/bot.js';
 import { initializeProjectSkills, listAgents, listModels, listSkills, getUsage, doStream } from '../agent/index.js';
@@ -38,7 +30,6 @@ function parseArgs(argv: string[]) {
     }
   }
   args.command = positional[0] ?? null;
-  // If no -p flag, treat remaining positional args as the prompt
   if (!args.prompt && positional.length > 1) args.prompt = positional.slice(1).join(' ');
   return args;
 }
@@ -204,7 +195,6 @@ async function main() {
           : 'claude';
       let sessionId: string | null = args.session;
 
-      // Default: find the latest session
       if (!sessionId) {
         const sessions = await querySessions({ agent, workdir, limit: 1 });
         if (!sessions.ok || !sessions.sessions.length) {
@@ -256,7 +246,6 @@ async function main() {
       };
       process.stdout.write(`Running ${agent}${args.model ? ` (model: ${args.model})` : ''}...\n`);
       const result = await doStream(opts);
-      // Clear the streaming line and print final result
       process.stdout.write('\r\x1b[K');
       process.stdout.write(`--- ${agent} result ---\n`);
       process.stdout.write(`ok:        ${result.ok}\n`);

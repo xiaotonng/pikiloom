@@ -1,19 +1,16 @@
 import type { ReactNode } from 'react';
 import { cn } from '../../utils';
 
-/* ── SectionLabel ── */
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-5">{children}</div>
   );
 }
 
-/* ── Skeleton ── */
 export function Skeleton({ className }: { className?: string }) {
   return <div className={cn('animate-shimmer rounded-md', className)} />;
 }
 
-/* ── Spinner ── */
 export function Spinner({ className }: { className?: string }) {
   return (
     <svg
@@ -27,7 +24,6 @@ export function Spinner({ className }: { className?: string }) {
   );
 }
 
-/* ── Toasts ── */
 export function Toasts({ items }: { items: { id: number; message: string; ok: boolean }[] }) {
   return (
     <div className="fixed bottom-6 right-6 z-200 flex max-w-sm flex-col gap-2">

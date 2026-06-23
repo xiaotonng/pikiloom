@@ -1,30 +1,11 @@
-/**
- * Credential reference — never store raw secrets in setting.json.
- *
- * Each credential is described by a small reference that can be dereferenced
- * at use time:
- *   - keychain: stored in OS keychain, looked up by service+account
- *   - env:      read from process.env at use time
- *   - command:  exec a command and use its stdout (e.g. `op read`, `gh auth token`)
- *   - inline:   AES-GCM sealed blob bound to this machine (fallback)
- */
-
 export type CredentialRef =
   | { source: 'keychain'; account: string }
   | { source: 'env';      varName: string }
   | { source: 'command';  argv: string[] }
   | { source: 'inline';   sealed: string };
 
-/** Stable service name used when writing to the OS keychain. */
 export const KEYCHAIN_SERVICE = 'pikiloom';
 
-/**
- * Legacy keychain service names this build still reads from. The project was
- * renamed (pikiclaw → pikiloom); credentials written under the old service are
- * orphaned because lookups now use `KEYCHAIN_SERVICE`. `readKeychain` falls
- * back to these on a miss and lazily re-writes the secret under the current
- * service, so each orphaned item self-heals on first use.
- */
 export const LEGACY_KEYCHAIN_SERVICES = ['pikiclaw'];
 
 export function isCredentialRef(value: unknown): value is CredentialRef {
@@ -39,7 +20,6 @@ export function isCredentialRef(value: unknown): value is CredentialRef {
   }
 }
 
-/** Short, non-sensitive description of a credential reference for UI display. */
 export function describeCredentialRef(ref: CredentialRef): string {
   switch (ref.source) {
     case 'keychain': return `keychain:${ref.account}`;

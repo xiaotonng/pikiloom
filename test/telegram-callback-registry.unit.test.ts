@@ -1,11 +1,3 @@
-/**
- * Telegram callback_data has a hard 64-byte limit; exceeding it on *any* button
- * makes Telegram reject the whole sendMessage with BUTTON_DATA_INVALID, which
- * killed the entire `/models` menu for users with BYOK Profiles. The Telegram
- * render layer swaps over-length encoded actions for short `r:<id>` tokens and
- * resolves them back on the callback round-trip. This covers that contract.
- */
-
 import { describe, expect, it } from 'vitest';
 import {
   renderCommandSelectionKeyboard,
@@ -33,7 +25,6 @@ describe('Telegram callback_data registry', () => {
 
     expect(Buffer.byteLength(data)).toBeLessThanOrEqual(64);
     expect(data.startsWith('r:')).toBe(true);
-    // Resolving the token recovers the exact action.
     expect(decodeCommandAction(unpackCallbackData(data))).toEqual(action);
   });
 
@@ -61,8 +52,6 @@ describe('Telegram callback_data registry', () => {
   });
 
   it('passes through unknown / stale tokens instead of throwing', () => {
-    // A token from before a restart no longer resolves; unpack returns it
-    // verbatim so decode can reject it cleanly (silent no-op, not a crash).
     expect(unpackCallbackData('r:999999')).toBe('r:999999');
     expect(unpackCallbackData('md:n:gpt-5')).toBe('md:n:gpt-5');
     expect(decodeCommandAction(unpackCallbackData('r:999999'))).toBeNull();

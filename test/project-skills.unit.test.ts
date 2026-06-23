@@ -28,7 +28,6 @@ afterEach(() => {
 
 describe('project skills', () => {
   it('resolves skill paths, routes per-agent, merges legacy roots, and collapses shorthand', () => {
-    // resolves claude skills with canonical project paths and injects context
     {
       const workdir = makeTmpDir('pikiloom-claude-skill-');
       writeSkill(path.join(workdir, '.pikiloom', 'skills'), 'install', '---\nlabel: Install\ndescription: shared\n---\n');
@@ -52,7 +51,6 @@ describe('project skills', () => {
       expect(resolved!.prompt).toContain('Additional context: ship it');
     }
 
-    // routes codex skills to project skill files instead of hard-coding .claude paths
     {
       const workdir = makeTmpDir('pikiloom-codex-skill-');
       writeSkill(path.join(workdir, '.pikiloom', 'skills'), 'fixup', '---\nlabel: Fixup\ndescription: shared\n---\n');
@@ -69,7 +67,6 @@ describe('project skills', () => {
       expect(resolved!.prompt).toContain('.claude/skills/fixup/SKILL.md');
     }
 
-    // merges legacy skill roots into .pikiloom/skills and links .claude/.agents back to canonical
     {
       const workdir = makeTmpDir('pikiloom-migrate-skill-');
       writeSkill(path.join(workdir, '.pikiloom', 'skills'), 'ship', '---\nlabel: Ship\ndescription: shared\n---\n');
@@ -80,30 +77,23 @@ describe('project skills', () => {
 
       initializeProjectSkills(workdir);
 
-      // .pikiloom/skills becomes the canonical real directory
       expect(fs.lstatSync(path.join(workdir, '.pikiloom', 'skills')).isSymbolicLink()).toBe(false);
-      // Canonical content keeps existing shared files and merges in legacy ones
       expect(fs.readFileSync(path.join(workdir, '.pikiloom', 'skills', 'ship', 'SKILL.md'), 'utf8')).toContain('description: shared');
       expect(fs.existsSync(path.join(workdir, '.pikiloom', 'skills', 'ship', 'references', 'shared.txt'))).toBe(true);
       expect(fs.existsSync(path.join(workdir, '.pikiloom', 'skills', 'ship', 'references', 'claude.txt'))).toBe(true);
       expect(fs.existsSync(path.join(workdir, '.pikiloom', 'skills', 'package', 'SKILL.md'))).toBe(true);
-      // .claude and .agents both become symlinks to canonical
       expect(fs.lstatSync(path.join(workdir, '.claude', 'skills')).isSymbolicLink()).toBe(true);
       expect(fs.lstatSync(path.join(workdir, '.agents', 'skills')).isSymbolicLink()).toBe(true);
       expect(fs.realpathSync(path.join(workdir, '.claude', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiloom', 'skills')));
       expect(fs.realpathSync(path.join(workdir, '.agents', 'skills'))).toBe(fs.realpathSync(path.join(workdir, '.pikiloom', 'skills')));
     }
 
-    // repoints a stale legacy symlink (.claude/skills -> ../.pikiclaw/skills)
-    // even when the legacy target no longer exists. A dangling symlink survives
-    // rmSync(recursive,force), so initialize must unlink it before relinking.
     {
       const workdir = makeTmpDir('pikiloom-relink-skill-');
       const claudeSkills = path.join(workdir, '.claude', 'skills');
       fs.mkdirSync(path.dirname(claudeSkills), { recursive: true });
-      // Point at the pre-rename name whose dir was never created here.
       fs.symlinkSync('../.pikiclaw/skills', claudeSkills, 'dir');
-      expect(fs.existsSync(claudeSkills)).toBe(false); // dangling
+      expect(fs.existsSync(claudeSkills)).toBe(false);
 
       initializeProjectSkills(workdir);
 
@@ -111,12 +101,10 @@ describe('project skills', () => {
       expect(fs.readlinkSync(claudeSkills)).toBe(path.join('..', '.pikiloom', 'skills'));
       expect(fs.realpathSync(claudeSkills)).toBe(fs.realpathSync(path.join(workdir, '.pikiloom', 'skills')));
 
-      // Idempotent: a second pass over an already-correct link is a no-op.
       initializeProjectSkills(workdir);
       expect(fs.readlinkSync(claudeSkills)).toBe(path.join('..', '.pikiloom', 'skills'));
     }
 
-    // collapses canonical skill expansions back to the slash command shorthand
     {
       const workdir = makeTmpDir('pikiloom-collapse-skill-');
       writeSkill(path.join(workdir, '.pikiloom', 'skills'), 'install', '---\nlabel: Install\n---\n');
@@ -124,7 +112,6 @@ describe('project skills', () => {
       bot.switchWorkdir(workdir, { persist: false });
       bot.chat(7).agent = 'claude';
 
-      // Round-trip: produce the expansion, then verify the inverse returns `/install`.
       const noArgs = resolveSkillPrompt(bot, 7, 'sk_install', '');
       expect(noArgs).not.toBeNull();
       expect(collapseSkillPrompt(noArgs!.prompt)).toBe('/install');
@@ -133,12 +120,9 @@ describe('project skills', () => {
       expect(withArgs).not.toBeNull();
       expect(collapseSkillPrompt(withArgs!.prompt)).toBe('/install ship it now');
 
-      // The claude driver collapses interior whitespace before surfacing user
-      // messages. Make sure we still recognize that single-space variant.
       const flattened = noArgs!.prompt.replace(/\s+/g, ' ').trim();
       expect(collapseSkillPrompt(flattened)).toBe('/install');
 
-      // Free-form text and partial matches should not collapse.
       expect(collapseSkillPrompt('hello world')).toBeNull();
       expect(collapseSkillPrompt('')).toBeNull();
       expect(collapseSkillPrompt(null)).toBeNull();

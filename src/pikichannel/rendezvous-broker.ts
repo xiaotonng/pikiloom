@@ -1,24 +1,3 @@
-/**
- * pikichannel/rendezvous-broker.ts — the public signaling broker (NAT traversal).
- *
- * This is the "route, don't relay data" rendezvous from the original design. A
- * pikiloom host that sits behind NAT dials OUT to a broker and registers a
- * NodeID; a client dials the same broker by NodeID. The broker pairs them and
- * relays ONLY signaling envelopes (SDP offer/answer + ICE candidates) — it never
- * sees datachannel data, which flows directly P2P (DTLS-encrypted) once ICE
- * hole-punches through. It is dependency-light (no werift) so any pikiloom can
- * act as a broker for reachable peers, or it can be run standalone.
- *
- * Wire protocol (JSON over the rendezvous WebSocket):
- *   host→  {t:'register', nodeId}            ← register to receive dials
- *      ←   {t:'registered', nodeId} | {t:'error', message}
- *   client→{t:'dial', nodeId}                ← reach a registered host
- *      ←   {t:'dialed', sessionId} | {t:'error', message}
- *   broker→host {t:'open', sessionId}        ← a client dialed; prepare answerer
- *   peer↔  {t:'signal', sessionId, data}     ← relayed to the other end verbatim
- *   broker→peer {t:'close', sessionId}       ← the other end went away
- */
-
 import crypto from 'node:crypto';
 import type http from 'node:http';
 import type internal from 'node:stream';
@@ -31,8 +10,8 @@ interface Session { client: WebSocket; host: WebSocket; nodeId: string; }
 
 export class RendezvousBroker {
   private wss = new WebSocketServer({ noServer: true });
-  private hosts = new Map<string, WebSocket>();        // nodeId → host socket
-  private sessions = new Map<string, Session>();        // sessionId → pair
+  private hosts = new Map<string, WebSocket>();
+  private sessions = new Map<string, Session>();
 
   constructor() {
     this.wss.on('connection', (ws: WebSocket) => this.onConnection(ws));
@@ -47,12 +26,12 @@ export class RendezvousBroker {
   get stats() { return { hosts: this.hosts.size, sessions: this.sessions.size }; }
 
   private send(ws: WebSocket, msg: unknown): void {
-    if (ws.readyState === ws.OPEN) { try { ws.send(JSON.stringify(msg)); } catch { /* ignore */ } }
+    if (ws.readyState === ws.OPEN) { try { ws.send(JSON.stringify(msg)); } catch {  } }
   }
 
   private onConnection(ws: WebSocket): void {
-    let myNodeId: string | null = null;          // set if this socket registers as a host
-    const mySessions = new Set<string>();         // sessions this socket participates in
+    let myNodeId: string | null = null;
+    const mySessions = new Set<string>();
 
     ws.on('message', (raw) => {
       let m: any; try { m = JSON.parse(String(raw)); } catch { return; }
@@ -60,7 +39,6 @@ export class RendezvousBroker {
         case 'register': {
           const nodeId = String(m.nodeId || '').trim();
           if (!nodeId) { this.send(ws, { t: 'error', message: 'nodeId required' }); return; }
-          // Last registration wins (a host reconnecting replaces its stale socket).
           this.hosts.set(nodeId, ws);
           myNodeId = nodeId;
           this.send(ws, { t: 'registered', nodeId });

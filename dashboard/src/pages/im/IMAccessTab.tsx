@@ -198,7 +198,6 @@ function buildChannelSummary(key: ChannelKey, config: Partial<UserConfig>, copy:
     return `AppKey ${maskValue(id, 4, 4)} · ${copy.appCredentialsSaved}`;
   }
 
-  // wecom
   const botId = getConfigValue(config, 'wecomBotId');
   const botSecret = getConfigValue(config, 'wecomBotSecret');
   if (!botId || !botSecret) return copy.noWeCom;
@@ -244,11 +243,6 @@ function getStatusPresentation(
   };
 }
 
-/**
- * Map the legacy `statusVariant` (Badge tone) onto the canonical StatusPill
- * states. Loading is treated as a 'running' pulse so the pill itself
- * communicates motion without needing a separate spinner.
- */
 function statusToPillState(variant: ChannelRowMeta['statusVariant'], loading?: boolean): StatusState {
   if (loading) return 'running';
   switch (variant) {

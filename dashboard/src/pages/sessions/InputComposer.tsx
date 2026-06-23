@@ -18,15 +18,9 @@ import type { SessionInfo, AgentRuntimeStatus, SkillInfo } from '../../types';
 
 type CascadeStep = 'closed' | 'agent' | 'model' | 'effort';
 
-/* ── Draft persistence across session switches ── */
 const draftStore = new Map<string, { text: string; files: File[] }>();
 function draftKey(agent: string, sessionId: string) { return `${agent}:${sessionId}`; }
 
-/**
- * Pick a BrandIcon id for a configured Provider based on its base URL / kind.
- * Mirrors the logic used in AgentTab / ModelsTab so the same provider shows
- * the same logo everywhere.
- */
 function brandIdForProvider(p: { kind: string; baseURL: string }): string {
   const host = (() => { try { return new URL(p.baseURL).host.toLowerCase(); } catch { return ''; } })();
   if (host.includes('openrouter')) return 'openrouter';
@@ -56,42 +50,22 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   streamTaskId?: string | null;
   queuedTaskIds?: string[];
   queuedTasks?: Array<{ taskId: string; prompt: string }>;
-  /** Optimistic fallback for queued sends — used by each queued row while the
-   *  server snapshot's `queuedTasks` hasn't yet caught up. `imageUrls` are
-   *  blob previews surfaced as inline thumbnails so the user can recognize
-   *  the queued message at a glance (server-side queued state has no image
-   *  data, so older rows after a refresh fall back to text only). */
   pendingQueuedSends?: Array<{ taskId: string | null; prompt: string; imageUrls?: string[] }>;
   onRecall?: (taskId: string) => void;
   onSteer?: (taskId: string) => void;
-  /** Stop the running stream AND cancel every queued task for this session. */
   onStopAll?: () => void | Promise<void>;
   editDraft?: string | null;
   onEditDraftConsumed?: () => void;
-  /** Reports the composer's currently-resolved model + effort (the per-session
-   *  cascade pick, or the agent's global default) so actions owned by the parent
-   *  — e.g. the message "rerun" button — can send with the same selection the
-   *  user sees in the chip instead of the stale session-runtime values. */
   onSelectionChange?: (sel: { model: string | null; effort: string | null }) => void;
 }) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [localTaskId, setLocalTaskId] = useState<string | null>(null);
-  // Per-task in-flight tracking. A global boolean would freeze every row's
-  // button when one recall completes but other tasks remain queued/streaming
-  // (the "did the target resolve?" check can't distinguish which row's
-  // operation finished). Tracking the target taskId lets us clear the flag
-  // when that specific task disappears and disable only that row's button.
   const [recallingIds, setRecallingIds] = useState<Set<string>>(() => new Set());
   const [steeringIds, setSteeringIds] = useState<Set<string>>(() => new Set());
-  // Stash last-sent content so recall can restore it to the input field
   const lastSentRef = useRef<{ prompt: string; files: File[] }>({ prompt: '', files: [] });
   const storeAgents = useStore(s => s.agentStatus?.agents ?? null);
   const [agents, setAgents] = useState<AgentRuntimeStatus[]>(storeAgents || []);
-  // User's applied cascade choice for this session. Empty = fall back to runtime
-  // default. These are intentionally per-session and never written back to the
-  // global runtime prefs — picking a model in the composer must NOT change other
-  // sessions' defaults. Reset on session change (see session-key effect below).
   const [selectedAgent, setSelectedAgent] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedEffort, setSelectedEffort] = useState('');
@@ -101,12 +75,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const [pendingAgent, setPendingAgent] = useState<string | null>(null);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [pendingEffort, setPendingEffort] = useState<string | null>(null);
-  // Tracks the staged Profile id while the user steps through the cascade.
-  // `null` (after the user touches the model step) means "switching to native";
-  // `undefined` means "user hasn't picked yet — leave the existing binding
-  // untouched on apply." This three-state semantics matters because applying
-  // the cascade should be a no-op for the agent's Profile binding when the
-  // user only changed the effort.
   const [pendingProfileSelection, setPendingProfileSelection] = useState<string | null | undefined>(undefined);
   const [cascadeStep, setCascadeStep] = useState<CascadeStep>('closed');
   const [cascadePos, setCascadePos] = useState<{ left: number; bottom: number } | null>(null);
@@ -122,11 +90,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const skillMenuRef = useRef<HTMLDivElement>(null);
   const refreshAgentStatus = useStore(s => s.refreshAgentStatus);
 
-  // Model layer — Providers + Profiles + current bindings. Fetched lazily on
-  // cascade open so the dropdown can list "我的模型" (Profile shortcuts) next
-  // to the agent's native model catalogue. Kept local to InputComposer since
-  // this is the only session-scoped consumer; the dashboard agents page has
-  // its own `useModelLayer` hook with the same shape.
   const [profiles, setProfiles] = useState<Array<{
     id: string; name: string; providerId: string; modelId: string; effort?: string | null;
   }>>([]);
@@ -147,20 +110,14 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
         for (const b of bRes.bindings || []) map[b.agent] = b.activeProfileId;
         setActiveProfiles(map);
       }
-    } catch { /* network blip — leave previous snapshot in place */ }
+    } catch {  }
   }, []);
 
-  // Eager-load the model layer on mount so the composer chip can resolve a BYOK
-  // profile binding immediately. Without this, a fresh session's chip falls back
-  // to the agent's native model (e.g. claude-opus) until the cascade is first
-  // opened — even though the bound profile is what actually runs (display-only
-  // bug: the spawn already uses the binding).
   useEffect(() => { void refreshModelLayer(); }, [refreshModelLayer]);
 
   useEffect(() => { if (storeAgents?.length) setAgents(storeAgents); }, [storeAgents]);
   useEffect(() => { attachmentsRef.current = imageAttachments; }, [imageAttachments]);
 
-  // Restore draft on mount, save on unmount
   const dk = draftKey(session.agent || '', session.sessionId);
   const dkRef = useRef(dk);
   dkRef.current = dk;
@@ -174,21 +131,12 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     return () => {
       const text = inputRef.current?.value || '';
       const files = attachmentsRef.current.map(a => a.file);
-      // Save draft — revoke preview URLs but keep File objects
       for (const a of attachmentsRef.current) URL.revokeObjectURL(a.previewUrl);
       if (text || files.length) draftStore.set(dkRef.current, { text, files });
       else draftStore.delete(dkRef.current);
     };
   }, [dk]);
 
-  // Reset applied cascade choice + transient pending state when the user moves to
-  // a DIFFERENT session. Real navigation already remounts this composer (the panel
-  // is keyed by a stable mountKey), so the only sessionId change a mounted instance
-  // sees is the pending→native promotion of its OWN first send — the same logical
-  // session. Resetting there is the bug: it snapped the chip back to the global
-  // runtime default the instant you hit Enter (e.g. picked `medium`, sent, chip
-  // flips to the global `high`/stale model), contradicting the live divider for the
-  // turn now running. Skip the reset across that promotion so the pick sticks.
   const prevSessionRef = useRef({ agent: session.agent || '', sessionId: session.sessionId });
   useEffect(() => {
     const prev = prevSessionRef.current;
@@ -206,7 +154,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     setCascadeStep('closed');
   }, [session.agent, session.sessionId]);
 
-  // Consume editDraft — populate the input when user clicks "Edit" on a message
   useEffect(() => {
     if (editDraft != null) {
       setInput(editDraft);
@@ -218,7 +165,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     }
   }, [editDraft, onEditDraftConsumed]);
 
-  // Fetch available skills when workdir changes
   useEffect(() => {
     if (!workdir) return;
     let cancelled = false;
@@ -228,7 +174,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     return () => { cancelled = true; };
   }, [workdir]);
 
-  // Compute filtered skills for the autocomplete menu
   const skillQuery = skillMenuOpen ? (() => {
     const match = input.match(/^\/(\S*)$/);
     return match ? match[1].toLowerCase() : null;
@@ -237,17 +182,14 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     ? skills.filter(s => s.name.toLowerCase().includes(skillQuery) || (s.label && s.label.toLowerCase().includes(skillQuery)))
     : [];
 
-  // Reset selected index when filtered list changes
   useEffect(() => { setSkillMenuIndex(0); }, [skillMenuOpen, input]);
 
-  // Scroll skill menu to keep selected item visible
   useEffect(() => {
     if (!skillMenuOpen || !skillMenuRef.current) return;
     const item = skillMenuRef.current.querySelector(`[data-skill-idx="${skillMenuIndex}"]`);
     if (item) (item as HTMLElement).scrollIntoView({ block: 'nearest' });
   }, [skillMenuIndex, skillMenuOpen]);
 
-  // Close skill menu on outside click
   useEffect(() => {
     if (!skillMenuOpen) return;
     const h = (e: MouseEvent) => {
@@ -259,14 +201,11 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     return () => document.removeEventListener('mousedown', h);
   }, [skillMenuOpen]);
 
-  // Close cascade on outside click — check both trigger and portal
   useEffect(() => {
     if (cascadeStep === 'closed') return;
     const h = (e: MouseEvent) => {
       const target = e.target as Node;
-      // Don't close if clicking inside the trigger button
       if (triggerRef.current?.contains(target)) return;
-      // Don't close if clicking inside the portal dropdown
       const portal = document.getElementById('cascade-portal');
       if (portal?.contains(target)) return;
       setCascadeStep('closed'); setPendingAgent(null); setPendingModel(null); setPendingEffort(null);
@@ -275,7 +214,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     return () => document.removeEventListener('mousedown', h);
   }, [cascadeStep]);
 
-  // Position the cascade portal above the trigger button
   useLayoutEffect(() => {
     if (cascadeStep === 'closed' || !triggerRef.current) { setCascadePos(null); return; }
     const rect = triggerRef.current.getBoundingClientRect();
@@ -283,7 +221,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   }, [cascadeStep]);
 
   const firstQueuedFromSnapshot = queuedTaskIds && queuedTaskIds.length ? queuedTaskIds[0] : null;
-  // Clear local taskId once the real snapshot has the info
   useEffect(() => {
     if (localTaskId) {
       if (firstQueuedFromSnapshot) setLocalTaskId(null);
@@ -291,7 +228,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     }
   }, [streamPhase, localTaskId, firstQueuedFromSnapshot]);
 
-  // Auto-resize textarea
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
@@ -332,18 +268,11 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
       || '';
     if (!targetAgent) return;
     const targetStatus = agents.find(a => a.agent === targetAgent) || null;
-    // Mirror the chip's resolution (see currentModel/currentEffort): cascade
-    // pick → session's own last-used → agent global default. Keeping send in
-    // sync with what the chip shows means a resume continues with the session's
-    // model/effort instead of silently switching to the global default.
     const sendOwnsSessionAgent = !!session.agent && targetAgent === session.agent;
     const targetModel = (selectedModel
       || (sendOwnsSessionAgent ? (session.model || '') : '')
       || targetStatus?.selectedModel
       || '').trim() || null;
-    // Mirror currentEffort's fold so an unedited send in a resumed `ultra`
-    // session sends `ultra` (re-decomposed to max+workflow) instead of a bare
-    // `max` that silently drops orchestration. The explicit local pick stays raw.
     const targetEffort = targetAgent === 'gemini'
       ? null
       : ((selectedEffort
@@ -352,23 +281,16 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
         || '').trim() || null);
     const isAgentSwitch = targetAgent !== session.agent;
     const targetSessionId = isAgentSwitch ? '' : session.sessionId;
-    // When switching agent, pass the live session of the outgoing agent so the
-    // backend can compact it and seed the new session's first turn — see
-    // `compactForHandover` in src/agent/handover.ts. We deliberately don't send
-    // these when the session id is unchanged: same-agent continuation goes via
-    // the agent's own --resume.
     const previousAgent = isAgentSwitch && session.agent ? session.agent : null;
     const previousSessionId = isAgentSwitch && session.sessionId ? session.sessionId : null;
     setSending(true);
-    // Stash content for potential recall restoration
     lastSentRef.current = { prompt, files: attachments };
     setInput('');
     draftStore.delete(dkRef.current);
-    // Create fresh preview URLs before clearing (clearing revokes the originals)
     const previewUrls = attachments.length ? attachments.map(f => URL.createObjectURL(f)) : undefined;
     clearImageAttachments();
     onSendStart(prompt, previewUrls);
-    onStreamQueued(); // Start polling immediately — don't wait for API response
+    onStreamQueued();
     api.sendSessionMessage(workdir, targetAgent, targetSessionId, prompt, {
       attachments,
       model: targetModel,
@@ -409,20 +331,13 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     workdir,
   ]);
 
-  // Task bar state — derived from snapshot + optimistic local state.
-  // `effectiveQueuedIds` aggregates every queued task we know about so each one
-  // gets its own row (instead of collapsing many queued tasks into one banner).
   const isActiveStream = streamPhase === 'streaming';
   const effectiveQueuedIds: string[] = (() => {
     const ids: string[] = [];
     if (queuedTaskIds && queuedTaskIds.length) ids.push(...queuedTaskIds);
-    // When the snapshot itself is in `queued` phase the visible task is the
-    // queued one — surface it as a queued row.
     if (streamPhase === 'queued' && streamTaskId && !ids.includes(streamTaskId)) {
       ids.unshift(streamTaskId);
     }
-    // Optimistic local id for messages we just sent before the backend has
-    // emitted the queued event yet.
     if (localTaskId && !ids.includes(localTaskId)) {
       const optimisticAllowed = streamPhase === 'queued' || (!streamPhase);
       if (optimisticAllowed) ids.push(localTaskId);
@@ -433,9 +348,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const hasQueuedTask = effectiveQueuedIds.length > 0;
   const showTaskBar = hasQueuedTask || isActiveStream;
 
-  // Clear per-task pending flags as their target tasks resolve.
-  // A target is "resolved" once it's no longer in the queued list and is no
-  // longer the active stream — i.e. the recall/steer landed on the server.
   useEffect(() => {
     const isLive = (id: string) => effectiveQueuedIds.includes(id) || id === streamTaskId;
     setRecallingIds(prev => {
@@ -451,7 +363,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
       return changed ? next : prev;
     });
   }, [effectiveQueuedIds, streamTaskId]);
-  // Clear stashed files once queued task starts streaming (no longer recallable)
   useEffect(() => {
     if (!hasQueuedTask && lastSentRef.current.files.length) {
       lastSentRef.current = { prompt: '', files: [] };
@@ -461,9 +372,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const handleRecallQueued = useCallback((taskId: string) => {
     if (recallingIds.has(taskId)) return;
     setRecallingIds(prev => { const next = new Set(prev); next.add(taskId); return next; });
-    // Only the most-recent queued task corresponds to the input the user just
-    // sent; restoring stash for an older queued task would dump someone else's
-    // prompt into the composer.
     if (taskId === effectiveQueuedId) {
       const stash = lastSentRef.current;
       if (stash.prompt) setInput(stash.prompt);
@@ -475,12 +383,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   }, [recallingIds, effectiveQueuedId, localTaskId, onRecall]);
 
   const [stoppingAll, setStoppingAll] = useState(false);
-  // "Stop" means halt the conversation, not "recall this one taskId". We call
-  // the session-scoped stop endpoint so:
-  //   1. queued follow-ups don't keep firing after the user hits stop, and
-  //   2. the button still works in the brief window after a fresh send where
-  //      `streamTaskId` is still null (no WS snapshot yet). The endpoint takes
-  //      (agent, sessionId), which the panel always has.
   const handleStop = useCallback(async () => {
     if (stoppingAll || !onStopAll) return;
     setStoppingAll(true);
@@ -506,7 +408,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
 
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
-    // Open skill menu when input is a single slash-command token (no spaces yet)
     const isSlashCmd = /^\/\S*$/.test(value) && skills.length > 0;
     setSkillMenuOpen(isSlashCmd);
   }, [skills.length]);
@@ -544,27 +445,16 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const currentAgent = agents.find(a => a.agent === effectiveAgent) || null;
   const cascadeAgentId = pendingAgent || effectiveAgent;
   const cascadeAgent = agents.find(a => a.agent === cascadeAgentId) || currentAgent;
-  // Unified model list — native catalogue + "我的模型" Profiles the agent can
-  // route through. Each row carries kind + profileId so the click handler
-  // knows whether to clear the active Profile binding (native) or set it
-  // (profile). The previous shape mixed native vs byok in one untyped
-  // ModelInfo array which couldn't express the distinction.
   type CascadeModelRow = {
     id: string;
-    /** What renders in the row. For Profiles this is the user-set name. */
     label: string;
-    /** Discriminates the click handler. Native rows clear the Profile binding. */
     kind: 'native' | 'profile';
-    /** Profile id when kind='profile'; the model id to send is `id`. */
     profileId?: string;
-    /** Secondary line — provider name for Profile rows, alias for native. */
     description?: string;
   };
   const models = useMemo<CascadeModelRow[]>(() => {
     if (!cascadeAgent) return [];
     const out: CascadeModelRow[] = [];
-    // Native section — the agent CLI's own model list. byokModels is no longer
-    // used here because Profiles are now first-class entries below.
     for (const m of cascadeAgent.models || []) {
       out.push({
         id: m.id,
@@ -573,7 +463,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
         description: m.alias && m.alias.toLowerCase() !== m.id.toLowerCase() ? m.alias : undefined,
       });
     }
-    // 我的模型 section — Profiles compatible with this agent's BYOK kinds.
     const acceptedKinds = new Set(AGENT_ACCEPTED_PROVIDER_KINDS[cascadeAgentId] || []);
     for (const p of profiles) {
       const provider = providers.find(x => x.id === p.providerId);
@@ -589,35 +478,19 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     }
     return out;
   }, [cascadeAgent, cascadeAgentId, profiles, providers]);
-  // First Profile row index for inserting the "我的模型" group header.
   const firstProfileIdx = useMemo(() => models.findIndex(m => m.kind === 'profile'), [models]);
-  // Index of the currently-active Profile in the unified list (or -1).
   const activeProfileIdForAgent = activeProfiles[cascadeAgentId] || null;
-  // Resolution precedence: (1) this session's cascade pick, (2) the session's
-  // OWN last-used model/effort so reopening a session restores what it actually
-  // ran with, (3) the agent's global default. The session fallback is gated on
-  // the effective agent still being the session's agent — after a cascade
-  // agent-switch the outgoing agent's model/effort must not leak into the new
-  // agent's chip.
   const sessionOwnsAgent = !!session.agent && effectiveAgent === session.agent;
   const currentModel = selectedModel
     || (sessionOwnsAgent ? (session.model || '') : '')
     || currentAgent?.selectedModel
     || '';
-  // An explicit local pick is authoritative and already carries `ultra` when
-  // chosen (picking a concrete rung deliberately turns Workflow off). Only the
-  // *fallbacks* need folding: the session's last run and the agent-global default
-  // store the concrete rung + a separate workflow flag, so re-fold them to `ultra`
-  // for display. currentEffort also feeds the rerun send — sending `ultra`
-  // re-decomposes to max+workflow, correctly preserving orchestration on resume.
   const currentEffort = effectiveAgent === 'gemini'
     ? ''
     : (selectedEffort
       || (sessionOwnsAgent ? foldUltraEffort(effectiveAgent, session.thinkingEffort, session.workflowEnabled) : '')
       || foldUltraEffort(effectiveAgent, currentAgent?.selectedEffort, currentAgent?.workflowEnabled)
       || '');
-  // Surface the resolved selection to the parent so the rerun action sends with
-  // the model/effort the user currently sees, not the stale session runtime.
   useEffect(() => {
     onSelectionChange?.({ model: currentModel || null, effort: currentEffort || null });
   }, [currentModel, currentEffort, onSelectionChange]);
@@ -646,11 +519,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
 
   const applyCascade = useCallback(async (agent: string, model: string, effort: string | null) => {
     const nextEffort = agent === 'gemini' ? '' : (effort || '');
-    // Profile binding is intentionally global (one binding per agent across
-    // all sessions). When the user picks a Profile row in this cascade we
-    // POST it through; native picks clear the binding. Per-session model and
-    // effort overrides still flow only into local state and never touch
-    // /api/runtime-agent, so other sessions keep their own pick.
     if (pendingProfileSelection !== undefined) {
       try {
         await fetch(`/api/models/agents/${agent}/active`, {
@@ -660,7 +528,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
         });
         void refreshModelLayer();
         void refreshAgentStatus();
-      } catch { /* fall through — the per-session model id still applies */ }
+      } catch {  }
     }
     setSelectedAgent(agent);
     setSelectedModel(model);
@@ -678,16 +546,12 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     } else { resetCascade(); setCascadeStep('closed'); }
   };
 
-  // Build summary label for the cascade trigger
   const displayAgent = pendingAgent || effectiveAgent;
   const displayMeta = getAgentMeta(displayAgent);
   const displayModel = pendingModel ?? currentModel;
   const displayEffort = pendingEffort ?? currentEffort;
   const shortModel = displayModel ? shortenModel(displayModel) : '';
 
-  // BYOK binding for the agent currently shown in the chip. When present we
-  // splice in a provider chip (logo + user-set name) between the agent label
-  // and the model id so the chip surfaces both pieces of identity.
   const displayProfile = (() => {
     const id = activeProfiles[displayAgent];
     return id ? profiles.find(p => p.id === id) ?? null : null;
@@ -696,17 +560,12 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     ? providers.find(p => p.id === displayProfile.providerId) ?? null
     : null;
   const displayProviderBrand = displayProvider ? brandIdForProvider(displayProvider) : null;
-  // When a Profile is bound, prefer the user-set Profile name over the raw
-  // model id. Matches the cascade row label. Fall back to the shortened model
-  // id when there's no Profile (native auth) or when the user named the
-  // Profile identical to its modelId.
   const displayModelLabel = displayProfile
     ? (displayProfile.name.trim().toLowerCase() !== displayProfile.modelId.trim().toLowerCase()
         ? displayProfile.name
         : shortenModel(displayProfile.modelId))
     : shortModel;
 
-  // Plain-text fallback used as the button tooltip when the user hovers.
   const cascadeLabel = [
     displayMeta.shortLabel,
     displayProvider ? displayProvider.name : null,
@@ -716,12 +575,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
 
   return (
     <div className="shrink-0" ref={composerRef}>
-      {/* Floating centered input area */}
       <div className="max-w-[680px] mx-auto px-5 pb-4 pt-2">
-        {/* Task control bar — stacked rows when streaming + queued coexist */}
         {showTaskBar && (
           <div className="mb-2 space-y-1.5">
-            {/* Row 1: Active stream — always visible when streaming */}
             {isActiveStream && (
               <div className="flex items-center gap-2.5 rounded-lg border border-primary/20 bg-primary/[0.04] px-3.5 py-1.5 transition-colors">
                 <Spinner className="h-3 w-3 text-primary shrink-0" />
@@ -739,22 +595,12 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                 </button>
               </div>
             )}
-            {/* Rows 2..N: one row per queued task — each carries its own steer/recall */}
             {effectiveQueuedIds.map((taskId, idx) => {
               const isLatest = idx === effectiveQueuedIds.length - 1;
-              // Steering interrupts the running task so this one jumps ahead.
-              // The abort it triggers is async (the agent CLI takes time to
-              // die), so the snapshot keeps this task `queued` for the whole
-              // gap. Surface a distinct "插队中…" state — otherwise the row reads
-              // an unchanged "排队中" and the action looks like it did nothing.
               const isSteering = steeringIds.has(taskId);
               const positionLabel = isSteering
                 ? t('hub.steering')
                 : effectiveQueuedIds.length > 1 ? `${t('hub.queued')} #${idx + 1}` : t('hub.queued');
-              // Per-task prompt + images come from pendingQueuedSends (client-
-              // only blob URLs) with the server snapshot as the text fallback.
-              // Server queue state doesn't carry image data, so an older
-              // queued row that survives a refresh just shows the text.
               const optimistic = pendingQueuedSends?.find(p => p.taskId === taskId)
                 || (isLatest ? pendingQueuedSends?.find(p => !p.taskId) : undefined);
               const taskPrompt = queuedTasks?.find(qt => qt.taskId === taskId)?.prompt
@@ -793,9 +639,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                       <span className="text-[11px] text-fg-5/60 truncate">{taskPrompt}</span>
                     )}
                   </div>
-                  {/* Once steered, the action is committed (the running task is
-                      already interrupted) — hide the controls and let the row
-                      surface the "插队中…" spinner until it graduates to running. */}
                   {!isSteering && (
                     <div className="flex items-center gap-1 shrink-0">
                       <button
@@ -873,7 +716,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
             </div>
           )}
 
-          {/* Skill autocomplete popup */}
           {skillMenuOpen && filteredSkills.length > 0 && (
             <div
               ref={skillMenuRef}
@@ -906,7 +748,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
             </div>
           )}
 
-          {/* Textarea */}
           <textarea
             ref={inputRef}
             value={input}
@@ -921,7 +762,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
             style={{ maxHeight: 200, overflow: input.split('\n').length > 6 ? 'auto' : 'hidden' }}
           />
 
-          {/* Bottom bar: cascade selector + send */}
           <div className="flex items-center gap-1.5 px-2.5 pb-2 pt-1">
             <button
               type="button"
@@ -935,7 +775,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
               </svg>
             </button>
 
-            {/* Cascade config trigger */}
             <button
               ref={triggerRef}
               onClick={toggleCascade}
@@ -983,22 +822,17 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
               </svg>
             </button>
 
-            {/* Cascade dropdown — rendered via portal to escape overflow:hidden */}
             {cascadeStep !== 'closed' && cascadePos && createPortal(
               <div
                 id="cascade-portal"
                 className="fixed z-[200] w-[300px] rounded-xl border border-edge/40 bg-[var(--th-dropdown)] backdrop-blur-xl shadow-lg overflow-hidden animate-in"
                 style={{ left: cascadePos.left, bottom: cascadePos.bottom }}
               >
-                {/* Step header */}
                 <div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5 border-b border-edge/20">
                   {cascadeStep !== 'agent' && (
                     <button
                       onClick={() => {
                         if (cascadeStep === 'effort') {
-                          // For agents that don't support model switching the
-                          // model step was skipped on the way in, so back from
-                          // effort goes straight to agent.
                           const supportsModelSwitch = cascadeAgent?.capabilities?.modelSwitch !== false;
                           setCascadeStep(supportsModelSwitch ? 'model' : 'agent');
                         } else {
@@ -1032,13 +866,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                   </div>
                 </div>
 
-                {/* Step content */}
                 <div className="max-h-[200px] overflow-y-auto py-1">
                   {cascadeStep === 'agent' && agents.filter(a => a.installed).map(a => {
                     const am = getAgentMeta(a.agent);
-                    // Per-agent quota at the moment of choosing: the worst
-                    // rate-limit window, so "claude is full, who has room?"
-                    // is answerable right inside the picker.
                     const rowUsage = worstUsageWindow(a.usage);
                     const rowTone = rowUsage ? usageWindowTone(rowUsage) : 'ok';
                     return (
@@ -1046,9 +876,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                         setPendingAgent(a.agent);
                         setPendingModel(a.selectedModel || '');
                         setPendingEffort(a.selectedEffort || '');
-                        // Agents that lock the model at profile-binding time skip the
-                        // model step. We jump straight to effort (or close if the
-                        // agent has no effort knob either).
                         const supportsModelSwitch = a.capabilities?.modelSwitch !== false;
                         if (!supportsModelSwitch) {
                           const efforts = EFFORT_OPTIONS[a.agent as keyof typeof EFFORT_OPTIONS] || [];
@@ -1074,17 +901,8 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                   {cascadeStep === 'model' && (
                     <>
                       {models.map((m, idx) => {
-                        // Group header: insert a small label row before the first
-                        // native row and before the first Profile row so the user
-                        // can see at a glance which catalogue they're picking from.
                         const showNativeHeader = idx === 0 && m.kind === 'native';
                         const showProfileHeader = idx === firstProfileIdx && m.kind === 'profile';
-                        // "Current" highlighting:
-                        //  - Profile rows light up when the row's profileId is the
-                        //    one the agent is currently bound to (or staged this turn).
-                        //  - Native rows light up when no Profile is bound (or the
-                        //    user just staged "switch to native") AND the model id
-                        //    matches.
                         const stagedProfile = pendingProfileSelection !== undefined
                           ? pendingProfileSelection
                           : activeProfileIdForAgent;
@@ -1141,7 +959,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
 
             <div className="flex-1" />
 
-            {/* Send button */}
             <button
               onClick={handleSend}
               disabled={!canSend}
@@ -1252,9 +1069,6 @@ function ComposerImageLightbox({ source, onClose, t }: {
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   Cascade item
-   ═══════════════════════════════════════════════════════════════ */
 export function CascadeItem({ selected, onClick, children }: {
   selected?: boolean; onClick: () => void; children: React.ReactNode;
 }) {

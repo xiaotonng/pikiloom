@@ -1,20 +1,3 @@
-/**
- * pikichannel/host.ts — the host SDK (transport- and agent-agnostic).
- *
- * `PikichannelHost` speaks the L2 protocol over any {@link ChannelConnection},
- * driven by a {@link SessionSource} the embedder supplies. The host knows
- * nothing about pikiloom: porting pikichannel to another agent runtime is a
- * matter of implementing SessionSource (see adapter-pikiloom.ts).
- *
- * It owns three cross-cutting concerns the protocol requires:
- *   - Auth: a peer must pass `authenticate(token, remote)` (loopback exempt by
- *     policy) before ANY session data or control is processed.
- *   - Delta: it holds the latest full snapshot per session and emits a `full`
- *     patch on (re)subscribe / resync, deltas thereafter — O(n) per stream.
- *   - Fan-out: one delta per update is broadcast to every caught-up subscriber;
- *     a fresh subscriber gets a `full` so it shares the same baseline.
- */
-
 import {
   PROTOCOL_VERSION,
   diffSnapshot,
@@ -47,20 +30,13 @@ export interface CommandResult {
   error?: string;
 }
 
-/** Validates a peer. `remote` is the peer's address label (for loopback policy). */
 export type Authenticator = (token: string | undefined, remote: string | undefined) => boolean;
 
-/**
- * The embedder-supplied bridge between pikichannel and an agent runtime.
- * Everything the protocol can express maps to one method here.
- */
 export interface SessionSource {
   hostInfo(): { name: string; version: string; capabilities: HostCapability[]; authRequired?: boolean };
   listSessions(): SessionMeta[];
   getSnapshot(sessionKey: string): { snapshot: UniversalSnapshot; seq: number } | null;
-  /** Subscribe to per-session snapshot updates (full snapshots). Returns an unsubscribe fn. */
   onUpdate(cb: (sessionKey: string, snapshot: UniversalSnapshot, seq: number) => void): () => void;
-  /** Subscribe to session-list changes. Returns an unsubscribe fn. */
   onSessionsChanged(cb: (sessions: SessionMeta[]) => void): () => void;
 
   prompt(cmd: PromptCommand): Promise<CommandResult>;
@@ -68,11 +44,6 @@ export interface SessionSource {
   steer(taskId: string): Promise<CommandResult>;
   recall(taskId: string): CommandResult;
   interact(promptId: string, action: 'select' | 'text' | 'skip' | 'cancel', value?: string, requestFreeform?: boolean): CommandResult;
-  /**
-   * Forward a control-plane HTTP request to the host's management router (the
-   * `tunnel` capability). Optional — a source without it makes the host reply
-   * 501. The host has already gated auth and restricted the path to `/api/*`.
-   */
   handleRequest?(req: TunnelRequest): Promise<TunnelResponse>;
 }
 
@@ -95,7 +66,6 @@ const SUBSCRIBE_ALL = '*';
 
 interface Peer {
   conn: ChannelConnection;
-  /** Sessions this peer is subscribed to. The literal '*' means "every session". */
   subs: Set<string>;
   authed: boolean;
 }
@@ -104,7 +74,6 @@ export class PikichannelHost {
   private peers = new Set<Peer>();
   private unsubscribers: Array<() => void> = [];
   private started = false;
-  /** Latest full snapshot per session — the delta baseline shared by all peers. */
   private lastFull = new Map<string, UniversalSnapshot>();
   private lastSeq = new Map<string, number>();
 
@@ -114,7 +83,6 @@ export class PikichannelHost {
     private readonly log: (msg: string) => void = () => {},
   ) {}
 
-  /** Wire host-level subscriptions to the source (once). */
   start(): void {
     if (this.started) return;
     this.started = true;
@@ -127,15 +95,14 @@ export class PikichannelHost {
   }
 
   stop(): void {
-    for (const u of this.unsubscribers.splice(0)) { try { u(); } catch { /* ignore */ } }
-    for (const peer of this.peers) { try { peer.conn.close(); } catch { /* ignore */ } }
+    for (const u of this.unsubscribers.splice(0)) { try { u(); } catch {  } }
+    for (const peer of this.peers) { try { peer.conn.close(); } catch {  } }
     this.peers.clear();
     this.lastFull.clear();
     this.lastSeq.clear();
     this.started = false;
   }
 
-  /** Adopt a freshly-established connection from any transport binding. */
   handleConnection(conn: ChannelConnection): void {
     if (!this.started) this.start();
     const peer: Peer = { conn, subs: new Set(), authed: false };
@@ -155,8 +122,6 @@ export class PikichannelHost {
     });
   }
 
-  // -- delta baseline ------------------------------------------------------
-
   private onSourceUpdate(sessionKey: string, full: UniversalSnapshot, seq: number): void {
     const prev = this.lastFull.get(sessionKey);
     const patch: SnapshotPatch = prev ? diffSnapshot(prev, full) : { full };
@@ -168,7 +133,6 @@ export class PikichannelHost {
     }
   }
 
-  /** Send the current full snapshot for a session to one peer (subscribe / resync). */
   private sendFull(peer: Peer, sessionKey: string): void {
     let full = this.lastFull.get(sessionKey);
     let seq = this.lastSeq.get(sessionKey);
@@ -182,10 +146,7 @@ export class PikichannelHost {
     this.send(peer, { type: 'session', sessionKey, seq: seq || 0, patch: { full } });
   }
 
-  // -- inbound -------------------------------------------------------------
-
   private async handleClientMessage(peer: Peer, msg: ClientMessage): Promise<void> {
-    // Ping is always allowed (RTT / keepalive). Everything else is gated on auth.
     if (msg.type === 'ping') { this.send(peer, { type: 'pong', t: msg.t }); return; }
 
     if (!peer.authed) {
@@ -216,7 +177,7 @@ export class PikichannelHost {
 
     switch (msg.type) {
       case 'hello':
-        return; // already authenticated; ignore duplicate hello
+        return;
       case 'subscribe': {
         peer.subs.add(msg.sessionKey);
         if (msg.sessionKey === SUBSCRIBE_ALL) {
@@ -271,9 +232,6 @@ export class PikichannelHost {
       }
       case 'request': {
         const id = msg.id;
-        // Only the management API is tunnelable — never static, the SPA shell,
-        // or loopback-gated endpoints (e.g. /pikichannel/pair would otherwise
-        // leak the token to a remote peer via the host's own fetch).
         if (!msg.path || !msg.path.startsWith('/api/')) {
           this.send(peer, { type: 'response', id, status: 403, error: 'only /api/* is tunnelable' });
           return;
@@ -293,19 +251,15 @@ export class PikichannelHost {
     }
   }
 
-  // -- outbound ------------------------------------------------------------
-
   private broadcast(frame: ServerMessage, authedOnly = false): void {
     for (const peer of this.peers) if (!authedOnly || peer.authed) this.send(peer, frame);
   }
 
   private send(peer: Peer, frame: ServerMessage): void {
     if (!peer.conn.isOpen()) return;
-    try { peer.conn.send(encodeServer(frame)); } catch { /* drop on closed pipe */ }
+    try { peer.conn.send(encodeServer(frame)); } catch {  }
   }
 
-  /** Number of live peers (for status / metrics). */
   get peerCount(): number { return this.peers.size; }
-  /** Number of authenticated peers. */
   get authedPeerCount(): number { let n = 0; for (const p of this.peers) if (p.authed) n++; return n; }
 }

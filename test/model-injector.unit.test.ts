@@ -9,13 +9,6 @@ import {
 import { sealInline } from '../src/core/secrets/index.js';
 import { shutdownResponsesBridge } from '../src/model/responses-bridge.js';
 
-// resolveAgentInjection is the single point where a bound Profile becomes the
-// env / model overrides a spawned agent receives. The Claude BYOK path is the
-// subtle one: Claude Code speaks the Anthropic Messages API and appends
-// `/v1/messages` to ANTHROPIC_BASE_URL, so the base has to be the provider's
-// *Anthropic-protocol* root — which for DeepSeek/Kimi/Zhipu is a dedicated
-// namespace, NOT the OpenAI base we store for validation.
-
 describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
   let tmpDir: string;
   let cache: Map<string, any>;
@@ -24,9 +17,6 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-injector-'));
     process.env.PIKILOOM_CONFIG = path.join(tmpDir, 'setting.json');
     fs.writeFileSync(process.env.PIKILOOM_CONFIG, JSON.stringify({ models: {} }));
-    // The provider-models cache is pinned to globalThis; pre-seed it per
-    // provider below so resolveAgentInjection's sync peek hits and never kicks
-    // off a real network /models fetch during the test.
     cache = (globalThis as any)[Symbol.for('pikiloom.providerModelsCache')]
       || new Map();
   });
@@ -40,7 +30,6 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
       kind, name: 'test', baseURL,
       credentialRef: { source: 'inline', sealed: sealInline('sk-test-key') },
     });
-    // Seed the model cache so the injection runs offline.
     cache.set(provider.id, {
       models: [modelId],
       modelInfos: [{ id: modelId, contextLength: 131072 }],
@@ -58,7 +47,6 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
     expect(inj.env.ANTHROPIC_BASE_URL).toBe('https://api.deepseek.com/anthropic');
     expect(inj.env.ANTHROPIC_API_KEY).toBe('sk-test-key');
     expect(inj.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-test-key');
-    // The exact model id the user picked must reach Claude verbatim.
     expect(inj.modelOverride).toBe('deepseek-v4-flash');
     expect(inj.contextWindow).toBe(131072);
   });
@@ -93,11 +81,6 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
     expect(inj.env.ANTHROPIC_BASE_URL).toBe('https://openrouter.ai/api');
   });
 
-  // Claude Code >= 2.1.36 sends a per-request x-anthropic-billing-header whose
-  // cch= token churns every turn; on third-party proxies that key their cache
-  // on request headers this defeats prefix caching. We suppress it only on
-  // proxy routes (claude env-bool: 0/false/no/off → header omitted), leaving
-  // first-party Anthropic direct routes exactly as shipped.
   it('suppresses the churning attribution header on third-party proxy routes', async () => {
     const ds = await bindClaude('openai-compatible', 'https://api.deepseek.com', 'deepseek-v4-flash');
     expect(ds.env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0');
@@ -113,11 +96,6 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
   });
 });
 
-// Codex 0.140+ speaks ONLY the Responses API (`wire_api = "chat"` is rejected
-// at config load). So the codex injector routes per provider capability:
-//   chat-only (DeepSeek, Kimi, …) → local Responses↔Chat bridge
-//   responses-native (OpenRouter)  → straight at the provider
-//   localhost (Ollama / LM Studio) → codex's built-in `oss` provider (no key)
 describe('resolveAgentInjection — Codex routing (Responses-only)', () => {
   let tmpDir: string;
   let cache: Map<string, any>;
@@ -149,14 +127,11 @@ describe('resolveAgentInjection — Codex routing (Responses-only)', () => {
   it('routes a chat-only provider (DeepSeek) through the local bridge', async () => {
     const inj = await bindCodex('openai-compatible', 'DeepSeek', 'https://api.deepseek.com', 'deepseek-v4-flash');
     const ovr = overrides(inj);
-    // Bound provider is `deepseek`, pointed at the localhost bridge…
     expect(ovr).toContain('model_provider="deepseek"');
     const baseLine = ovr.find(o => o.startsWith('model_providers.deepseek.base_url='));
     const m = baseLine?.match(/^model_providers\.deepseek\.base_url="(http:\/\/127\.0\.0\.1:\d+\/u\/([^"]+))"$/);
     expect(m, `base_url should point at the bridge, got: ${baseLine}`).toBeTruthy();
-    // …with the upstream base URL encoded (base64url) in the path so one server routes all upstreams.
     expect(Buffer.from(m![2], 'base64url').toString('utf8')).toBe('https://api.deepseek.com');
-    // The key is forwarded via env_key; NO wire_api override (codex rejects "chat", defaults to responses).
     expect(inj.env.DEEPSEEK_API_KEY).toBe('sk-test-key');
     expect(ovr.some(o => o.includes('wire_api'))).toBe(false);
     expect(inj.modelOverride).toBe('deepseek-v4-flash');
@@ -168,14 +143,14 @@ describe('resolveAgentInjection — Codex routing (Responses-only)', () => {
     expect(ovr).toContain('model_provider="openrouter"');
     expect(ovr).toContain('model_providers.openrouter.base_url="https://openrouter.ai/api/v1"');
     expect(inj.env.OPENROUTER_API_KEY).toBe('sk-test-key');
-    expect(ovr.some(o => o.includes('127.0.0.1'))).toBe(false); // not bridged
+    expect(ovr.some(o => o.includes('127.0.0.1'))).toBe(false);
     expect(ovr.some(o => o.includes('wire_api'))).toBe(false);
   });
 
   it('selects codex built-in `ollama` provider for a localhost endpoint (no custom provider, no key)', async () => {
     const inj = await bindCodex('openai-compatible', 'Ollama', 'http://127.0.0.1:11434/v1', 'qwen3:4b');
     expect(overrides(inj)).toEqual(['model_provider="ollama"']);
-    expect(inj.env).toEqual({}); // local needs no auth
+    expect(inj.env).toEqual({});
     expect(inj.modelOverride).toBe('qwen3:4b');
   });
 

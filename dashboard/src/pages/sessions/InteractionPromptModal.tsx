@@ -1,17 +1,3 @@
-/**
- * InteractionPromptModal — dashboard popup for `im_ask_user` / Codex user-input.
- *
- * Mirrors the IM card flow on Telegram + Feishu: shows the active question with
- * either tap-able option chips, a freeform text input, or both. Multi-question
- * prompts advance locally (tracked via `currentIndex`) and the server closes the
- * popup automatically once every question is answered (the snapshot's
- * `interactions` array empties out via SSE, which un-renders this component).
- *
- * Action plumbing: select / text / skip / cancel all hit `/api/interaction/...`
- * endpoints exposed by the dashboard backend; both Claude (via the bridge MCP
- * tool) and Codex (via its native `requestUserInput`) reach this same UI.
- */
-
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../api';
 import { Button, Input, Modal, ModalHeader, Spinner } from '../../components/ui';
@@ -28,9 +14,6 @@ export function InteractionPromptModal({ snapshot }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset whenever the prompt identity changes — back-to-back prompts on the
-  // same session should each start at the server's reported current question
-  // (handles refresh / reconnect resume correctly).
   useEffect(() => {
     setCurrentIndex(snapshot.currentIndex ?? 0);
     setFreeformText('');
@@ -49,9 +32,6 @@ export function InteractionPromptModal({ snapshot }: Props) {
       setCurrentIndex(idx => idx + 1);
       setFreeformText('');
     }
-    // When the server reports `completed`, it also clears the prompt from the
-    // session snapshot — the parent un-renders this modal via the next SSE
-    // event, so we don't need to dismiss explicitly here.
   };
 
   const handleSelectOption = async (value: string) => {
@@ -110,11 +90,8 @@ export function InteractionPromptModal({ snapshot }: Props) {
     try {
       await api.interactionCancel(snapshot.promptId);
     } catch {}
-    // The server emits `interaction-resolved`; the parent will un-render us.
   };
 
-  // We must call hooks at the top level, so always run the modal but render an
-  // empty body if `question` is somehow missing (shouldn't happen in practice).
   const description = useMemo(() => {
     const parts: string[] = [];
     if (snapshot.hint) parts.push(snapshot.hint);

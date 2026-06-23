@@ -1,13 +1,3 @@
-/**
- * Stream preview parsing helpers for live message updates.
- *
- * Used by IM channels (Telegram / Feishu / WeChat). The dashboard reads the
- * raw `StreamSnapshot.activity` string directly and renders independently —
- * none of the compaction in this file flows to it. Keep changes that improve
- * IM legibility free to touch this surface; if a change would also alter what
- * the dashboard ultimately shows, do it in the dashboard layer instead.
- */
-
 import type { StreamPreviewMeta, StreamPreviewPlan } from '../agent/index.js';
 
 export interface ActivitySummary {
@@ -17,15 +7,6 @@ export interface ActivitySummary {
   activeCommands: number;
 }
 
-/**
- * Shrink absolute paths that bloat IM cards on small screens. Any absolute
- * path with 4+ segments collapses to `…/<last-two-segments>` so directory
- * context is kept while the leading `/Users/…/long/project/root/` noise is
- * dropped. Length-based gating made the output inconsistent — borderline
- * paths (47 chars) sat next to compacted ones (52 chars), making the activity
- * list look broken. Relative paths and short paths (<4 segments, e.g.
- * `~/foo`, `/tmp/x.log`) are passed through unchanged.
- */
 function compactActivityPath(token: string): string {
   if (!token.includes('/')) return token;
   const segments = token.split('/').filter(Boolean);
@@ -35,9 +16,6 @@ function compactActivityPath(token: string): string {
 }
 
 function compactPathsInActivityLine(line: string): string {
-  // Conservative: only target obviously absolute paths starting with `/` or
-  // `~/`. Inline file:line references (`foo/bar.ts:42`) keep their structure
-  // since the prefix is short anyway.
   return line.replace(/(^|\s)([~/][^\s]+)/g, (_match, lead: string, raw: string) => {
     const trailingPunct = raw.match(/[)\],.;!?]+$/)?.[0] ?? '';
     const path = trailingPunct ? raw.slice(0, -trailingPunct.length) : raw;
@@ -46,11 +24,6 @@ function compactPathsInActivityLine(line: string): string {
 }
 
 const TOOL_DONE_RE = /^(.+?)\s+(done|failed)$/;
-/** "X -> Y" pattern produced by `summarizeClaudeToolResult` for tools whose
- *  result has body text (im_ask_user, ToolSearch, MCP tools, …). The Y half
- *  is the tool's response — capturing it lets us collapse the pre-event
- *  (`Ask user: q`) and the post-event (`Ask user: q -> A: …`) into a single
- *  line in the narrative instead of leaving both sitting around. */
 const TOOL_ARROW_RE = /^(.+?)\s*->\s*(.+)$/;
 
 const INJECTED_PROMPT_MARKERS = [
@@ -114,10 +87,6 @@ export function parseActivitySummary(activity: string): ActivitySummary {
   let activeCommands = 0;
   let completedCommands = 0;
   const activeClaudeShells = new Map<string, number>();
-  // Track narrative indices keyed by their normalized start text so a later
-  // "X done" / "X failed" line collapses the prior "X" entry instead of
-  // appending. Avoids the double-line spam in IM cards where each tool call
-  // shows both its in-progress and completed line.
   const pendingNarrative = new Map<string, number[]>();
 
   const pushPending = (key: string, index: number) => {
@@ -177,10 +146,6 @@ export function parseActivitySummary(activity: string): ActivitySummary {
       continue;
     }
 
-    // Pair "X" → "X done"/"X failed": rewrite the prior in-progress entry in
-    // place rather than appending a second line. Falls back to a plain append
-    // when no matching start exists (e.g. the start line was trimmed off by a
-    // history window earlier in the run).
     const doneMatch = line.match(TOOL_DONE_RE);
     if (doneMatch) {
       const baseKey = doneMatch[1].trim();
@@ -194,11 +159,6 @@ export function parseActivitySummary(activity: string): ActivitySummary {
       continue;
     }
 
-    // Pair "X" → "X -> Y" (im_ask_user, ToolSearch, MCP tools, … — any tool
-    // whose summarizeClaudeToolResult fell into the arrow branch). Without
-    // this, the IM card shows the question and the answered form side by
-    // side. We replace the pending entry with the full arrow form so the
-    // narrative carries the answer in a single line.
     const arrowMatch = line.match(TOOL_ARROW_RE);
     if (arrowMatch) {
       const baseKey = arrowMatch[1].trim();
@@ -220,14 +180,6 @@ export function parseActivitySummary(activity: string): ActivitySummary {
   return { narrative: collapseConsecutiveDuplicates(narrative), failedCommands, completedCommands, activeCommands };
 }
 
-/**
- * Walk the narrative and collapse runs of identical lines into `X ×N`. The
- * input narrative often contains repeats when the model calls the same tool
- * multiple times in a row (two consecutive `Edit README.md`, three `Read X`,
- * …) — listing them N times wastes IM card real estate without adding
- * information. Non-adjacent duplicates are preserved to keep the temporal
- * order intact.
- */
 function collapseConsecutiveDuplicates(narrative: string[]): string[] {
   const out: string[] = [];
   let runStart = -1;
@@ -302,15 +254,9 @@ export function renderPlanForPreview(plan: StreamPreviewPlan | null): string {
   const total = plan.steps.length;
   const completed = plan.steps.filter(step => step.status === 'completed').length;
   const lines = [`Plan ${completed}/${total}`];
-  // Show the most recent / currently-active slice of the plan. Live viewers
-  // care about the in-progress + upcoming steps; the dozen already-completed
-  // ones at the top of the list are just visual ballast (the `completed/total`
-  // header already conveys the overall progress).
   const WINDOW = 4;
   let startIdx = 0;
   if (total > WINDOW) {
-    // Center the window on the in-progress step when one exists; otherwise
-    // anchor to the tail so the next pending steps are visible.
     const inProgressIdx = plan.steps.findIndex(step => step.status === 'inProgress');
     const anchor = inProgressIdx >= 0 ? inProgressIdx : total - 1;
     startIdx = Math.max(0, Math.min(total - WINDOW, anchor - Math.floor(WINDOW / 2)));

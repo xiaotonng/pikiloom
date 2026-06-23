@@ -1,19 +1,3 @@
-/**
- * Pikiloom "Model" layer — barrel export.
- *
- * The Model layer is one of the four physical layers in pikiloom's
- * architecture (Terminal / Agent / **Model** / Tool). It centralises:
- *   - Provider/Profile data model (types.ts)
- *   - Read-only catalog of providers/models from models.dev (catalog.ts)
- *   - Persistence (store.ts) over ~/.pikiloom/setting.json
- *   - Feishu-style credential validation (validation.ts)
- *   - Per-agent credential injection at spawn time (injector.ts)
- *
- * Adding a new agent driver only needs to:
- *   1. Define a new AgentInjector entry in injector.ts
- *   2. Read `resolveAgentInjection(agentId)` before spawning
- */
-
 export type {
   ProviderKind, ProviderConfig, ProviderValidationStatus,
   ModelProfileConfig, ModelLayerConfig,

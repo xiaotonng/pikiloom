@@ -1,7 +1,3 @@
-/**
- * Barrel entry for the CLI extension module.
- */
-
 export {
   getRecommendedClis, getRecommendedCli,
   type RecommendedCli, type CliCategory, type CliAuthType,

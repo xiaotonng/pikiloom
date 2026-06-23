@@ -1,23 +1,3 @@
-/**
- * Dashboard API: Model layer (Providers, Profiles, BYOK bindings).
- *
- * Endpoints:
- *   GET    /api/models/catalog                          → models.dev metadata
- *   GET    /api/models/providers                        → list configured providers
- *   POST   /api/models/providers                        → add new provider (paste key / use env)
- *   PATCH  /api/models/providers/:id                    → update provider
- *   DELETE /api/models/providers/:id                    → remove provider + bound profiles
- *   POST   /api/models/providers/:id/validate           → Feishu-style validation
- *
- *   GET    /api/models/profiles                         → list profiles
- *   POST   /api/models/profiles                         → add profile
- *   PATCH  /api/models/profiles/:id                     → update profile
- *   DELETE /api/models/profiles/:id                     → remove profile
- *
- *   GET    /api/models/agents                           → list active bindings
- *   POST   /api/models/agents/:agent/active             → bind/unbind a Profile
- */
-
 import { Hono } from 'hono';
 import {
   getModelsDevCatalog, searchCatalogProviders,
@@ -35,10 +15,6 @@ import { allDriverIds } from '../../agent/index.js';
 
 const router = new Hono();
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function publicProvider(p: ProviderConfig): any {
   return {
     id: p.id,
@@ -54,10 +30,6 @@ function publicProvider(p: ProviderConfig): any {
 }
 
 const VALID_KINDS: ProviderKind[] = ['anthropic', 'openai', 'openai-compatible', 'google'];
-
-// ---------------------------------------------------------------------------
-// Catalog (read-only models.dev mirror)
-// ---------------------------------------------------------------------------
 
 router.get('/api/models/catalog', async c => {
   const q = c.req.query('q') || '';
@@ -113,10 +85,6 @@ router.get('/api/models/catalog/:providerId', async c => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Providers
-// ---------------------------------------------------------------------------
-
 router.get('/api/models/providers', c => {
   return c.json({ ok: true, providers: listProviders().map(publicProvider) });
 });
@@ -170,16 +138,6 @@ router.delete('/api/models/providers/:id', async c => {
   return c.json({ ok: true });
 });
 
-/**
- * GET /api/models/providers/:id/models — model id list for the configured
- * provider, served from a 30-minute in-memory TTL cache. The first hit (or any
- * hit after a config edit) re-fetches from the provider's /models endpoint.
- *
- * Used by:
- *   - Dashboard: per-agent unified config modal model picker
- *   - IM /models command: when an agent is bound to this provider
- *   - Agent status response: when an agent is bound to this provider
- */
 router.get('/api/models/providers/:id/models', async c => {
   const id = c.req.param('id');
   const refresh = c.req.query('refresh') === '1';
@@ -216,10 +174,6 @@ router.post('/api/models/providers/:id/validate', async c => {
     return c.json({ ok: true, validation: status, models: [] });
   }
 });
-
-// ---------------------------------------------------------------------------
-// Profiles
-// ---------------------------------------------------------------------------
 
 router.get('/api/models/profiles', c => {
   return c.json({ ok: true, profiles: listProfiles() });
@@ -274,10 +228,6 @@ router.delete('/api/models/profiles/:id', c => {
   return c.json({ ok: true });
 });
 
-// ---------------------------------------------------------------------------
-// Agent bindings
-// ---------------------------------------------------------------------------
-
 router.get('/api/models/agents', c => {
   const agents = allDriverIds();
   return c.json({
@@ -298,8 +248,6 @@ router.post('/api/models/agents/:agent/active', async c => {
   if (profileId === undefined) return c.json({ ok: false, error: 'profileId (string|null) is required' }, 400);
   try {
     setActiveProfile(agent, profileId);
-    // Warm a local backend the instant it's selected, so the user's first turn
-    // skips the model cold-load. Fire-and-forget; never blocks the bind.
     if (profileId) {
       const profile = getProfile(profileId);
       const provider = profile ? getProvider(profile.providerId) : null;

@@ -4,7 +4,6 @@ import InView from '@/components/InView';
 import SafeWebGL from '@/components/SafeWebGL';
 import { useIsDesktop } from '@/lib/use-device';
 
-// three.js is heavy — load the ball pit's chunk only when this section nears view.
 const Ballpit = lazy(() => import('@/components/Ballpit'));
 
 const POINTS = [

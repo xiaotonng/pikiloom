@@ -7,7 +7,6 @@ import {
 
 describe('dashboard live session state helpers', () => {
   it('normalizes snapshots, maps phases to UI states, and handles incomplete done', () => {
-    // normalizes promoted stream snapshots onto the native session key
     const live = normalizeLiveSessionState('codex:pending_123', {
       phase: 'streaming',
       sessionId: 'native-456',
@@ -23,7 +22,6 @@ describe('dashboard live session state helpers', () => {
       error: null,
     });
 
-    // maps queued and streaming snapshots to running UI state
     const base1 = {
       sessionId: 'sess-1',
       agent: 'codex',
@@ -38,7 +36,6 @@ describe('dashboard live session state helpers', () => {
     expect(sessionDisplayState(applyLiveSessionState(base1, streaming))).toBe('running');
     expect(applyLiveSessionState(base1, streaming).runDetail).toBeNull();
 
-    // maps incomplete done snapshots to incomplete instead of completed
     const base2 = {
       sessionId: 'sess-2',
       agent: 'codex',
@@ -59,7 +56,6 @@ describe('dashboard live session state helpers', () => {
   });
 
   it('lets fresh server running state supersede stale done snapshots, and shows waiting for parked sessions', () => {
-    // lets a fresh server "running" state supersede a stale "done" snapshot
     const base = {
       sessionId: 'sess-resume',
       agent: 'claude',
@@ -92,7 +88,6 @@ describe('dashboard live session state helpers', () => {
     });
     expect(sessionDisplayState(applyLiveSessionState(flashBase, freshDone))).toBe('completed');
 
-    // shows "waiting" when a non-running session parked background work
     const parked = {
       sessionId: 'sess-3',
       agent: 'claude',

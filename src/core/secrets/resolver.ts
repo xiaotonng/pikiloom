@@ -1,11 +1,3 @@
-/**
- * Resolve a CredentialRef to a plaintext secret.
- *
- * Resolved values are returned to the caller and immediately consumed (e.g.
- * injected into a child process env at spawn time). Pikiloom never persists
- * the resolved plaintext in long-lived state.
- */
-
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { CredentialRef } from './ref.js';
@@ -15,9 +7,7 @@ import { unsealInline } from './inline-seal.js';
 const execFileP = promisify(execFile);
 
 export interface ResolveOptions {
-  /** Optional override for env lookups (defaults to process.env). */
   env?: NodeJS.ProcessEnv;
-  /** Hard timeout for `command` source (ms). Default 5000. */
   commandTimeoutMs?: number;
 }
 
@@ -60,7 +50,6 @@ export async function resolveCredential(ref: CredentialRef, opts: ResolveOptions
   }
 }
 
-/** Resolve to null on error rather than throwing — useful for status checks. */
 export async function tryResolveCredential(ref: CredentialRef, opts: ResolveOptions = {}): Promise<string | null> {
   try {
     return await resolveCredential(ref, opts);

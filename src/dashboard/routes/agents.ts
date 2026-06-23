@@ -1,7 +1,3 @@
-/**
- * Dashboard API routes: agent detection, model listing, installation.
- */
-
 import { Hono } from 'hono';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,18 +17,10 @@ import { DASHBOARD_TIMEOUTS } from '../../core/constants.js';
 import { withTimeoutFallback } from '../../core/utils.js';
 import { runtime } from '../runtime.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const AGENT_STATUS_MODELS_TIMEOUT_MS = DASHBOARD_TIMEOUTS.agentStatusModels;
 const AGENT_STATUS_USAGE_TIMEOUT_MS = DASHBOARD_TIMEOUTS.agentStatusUsage;
 const AGENT_STATUS_CACHE_TTL_MS = DASHBOARD_TIMEOUTS.agentStatusCacheTtl;
 const AGENT_INSTALL_TIMEOUT_MS = DASHBOARD_TIMEOUTS.agentInstall;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function dedupeModels(models: { id: string; alias: string | null }[]): { id: string; alias: string | null }[] {
   const seen = new Set<string>();
@@ -90,11 +78,6 @@ function runCommand(
   });
 }
 
-/**
- * Parse `ENOTEMPTY: ... rename 'A' -> 'B'` paths out of npm stderr and remove
- * any staging dirs (siblings of the package dir whose name starts with `.`).
- * Never touches the live package dir itself.
- */
 function cleanupNpmStagingFromError(stderr: string): string[] {
   const removed: string[] = [];
   const re = /rename\s+'([^']+)'\s+->\s+'([^']+)'/g;
@@ -109,17 +92,12 @@ function cleanupNpmStagingFromError(stderr: string): string[] {
     try {
       fs.rmSync(p, { recursive: true, force: true });
       removed.push(p);
-    } catch { /* best effort */ }
+    } catch {  }
   }
   return removed;
 }
 
 async function installAgentViaNpm(agent: Agent, log: (msg: string) => void): Promise<void> {
-  // Only npm-published agents can be installed unattended. Manual agents
-  // (e.g. Hermes — a Python CLI with its own installer) surface their command
-  // + docs in the dashboard instead; the UI never POSTs here for them, but we
-  // still guard with an actionable message rather than an opaque
-  // "Unsupported agent" in case the endpoint is hit directly (CLI/API).
   const spec = getAgentInstall(agent);
   if (!spec) throw new Error(`Unknown agent: ${agent}`);
   if (spec.method !== 'npm') {
@@ -145,10 +123,6 @@ async function installAgentViaNpm(agent: Agent, log: (msg: string) => void): Pro
   if (!result.ok) throw new Error(result.error || `Failed to install ${pkg}`);
   log(`${getAgentLabel(agent)} installation complete.`);
 }
-
-// ---------------------------------------------------------------------------
-// Agent status builder
-// ---------------------------------------------------------------------------
 
 function emptyUsage(agent: Agent, error: string): UsageResult {
   return { ok: false, agent, source: null, capturedAt: null, status: null, windows: [], error };
@@ -182,17 +156,10 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
       try {
         const driver = getDriver(agentId);
         if (driver.getNativeConfig) {
-          try { nativeConfig = driver.getNativeConfig(); } catch { /* tolerate driver errors */ }
+          try { nativeConfig = driver.getNativeConfig(); } catch {  }
         }
         const modelFallback = runtimeSelectedModel ? [{ id: runtimeSelectedModel, alias: null }] : [];
         const cachedUsage = driver.getUsage({ agent: agentId, model: runtimeSelectedModel });
-        // The dashboard agent card lets the user *edit* the binding — when
-        // they toggle the provider to "Native", the model field must show
-        // the agent CLI's own catalogue, not the provider's. We deliberately
-        // call the driver's `listModels` directly (bypassing
-        // `resolveAgentModels`'s BYOK substitution) so `models` is always the
-        // native list; the BYOK catalogue is exposed separately as
-        // `byokModels` below.
         const [resolvedModels, resolvedUsage] = await Promise.all([
           withTimeoutFallback(
             driver.listModels({ workdir, currentModel: runtimeSelectedModel }).then(result => dedupeModels([
@@ -220,35 +187,15 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
 
     const updateState = getAgentUpdateState(agentId);
 
-    // BYOK binding — when an active Profile exists, it overrides the native
-    // model/effort surfaces. Otherwise the values fall through to the user's
-    // runtime override and then to the driver's native config.
     const activeProfile = getActiveProfile(agentId);
     const byokProvider = activeProfile ? getProvider(activeProfile.providerId) : null;
     const byokProviderName = byokProvider?.name || null;
 
-    // Native model/effort — what the user would run under the agent CLI's
-    // own auth, independent of any active BYOK Profile. AgentTab uses these
-    // as defaults when the user toggles a card's provider back to "Native".
     const nativeSelectedModel = runtimeSelectedModel || nativeConfig?.model || null;
     const nativeSelectedEffort = runtimeSelectedEffort || nativeConfig?.effort || null;
-    // The BYOK-bound model is what the agent will ACTUALLY run (the injector
-    // overrides `--model`/codex `model` at spawn). Surface it everywhere the
-    // UI quotes "current model" — the InputComposer pill, the cascade label,
-    // the agent card. Falling back to the native values when no Profile is
-    // bound preserves the existing native-auth path.
     const selectedModel = activeProfile?.modelId || nativeSelectedModel;
     const selectedEffort = activeProfile?.effort || nativeSelectedEffort;
 
-    // Likewise, the InputComposer cascade should list the bound provider's
-    // catalogue — those are the models the agent can actually serve through
-    // BYOK, not the native CLI's hardcoded list. We expose it as a SEPARATE
-    // `byokModels` field rather than overwriting `models`, because AgentTab's
-    // provider/model row falls back to `models` whenever the user temporarily
-    // switches the editor to the native provider — we mustn't silently leak
-    // BYOK ids into that view. Read from the provider-models cache
-    // synchronously; miss triggers a background refresh and we degrade to the
-    // bound model id alone so the user can at least see it selected.
     let byokModels: { id: string; alias: string | null }[] | null = null;
     if (activeProfile && byokProvider) {
       const cachedList = peekProviderModelList(byokProvider.id);
@@ -286,10 +233,6 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
   return { defaultAgent, workdir, agents };
 }
 
-// ---------------------------------------------------------------------------
-// Stale-while-revalidate cache
-// ---------------------------------------------------------------------------
-
 type AgentStatusData = Awaited<ReturnType<typeof buildAgentStatusResponse>>;
 
 const statusCache: {
@@ -322,10 +265,6 @@ function invalidateAgentStatus(config?: Partial<UserConfig>, opts?: AgentDetectO
 
 export function preloadAgentStatus() { void refreshStatusCache(); }
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
 const app = new Hono();
 
 app.get('/api/agent-status', async (c) => {
@@ -336,9 +275,6 @@ app.post('/api/agent-install', async (c) => {
   const body = await c.req.json();
   const agent = String(body?.agent || '').trim();
   if (!runtime.isAgent(agent)) return c.json({ ok: false, error: 'Invalid agent' }, 400);
-  // Manual-install agents (e.g. Hermes) aren't npm-installable — the dashboard
-  // shows their command + docs instead of an Install button, so this is a bad
-  // request rather than a server error. Return the actionable command.
   const installSpec = getAgentInstall(agent);
   if (installSpec && installSpec.method !== 'npm') {
     const docs = installSpec.docsUrl ? ` See ${installSpec.docsUrl}.` : '';
@@ -358,7 +294,6 @@ app.post('/api/agent-install', async (c) => {
   }
 });
 
-// Agent list (lightweight)
 app.get('/api/agents', (c) => {
   return c.json({ agents: runtime.getSetupState(loadUserConfig(), { includeVersion: true }).agents });
 });
@@ -410,9 +345,6 @@ app.post('/api/runtime-agent', async (c) => {
   const targetAgent = body?.agent;
   const model = typeof body?.model === 'string' ? body.model.trim() : '';
   const rawEffort = typeof body?.effort === 'string' ? body.effort.trim().toLowerCase() : '';
-  // "ultra" folds max depth + Workflow orchestration into one rung; decompose
-  // so the stored effort is always a real --effort value and orchestration
-  // follows the pick (any concrete rung ⇒ off). Mirrors Bot.switchEffortForChat.
   const { effort, workflow: effortWorkflow } = decomposeEffortSelection(rawEffort);
   const hasEffort = rawEffort !== '';
   const botRef = runtime.getBotRef();
@@ -434,9 +366,6 @@ app.post('/api/runtime-agent', async (c) => {
       if (targetAgent === 'codex') nextConfig.codexModel = model;
       if (targetAgent === 'gemini') nextConfig.geminiModel = model;
       if (targetAgent === 'hermes') {
-        // Prefer the active BYOK Profile (the only surface `hermes acp` honors
-        // at runtime); fall back to the legacy `hermesModel` field only when no
-        // Profile is bound, so older configs keep working.
         if (!setAgentBoundModelId('hermes', model)) nextConfig.hermesModel = model;
       }
       if (botRef) botRef.setModelForAgent(targetAgent, model);
@@ -449,9 +378,6 @@ app.post('/api/runtime-agent', async (c) => {
       if (targetAgent === 'gemini') nextConfig.geminiReasoningEffort = effort;
       if (targetAgent === 'hermes') nextConfig.hermesReasoningEffort = effort;
       if (botRef) botRef.setEffortForAgent(targetAgent, effort);
-      // The effort pick is also the single knob for orchestration: Ultra turns
-      // it on, any concrete rung turns it off (mutual exclusion). Only claude
-      // advertises the capability today.
       if (targetAgent === 'claude') {
         runtime.runtimePrefs.workflow.claude = effortWorkflow;
         runtime.setWorkflowEnv('claude', effortWorkflow);
@@ -461,8 +387,6 @@ app.post('/api/runtime-agent', async (c) => {
     }
   }
 
-  // Workflow orchestration toggle — independent of model/effort (orthogonal
-  // axis), gated to drivers that advertise the capability.
   if (typeof body?.workflow === 'boolean') {
     if (!runtime.isAgent(targetAgent)) return c.json({ ok: false, error: 'Invalid agent' }, 400);
     if (!getDriverCapabilities(targetAgent).workflow) {
@@ -475,8 +399,6 @@ app.post('/api/runtime-agent', async (c) => {
     if (botRef) botRef.setWorkflowEnabledForAgent(targetAgent, enabled);
   }
 
-  // Access mode — Claude only (subscription TUI vs `claude -p` API credits).
-  // Persisted preference; takes effect on the next spawned turn.
   if (typeof body?.accessMode === 'string') {
     if (targetAgent !== 'claude') return c.json({ ok: false, error: 'accessMode is only supported for claude' }, 400);
     const mode = body.accessMode;

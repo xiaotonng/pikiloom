@@ -8,7 +8,6 @@ import { withTempHome } from './support/env.ts';
 
 describe('getGlobalExtensionsAsServers — HTTP transport', () => {
   it('injects OAuth headers, skips disabled entries, and lets workspace .mcp.json override globals', async () => {
-    // --- HTTP entry with OAuth Authorization injected from the token store ---
     await withTempHome(async () => {
       saveUserConfig({
         extensions: {
@@ -39,7 +38,6 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
       });
     });
 
-    // --- HTTP entry without Authorization when no token is stored ---
     await withTempHome(async () => {
       saveUserConfig({
         extensions: {
@@ -58,7 +56,6 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
       expect(server.headers).toBeUndefined();
     });
 
-    // --- Skips disabled entries for both stdio and HTTP transports ---
     await withTempHome(async () => {
       saveUserConfig({
         extensions: {
@@ -86,7 +83,6 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
       expect(names).toEqual(['on-stdio']);
     });
 
-    // --- Workspace .mcp.json overrides a global stdio entry with HTTP ---
     await withTempHome(async homeDir => {
       saveUserConfig({
         extensions: {
@@ -125,7 +121,6 @@ describe('getGlobalExtensionsAsServers — HTTP transport', () => {
 
 describe('buildCodexMcpAddArgs', () => {
   it('builds stdio/HTTP argv, threads bearer tokens, sanitizes names, and returns null for malformed entries', () => {
-    // --- stdio argv with --env flags before the trailing command ---
     const stdioArgs = buildCodexMcpAddArgs(
       {
         name: 'pikiloom',
@@ -138,7 +133,6 @@ describe('buildCodexMcpAddArgs', () => {
     );
     expect(stdioArgs).toEqual(['mcp', 'add', 'pikiloom', '--env', 'FOO=bar', '--', '/usr/bin/node', 'session-server.js']);
 
-    // --- HTTP argv with --url threading the bearer token into tokenEnv ---
     const bearerEnv: Record<string, string> = {};
     const httpArgs = buildCodexMcpAddArgs(
       {
@@ -156,7 +150,6 @@ describe('buildCodexMcpAddArgs', () => {
     ]);
     expect(bearerEnv).toEqual({ PIKILOOM_MCP_BEARER_NOTION: 'tok-xyz' });
 
-    // --- HTTP argv without bearer when no Authorization header is set ---
     const noBearerEnv: Record<string, string> = {};
     const openArgs = buildCodexMcpAddArgs(
       { name: 'open', type: 'http', url: 'https://example.com/mcp' },
@@ -165,11 +158,9 @@ describe('buildCodexMcpAddArgs', () => {
     expect(openArgs).toEqual(['mcp', 'add', 'open', '--url', 'https://example.com/mcp']);
     expect(noBearerEnv).toEqual({});
 
-    // --- null for malformed entries instead of throwing ---
     expect(buildCodexMcpAddArgs({ name: 'broken' }, {})).toBeNull();
     expect(buildCodexMcpAddArgs({ name: 'broken-http', type: 'http' }, {})).toBeNull();
 
-    // --- sanitizes server name into a valid env-var suffix ---
     const sanitizeEnv: Record<string, string> = {};
     buildCodexMcpAddArgs(
       {
@@ -186,7 +177,6 @@ describe('buildCodexMcpAddArgs', () => {
 
 describe('buildGeminiMcpConfig', () => {
   it('emits HTTP/stdio shapes with trust and omits headers when absent', () => {
-    // --- {type, url, headers} for HTTP and {command, args, env} for stdio ---
     const config = buildGeminiMcpConfig([
       {
         name: 'notion',
@@ -218,7 +208,6 @@ describe('buildGeminiMcpConfig', () => {
       },
     });
 
-    // --- omits headers field for HTTP servers without headers ---
     const openConfig = buildGeminiMcpConfig([
       { name: 'open', type: 'http', url: 'https://example.com/mcp' },
     ]);

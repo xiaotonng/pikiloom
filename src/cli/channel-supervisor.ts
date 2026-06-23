@@ -1,21 +1,3 @@
-/**
- * channel-supervisor.ts — Owns the set of running IM channel bots and
- * reconciles it against the current user config without restarting the
- * pikiloom process.
- *
- * Subscribes to onUserConfigChange. Whenever the channels array or any
- * channel's credentials change, the supervisor stops the affected bot,
- * disposes its transport, and (if still configured) launches a fresh
- * instance with the new config — all in-process, leaving the dashboard,
- * other channels, and active coding sessions on unaffected bots running.
- *
- * Dashboard-as-terminal: the Web Dashboard is a first-class terminal, equal to
- * the IM channels. When no IM channel is configured, the supervisor keeps a
- * headless bot attached to the dashboard so it's a fully usable terminal on its
- * own; when an IM channel is added, that channel's bot takes over the dashboard
- * attachment and the headless bot is torn down.
- */
-
 import type { Bot } from '../bot/bot.js';
 import type { ChannelName, UserConfig } from '../core/config/user-config.js';
 import { loadUserConfig, onUserConfigChange } from '../core/config/user-config.js';
@@ -47,26 +29,10 @@ const CHANNEL_AFFECTING_KEYS = new Set<keyof UserConfig>([
   'wecomEndpoint',
 ]);
 
-/**
- * How long to wait between stopping a channel and starting a replacement
- * with new credentials. Some IM providers hold the old connection slot
- * server-side for a moment after we close the socket; if a new client
- * with the same credentials connects too quickly the server rejects with
- * "system busy" and the SDK ends up in a broken state.
- *
- * Feishu's lark SDK is the known offender — its WSClient handshake races
- * with a "PingInterval" setup that crashes when the server rejects the
- * second connect. Telegram (long-poll over HTTP) and Weixin (HTTP long-
- * poll) tolerate immediate replacement.
- */
 const CHANNEL_REPLACE_SETTLE_MS: Record<ChannelName, number> = {
   telegram: 0,
   weixin: 0,
   feishu: 5_000,
-  // The Slack / Discord / DingTalk / WeChat-Work providers all hold the
-  // single-bot socket slot for a moment after disconnect; give them a
-  // small grace window so token rotation doesn't trip "already connected"
-  // style errors on the immediate replacement connection.
   slack: 3_000,
   discord: 3_000,
   dingtalk: 3_000,
@@ -162,7 +128,6 @@ export interface ChannelSupervisorOpts {
 
 export class ChannelSupervisor {
   private readonly running = new Map<ChannelName, RunningBot>();
-  /** Headless dashboard-terminal bot, present only while no IM channel runs. */
   private headless: { bot: Bot; runPromise: Promise<void> } | null = null;
   private readonly dashboard: DashboardServer | null;
   private readonly log: (message: string) => void;
@@ -176,10 +141,6 @@ export class ChannelSupervisor {
     this.log = opts.log;
   }
 
-  /**
-   * Initial launch + subscribe to config changes. Idempotent: calling
-   * twice is a no-op for the second call.
-   */
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
@@ -190,7 +151,6 @@ export class ChannelSupervisor {
     });
   }
 
-  /** Stop every running channel and unsubscribe from config changes. */
   async stop(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -199,7 +159,6 @@ export class ChannelSupervisor {
     await this.stopHeadless();
   }
 
-  /** Reconcile running bots against the desired channel set + credentials. */
   async reconcile(config: Partial<UserConfig>): Promise<void> {
     if (this.reconcileInFlight) {
       this.reconcilePending = true;
@@ -212,8 +171,6 @@ export class ChannelSupervisor {
         this.reconcilePending = false;
         await this.doReconcile(current);
         if (!this.reconcilePending) break;
-        // Newer config arrived during reconcile — re-read from disk so the
-        // next pass acts on the latest state.
         current = loadUserConfig();
       }
     } finally {
@@ -225,7 +182,6 @@ export class ChannelSupervisor {
     const desired = resolveConfiguredChannels({ config });
     const desiredSet = new Set(desired);
 
-    // Stop channels that are no longer desired OR whose credentials changed.
     const toStop: ChannelName[] = [];
     for (const [channel, entry] of this.running) {
       if (!desiredSet.has(channel)) {
@@ -240,10 +196,6 @@ export class ChannelSupervisor {
       await Promise.all(toStop.map(channel => this.stopChannel(channel)));
     }
 
-    // For channels being replaced (still desired, just stopped above for
-    // credential rotation), wait the per-channel settle delay so the
-    // remote server has time to release the old connection slot before
-    // we open a new one.
     const replacing = toStop.filter(channel => desiredSet.has(channel));
     const settleMs = replacing.reduce(
       (max, channel) => Math.max(max, CHANNEL_REPLACE_SETTLE_MS[channel] ?? 0),
@@ -254,8 +206,6 @@ export class ChannelSupervisor {
       await sleep(settleMs);
     }
 
-    // Start channels that should be running but aren't (either added or
-    // just stopped above due to credential rotation).
     for (const channel of desired) {
       if (this.running.has(channel)) continue;
       try {
@@ -265,11 +215,6 @@ export class ChannelSupervisor {
       }
     }
 
-    // Dashboard-as-terminal: keep a headless bot attached whenever no channel
-    // bot is actually running (none configured, or all failed to start), so the
-    // dashboard stays a usable terminal on its own. Gate on `running.size`
-    // rather than `desired.length` so a channel that fails to come up still
-    // leaves the dashboard with a working bot.
     if (this.running.size > 0) {
       await this.stopHeadless();
     } else {
@@ -277,7 +222,6 @@ export class ChannelSupervisor {
     }
   }
 
-  /** Launch the headless dashboard-terminal bot and attach it to the dashboard. */
   private async startHeadless(): Promise<void> {
     if (this.headless) return;
     this.log('dashboard terminal: starting (no IM channel configured)');
@@ -290,14 +234,13 @@ export class ChannelSupervisor {
     this.headless = { bot, runPromise };
   }
 
-  /** Tear down the headless bot once a real channel bot owns the dashboard. */
   private async stopHeadless(): Promise<void> {
     if (!this.headless) return;
     this.log('dashboard terminal: stopping (IM channel took over)');
     const { bot, runPromise } = this.headless;
     this.headless = null;
     bot.requestStop();
-    try { await runPromise; } catch { /* already logged */ }
+    try { await runPromise; } catch {  }
   }
 
   private async startChannel(channel: ChannelName, config: Partial<UserConfig>): Promise<void> {
@@ -318,8 +261,6 @@ export class ChannelSupervisor {
     const entry = this.running.get(channel);
     if (!entry) return;
     this.log(`channel ${channel}: stopping`);
-    // Remove from the map up-front so a concurrent reconcile pass doesn't
-    // try to stop the same instance twice.
     this.running.delete(channel);
     try {
       entry.bot.requestStop();

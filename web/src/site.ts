@@ -1,6 +1,3 @@
-// Single source of truth for landing-page copy + links.
-// Copy is drawn from the project README / CLAUDE.md positioning.
-
 export const LINKS = {
   github: 'https://github.com/xiaotonng/pikiloom',
   npm: 'https://www.npmjs.com/package/pikiloom',
@@ -18,7 +15,6 @@ export const TAGLINE =
 export const SUBHEAD =
   'Plug in any agent, any model, and any tool — then drive a swarm of them in parallel from one console: an IM, the Web Dashboard, or the CLI. You might never open a code file again.';
 
-// Logos/chips shown under the hero as a trust strip.
 export const AGENTS = ['Claude Code', 'Codex', 'Gemini', 'Hermes'];
 export const MODELS = [
   'Claude',

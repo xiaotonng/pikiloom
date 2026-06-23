@@ -1,10 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
-/**
- * Mount-gate for heavy WebGL scenes. Children render only once the wrapper nears
- * the viewport. With `keepMounted={false}` they also UNMOUNT when scrolled away —
- * critical for freeing GL contexts so only the on-screen scene holds one.
- */
 export default function InView({
   children,
   rootMargin = '250px',

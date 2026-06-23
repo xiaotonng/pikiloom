@@ -1,8 +1,3 @@
-/**
- * Host system data collection: battery, CPU, memory, display name.
- * Platform-adaptive with macOS, Linux, and Windows support.
- */
-
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -195,7 +190,7 @@ export function getHostDisplayName(): string {
     try {
       const name = execSync('scutil --get ComputerName', { encoding: 'utf-8', timeout: 3000 }).trim();
       if (name) return name;
-    } catch { /* fall through */ }
+    } catch {  }
   }
   return os.hostname();
 }

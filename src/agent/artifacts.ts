@@ -1,20 +1,3 @@
-/**
- * artifacts.ts — delivered-artifact manifest (the single source of truth for
- * "files the agent handed to the user during a session").
- *
- * When the agent calls `im_send_file`, the bot materializes the file into the
- * session attachments dir and appends a record here. IM channels additionally
- * push the bytes to their chat; the dashboard serves the materialized copy over
- * HTTP and renders it. Recording is terminal-agnostic, so a session watched
- * from BOTH a chat and the dashboard shows the same deliveries on either side,
- * and they survive a page reload / workspace cleanup.
- *
- * The manifest lives next to the MCP-buffered image attachments
- * (`sessionAttachmentsDir`), which is already an allowlist root for the
- * dashboard attachment endpoint — so materialized artifacts are servable with
- * no new trust boundary.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { sessionAttachmentsDir } from './images.js';
@@ -24,21 +7,13 @@ import type { Agent, MessageBlock } from './types.js';
 export type ArtifactKind = 'photo' | 'document';
 
 export interface DeliveredArtifact {
-  /** Epoch ms when delivered. */
   ts: number;
-  /** Originating task id, when known. */
   taskId?: string;
-  /** Absolute on-disk path of the materialized copy (stable + servable). */
   path: string;
-  /** Pristine display name (the artifact's original basename). */
   fileName: string;
-  /** MIME type. */
   fileMime: string;
-  /** Size in bytes. */
   fileSize: number;
-  /** `photo` → rendered inline; `document` → download chip. */
   kind: ArtifactKind;
-  /** Optional caption supplied at delivery time. */
   caption?: string;
 }
 
@@ -54,7 +29,6 @@ const MIME_BY_EXT: Record<string, string> = {
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.log': 'text/plain; charset=utf-8',
 };
 
-/** Best-effort MIME for a delivered artifact; `application/octet-stream` when unknown. */
 export function mimeForArtifact(filePath: string): string {
   return MIME_BY_EXT[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
 }
@@ -71,13 +45,6 @@ function sanitizeName(name: string): string {
   return (name || 'file').replace(/[/\\\0]+/g, '_').replace(/^\.+/, '').slice(0, 200) || 'file';
 }
 
-/**
- * Materialize `srcPath` into the session's delivered-artifacts dir so it is
- * (a) servable by the dashboard attachment endpoint (the dir is an allowlist
- * root) and (b) durable across workspace cleanup. Hardlinks when possible,
- * falling back to a copy across filesystems. The on-disk name is stamped to
- * avoid collisions; the pristine basename travels in the manifest.
- */
 export function stageDeliveredArtifact(
   agent: Agent,
   sessionId: string,
@@ -97,7 +64,6 @@ export function stageDeliveredArtifact(
   return { path: dest, fileName, fileSize: stat.size, fileMime: mimeForArtifact(fileName) };
 }
 
-/** Append a record to the session's delivered-artifact manifest. */
 export function recordDeliveredArtifact(agent: Agent, sessionId: string, entry: DeliveredArtifact): void {
   try {
     const file = manifestPath(agent, sessionId);
@@ -108,11 +74,6 @@ export function recordDeliveredArtifact(agent: Agent, sessionId: string, entry: 
   }
 }
 
-/**
- * Materialize + record a delivered artifact in one step. Best-effort: returns
- * the stored record (with the materialized path), or null on failure — delivery
- * must never crash the stream.
- */
 export function deliverArtifact(
   agent: Agent,
   sessionId: string,
@@ -139,7 +100,6 @@ export function deliverArtifact(
   }
 }
 
-/** Read the delivered-artifact manifest for a session (tolerant of partial lines). */
 export function readDeliveredArtifacts(agent: Agent, sessionId: string): DeliveredArtifact[] {
   const file = manifestPath(agent, sessionId);
   let raw: string;
@@ -151,17 +111,11 @@ export function readDeliveredArtifacts(agent: Agent, sessionId: string): Deliver
     try {
       const rec = JSON.parse(t) as DeliveredArtifact;
       if (rec && typeof rec.path === 'string' && rec.fileName) out.push(rec);
-    } catch { /* skip malformed line */ }
+    } catch {  }
   }
   return out;
 }
 
-/**
- * Project the delivered-artifact manifest into pre-transport MessageBlocks
- * (content = `file://<abs>`). The dashboard read path rewrites these to
- * attachment HTTP URLs via `rewriteAttachmentBlocksForTransport`. Records whose
- * file no longer exists on disk are dropped.
- */
 export function deliveredArtifactBlocks(agent: Agent, sessionId: string): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   for (const a of readDeliveredArtifacts(agent, sessionId)) {

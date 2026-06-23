@@ -1,10 +1,5 @@
 import { useEffect, useState } from 'react';
 
-/**
- * True only on a desktop-class device with a fine pointer and no reduced-motion
- * preference. Used to gate the heaviest effects (fluid cursor, 3D ball pit) so
- * phones and accessibility settings don't pay for them.
- */
 export function useIsDesktop() {
   const [isDesktop, setIsDesktop] = useState(false);
 

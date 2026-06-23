@@ -1,23 +1,3 @@
-/**
- * Minimal Agent Client Protocol (ACP) client.
- *
- * ACP is a JSON-RPC 2.0 protocol over stdio that standardises how clients
- * (editors, orchestrators) talk to AI coding agents. Reference impls:
- * Hermes (`hermes acp`), Gemini CLI (`gemini --acp`), OpenCode, Claude Code
- * via `@zed-industries/claude-code-acp` adapter.
- *
- * This is a deliberately small implementation — it parses line-delimited
- * JSON-RPC messages, dispatches results/notifications, and lets callers
- * `request()` and consume an async stream of `sessionUpdate` notifications.
- *
- * Spec: https://agentclientprotocol.com — methods we use:
- *   client → agent:  initialize, session/new, session/load, session/prompt,
- *                    session/set_model, session/set_session_mode, session/cancel
- *   agent  → client: session/update (streaming notifications)
- *                    session/request_permission (we deny by default)
- *                    fs/read_text_file, fs/write_text_file (we say "no")
- */
-
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
@@ -58,17 +38,6 @@ type Pending = {
   method: string;
 };
 
-/**
- * Translate a Claude-style MCP server map (keyed by name with
- * `{type?, command|url, args?, env?, headers?}`) into ACP wire format:
- *   stdio: { name, command, args, env: [{name, value}, ...] }
- *   http:  { type: "http", name, url, headers: [{name, value}, ...] }
- *   sse:   { type: "sse",  name, url, headers: [{name, value}, ...] }
- *
- * The ACP schema requires `name` plus a list-of-records `env` for stdio
- * servers — sending an object map for env, or omitting name, results in
- * a JSON-RPC -32602 (Invalid params) response.
- */
 export function toAcpMcpServers(servers: Record<string, any> | undefined): any[] {
   if (!servers) return [];
   const out: any[] = [];
@@ -93,14 +62,6 @@ export function toAcpMcpServers(servers: Record<string, any> | undefined): any[]
   return out;
 }
 
-/**
- * AcpClient — encapsulates a single ACP child process.
- *
- * Events:
- *   - 'sessionUpdate' (params)   → agent → client streaming events
- *   - 'request' ({method, id, params}) → agent → client requests we must answer
- *   - 'exit' (code)              → process closed
- */
 export class AcpClient extends EventEmitter {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private nextId = 1;
@@ -125,7 +86,6 @@ export class AcpClient extends EventEmitter {
 
     this.proc.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
-      // ACP stderr is reserved for human-readable diagnostics.
       for (const ln of text.split('\n')) {
         const t = ln.trim();
         if (t) agentLog(`[acp:stderr] ${t.slice(0, 240)}`);
@@ -149,7 +109,6 @@ export class AcpClient extends EventEmitter {
     return !!this.proc && !this.exited;
   }
 
-  /** Send a JSON-RPC request and resolve when the agent responds. */
   async request(method: string, params?: unknown, timeoutMs = 60_000): Promise<unknown> {
     if (!this.proc || this.exited) throw new Error('ACP process not running');
     const id = this.nextId++;
@@ -167,12 +126,6 @@ export class AcpClient extends EventEmitter {
     });
   }
 
-  /**
-   * Best-effort request — resolves with `null` on any error or non-existent
-   * method, instead of throwing. Useful for optional methods like
-   * `session/set_session_mode` that may or may not be implemented by the
-   * agent. The error is logged but does not propagate.
-   */
   async tryRequest(method: string, params?: unknown, timeoutMs = 15_000): Promise<unknown> {
     try {
       return await this.request(method, params, timeoutMs);
@@ -182,13 +135,11 @@ export class AcpClient extends EventEmitter {
     }
   }
 
-  /** Send a notification (no response expected). */
   notify(method: string, params?: unknown): void {
     if (!this.proc || this.exited) return;
     this.write({ jsonrpc: '2.0', method, params });
   }
 
-  /** Send a JSON-RPC response back to the agent (when it asks us something). */
   respond(id: number | string, result: unknown): void {
     this.write({ jsonrpc: '2.0', id, result });
   }
@@ -197,11 +148,6 @@ export class AcpClient extends EventEmitter {
     this.write({ jsonrpc: '2.0', id, error: { code, message } });
   }
 
-  /**
-   * Wait for the session/update event stream to go quiet for `quietMs`
-   * milliseconds, or until `maxMs` elapses. Used to drain replay events
-   * after `session/load`. Returns the number of events observed.
-   */
   async waitForQuiet(quietMs = 150, maxMs = 3_000): Promise<number> {
     let events = 0;
     let lastEventAt = Date.now();
@@ -220,7 +166,6 @@ export class AcpClient extends EventEmitter {
     }
   }
 
-  /** Gracefully shut down. */
   async close(): Promise<void> {
     if (!this.proc || this.exited) return;
     try { this.proc.stdin.end(); } catch {}
@@ -232,8 +177,6 @@ export class AcpClient extends EventEmitter {
       this.proc?.on('close', () => { clearTimeout(timer); resolve(); });
     });
   }
-
-  // ------------------------------------------------------------------------
 
   private write(msg: unknown): void {
     if (!this.proc || this.exited) return;
@@ -251,12 +194,10 @@ export class AcpClient extends EventEmitter {
     try {
       msg = JSON.parse(trimmed) as IncomingMessage;
     } catch {
-      // ACP sometimes prefixes diagnostic logs to stdout; ignore non-JSON
       agentLog(`[acp:stdout-noise] ${trimmed.slice(0, 200)}`);
       return;
     }
 
-    // Response (has id and result/error)
     if ('id' in msg && (('result' in msg) || ('error' in msg))) {
       const resp = msg as JsonRpcResponse;
       const pending = this.pending.get(resp.id);
@@ -267,7 +208,6 @@ export class AcpClient extends EventEmitter {
       return;
     }
 
-    // Notification (no id) — agent → client streaming event
     if (!('id' in msg) && 'method' in msg) {
       const n = msg as JsonRpcNotification;
       if (n.method === 'session/update') {
@@ -278,7 +218,6 @@ export class AcpClient extends EventEmitter {
       return;
     }
 
-    // Request (has id and method) — agent → client RPC
     if ('id' in msg && 'method' in msg) {
       const r = msg as JsonRpcRequest;
       this.emit('request', { id: r.id, method: r.method, params: r.params });

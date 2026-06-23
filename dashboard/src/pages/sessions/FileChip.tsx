@@ -1,12 +1,6 @@
 import { cn } from '../../utils';
 import { formatFileSize } from './utils';
 
-/**
- * Download chip for a delivered non-image artifact (file block / document
- * snapshot artifact). `url` already points at the dashboard attachment endpoint,
- * so a remote browser fetches the bytes over HTTP — no local-path dependency.
- * Images render via <img> elsewhere; this is the document affordance.
- */
 export function FileChip({
   url,
   fileName,

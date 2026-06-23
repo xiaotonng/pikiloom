@@ -1,11 +1,3 @@
-/**
- * Regression for #22: persisted "known chats" (recorded so the startup notice
- * can greet them) must never be folded into `allowedChatIds`. The allowlist is
- * explicit-only — `_isAllowed()` treats a non-empty set as allowlist-only mode,
- * so polluting it with known chats silently blocks every new chat. This also
- * guards the restart hand-off env, which must not smuggle known chats back into
- * the allowlist on the next boot.
- */
 import { beforeEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { TelegramBot } from '../src/channels/telegram/bot.ts';
@@ -23,8 +15,6 @@ const snapshot = captureEnv(ENV_KEYS);
 
 beforeEach(() => {
   restoreEnv(snapshot);
-  // Isolate setting.json so recordKnownChatId / loadKnownChatIds never touch the
-  // real ~/.pikiloom/setting.json.
   process.env.PIKILOOM_CONFIG = path.join(makeTmpDir('known-allow-config-'), 'setting.json');
   process.env.PIKILOOM_WORKDIR = makeTmpDir('known-allow-work-');
   process.env.TELEGRAM_BOT_TOKEN = 'test-token';
@@ -41,16 +31,12 @@ describe('known chats never pollute the allowlist (regression for #22)', () => {
     recordKnownChatId('telegram', '67890');
 
     const bot = new TelegramBot();
-    // No explicit allowlist configured -> stays empty so the channel allows all
-    // chats (size === 0 means allow-all in _isAllowed()).
     expect((bot as any).allowedChatIds.size).toBe(0);
     expect((bot as any).allowedChatIds.has(12345)).toBe(false);
 
-    // A config reload must not fold known chats back in.
     (bot as any).onManagedConfigChange({}, { initial: true });
     expect((bot as any).allowedChatIds.size).toBe(0);
 
-    // Restart hand-off must not carry known chats in the allowlist env.
     const env = (bot as any).buildRestartEnv();
     expect(env.TELEGRAM_ALLOWED_CHAT_IDS).toBeUndefined();
   });

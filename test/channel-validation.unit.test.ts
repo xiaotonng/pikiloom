@@ -1,8 +1,3 @@
-/**
- * Unit tests for the new channel credential validators (Slack / Discord /
- * DingTalk / WeChat Work). Each test stubs global fetch with a deterministic
- * response and asserts the resulting ChannelSetupState.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   validateDingtalkConfig,
@@ -89,7 +84,6 @@ describe('validateDiscordConfig', () => {
 
 describe('validateDingtalkConfig and validateWecomConfig', () => {
   it('reports missing, invalid, and ready states across all DingTalk and WeCom credential combinations', async () => {
-    // DingTalk
     const dtMissing = await validateDingtalkConfig('', '');
     expect(dtMissing.state.status).toBe('missing');
 
@@ -106,7 +100,6 @@ describe('validateDingtalkConfig and validateWecomConfig', () => {
     expect(dtTokenError.state.status).toBe('invalid');
     expect(dtTokenError.state.detail).toMatch(/invalid credentials/);
 
-    // WeCom
     const wcMissing = await validateWecomConfig('', '');
     expect(wcMissing.state.status).toBe('missing');
 

@@ -61,9 +61,6 @@ beforeEach(() => {
   restoreEnv(envSnapshot);
   vi.clearAllMocks();
   const tmpDir = makeTmpDir('bot-tg-unit-');
-  // Isolate setting.json so switchWorkdir / setUserWorkdir can never touch the real
-  // ~/.pikiloom/setting.json. Without this, any test that calls switchWorkdir
-  // without { persist: false } will pollute the user's production config.
   process.env.PIKILOOM_CONFIG = `${makeTmpDir('bot-tg-config-')}/setting.json`;
   process.env.TELEGRAM_BOT_TOKEN = 'test-token';
   process.env.PIKILOOM_WORKDIR = tmpDir;
@@ -74,7 +71,6 @@ beforeEach(() => {
 
 describe('TelegramBot', () => {
   it('covers final reply rendering, steer preview, shutdown/restart, status/session UI, and streaming message handling', async () => {
-    // --- sendFinalReply: compresses warnings, footers, and command activity ---
     const failed = await renderFinalReply('claude', {
       ok: false,
       message: 'Should I continue?',
@@ -86,8 +82,6 @@ describe('TelegramBot', () => {
     }, 99);
     expect(failed.finalEdit.text).toContain('Incomplete Response');
     expect(failed.finalEdit.text).toContain('Claude hit usage limit');
-    // Footer is now split across two lines: identity (agent · model) and a
-    // runtime row (effort · ctx · elapsed). Match across the newline.
     expect(failed.finalEdit.text).toMatch(/✗ claude[\s\S]*17s/);
     expect(failed.finalEdit.opts?.keyboard).toEqual({ inline_keyboard: [] });
 
@@ -118,7 +112,6 @@ describe('TelegramBot', () => {
     expect(summarized.finalEdit.text).not.toContain('npm run build');
     expect(summarized.finalEdit.text).not.toContain('npm test');
 
-    // --- steer handoff preview: freezes previous preview content and clears keyboard ---
     const harness = createBot();
 
     const messageIds = await (harness.bot as any).freezeSteerHandoffPreview(
@@ -135,8 +128,6 @@ describe('TelegramBot', () => {
       },
     ]);
 
-    // --- run shutdown and restart: exits after SIGINT, idempotent shutdown, non-interactive npx restarts ---
-    // --- Sub-scenario 1: shutdown handling ---
     {
       const bot = new TelegramBot();
       const logLines: string[] = [];
@@ -218,7 +209,6 @@ describe('TelegramBot', () => {
       }
     }
 
-    // --- Sub-scenario 2: performRestart ---
     {
       const spawnMock = vi.mocked(spawn);
       const oldArgv = process.argv;
@@ -272,8 +262,6 @@ describe('TelegramBot', () => {
       }
     }
 
-    // --- status and session previews: renders pickers, hides artifacts, shows history, compact callbacks ---
-    // --- Sub-scenario 1: renders compact agent and model pickers for mobile layouts ---
     {
       const { bot, ctx } = createBot();
       const replies: Array<{ text: string; opts?: any }> = [];
@@ -302,8 +290,6 @@ describe('TelegramBot', () => {
         [{ text: 'Claude Code', callback_data: 'ag:claude' }],
         [{ text: '● Codex', callback_data: 'ag:codex' }],
       ]);
-      // Version + provider details are rendered as items above the buttons,
-      // not in the button labels (which would truncate on narrow IM clients).
       expect(replies[0]?.text).toContain('Claude Code · v1.2.3');
       expect(replies[0]?.text).toContain('Codex · v9.9.9');
 
@@ -325,9 +311,6 @@ describe('TelegramBot', () => {
       expect(replies[0]?.text).toContain('Source: app-server model/list');
       expect(replies[0]?.text).toContain('debug note should stay hidden while models exist');
       const keyboard = replies[0]?.opts?.keyboard?.inline_keyboard || [];
-      // Unified picker layout: a group header precedes each non-empty bucket.
-      // With no BYOK Profiles configured the only bucket is `native`, so the
-      // first row is the "— Native —" header, followed by the native models.
       expect(keyboard[0]).toEqual([{ text: '— Native —', callback_data: 'mc' }]);
       expect(keyboard[1]).toEqual([{ text: '● opus', callback_data: 'md:n:claude-opus-4-8' }]);
       expect(keyboard[2]).toEqual([{ text: 'sonnet', callback_data: 'md:n:claude-sonnet-4-6' }]);
@@ -337,7 +320,6 @@ describe('TelegramBot', () => {
       expect(keyboardJson).toContain('"callback_data":"ed:max"');
     }
 
-    // --- Sub-scenario 2: hides artifact system prompts from status output ---
     {
       const { bot, ctx } = createBot();
       const replies: Array<{ text: string; opts?: any }> = [];
@@ -358,7 +340,6 @@ describe('TelegramBot', () => {
       expect(replies[0].text).toContain('进度怎么样 第二行');
     }
 
-    // --- Sub-scenario 3: renders resumed history as quoted user text plus normal assistant markdown ---
     {
       const { bot, ctx, sends } = createBot();
       const sessionId = 'engine-history-preview';
@@ -405,7 +386,6 @@ describe('TelegramBot', () => {
       expect(sends[0].text).toContain('<pre><code class="language-ts">const x = 1;</code></pre>');
     }
 
-    // --- Sub-scenario 4: returns compact callback confirmations for agent and model switches ---
     {
       const { bot, ctx } = createBot();
       bot.chat(ctx.chatId).agent = 'claude';
@@ -426,7 +406,6 @@ describe('TelegramBot', () => {
       );
     }
 
-    // --- Sub-scenario 5: reports when switching agents resumes an existing thread binding ---
     {
       const { bot, ctx, sends } = createBot();
       const workdir = process.env.PIKILOOM_WORKDIR!;
@@ -474,8 +453,6 @@ describe('TelegramBot', () => {
       expect(sends[0].text).toContain('<b>Recent Context</b>');
     }
 
-    // --- handleMessage streaming: previews, uploads, fallback, concurrency, serialization, session restore ---
-    // --- Sub-scenario 1: streams sanitized previews, keeps elapsed updates alive, and finalizes in place ---
     {
       vi.useFakeTimers();
       const { bot, ctx, channel, sends, edits } = createBot();
@@ -520,8 +497,6 @@ describe('TelegramBot', () => {
 
         expect((channel as any).sendMessageDraft).toBeUndefined();
         expect(vi.mocked(ctx.reply)).toHaveBeenCalledWith(
-          // Initial placeholder splits identity (agent · model) and runtime
-          // (effort · elapsed) across two lines.
           expect.stringMatching(/● codex[\s\S]*0s/),
           expect.objectContaining({ messageThreadId: 42, parseMode: 'HTML' }),
         );
@@ -550,7 +525,6 @@ describe('TelegramBot', () => {
       }
     }
 
-    // --- Sub-scenario 2: stages bare uploads before the next prompt and reports artifact upload failures ---
     {
       const uploadDir = makeTmpDir('bot-tg-upload-');
       const uploadPath = path.join(uploadDir, 'report.pdf');
@@ -595,7 +569,6 @@ describe('TelegramBot', () => {
       fs.rmSync(uploadDir, { recursive: true, force: true });
     }
 
-    // --- Sub-scenario 3: skips placeholder previews on channels without message editing and falls back to a final send ---
     {
       const { bot, ctx, channel, sends, edits } = createBot();
       ctx.raw = { chat: { type: 'private' } };
@@ -625,8 +598,6 @@ describe('TelegramBot', () => {
       expect(vi.mocked(channel.sendTyping)).toHaveBeenCalled();
     }
 
-    // --- runs concurrent sessions and serializes follow-ups within a single session ---
-    // --- Sub-scenario 1: runs different sessions concurrently in the same chat ---
     {
       const { bot, ctx } = createBot();
       let nextReplyId = 1000;
@@ -683,7 +654,6 @@ describe('TelegramBot', () => {
       await Promise.resolve();
     }
 
-    // --- Sub-scenario 2: keeps a single session serialized even when follow-ups arrive before completion ---
     {
       const { bot, ctx } = createBot();
       let nextReplyId = 2000;
@@ -744,7 +714,6 @@ describe('TelegramBot', () => {
       await Promise.resolve();
     }
 
-    // --- restores reply follow-ups to the original workdir and agent after global switches ---
     const { bot, ctx } = createBot();
     let nextReplyId = 3000;
     ctx.reply = vi.fn(async () => nextReplyId++);

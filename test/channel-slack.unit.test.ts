@@ -1,7 +1,3 @@
-/**
- * Unit tests for SlackChannel — mocks @slack/web-api + @slack/socket-mode
- * to verify message dispatch, send/edit, mention filtering, and dedup.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const hoist = vi.hoisted(() => {
@@ -73,7 +69,6 @@ function makeChannel(overrides: Partial<ConstructorParameters<typeof SlackChanne
 
 describe('SlackChannel connect, send, and edit', () => {
   it('reads bot identity, posts messages, threads, edits, and swallows not-found errors', async () => {
-    // connect
     {
       const ch = makeChannel();
       const bot = await ch.connect();
@@ -84,7 +79,6 @@ describe('SlackChannel connect, send, and edit', () => {
 
     hoist.calls.length = 0;
 
-    // posts to a channel and returns the ts
     {
       const ch = makeChannel();
       await ch.connect();
@@ -96,7 +90,6 @@ describe('SlackChannel connect, send, and edit', () => {
 
     hoist.calls.length = 0;
 
-    // sets thread_ts when replyTo is provided
     {
       const ch = makeChannel();
       await ch.connect();
@@ -107,7 +100,6 @@ describe('SlackChannel connect, send, and edit', () => {
 
     hoist.calls.length = 0;
 
-    // updates a previous message via chat.update
     {
       const ch = makeChannel();
       await ch.connect();
@@ -118,7 +110,6 @@ describe('SlackChannel connect, send, and edit', () => {
 
     hoist.calls.length = 0;
 
-    // swallows message_not_found on edit instead of throwing
     {
       const ch = makeChannel();
       await ch.connect();
@@ -136,7 +127,6 @@ describe('SlackChannel dispatch', () => {
   }
 
   it('delivers DMs, drops non-mentions, dedups, drops self-messages, and enforces allowlists', async () => {
-    // delivers DM message text after stripping the bot mention
     {
       const ch = makeChannel();
       await ch.connect();
@@ -155,7 +145,6 @@ describe('SlackChannel dispatch', () => {
       expect(seen).toEqual([{ text: 'please ship it', chatId: 'D123' }]);
     }
 
-    // drops channel messages that do not @mention the bot
     {
       const ch = makeChannel();
       await ch.connect();
@@ -172,7 +161,6 @@ describe('SlackChannel dispatch', () => {
       expect(seen).toEqual([]);
     }
 
-    // dedups repeated event ids
     {
       const ch = makeChannel();
       await ch.connect();
@@ -192,7 +180,6 @@ describe('SlackChannel dispatch', () => {
       expect(seen.length).toBe(1);
     }
 
-    // drops messages from itself
     {
       const ch = makeChannel();
       await ch.connect();
@@ -218,7 +205,6 @@ describe('SlackChannel dispatch', () => {
       expect(seen).toEqual([]);
     }
 
-    // blocks chat ids outside the allowlist
     {
       const ch = makeChannel({ allowedChatIds: new Set(['C-OK']) });
       await ch.connect();

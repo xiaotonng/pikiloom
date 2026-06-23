@@ -1,7 +1,3 @@
-/**
- * Telegram-specific message rendering and formatting.
- */
-
 import type { Agent, StreamPreviewMeta, StreamResult } from '../../bot/bot.js';
 import type { SkillsListData } from '../../bot/commands.js';
 import type { HumanLoopPromptState, ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
@@ -126,15 +122,6 @@ export function renderCommandSelectionHtml(view: CommandSelectionView): string {
   return lines.join('\n');
 }
 
-/**
- * Telegram caps `callback_data` at 64 bytes. Most encoded actions fit easily,
- * but BYOK model rows encode as `md:p:<uuid>:<modelId>` (~42 bytes of overhead
- * before the model id even starts), so a single long provider/model id blows
- * the limit — and Telegram then rejects the *entire* message with
- * BUTTON_DATA_INVALID, killing the whole menu. Mirror the PathRegistry idiom
- * from directory.ts: stash the over-length payload and ship a short `r:<id>`
- * token instead, resolving it back on the callback round-trip.
- */
 const TELEGRAM_CALLBACK_LIMIT = 64;
 
 class CallbackDataRegistry {
@@ -170,7 +157,6 @@ class CallbackDataRegistry {
 
 const callbackDataRegistry = new CallbackDataRegistry();
 
-/** Resolve a `r:<id>` token back to its original encoded action payload. */
 export function unpackCallbackData(data: string): string {
   return callbackDataRegistry.unpack(data);
 }
@@ -225,11 +211,6 @@ export function buildHumanLoopPromptHtml(prompt: HumanLoopPromptState): string {
   return lines.join('\n');
 }
 
-/**
- * Closed-state rendering for a resolved human-loop card. The original prompt
- * collapses to a single header line plus one line per question showing the
- * answer — no buttons, no "submit hint", just the decision frozen in place.
- */
 export function buildAnsweredHumanLoopPromptHtml(prompt: HumanLoopPromptState, summary: ResolvedHumanLoopAnswers): string {
   const symbol = summary.status === 'cancelled' ? '⊘' : '✓';
   const lines = [`<b>${symbol} ${escapeHtml(prompt.title)}</b>`];
@@ -241,7 +222,6 @@ export function buildAnsweredHumanLoopPromptHtml(prompt: HumanLoopPromptState, s
 }
 
 function mdInline(line: string): string {
-  // Strip inline backtick code — IM channels render them with heavy styling
   const stripped = line.replace(/`([^`\n]+)`/g, '$1');
   return formatMarkdownSegment(stripped);
 }
@@ -403,9 +383,6 @@ export function buildInitialPreviewHtml(
   waitingArg = false,
   queuePositionArg = 0,
 ): string {
-  // Backwards-compat shim: legacy calls pass `(agent, waiting, queuePosition)`,
-  // new calls pass `(agent, model, effort, waiting, queuePosition)`. Normalise
-  // both shapes here so existing tests + callsites keep working.
   let model: string | null = null;
   let effort: string | null = null;
   let waiting = waitingArg;
@@ -432,9 +409,6 @@ export function buildStreamPreviewHtml(input: StreamPreviewRenderInput): string 
   const parts: string[] = [];
 
   if (data.planDisplay) {
-    // The first line of planDisplay is already "Plan N/M" (rendered by
-    // renderPlanForPreview). Promote it to the bold heading and inline the
-    // rest, so the card doesn't show a redundant "Plan" line above "Plan N/M".
     const planText = data.planDisplay;
     const nl = planText.indexOf('\n');
     const head = nl >= 0 ? planText.slice(0, nl) : planText;
@@ -450,7 +424,6 @@ export function buildStreamPreviewHtml(input: StreamPreviewRenderInput): string 
   }
 
   if (data.thinkDisplay && !data.display) {
-    // Elapsed lives in the footer only (single timer). Header is the bare label.
     parts.push(`<blockquote><b>${escapeHtml(data.label)}</b>\n${escapeHtml(data.thinkDisplay)}</blockquote>`);
   } else if (data.display) {
     if (data.rawThinking) {
@@ -458,10 +431,6 @@ export function buildStreamPreviewHtml(input: StreamPreviewRenderInput): string 
     }
     parts.push(mdToTgHtml(data.preview));
   } else if (data.thinkingProgressText) {
-    // Thinking phase with no streamed thinking/body text yet — show the bare
-    // "{thinkLabel}" so the card isn't blank. The elapsed tick lives in the
-    // footer only (one timer, not two); the footer re-renders on the channel
-    // heartbeat, so the card still visibly advances.
     parts.push(`<blockquote><b>${escapeHtml(data.label)}</b></blockquote>`);
   }
 

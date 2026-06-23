@@ -21,9 +21,6 @@ function requestErrorText(error: unknown, t: (key: string) => string): string {
   return t('modal.networkError');
 }
 
-/* ═══════════════════════════════════════════════════
-   Telegram Modal
-   ═══════════════════════════════════════════════════ */
 export function TelegramModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const state = useStore(s => s.state);
   const toast = useStore(s => s.toast);
@@ -125,7 +122,6 @@ export function TelegramModal({ open, onClose }: { open: boolean; onClose: () =>
     <Modal open={open} onClose={handleRequestClose}>
       <ModalHeader title={t('modal.configureTelegram')} onClose={handleRequestClose} />
       <div className="space-y-4">
-        {/* Setup guide */}
         <div className="rounded-lg border border-edge bg-panel-alt">
           <button
             type="button"
@@ -179,21 +175,6 @@ export function TelegramModal({ open, onClose }: { open: boolean; onClose: () =>
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   Feishu Modal
-   ═══════════════════════════════════════════════════ */
-
-/**
- * Minimum API scopes for the Feishu bot, ready to paste into the Open Platform
- * "Permissions → Batch import" dialog. Each scope maps to a capability the
- * channel actually calls (see channels/feishu/channel.ts):
- *   - p2p_msg / group_at_msg readonly → receive the im.message.receive_v1 event
- *   - send_as_bot → send / reply / recall as the bot
- *   - im:message → edit cards (patch) + reactions
- *   - im:resource → upload / download images & files
- * Bot capability and event subscriptions are configured separately and cannot
- * be imported here (see the guide note).
- */
 const FEISHU_PERMS_JSON = JSON.stringify(
   {
     scopes: {
@@ -309,7 +290,6 @@ export function FeishuModal({ open, onClose }: { open: boolean; onClose: () => v
     <Modal open={open} onClose={handleRequestClose}>
       <ModalHeader title={t('modal.configureFeishu')} onClose={handleRequestClose} />
       <div className="space-y-4">
-        {/* Setup guide */}
         <div className="rounded-lg border border-edge bg-panel-alt">
           <button
             type="button"
@@ -372,9 +352,6 @@ export function FeishuModal({ open, onClose }: { open: boolean; onClose: () => v
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   Weixin Modal
-   ═══════════════════════════════════════════════════ */
 export function WeixinModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const state = useStore(s => s.state);
   const toast = useStore(s => s.toast);
@@ -565,10 +542,6 @@ export function WeixinModal({ open, onClose }: { open: boolean; onClose: () => v
     </Modal>
   );
 }
-
-/* ═══════════════════════════════════════════════════
-   Generic credential modal (Slack / Discord / DingTalk / WeCom)
-   ═══════════════════════════════════════════════════ */
 
 import type { UserConfig } from '../types';
 
@@ -786,8 +759,6 @@ function ChannelCredentialModal({
   );
 }
 
-/* ─── Slack / Discord / DingTalk / WeCom modals (data-only wrappers) ─── */
-
 export function SlackModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
     <ChannelCredentialModal
@@ -909,9 +880,6 @@ export function WeComModal({ open, onClose }: { open: boolean; onClose: () => vo
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   Workdir Modal
-   ═══════════════════════════════════════════════════ */
 export function WorkdirModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const state = useStore(s => s.state);
   const toast = useStore(s => s.toast);
@@ -989,9 +957,6 @@ export function WorkdirModal({ open, onClose }: { open: boolean; onClose: () => 
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   Session Detail Modal
-   ═══════════════════════════════════════════════════ */
 export function SessionDetailModal({ open, onClose, agent, sessionId, session }: {
   open: boolean; onClose: () => void;
   agent: string; sessionId: string; session: SessionInfo | null;
@@ -1128,9 +1093,6 @@ export function SessionDetailModal({ open, onClose, agent, sessionId, session }:
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   Managed Browser Setup Modal
-   ═══════════════════════════════════════════════════ */
 export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved?: () => void }) {
   const toast = useStore(s => s.toast);
   const locale = useStore(s => s.locale);
@@ -1155,10 +1117,8 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
   const savedEnabled = !!browser?.enabled;
   const modeChanged = !!browser && savedEnabled !== enabled;
   const remoteCdpUrl = browser?.remoteCdpUrl || '';
-  // Remote mode is only meaningful while browser automation is on.
   const isRemote = !!remoteCdpUrl && enabled;
   const profileDir = browser?.profileDir || '';
-  // In remote mode the relevant locator is the CDP endpoint, not a local profile dir.
   const selectedInfoLabel = isRemote ? t('ext.browserRemote') : t('ext.profileDir');
   const selectedInfoValue = isRemote ? remoteCdpUrl : profileDir;
   const profileReady = !!browser?.chromeInstalled && !!browser?.profileCreated;
@@ -1209,9 +1169,6 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
     }
 
     if (refreshed?.browser.remoteCdpUrl) {
-      // Remote CDP endpoint \u2014 pikiloom owns no local browser, so there is nothing
-      // to launch. Saving enabled is enough; sign-in happens in the Chrome that
-      // owns the endpoint (e.g. the sidecar's web VNC).
       setResult({ ok: true, text: '\u2713 ' + t('ext.browserRemoteStep') });
       toast(t('ext.browserRemoteStep'));
       setSubmitting(false);
@@ -1332,4 +1289,3 @@ export function BrowserSetupModal({ open, onClose, onSaved }: { open: boolean; o
     </Modal>
   );
 }
-

@@ -4,7 +4,6 @@ import { hasPendingChannelValidation } from './channel-status';
 import type { AgentStatusResponse, AppState, HostInfo, SessionInfo } from './types';
 import type { Locale } from './i18n';
 
-/* ── Toast ── */
 export interface Toast {
   id: number;
   message: string;
@@ -12,8 +11,6 @@ export interface Toast {
 }
 
 export type Theme = 'dark' | 'light';
-
-/* ── sessionStorage cache for instant restore on refresh ── */
 
 const CACHE_KEY = 'pikiloom-store-cache';
 
@@ -38,7 +35,6 @@ function writeCache(slices: Partial<CachedSlices>) {
   } catch {}
 }
 
-/* ── Helpers ── */
 let _toastId = 0;
 
 function getInitialTheme(): Theme {
@@ -57,9 +53,7 @@ function getInitialLocale(): Locale {
   return 'zh-CN';
 }
 
-/* ── Store shape ── */
 interface StoreState {
-  /* ── Data slices ── */
   state: AppState | null;
   host: HostInfo | null;
   agentStatus: AgentStatusResponse | null;
@@ -68,7 +62,6 @@ interface StoreState {
   theme: Theme;
   locale: Locale;
 
-  /* ── Actions ── */
   toast: (msg: string, ok?: boolean) => void;
   setTheme: (t: Theme) => void;
   setLocale: (l: Locale) => void;
@@ -82,20 +75,12 @@ interface StoreState {
   loadSessions: () => Promise<void>;
 }
 
-/* ── Apply theme to DOM once at module load ── */
 const initialTheme = getInitialTheme();
 document.documentElement.dataset.theme = initialTheme;
 
-/* ══════════════════════════════════════════════════════
-   Zustand Store — selector-based, no Provider needed.
-   Components subscribe only to the slices they read:
-     const locale = useStore(s => s.locale);
-   Actions are stable refs and never cause re-renders.
-   ══════════════════════════════════════════════════════ */
 const _cached = readCache();
 
 export const useStore = create<StoreState>()((set, get) => ({
-  /* ── Initial data (hydrated from sessionStorage) ── */
   state: _cached.state,
   host: _cached.host,
   agentStatus: _cached.agentStatus,
@@ -104,7 +89,6 @@ export const useStore = create<StoreState>()((set, get) => ({
   theme: initialTheme,
   locale: getInitialLocale(),
 
-  /* ── Toast ── */
   toast: (message, ok = true) => {
     const id = ++_toastId;
     set((prev) => ({ toasts: [...prev.toasts, { id, message, ok }] }));
@@ -113,20 +97,17 @@ export const useStore = create<StoreState>()((set, get) => ({
     }, 3000);
   },
 
-  /* ── Theme ── */
   setTheme: (t) => {
     document.documentElement.dataset.theme = t;
     try { localStorage.setItem('pikiloom-theme', t); } catch {}
     set({ theme: t });
   },
 
-  /* ── Locale ── */
   setLocale: (l) => {
     try { localStorage.setItem('pikiloom-locale', l); } catch {}
     set({ locale: l });
   },
 
-  /* ── Reload app state + host + agent status ── */
   reload: async () => {
     try {
       const [d, h, agents] = await Promise.all([
@@ -157,7 +138,6 @@ export const useStore = create<StoreState>()((set, get) => ({
     writeCache({ agentStatus: status });
   },
 
-  /* ── Reload with polling until predicate ── */
   reloadUntil: async (predicate, opts) => {
     const attempts = opts?.attempts ?? 8;
     const intervalMs = opts?.intervalMs ?? 250;
@@ -170,7 +150,6 @@ export const useStore = create<StoreState>()((set, get) => ({
     return latest;
   },
 
-  /* ── Load sessions (legacy, for non-hub tabs) ── */
   loadSessions: async () => {
     try {
       const [s, h, ses] = await Promise.all([
@@ -190,24 +169,15 @@ export const useStore = create<StoreState>()((set, get) => ({
   },
 }));
 
-/* ── Kick off initial load ── */
 void useStore.getState().reload();
 
-/* ══════════════════════════════════════════════════════
-   Channel validation polling — runs as a store subscription.
-   Fires when channels have pending validation.
-   Updates only the `state` slice.
-   ══════════════════════════════════════════════════════ */
 let _channelPollTimer: ReturnType<typeof setTimeout> | null = null;
 
 useStore.subscribe((cur, prev) => {
-  // Only react to state changes (channel validation results)
   if (cur.state === prev.state) return;
 
-  // Clear any pending timer
   if (_channelPollTimer) { clearTimeout(_channelPollTimer); _channelPollTimer = null; }
 
-  // Skip if no channels need validation
   if (!hasPendingChannelValidation(cur.state?.setupState?.channels || null)) return;
 
   _channelPollTimer = setTimeout(() => {

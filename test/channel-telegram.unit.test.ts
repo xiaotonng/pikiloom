@@ -1,6 +1,3 @@
-/**
- * Unit tests for TelegramChannel — standalone, no core/agent needed.
- */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,7 +59,6 @@ beforeEach(() => {
 
 describe('TelegramChannel', () => {
   it('fetches bot info, reports errors, sends and edits messages, routes files, and dispatches updates', async () => {
-    // --- Sub-scenario 1: fetches bot info via getMe ---
     {
       const { ch, apiCalls } = createTestChannel();
       const bot = await ch.connect();
@@ -73,7 +69,6 @@ describe('TelegramChannel', () => {
       expect(apiCalls[0].method).toBe('getMe');
     }
 
-    // --- Sub-scenario 2: reports polling conflicts plus fetch and HTTP failures with useful details ---
     {
       const conflict = createTestChannel();
       const onError = vi.fn();
@@ -130,8 +125,6 @@ describe('TelegramChannel', () => {
       }
     }
 
-    // --- send, media, edit, and draft helpers ---
-    // --- Sub-scenario 1: passes options through and logs outgoing text verbatim ---
     {
       const { ch, apiCalls } = createTestChannel();
       const writeSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
@@ -167,7 +160,6 @@ describe('TelegramChannel', () => {
       }
     }
 
-    // --- Sub-scenario 2: retries transient failures, falls back on parse errors, and preserves terminal transport errors ---
     {
       const retry = createTestChannel();
       let attempts = 0;
@@ -229,7 +221,6 @@ describe('TelegramChannel', () => {
       await expect(pending).rejects.toThrow(/code=ECONNRESET/);
     }
 
-    // --- Sub-scenario 3: preserves upload metadata and routes files by mime type ---
     {
       const photo = createTestChannel();
       const fetchMock = vi.fn(async () => ({
@@ -295,7 +286,6 @@ describe('TelegramChannel', () => {
       });
     }
 
-    // --- Sub-scenario 4: edits messages, skips empty payloads, and keeps edit and draft logs terse ---
     {
       const { ch, apiCalls } = createTestChannel();
       const writeSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
@@ -334,7 +324,6 @@ describe('TelegramChannel', () => {
       }
     }
 
-    // --- dispatch flow ---
     {
     const flow = createTestChannel();
     await flow.ch.connect();

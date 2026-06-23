@@ -16,14 +16,8 @@ export interface LiveStreamView {
   plan?: StreamPlan | null;
   subAgents?: StreamSubAgent[] | null;
   error?: string | null;
-  /** Number of image-generation calls in flight — drives the
-   *  "Generating image…" chip while bytes have yet to land. */
   generatingImages?: number;
-  /** Live token/usage meta for the in-flight turn. `turnOutputTokens` climbs
-   *  from the opening extended-thinking phase through every tool roundtrip;
-   *  the TurnDivider header renders it as the "↑n" chip. */
   previewMeta?: StreamPreviewMeta | null;
-  /** Files delivered mid-turn via `im_send_file`, in delivery order. */
   artifacts?: SnapshotArtifact[] | null;
 }
 
@@ -37,13 +31,8 @@ export function liveStreamHasBody(stream: LiveStreamView): boolean {
     || !!(stream.artifacts && stream.artifacts.length);
 }
 
-/** True when the live preview will render any visible element (body or error tile). */
 export function liveStreamShouldRender(stream: LiveStreamView): boolean {
   if (liveStreamHasBody(stream)) return true;
-  // Streaming with no body yet — still render so the TurnDivider header and the
-  // internal ThinkingDots fill the "waiting for the first token" window. Without
-  // this branch, IM-initiated turns (no pendingPrompt to bridge) show nothing
-  // between session-start and the first text chunk.
   if (stream.phase === 'streaming') return true;
   return stream.phase === 'done' && !!stream.error;
 }
@@ -53,16 +42,6 @@ export function liveStreamFailureLabelKey(stream: LiveStreamView): string | null
   return liveStreamHasBody(stream) ? 'hub.streamErrored' : 'hub.streamFailed';
 }
 
-/**
- * Compact, low-profile end-of-turn marker. Replaces the old full-width rose
- * box that occupied three padded lines for every stopped/errored turn.
- *  - A user stop ("Interrupted by user.") renders as a muted neutral chip —
- *    it was intentional, so it must not read as a failure or grab attention.
- *  - Timeouts / max-token stops render neutral with their (short) reason.
- *  - Only genuine errors get a rose tint, and even then as a single tiny line.
- * Used both for the persisted `runDetail` (SessionPanel) and the transient
- * live `stream.error` (LivePreview) so the two stay visually consistent.
- */
 export function RunEndNotice({ detail, t, className }: {
   detail: string;
   t: (k: string) => string;
@@ -88,13 +67,6 @@ export function RunEndNotice({ detail, t, className }: {
   );
 }
 
-// Re-parsing the full, growing assistant text through react-markdown on every
-// stream delta is O(n) per delta → O(n²) over a long reply (a 16KB answer costs
-// ~800ms of main-thread parse work, 12–27ms per late delta). That starves the
-// event loop and makes typing in the composer stutter mid-stream. Cap the
-// re-parse to ~16fps while streaming — reading doesn't need more, and the gaps
-// between parses leave the main thread free for keystrokes. Once the turn is
-// done we render immediately (intervalMs 0) so the final text is never stale.
 const STREAM_MARKDOWN_THROTTLE_MS = 64;
 
 function useThrottledValue<T>(value: T, intervalMs: number): T {
@@ -113,12 +85,9 @@ function useThrottledValue<T>(value: T, intervalMs: number): T {
     }
     return () => { if (timer.current) clearTimeout(timer.current); };
   }, [value, intervalMs]);
-  // When not throttling (turn done), return the live value so the final,
-  // complete text renders without waiting on a trailing timer.
   return intervalMs <= 0 ? value : throttled;
 }
 
-/* ── Live streaming preview ── */
 export function LivePreview({
   stream,
   t,
@@ -133,8 +102,6 @@ export function LivePreview({
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const activityScrollRef = useRef<HTMLDivElement>(null);
   const thinkingScrollRef = useRef<HTMLDivElement>(null);
-  // Stream finished with an error — surface it even when partial text/activity
-  // exists, otherwise failed Claude turns can look like normal replies.
   const failureLabelKey = liveStreamFailureLabelKey(stream);
   const activityLines = useMemo(() =>
     (stream.activity || '').split('\n').filter(Boolean),
@@ -145,13 +112,11 @@ export function LivePreview({
     || toolCalls[toolCalls.length - 1]?.summary
     || '';
 
-  // Auto-scroll activity detail to bottom when content updates
   useLayoutEffect(() => {
     const el = activityScrollRef.current;
     if (el && activityOpen) el.scrollTop = el.scrollHeight;
   }, [activityOpen, stream.activity, toolCalls.length]);
 
-  // Auto-scroll thinking detail to bottom when content updates
   useLayoutEffect(() => {
     const el = thinkingScrollRef.current;
     if (el && thinkingOpen) el.scrollTop = el.scrollHeight;
@@ -159,9 +124,6 @@ export function LivePreview({
 
   const subAgents = stream.subAgents ?? null;
 
-  // Throttle + memoize the response markdown so it re-parses at most ~16fps while
-  // streaming (and only when the text actually changes — not when activity /
-  // thinking / tool rows update around it).
   const liveText = useThrottledValue(stream.text, stream.phase === 'streaming' ? STREAM_MARKDOWN_THROTTLE_MS : 0);
   const markdownComponents = useMemo(() => createMarkdownComponents({ workdir }), [workdir]);
   const responseMarkdown = useMemo(
@@ -171,21 +133,14 @@ export function LivePreview({
 
   return (
     <div className="space-y-3 animate-in">
-      {/* Plan — prominent card at top */}
       {showPlan && (
         <PlanProgressCard plan={stream.plan!} t={t} className="mb-1 max-w-[760px]" />
       )}
 
-      {/* Sub-agent invocations — each Task tool gets its own discrete card so
-          its model and tool stream stay isolated from the parent's activity. */}
       {subAgents && subAgents.length > 0 && subAgents.map(sub => (
         <SubAgentCard key={sub.id} sub={sub} t={t} />
       ))}
 
-      {/* Activity — expandable, shows latest line as preview. When the driver
-          supplies structured tool calls (previewMeta.toolCalls), each row is
-          itself click-to-expand with bounded input/result detail; otherwise we
-          fall back to the flat summary strings. */}
       {(toolCalls.length > 0 || activityLines.length > 0) && (
         <CollapsibleCard
           open={activityOpen}
@@ -210,7 +165,6 @@ export function LivePreview({
         </CollapsibleCard>
       )}
 
-      {/* Thinking — 3-line preview, expandable */}
       {stream.thinking && (
         <CollapsibleCard
           open={thinkingOpen}
@@ -229,7 +183,6 @@ export function LivePreview({
         </CollapsibleCard>
       )}
 
-      {/* Response text with thinking dots */}
       {stream.text && (
         <div className="session-md text-[13.5px] leading-[1.75] text-fg-2">
           {responseMarkdown}
@@ -237,10 +190,6 @@ export function LivePreview({
         </div>
       )}
 
-      {/* Delivered files — surfaced live as the agent hands them over, so a
-          remote user sees the artifact immediately rather than waiting for the
-          turn to finalize. Photos render inline; documents get a download chip.
-          The durable copy re-renders from the transcript after the turn ends. */}
       {stream.artifacts && stream.artifacts.length > 0 && (
         <div className="flex flex-col gap-2">
           {stream.artifacts.map((a, i) => (
@@ -259,22 +208,12 @@ export function LivePreview({
         </div>
       )}
 
-      {/* Loading dots — shown whenever the stream is live but no text body is
-          rendered yet. Inline dots (above) only appear once stream.text exists,
-          so this fills the gap when activity / thinking / plan are shown alone
-          or when no content has arrived at all. The divider already carries
-          model/effort/token state, so avoid repeating a textual "thinking"
-          label in the body. */}
       {!stream.text && stream.phase === 'streaming' && (
         <div className="py-1">
           <ThinkingDots className="text-fg-5" />
         </div>
       )}
 
-      {/* Image generation in flight — surfaced as a distinct chip so the user
-          knows why the turn is taking longer than a typical text reply
-          (image_gen wall time is 60-90s). Disappears when the assistant block
-          arrives with the actual image. */}
       {stream.phase === 'streaming' && (stream.generatingImages ?? 0) > 0 && (
         <div className="flex items-center gap-2 text-[12px] text-fg-4">
           <span className="relative inline-flex items-center justify-center w-3 h-3">
@@ -289,10 +228,6 @@ export function LivePreview({
         </div>
       )}
 
-      {/* Stream finished — surface a compact, low-profile end marker. A user
-          stop is intentional (neutral chip), not an error; only genuine
-          failures get rose tint. Replaces the old full-width rose box so a
-          stopped/errored turn no longer dominates the conversation. */}
       {failureLabelKey && stream.error && (
         <RunEndNotice detail={stream.error} t={t} className="pt-0.5" />
       )}
@@ -300,11 +235,6 @@ export function LivePreview({
   );
 }
 
-/**
- * One live tool invocation. Rows with input/result detail expand on click —
- * this is what makes the 执行 list inspectable *during* a run instead of only
- * after the turn lands in history.
- */
 function ToolCallRow({ call }: { call: StreamToolCall }) {
   const [open, setOpen] = useState(false);
   const expandable = !!(call.input || call.result);
@@ -339,7 +269,6 @@ function ToolCallRow({ call }: { call: StreamToolCall }) {
   );
 }
 
-/** Animated ··· indicator for streaming / thinking states */
 export function ThinkingDots({ className }: { className?: string }) {
   return (
     <span className={`thinking-dots inline-flex items-center gap-[3px] ${className || ''}`}>
@@ -348,11 +277,6 @@ export function ThinkingDots({ className }: { className?: string }) {
   );
 }
 
-/**
- * Discrete card for a sub-agent (Claude Task tool). Shows its own model, kind
- * (e.g. "Explore"), description, and tool stream — visually separated from the
- * parent agent's activity so the two contexts don't blur into one.
- */
 export function SubAgentCard({ sub, t }: { sub: StreamSubAgent; t: (k: string) => string }) {
   const [open, setOpen] = useState(false);
   const status = sub.status;

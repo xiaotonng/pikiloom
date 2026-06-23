@@ -1,12 +1,3 @@
-/**
- * The session list / swim-lane endpoints (`/api/sessions`, `/api/sessions/:agent`)
- * cap the heavy preview text fields so a session whose last turn dumped a huge
- * tool output or long answer doesn't ship tens of KB per card that the list never
- * renders (the cards only show the head via firstMeaningfulLine / slice / sanitize
- * and use the text for client-side substring search). Full text stays available
- * from the session-detail / messages endpoints. Guard the contract here.
- */
-
 import { describe, expect, it } from 'vitest';
 import { projectSessionForList } from '../src/dashboard/routes/sessions.ts';
 import type { SessionInfo } from '../src/agent/types.ts';
@@ -35,7 +26,6 @@ describe('projectSessionForList', () => {
     expect(out.lastAnswer!.length).toBe(CAP);
     expect(out.lastMessageText!.length).toBe(CAP);
     expect(out.runDetail!.length).toBe(CAP);
-    // The retained slice is the *head*, so previews/search over the start still work.
     expect(out.lastAnswer).toBe(huge.slice(0, CAP));
   });
 

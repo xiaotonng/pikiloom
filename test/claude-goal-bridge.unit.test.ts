@@ -1,16 +1,3 @@
-/**
- * Tests the native /goal bridge for the claude driver: reading goal_status
- * attachments out of a session transcript JSONL exactly as Claude Code v2.x
- * writes them, and the helpers that build the slash-command prompts pikiloom
- * sends through the task queue.
- *
- * Fixture transcripts mirror the on-disk shape from a real claude -p run:
- *   ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
- * The encoded-cwd convention (every non-alphanumeric → "-") is shared with the
- * rest of the claude driver (see core/platform.ts:encodePathAsDirName), so we
- * exercise that path by pointing HOME at a tmp dir and using its real workdir.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -56,20 +43,16 @@ afterEach(() => {
 
 describe('getClaudeNativeGoal', () => {
   it('reads, parses, auto-clears, and validates goal_status attachments from the transcript', () => {
-    // --- returns null when no transcript exists ---
     expect(getClaudeNativeGoal(tmpWorkdir, SID)).toBeNull();
 
-    // --- returns null on empty / blank session id (independent of transcript) ---
     expect(getClaudeNativeGoal(tmpWorkdir, '')).toBeNull();
 
-    // --- returns null when transcript has no goal_status attachment ---
     writeTranscript([
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }),
       JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }),
     ]);
     expect(getClaudeNativeGoal(tmpWorkdir, SID)).toBeNull();
 
-    // --- parses the latest goal_status attachment as an active goal when met:false ---
     writeTranscript([
       JSON.stringify({ type: 'user', message: { role: 'user', content: '/goal x' } }),
       JSON.stringify({
@@ -85,10 +68,6 @@ describe('getClaudeNativeGoal', () => {
     expect(goal!.status).toBe('active');
     expect(goal!.updatedAtMs).toBe(Date.parse('2026-05-13T00:15:01.374Z'));
 
-    // --- returns null after auto-clear (latest goal_status has met:true) ---
-    // Claude's Stop hook emits a follow-up goal_status with met:true when the
-    // Haiku judge confirms the condition is satisfied. The bridge surfaces
-    // that as "no active goal" so the API matches codex's clear semantics.
     writeTranscript([
       JSON.stringify({
         type: 'attachment',
@@ -103,7 +82,6 @@ describe('getClaudeNativeGoal', () => {
     ]);
     expect(getClaudeNativeGoal(tmpWorkdir, SID)).toBeNull();
 
-    // --- latest entry wins when multiple active goal_status lines are present (e.g. user re-set goal) ---
     writeTranscript([
       JSON.stringify({
         type: 'attachment',
@@ -118,7 +96,6 @@ describe('getClaudeNativeGoal', () => {
     ]);
     expect(getClaudeNativeGoal(tmpWorkdir, SID)?.condition).toBe('second goal');
 
-    // --- ignores malformed JSON lines and unrelated attachments ---
     writeTranscript([
       'not even json',
       '{ broken',
@@ -135,9 +112,7 @@ describe('getClaudeNativeGoal', () => {
 
 describe('slash-command prompt builders', () => {
   it('builds /goal set and clear prompts', () => {
-    // --- buildClaudeSetGoalPrompt prepends /goal and trims ---
     expect(buildClaudeSetGoalPrompt('  fix the auth bug ')).toBe('/goal fix the auth bug');
-    // --- buildClaudeClearGoalPrompt is the canonical /goal clear ---
     expect(buildClaudeClearGoalPrompt()).toBe('/goal clear');
   });
 });

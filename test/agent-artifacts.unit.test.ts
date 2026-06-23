@@ -9,7 +9,6 @@ import {
   mimeForArtifact,
 } from '../src/agent/artifacts.ts';
 
-// Minimal 1×1 transparent PNG.
 const PNG_BYTES = Buffer.from(
   '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4'
   + '890000000a49444154789c63000100000005000156c2c4360000000049454e44ae426082',
@@ -24,7 +23,7 @@ describe('delivered-artifact manifest', () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-artifacts-home-'));
     homeSnapshot = process.env.HOME;
-    process.env.HOME = home; // sessionAttachmentsDir resolves under $HOME
+    process.env.HOME = home;
     workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-artifacts-wd-'));
   });
   afterEach(() => {
@@ -46,14 +45,11 @@ describe('delivered-artifact manifest', () => {
     expect(rec!.kind).toBe('document');
     expect(rec!.caption).toBe('final report');
 
-    // Materialized copy lives under ~/.pikiloom/attachments/<agent>/<session>/delivered
-    // and is a *distinct* path from the source (survives workspace cleanup).
     expect(rec!.path).toContain(path.join('.pikiloom', 'attachments', 'claude', 'sess-1', 'delivered'));
     expect(rec!.path).not.toBe(src);
     expect(fs.existsSync(rec!.path)).toBe(true);
     expect(fs.readFileSync(rec!.path, 'utf-8')).toBe('PDF-CONTENT');
 
-    // Source deletion must NOT take the delivered copy with it.
     fs.rmSync(src);
     expect(fs.existsSync(rec!.path)).toBe(true);
   });
@@ -70,7 +66,6 @@ describe('delivered-artifact manifest', () => {
     const records = readDeliveredArtifacts('codex', 'sess-2');
     expect(records.map(r => r.fileName)).toEqual(['a.txt', 'b.log']);
     expect(records[1].taskId).toBe('t-9');
-    // Manifests are session-scoped — a different session sees nothing.
     expect(readDeliveredArtifacts('codex', 'other')).toEqual([]);
   });
 
@@ -95,7 +90,6 @@ describe('delivered-artifact manifest', () => {
     expect(file.fileMime).toBe('text/csv; charset=utf-8');
     expect(file.content.startsWith('file://')).toBe(true);
 
-    // A record whose backing file disappeared is silently dropped.
     fs.rmSync(docRec!.path);
     const after = deliveredArtifactBlocks('gemini', 'sess-3');
     expect(after).toHaveLength(1);

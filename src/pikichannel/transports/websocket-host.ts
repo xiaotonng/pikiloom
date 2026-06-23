@@ -1,16 +1,3 @@
-/**
- * pikichannel/transports/websocket-host.ts — the WebSocket L1 binding (host).
- *
- * The baseline transport: protocol frames ride a raw WebSocket. Same-machine /
- * LAN clients (the Dashboard case) want exactly this — there is no NAT to
- * traverse, so a TCP WebSocket is the optimal path. It is the control against
- * which the WebRTC binding is compared.
- *
- * The server wiring owns upgrade routing and feeds matching upgrades to
- * `handleUpgrade`; this class only manages the noServer WebSocketServer and
- * wraps each socket as a {@link ChannelConnection}.
- */
-
 import type http from 'node:http';
 import type internal from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -52,7 +39,7 @@ class WsConnection extends BaseConnection {
   }
 
   close(): void {
-    try { this.ws.close(); } catch { /* ignore */ }
+    try { this.ws.close(); } catch {  }
     this.emitClose();
   }
 }
@@ -74,7 +61,6 @@ export class WebSocketTransport implements ChannelTransport {
     });
   }
 
-  /** Server wiring routes a matching upgrade request here. */
   handleUpgrade(req: http.IncomingMessage, socket: internal.Duplex, head: Buffer): void {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
   }

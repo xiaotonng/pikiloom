@@ -11,10 +11,6 @@ describe('importFilesIntoWorkspace', () => {
     cleanup.length = 0;
   });
 
-  // Regression: an attachment already staged inside the workspace, but referenced
-  // through a SYMLINKED workspace prefix (macOS /tmp → /private/tmp, iCloud
-  // ~/Desktop), used to be mis-detected as "outside" and re-copied under a
-  // collision name. The prompt then carried the image twice → it rendered twice.
   it('recognizes an in-workspace file referenced via a symlinked path (no re-copy)', () => {
     const realRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'imp-real-'));
     cleanup.push(realRoot);
@@ -27,12 +23,9 @@ describe('importFilesIntoWorkspace', () => {
     const wsViaLink = path.join(linkRoot, 'ws-link');
     fs.symlinkSync(ws, wsViaLink);
 
-    // Reference the already-staged file through the symlinked workspace path —
-    // exactly what prepareStreamOpts does after stageSessionFiles forwarded it.
     const result = importFilesIntoWorkspace(wsViaLink, [path.join(wsViaLink, 'pic.png')]);
 
     expect(result).toEqual(['pic.png']);
-    // No collision copy (pic-1.png / pic-2.png) was created.
     expect(fs.readdirSync(ws).filter(f => f.endsWith('.png'))).toEqual(['pic.png']);
   });
 

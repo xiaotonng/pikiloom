@@ -1,7 +1,3 @@
-/**
- * Session and message orchestration helpers shared across channels.
- */
-
 import type { Bot, ChatId, SessionRuntime } from './bot.js';
 import { buildDefaultMenuCommands } from './menu.js';
 import { BOT_SHUTDOWN_FORCE_EXIT_MS as _BOT_SHUTDOWN_FORCE_EXIT_MS } from '../core/constants.js';

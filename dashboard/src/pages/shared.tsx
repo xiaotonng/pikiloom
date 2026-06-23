@@ -20,22 +20,11 @@ import {
 } from '../components/ui';
 import { cn } from '../utils';
 
-/**
- * Page-level composites — thin compatibility layer over the canonical
- * primitives in `components/ui/`. Every component in this file is a
- * one-line delegator so consumers don't need to migrate import paths in
- * lock-step with the design-system refactor; they get the new look for free.
- *
- * Adding new things here is OK if they're truly *page-shape* (page hero,
- * action bar). Anything reusable across pages belongs in `components/ui`.
- */
-
 export type Tone = 'ok' | 'warn' | 'err' | 'accent' | 'muted';
 const TONE_TO_STATE: Record<Tone, StatusState> = {
   ok: 'ok', warn: 'warn', err: 'err', accent: 'info', muted: 'idle',
 };
 
-/** Page hero — delegate to PageHeader. */
 export function TabHero({
   eyebrow,
   title,
@@ -50,7 +39,6 @@ export function TabHero({
   return <PageHeader eyebrow={eyebrow} title={title} description={description} right={right} />;
 }
 
-/** Status badge — delegate to StatusPill. Loading uses the running-pulse pill. */
 export function StatusBadge({
   tone,
   label,
@@ -71,12 +59,10 @@ export function StatusBadge({
   return <StatusPill state={TONE_TO_STATE[tone]} label={label} />;
 }
 
-/** Metric tile — delegate. */
 export function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return <MetricPrimitive label={label} value={value} hint={hint} />;
 }
 
-/** Description list — delegate. */
 export function DetailGrid({
   items,
 }: {
@@ -85,7 +71,6 @@ export function DetailGrid({
   return <DescriptionList items={items} columns={2} />;
 }
 
-/** Vertical list of bordered step-tiles. */
 export function StepList({ steps }: { steps: string[] }) {
   return (
     <ol className="space-y-2 text-sm leading-relaxed text-fg-3">
@@ -155,17 +140,6 @@ export function SectionCard({ children, className }: { children: ReactNode; clas
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * SettingRow* — preserved API delegating to the canonical Row primitives.
- *
- * The previous version rendered per-cell uppercase labels which produced
- * variable-height cells and made columns drift between rows. The new Row
- * is single-line-per-cell with full-width Description rows for secondary
- * text, so the wrapper here drops the `label` prop's prominence — it
- * still renders (for non-migrated consumers) but as a quiet inline prefix
- * rather than a full second line.
- * ─────────────────────────────────────────────────────────── */
-
 export function SettingRowCard({ children, className }: { children: ReactNode; className?: string }) {
   return <Row inline={false} className={className}>{children}</Row>;
 }
@@ -217,5 +191,4 @@ export function SettingRowAction({ children, className }: { children: ReactNode;
   return <Row.Action className={className}>{children}</Row.Action>;
 }
 
-/* Re-export the canonical primitives so pages can switch over progressively. */
 export { Row, RowGroup, Section, Field, EmptyState, LoadingDots, Tile, PageHeader };

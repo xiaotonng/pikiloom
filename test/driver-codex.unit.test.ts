@@ -10,7 +10,6 @@ afterEach(() => {
 
 describe('Codex session history', () => {
   it('reconstructs rich history (commentary/tools/plan/thinking) and surfaces generated images', async () => {
-    // --- reconstructs commentary, tools, plan, and persisted thinking for rich history ---
     await withTempHome(async homeDir => {
       const workdir = path.join(homeDir, 'project');
       const workspacePath = path.join(workdir, '.pikiloom', 'sessions', 'codex', 'sess-rich', 'workspace');
@@ -187,7 +186,6 @@ describe('Codex session history', () => {
       });
     });
 
-    // --- surfaces image_generation_call rollout entries as image MessageBlocks ---
     await withTempHome(async homeDir => {
       const sessionId = 'sess-img';
       const workdir = path.join(homeDir, 'project');
@@ -201,7 +199,6 @@ describe('Codex session history', () => {
       fs.mkdirSync(rolloutDir, { recursive: true });
       fs.mkdirSync(imageDir, { recursive: true });
 
-      // Minimal 1×1 PNG so attachAgentImage finds a real file.
       const pngBytes = Buffer.from(
         '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4'
         + '890000000a49444154789c63000100000005000156c2c4360000000049454e44ae426082',
@@ -245,7 +242,6 @@ describe('Codex session history', () => {
       expect(imageBlock?.imagePath).toBe(imagePath);
       expect(imageBlock?.imageMime).toBe('image/png');
       expect(imageBlock?.imageCaption).toContain('infographic-diagram');
-      // Small image — inlined as data URL.
       expect(imageBlock?.content.startsWith('data:image/png;base64,')).toBe(true);
     });
   });

@@ -38,7 +38,6 @@ afterEach(() => {
 
 describe('process-control restart flow', () => {
   it('rejects active tasks, signals supervisor in daemon mode, and spawns replacement in no-daemon mode', async () => {
-    // rejects restart while any registered runtime still has active tasks
     {
       const mod = await loadModule();
       const cleanupSpy = vi.fn();
@@ -65,7 +64,6 @@ describe('process-control restart flow', () => {
       }
     }
 
-    // Reset between scenarios
     vi.resetModules();
     spawnMock.mockReset();
     spawnMock.mockReturnValue({ pid: 4321, unref: vi.fn() } as any);
@@ -77,7 +75,6 @@ describe('process-control restart flow', () => {
     delete process.env.FEISHU_ALLOWED_CHAT_IDS;
     delete process.env.npm_config_yes;
 
-    // --- Daemon child scenario ---
     {
       const mod = await loadModule();
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-restart-'));
@@ -109,7 +106,6 @@ describe('process-control restart flow', () => {
       }
     }
 
-    // Reset for the next scenario
     vi.resetModules();
     spawnMock.mockReset();
     spawnMock.mockReturnValue({ pid: 4321, unref: vi.fn() } as any);
@@ -121,7 +117,6 @@ describe('process-control restart flow', () => {
     delete process.env.FEISHU_ALLOWED_CHAT_IDS;
     delete process.env.npm_config_yes;
 
-    // --- No-daemon scenario ---
     {
       const mod = await loadModule();
       const cleanupSpy = vi.fn();

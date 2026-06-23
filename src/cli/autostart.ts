@@ -1,27 +1,3 @@
-/**
- * macOS LaunchAgent integration for `pikiloom --daemon`.
- *
- * Every time the user runs pikiloom with an explicit `--daemon` flag on
- * macOS *without* a LaunchAgent already installed, an osascript dialog asks
- * whether to enable login auto-start. Choosing Enable writes
- * `~/Library/LaunchAgents/ai.pikiloom.gateway.plist` and loads it via
- * `launchctl bootstrap`. There is intentionally no CLI to disable: the user
- * toggles it off under System Settings → General → Login Items, which is
- * where macOS surfaces every LaunchAgent installed in
- * `~/Library/LaunchAgents`.
- *
- * Decision flow (`maybePromptAutostart`):
- *   1. Non-darwin → no-op.
- *   2. Already running under launchd (PIKILOOM_FROM_LAUNCHD set) → no-op.
- *   3. plist exists but its ProgramArguments no longer point to a valid
- *      binary (e.g. Homebrew migration moved node) → silently rewrite.
- *   4. plist already valid → no-op.
- *   5. Non-interactive (no TTY, CI=1) → no-op.
- *   6. Otherwise → show dialog after a short delay so the bot is already
- *      live when the user sees it. "Not now" silently dismisses; the next
- *      `--daemon` run will ask again.
- */
-
 import { exec, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,8 +13,6 @@ const PLIST_LABEL = 'ai.pikiloom.gateway';
 const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const PLIST_PATH = path.join(PLIST_DIR, `${PLIST_LABEL}.plist`);
 const PIKILOOM_HOME = path.join(os.homedir(), STATE_DIR_NAME);
-// Pre-rename LaunchAgent (pikiclaw) — removed on (re)install so an upgraded
-// machine never runs two daemons. Delete a couple releases post-rename.
 const LEGACY_PLIST_LABELS = ['ai.pikiclaw.gateway'];
 const PROMPT_DELAY_MS = 3000;
 
@@ -53,11 +27,6 @@ type DialogChoice = 'enable' | 'not_now' | 'closed';
 
 type LogFn = (msg: string) => void;
 
-/**
- * Resolve the command used to launch pikiloom, so the plist can re-launch it
- * the same way. We distinguish npx (`.../_npx/<hash>/.../main.js`) from a
- * globally installed binary (`pikiloom` on PATH).
- */
 function detectInvocation(): InvocationCommand | null {
   const entry = process.argv[1] || '';
   const userArgs = process.argv.slice(2);
@@ -155,7 +124,6 @@ async function showEnableDialog(): Promise<DialogChoice> {
     if (stdout.includes('Not now')) return 'not_now';
     return 'closed';
   } catch {
-    // User pressed Cmd-. or closed the dialog — osascript exits non-zero.
     return 'closed';
   }
 }
@@ -163,8 +131,6 @@ async function showEnableDialog(): Promise<DialogChoice> {
 async function bootstrapLaunchAgent(log: LogFn): Promise<boolean> {
   const uid = process.getuid?.() ?? 0;
   const domain = `gui/${uid}`;
-  // bootout first so a reinstall replaces any previously-loaded copy. We
-  // swallow errors here since bootout fails harmlessly when nothing is loaded.
   await new Promise<void>(resolve => {
     exec(`launchctl bootout ${domain}/${PLIST_LABEL}`, () => resolve());
   });
@@ -177,11 +143,6 @@ async function bootstrapLaunchAgent(log: LogFn): Promise<boolean> {
   }
 }
 
-/**
- * Remove the pre-rename LaunchAgent (`ai.pikiclaw.gateway`) if present, so an
- * upgraded install never runs two daemons. Best-effort; safe when nothing is
- * loaded. Delete a couple releases post-rename.
- */
 async function cleanupLegacyAutostart(log: LogFn): Promise<void> {
   const uid = process.getuid?.() ?? 0;
   for (const label of LEGACY_PLIST_LABELS) {
@@ -196,7 +157,7 @@ async function cleanupLegacyAutostart(log: LogFn): Promise<void> {
         try { fs.unlinkSync(plistPath); } catch {}
         log(`autostart: removed legacy LaunchAgent ${label}`);
       }
-    } catch { /* best-effort */ }
+    } catch {  }
   }
 }
 
@@ -217,10 +178,6 @@ async function installAutostart(log: LogFn, invocation: InvocationCommand): Prom
   return loaded;
 }
 
-/**
- * Top-level entry called once from the watchdog process when the user passed
- * an explicit `--daemon` flag. Fires and forgets; never throws.
- */
 export function maybePromptAutostart(log: LogFn): void {
   if (process.platform !== 'darwin') return;
   if (process.env[FROM_LAUNCHD_ENV]) return;
@@ -253,7 +210,6 @@ export function maybePromptAutostart(log: LogFn): void {
   }, PROMPT_DELAY_MS).unref?.();
 }
 
-// ─── exports for tests ─────────────────────────────────────────────────
 export const __test = {
   PLIST_LABEL,
   PLIST_PATH,

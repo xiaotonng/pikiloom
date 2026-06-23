@@ -49,12 +49,8 @@ export function Sidebar({
   const confirming = restartPhase === 'confirm';
 
   return (
-    // Glass-chrome top bar. `--th-sidebar` is intentionally semi-transparent
-    // (rgba 0.78 / 0.9) so the backdrop blur + saturate produces a visible
-    // frosted effect over the page surface below.
     <header className="sticky top-0 z-40 border-b border-edge bg-[var(--th-sidebar)] backdrop-blur-[20px] [backdrop-filter:blur(20px)_saturate(1.2)]">
       <div className="mx-auto flex min-h-13 max-w-[1180px] flex-wrap items-center gap-2.5 px-4 py-2">
-        {/* Logo — brand wordmark, recolored per theme (cyan on dark, deep cyan on light) */}
         <div className="mr-1.5 flex items-center gap-2.5 shrink-0">
           <img src={theme === 'light' ? wordmarkLight : wordmark} alt="pikiloom" className="h-[22px] w-auto shrink-0" />
           <span className="rounded-md border border-[var(--edge-subtle)] bg-transparent px-1.5 py-0.5 text-[10px] font-mono text-fg-5">
@@ -62,7 +58,6 @@ export function Sidebar({
           </span>
         </div>
 
-        {/* Tab navigation — icon-only-feel: minimal height, 1px accent on active */}
         <nav className="order-3 w-full md:order-none md:w-auto">
           <TabsList className="w-full overflow-x-auto md:w-auto">
             {tabs.map(item => (
@@ -84,22 +79,20 @@ export function Sidebar({
           </TabsList>
         </nav>
 
-        {/* Spacer */}
         <div className="flex-1 min-w-0" />
 
-        {/* Right-side actions */}
         <div className="flex items-center gap-1 shrink-0">
           <HeaderUsage t={t} />
-          {/* Connection target — which machine this console controls. Click to
-              switch 本机 / 局域网 / 互联网 and to share this machine. */}
-          <Button variant="outline" size="sm" onClick={onConnectionClick} title={t('conn.title')} className="gap-1.5">
-            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', connRemote ? 'bg-[var(--brand)]' : 'bg-fg-5')} />
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-              <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-            </svg>
-            <span className="hidden md:inline max-w-[150px] truncate">{connLabel}</span>
-          </Button>
+          {connRemote && (
+            <Button variant="outline" size="sm" onClick={onConnectionClick} title={t('conn.title')} className="gap-1.5">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--brand)]" />
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              </svg>
+              <span className="hidden md:inline max-w-[150px] truncate">{connLabel}</span>
+            </Button>
+          )}
           <Button
             variant={confirming ? 'secondary' : 'outline'}
             size="sm"

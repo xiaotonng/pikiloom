@@ -1,10 +1,3 @@
-/**
- * agent-driver.ts — Agent driver interface and registry.
- *
- * Each CLI agent (claude, codex, gemini, ...) implements AgentDriver.
- * Register with `registerDriver()`, look up with `getDriver()`.
- */
-
 import type {
   StreamOpts, StreamResult,
   SessionListResult, SessionTailOpts, SessionTailResult,
@@ -14,18 +7,6 @@ import type {
   AgentDriverCapabilities,
 } from './index.js';
 
-/**
- * Optional descriptor of an agent's *external* (non-pikiloom) configuration.
- *
- * Some agents (e.g. Hermes) maintain their own provider/model state outside
- * pikiloom — in `~/.hermes/config.yaml` and `~/.hermes/.env`. When that's the
- * case, `getNativeConfig()` returns a read-only snapshot so the dashboard can
- * surface what the agent will actually run with even before the user has
- * configured a pikiloom-managed BYOK Provider.
- *
- * Pikiloom never writes back to the source file; users edit native config via
- * the agent's own CLI (e.g. `hermes config`).
- */
 export interface AgentNativeConfig {
   model: string;
   provider: string;
@@ -37,20 +18,9 @@ export interface AgentNativeConfig {
 
 export interface AgentDriver {
   readonly id: string;
-  /** CLI binary name (e.g. 'claude', 'codex', 'gemini') */
   readonly cmd: string;
-  /** UI label for thinking/reasoning display */
   readonly thinkLabel: string;
-  /** Static capability flags. Drivers omit this to opt into all defaults (false). */
   readonly capabilities?: AgentDriverCapabilities;
-  /**
-   * Which BYOK provider kinds this driver can route through. The unified
-   * /models picker uses this to filter compatible Profiles into the agent's
-   * cross-provider model list (cf. resolveAgentModels). String values
-   * intentionally — kept bare so this interface stays independent of the
-   * Model layer's ProviderKind union (see src/model/types.ts).
-   * Omit to opt out of BYOK Profile listing entirely.
-   */
   readonly acceptedProviderKinds?: readonly string[];
 
   doStream(opts: StreamOpts): Promise<StreamResult>;
@@ -59,24 +29,11 @@ export interface AgentDriver {
   getSessionMessages(opts: SessionMessagesOpts): Promise<SessionMessagesResult>;
   listModels(opts: ModelListOpts): Promise<ModelListResult>;
   getUsage(opts: UsageOpts): UsageResult;
-  /** Optional live/async usage (e.g. codex app-server). Falls back to getUsage. */
   getUsageLive?(opts: UsageOpts): Promise<UsageResult>;
-  /** Optional read-only snapshot of the agent's external config. */
   getNativeConfig?(): AgentNativeConfig | null;
-  /**
-   * Best-effort removal of the agent's native session record (Claude jsonl /
-   * Codex rollout / Gemini chat file). Returns the absolute paths removed.
-   * Drivers omit this when they have no on-disk session store. Errors should
-   * be swallowed and reflected as missing entries in the returned array —
-   * deletion is advisory cleanup, not a hard contract.
-   */
   deleteNativeSession?(workdir: string, sessionId: string): Promise<string[]>;
   shutdown(): void;
 }
-
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
 
 const drivers = new Map<string, AgentDriver>();
 
@@ -104,11 +61,6 @@ export function getDriverCapabilities(id: string): AgentDriverCapabilities {
   return { ...DEFAULT_CAPABILITIES, ...d.capabilities };
 }
 
-/**
- * Provider kinds this driver can route through. Empty array means the driver
- * declared no compatibility (so no Profiles will be listed for it). Callers
- * should treat this as the filter for cross-provider model offerings.
- */
 export function getAcceptedProviderKinds(id: string): readonly string[] {
   return drivers.get(id)?.acceptedProviderKinds ?? [];
 }

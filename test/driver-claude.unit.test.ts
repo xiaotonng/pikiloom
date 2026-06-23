@@ -42,9 +42,6 @@ describe('Claude -p driver — selected-model-unavailable surfaces as a non-retr
       sessionId: null, model: 'claude-fable-5', thinkingEffort: 'high',
       onText: () => {},
     } as any);
-    // The disabled model surfaces as a `<synthetic>` assistant event carrying
-    // `error:"model_not_found"` — dropped from s.text on the live channel, but
-    // we record it as a hard error here.
     claudeParse({
       type: 'assistant',
       error: 'model_not_found',
@@ -57,8 +54,6 @@ describe('Claude -p driver — selected-model-unavailable surfaces as a non-retr
     expect(Array.isArray(s.errors) && s.errors.length > 0).toBe(true);
     expect(String(s.errors[0])).toContain('(claude-fable-5)');
     expect(String(s.errors[0]).toLowerCase()).toContain('unavailable');
-    // The result event carries a benign stop_reason ('stop_sequence') that must
-    // NOT clobber the 'model_error' we set, and its text is harmless to fold in.
     claudeParse({
       type: 'result', is_error: true, api_error_status: 404, stop_reason: 'stop_sequence',
       result: "There's an issue with the selected model (claude-fable-5).", session_id: 'sess-1',
@@ -85,7 +80,6 @@ describe('Claude usage resolution', () => {
   });
 
   it('falls through to telemetry when OAuth fails and generates age-based labels', async () => {
-    // --- OAuth rate_limit_error scenario ---
     {
       const telemetryDir = path.join(homeDir, '.claude', 'telemetry');
       fs.mkdirSync(telemetryDir, { recursive: true });
@@ -93,7 +87,7 @@ describe('Claude usage resolution', () => {
         event_type: 'ClaudeCodeInternalEvent',
         event_data: {
           event_name: 'tengu_claudeai_limits_status_changed',
-          client_timestamp: new Date(Date.now() - 60_000).toISOString(), // 1 minute ago
+          client_timestamp: new Date(Date.now() - 60_000).toISOString(),
           model: 'claude-opus-4-7',
           additional_metadata: JSON.stringify({ status: 'allowed_warning', hoursTillReset: 39 }),
         },
@@ -117,28 +111,24 @@ describe('Claude usage resolution', () => {
       const { getUsage } = await import('../src/agent/index.ts');
       const usage = getUsage({ agent: 'claude', model: 'claude-opus-4-7' });
 
-      // Should fall through to telemetry, not report the OAuth error
       expect(usage.ok).toBe(true);
       expect(usage.source).toBe('telemetry');
       expect(usage.status).toBe('warning');
     }
 
-    // Reset modules and mocks for the next scenario
     vi.resetModules();
     execSyncMock.mockReset();
     homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-claude-usage-'));
     process.env.HOME = homeDir;
 
-    // --- Age-based labels scenario ---
     {
       const telemetryDir = path.join(homeDir, '.claude', 'telemetry');
       fs.mkdirSync(telemetryDir, { recursive: true });
-      // Write a recent telemetry event (5 minutes ago) so label is deterministic
       fs.writeFileSync(path.join(telemetryDir, 'events.json'), JSON.stringify({
         event_type: 'ClaudeCodeInternalEvent',
         event_data: {
           event_name: 'tengu_claudeai_limits_status_changed',
-          client_timestamp: new Date(Date.now() - 5 * 60_000).toISOString(), // 5 minutes ago
+          client_timestamp: new Date(Date.now() - 5 * 60_000).toISOString(),
           model: 'claude-opus-4-7',
           additional_metadata: JSON.stringify({ status: 'allowed_warning', hoursTillReset: 39 }),
         },
@@ -153,13 +143,12 @@ describe('Claude usage resolution', () => {
 
       expect(usage.ok).toBe(true);
       expect(usage.source).toBe('telemetry');
-      expect(usage.windows[0]?.label).toMatch(/^\d+m ago$/); // e.g. "5m ago"
+      expect(usage.windows[0]?.label).toMatch(/^\d+m ago$/);
       expect(usage.windows[0]?.status).toBe('warning');
     }
   });
 
   it('throttles the OAuth usage query and serves the last good result within the window', async () => {
-    // First poll: OAuth returns real utilization → cached as last-good.
     execSyncMock.mockImplementation((cmd: string) => {
       if (cmd.includes('security find-generic-password')) {
         return JSON.stringify({ claudeAiOauth: { accessToken: 'oauth-token' } });
@@ -180,13 +169,10 @@ describe('Claude usage resolution', () => {
     expect(first.windows[0]?.usedPercent).toBe(42);
     expect(usageCalls()).toBe(1);
 
-    // Second poll inside the throttle window must NOT re-query the (rate-limited)
-    // endpoint, and must keep serving the cached good windows — so a transient
-    // 429 between polls can't blank the header ring.
     const second = getUsage({ agent: 'claude', model: 'claude-opus-4-7' });
     expect(second.source).toBe('oauth-api');
     expect(second.windows[0]?.usedPercent).toBe(42);
-    expect(usageCalls()).toBe(1); // unchanged → query was throttled
+    expect(usageCalls()).toBe(1);
   });
 });
 
@@ -199,7 +185,6 @@ describe('Claude context fallback', () => {
   });
 
   it('derives context window via 1M fallback and accumulates turnOutputTokens across calls', async () => {
-    // --- uses 1M fallback for Opus and Sonnet base models ---
     {
     const { doClaudeStream } = await import('../src/agent/index.ts');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-claude-context-'));
@@ -237,15 +222,10 @@ describe('Claude context fallback', () => {
     ]);
 
     const result = await doClaudeStream(baseOpts);
-    // contextWindow stores the *effective* usable window: advertised 1M minus
-    // 20K max-output reserve and 13K auto-compact buffer (matches cc 2.1.112's
-    // `Yn() − t_7` denominator).
     expect(result.contextWindow).toBe(967_000);
-    // 26000 used / 967000 = 2.689... → 2.7
     expect(result.contextPercent).toBe(2.7);
     }
 
-    // --- accumulates turnOutputTokens across per-call message_start resets ---
     {
     const { doClaudeStream } = await import('../src/agent/index.ts');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-claude-turnout-'));
@@ -255,10 +235,8 @@ describe('Claude context fallback', () => {
 
     const jsonLines = [
       { type: 'system', session_id: 's-turnout', model: 'claude-opus-4-8' },
-      // Call 1: thinking burns 500 output tokens, ends in tool_use.
       { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 10_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } },
       { type: 'stream_event', event: { type: 'message_delta', delta: {}, usage: { output_tokens: 500 } } },
-      // Call 2 (after the tool roundtrip): per-call counters reset, 300 more.
       { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 11_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } },
       { type: 'stream_event', event: { type: 'message_delta', delta: {}, usage: { output_tokens: 300 } } },
       { type: 'result', session_id: 's-turnout', usage: { input_tokens: 11_000, output_tokens: 300 } },
@@ -278,8 +256,6 @@ describe('Claude context fallback', () => {
       onText: (_text: string, _thinking: string, _activity?: string, meta?: any) => { if (meta) lastMeta = meta; },
     });
 
-    // Per-call output reflects the latest call only; the turn-cumulative
-    // counter keeps climbing across the message_start reset (500 + 300).
     expect(lastMeta?.outputTokens).toBe(300);
     expect(lastMeta?.turnOutputTokens).toBe(800);
     }
@@ -290,8 +266,6 @@ describe('Claude session-context env scrub', () => {
   it('removes the markers a parent claude session exports, keeps user config', async () => {
     const { scrubClaudeSessionContextEnv } = await import('../src/agent/drivers/claude.ts');
     const env: Record<string, string | undefined> = {
-      // Runtime context markers — leak from an agent-launched daemon and flip
-      // spawned claudes into child-session mode (transcript never written).
       CLAUDECODE: '1',
       CLAUDE_CODE_CHILD_SESSION: 'true',
       CLAUDE_CODE_ENTRYPOINT: 'cli',
@@ -300,7 +274,6 @@ describe('Claude session-context env scrub', () => {
       CLAUDE_CODE_SSE_PORT: '12345',
       CLAUDE_EFFORT: 'max',
       CLAUDE_PERMISSION_MODE: 'bypassPermissions',
-      // Deliberate user config — must survive the scrub.
       CLAUDE_CODE_USE_BEDROCK: '1',
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192',
       ANTHROPIC_BASE_URL: 'https://proxy.example.com',

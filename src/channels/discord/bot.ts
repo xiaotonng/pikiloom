@@ -1,11 +1,3 @@
-/**
- * Discord bot orchestration.
- *
- * Mirrors the Slack/Weixin command surface (/help, /status, /agent, /models, …)
- * over Discord channels. Bot replies as a regular message reply so the thread
- * UI keeps the conversation grouped under the trigger message.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

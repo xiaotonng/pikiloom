@@ -1,17 +1,3 @@
-/**
- * pikichannel/rendezvous-host.ts — the host's OUTBOUND registrar (NAT side).
- *
- * A pikiloom host behind NAT can't be dialed directly, so it dials OUT to a
- * reachable {@link RendezvousBroker} and registers its NodeID. For each client
- * that dials that NodeID, the broker relays signaling and this client drives a
- * shared werift answerer — the resulting datachannel is a normal pikichannel
- * connection, indistinguishable downstream from a direct or local one. The
- * registration auto-reconnects so the host stays reachable.
- *
- * Imports werift (via webrtc-shared), so the server wiring loads it only inside
- * the guarded WebRTC dynamic import.
- */
-
 import WebSocket from 'ws';
 import { writeScopedLog } from '../core/logging.js';
 import type { ChannelConnection } from './transport.js';
@@ -37,7 +23,7 @@ export class RendezvousHostClient {
   stop(): void {
     this.stopped = true;
     const ws = this.ws; this.ws = null;
-    try { ws?.close(); } catch { /* ignore */ }
+    try { ws?.close(); } catch {  }
     for (const a of this.answerers.values()) a.close();
     this.answerers.clear();
     this.adopted.clear();
@@ -60,7 +46,7 @@ export class RendezvousHostClient {
       this.answerers.clear(); this.adopted.clear();
       this.scheduleReconnect();
     });
-    ws.on('error', () => { /* close handles reconnect */ });
+    ws.on('error', () => {  });
   }
 
   private scheduleReconnect(): void {
@@ -82,7 +68,7 @@ export class RendezvousHostClient {
         return;
       }
       case 'signal': {
-        if (this.adopted.has(m.sessionId)) return; // datachannel already live; ignore late signals
+        if (this.adopted.has(m.sessionId)) return;
         const a = this.ensureAnswerer(m.sessionId);
         void a.onSignal(m.data as SignalData);
         return;
@@ -98,7 +84,7 @@ export class RendezvousHostClient {
       log: rlog,
       onConnection: (conn) => {
         this.adopted.add(sessionId);
-        this.answerers.delete(sessionId); // pc now owned by the connection
+        this.answerers.delete(sessionId);
         this.onConnection(conn);
       },
       sendSignal: (data) => {

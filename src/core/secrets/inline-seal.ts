@@ -1,10 +1,3 @@
-/**
- * Machine-bound AES-256-GCM seal for credential values when no OS keychain
- * is available. The derived key mixes hostname + a per-install random salt
- * stored alongside ~/.pikiloom/setting.json, so a sealed blob copied to a
- * different machine will not decrypt.
- */
-
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,7 +30,6 @@ function deriveKey(): Buffer {
   return crypto.createHash('sha256').update(material).digest();
 }
 
-/** Returns base64 string `v1:<iv>:<ciphertext>:<tag>`. */
 export function sealInline(plaintext: string): string {
   const key = deriveKey();
   const iv = crypto.randomBytes(12);

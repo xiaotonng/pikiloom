@@ -1,7 +1,3 @@
-/**
- * Setup/doctor state assessment and messaging.
- */
-
 import type { AgentInfo } from '../agent/index.js';
 import { getAgentInstallCommand, getAgentLabel } from '../agent/npm.js';
 
@@ -158,9 +154,6 @@ export function hasInstalledAgent(state: SetupState): boolean {
 }
 
 export function isSetupReady(state: SetupState): boolean {
-  // The Web Dashboard is always an available terminal, so an installed agent is
-  // the only hard prerequisite. IM channels are optional add-ons — their
-  // readiness is surfaced separately (per-channel status), not gated here.
   return hasReadyAgent(state);
 }
 

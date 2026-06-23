@@ -1,15 +1,3 @@
-/**
- * Hermes Agent driver — speaks ACP (Agent Client Protocol) to `hermes acp`.
- *
- * Pikiloom owns Provider/Profile credentials in its own vault; this driver
- * reads the active Profile via the model layer's injector and applies env
- * vars when spawning the Hermes ACP child process. Hermes' own config and
- * `hermes auth` command are not touched.
- *
- * Reference: https://agentclientprotocol.com — JSON-RPC 2.0 over stdio.
- * Hermes implements ACP via `~/.hermes/hermes-agent/acp_adapter/server.py`.
- */
-
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -30,11 +18,6 @@ import {
   IMAGE_EXTS, mimeForExt,
 } from '../index.js';
 
-// Build the ACP `prompt` content array from the user's text + staged
-// attachments. Images become ImageContentBlocks (base64 + mimeType — the
-// shape Hermes' acp_adapter accepts and converts to OpenAI multimodal
-// content). Non-image attachments are referenced by path so the agent can
-// open them with its own filesystem tools.
 function buildHermesPromptBlocks(prompt: string, attachments: string[]): any[] {
   const blocks: any[] = [];
   for (const filePath of attachments) {
@@ -57,11 +40,6 @@ function buildHermesPromptBlocks(prompt: string, attachments: string[]): any[] {
   blocks.push({ type: 'text', text: prompt });
   return blocks;
 }
-
-// ---------------------------------------------------------------------------
-// Stream state — encapsulates the per-turn buffer + delta model so we can
-// reset/snapshot it cleanly across resume → replay → prompt boundaries.
-// ---------------------------------------------------------------------------
 
 interface StreamState {
   text: string;
@@ -100,9 +78,6 @@ function applySessionUpdate(state: StreamState, update: any): boolean {
       return false;
     }
     case 'tool_call': {
-      // ACP tool_call kicks off a new invocation. Accumulate it (mirroring
-      // Claude/Codex) so the user sees the full chain in the live footer,
-      // not just the title of whatever tool is currently mid-flight.
       const id = typeof update.toolCallId === 'string' ? update.toolCallId : '';
       const title = (typeof update.title === 'string' && update.title.trim()) || 'tool';
       if (id) state.toolsById.set(id, { title });
@@ -127,10 +102,6 @@ function applySessionUpdate(state: StreamState, update: any): boolean {
       return true;
     }
     case 'usage_update': {
-      // ACP semantics: `size` = model context window, `used` = current
-      // context pressure. We previously mis-mapped `size` to
-      // contextUsedTokens, which made the chip show the full window
-      // (e.g. "1.0M tok" for a 1M-window model) regardless of actual use.
       if (typeof update.size === 'number') state.contextWindow = update.size;
       if (typeof update.used === 'number') state.contextUsedTokens = update.used;
       return true;
@@ -152,23 +123,10 @@ function makeStreamResult(start: number, partial: Partial<StreamResult> = {}): S
   };
 }
 
-// Empty / refusal heuristic — used to surface a hint when the model's reply
-// is the canonical OpenAI safety refusal with no content. We don't paper
-// over it (the user should see exactly what the model said), but a short
-// pikiloom note tells them this came from the model itself, not a bug.
 const REFUSAL_REGEX = /^(?:i'?m sorry|sorry),?[\s\w,'`]*?(?:can(?:not|'t)|unable to)\s+(?:assist|help)[\s\S]{0,40}$/i;
-
-// ---------------------------------------------------------------------------
-// ACP-driven streaming
-// ---------------------------------------------------------------------------
 
 async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
   const start = Date.now();
-  // BYOK env is populated on opts by stream.ts via resolveAgentInjection('hermes');
-  // we just merge it into the spawn env. The bound model is delivered via the
-  // ACP `session/set_model` request below — `hermes acp` does NOT accept any
-  // CLI flags besides `--accept-hooks`, so we MUST NOT append byokArgvAppend
-  // here (doing so would crash the spawn with `unrecognized arguments`).
   const baseEnv: NodeJS.ProcessEnv = { ...process.env, ...(opts.extraEnv || {}) };
   if (!opts.hermesModel) {
     agentLog(`[hermes] no active profile bound — running with hermes' native config default`);
@@ -183,17 +141,9 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
 
   let sessionId = opts.sessionId || null;
   let stopReason: string | null = null;
-  // Per-turn streaming state. We reset it just before sending session/prompt
-  // so any session/update events from the prior session/load replay don't
-  // leak into the user-visible reply.
   const state = makeStreamState();
-  // While true, sessionUpdate events flow into `state`. When false, they are
-  // counted but discarded — used during the session/load replay window so
-  // history-replay chunks don't pollute the new turn's reply.
   let consumeUpdates = true;
 
-  // Agent-initiated requests we must respond to (we deny filesystem ops we
-  // don't support; pikiloom has its own sandbox/permission model elsewhere).
   client.on('request', ({ id, method }: any) => {
     if (method === 'session/request_permission') {
       client.respond(id, { outcome: { outcome: 'cancelled' } });
@@ -223,7 +173,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
   };
   client.on('sessionUpdate', onUpdate);
 
-  // Abort handling
   const onAbort = () => {
     stopReason = 'interrupted';
     if (sessionId) client.notify('session/cancel', { sessionId });
@@ -249,16 +198,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
       sessionId = newSession?.sessionId || newSession?.session_id || null;
       if (sessionId) opts.onSessionId?.(sessionId);
     } else {
-      // Resumed session in a fresh `hermes acp` process. We MUST call
-      // `session/load`, not just rely on the implicit DB restore that
-      // `session/prompt` does internally:
-      //   1. ACP-registered MCP servers are NOT persisted on disk — Hermes'
-      //      `_make_agent` (used during DB restore) recreates the agent with
-      //      *only* its native toolset. Without re-registering, the model
-      //      sees a different tool surface than turn 1.
-      //   2. `session/load` triggers Hermes' history-replay (it streams every
-      //      prior user/assistant message back as session/update events).
-      //      Discard them so they don't pollute the new turn's reply.
       consumeUpdates = false;
       try {
         const result = await client.request('session/load', {
@@ -269,9 +208,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
         if (result === null) {
           agentWarn(`[hermes] session/load returned null for ${sessionId} — session not found in Hermes DB; continuing with a fresh prompt against the existing id`);
         } else {
-          // Replay events arrive on Hermes' event loop AFTER session/load
-          // resolves. Wait until the stream goes quiet for ~150ms (or 3s
-          // hard cap) — that's a more robust signal than a fixed sleep.
           const drained = await client.waitForQuiet(150, 3_000);
           if (drained > 0) agentLog(`[hermes] drained ${drained} replay event(s) after session/load`);
         }
@@ -282,12 +218,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
 
     if (!sessionId) throw new Error('Hermes did not return a session id');
 
-    // If a Profile is bound, override Hermes' config-default model via ACP.
-    // `set_model` is best-effort: a Hermes that doesn't recognise the model id
-    // (or doesn't have credentials for the requested provider) responds with
-    // an error, but we keep going — the user will see that error in the first
-    // prompt response and can re-pick a working profile, which is far better
-    // than crashing the whole spawn.
     if (opts.hermesModel) {
       try {
         await client.request('session/set_model', {
@@ -300,11 +230,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
       }
     }
 
-    // Best-effort: forward the chosen reasoning effort via ACP `session/set_mode`.
-    // Current `hermes acp` accepts the request but only persists the value on
-    // the session record (it doesn't influence generation). When Hermes adds a
-    // real effort knob to the ACP surface, this call will start taking effect
-    // without any pikiloom change.
     if (opts.thinkingEffort) {
       await client.tryRequest('session/set_mode', {
         sessionId,
@@ -312,9 +237,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
       });
     }
 
-    // Reset the buffer one last time before we start consuming updates for
-    // the prompt. Anything that arrived during/after the drain (latency
-    // stragglers from the replay) gets discarded too.
     state.text = '';
     state.thinking = '';
     state.activity = '';
@@ -329,9 +251,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
 
     stopReason = promptResponse?.stopReason || 'end_turn';
 
-    // `PromptResponse.usage` (ACP) carries real per-turn token counts from the
-    // provider. `usage_update` notifications, by contrast, describe the
-    // session's *context window pressure* (size/used), not this turn's I/O.
     const usage = promptResponse?.usage;
     if (usage && typeof usage === 'object') {
       const input = usage.inputTokens ?? usage.input_tokens;
@@ -359,8 +278,6 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
       stopReason,
       incomplete: stopReason !== 'end_turn',
       activity: null,
-      // When the model itself refuses, mark as incomplete and add a hint so
-      // the user can tell it's the model's choice (not a pikiloom error).
       error: isRefusalOnly
         ? `Model returned a safety refusal. Try a different model on the agent card (e.g. claude-haiku-4.5 via OpenRouter), or check ~/.hermes/config.yaml.`
         : null,
@@ -387,17 +304,8 @@ async function doHermesStream(opts: StreamOpts): Promise<StreamResult> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sessions / models / usage — minimal surface
-// ---------------------------------------------------------------------------
-
 async function getHermesSessions(workdir: string, limit?: number): Promise<SessionListResult> {
-  // Hermes' own session list lives in a SQLite DB inside ~/.hermes — useful
-  // for the `hermes sessions` CLI but irrelevant to pikiloom, which always
-  // creates its own ACP session per turn and records it under .pikiloom.
   const resolvedWorkdir = resolvePath(workdir);
-  // Canonical record→SessionInfo mapper (single source of truth) — see claude.ts.
-  // Hand-rolling dropped thinkingEffort/workflowEnabled/profileId.
   const records = listPikiloomSessions(resolvedWorkdir, 'hermes');
   const sessions = records.map(managedRecordToSessionInfo);
   sessions.sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
@@ -410,19 +318,12 @@ async function getHermesSessionTail(_opts: SessionTailOpts): Promise<SessionTail
   return { ok: true, messages: [], error: null };
 }
 
-// Hermes mirrors every ACP/CLI session to ~/.hermes/sessions/session_<id>.json
-// (in addition to the SQLite store at ~/.hermes/state.db). The JSON file is
-// authoritative for full conversation replay: it carries the OpenAI-style
-// `messages[]` stream, including assistant `reasoning_content` and any
-// `tool_calls[] / role:"tool"` pairs. Reading it is ~20ms vs. a 4+ s ACP
-// `session/load` replay round-trip, so we use it directly.
 function hermesSessionJsonPath(sessionId: string): string {
   return join(homedir(), '.hermes', 'sessions', `session_${sessionId}.json`);
 }
 
 function extractHermesContentText(content: unknown): string {
   if (typeof content === 'string') return content;
-  // OpenAI multimodal: array of { type, text | image_url, ... }.
   if (Array.isArray(content)) {
     const parts: string[] = [];
     for (const part of content) {
@@ -441,7 +342,6 @@ function formatHermesArgs(raw: unknown): string {
   if (typeof raw === 'string') {
     const trimmed = raw.trim();
     if (!trimmed) return '';
-    // tool_calls.function.arguments is a JSON string — pretty-print when valid.
     try {
       const parsed = JSON.parse(trimmed);
       return JSON.stringify(parsed, null, 2);
@@ -561,7 +461,6 @@ function getHermesSessionMessagesFromJson(opts: SessionMessagesOpts): SessionMes
       });
       continue;
     }
-    // Unknown role — ignore silently.
   }
   flushAssistant();
 
@@ -569,10 +468,6 @@ function getHermesSessionMessagesFromJson(opts: SessionMessagesOpts): SessionMes
 }
 
 function getHermesSessionMessagesFromRecord(opts: SessionMessagesOpts): SessionMessagesResult {
-  // Fallback for sessions that pre-date the JSON store (or that Hermes wrote
-  // somewhere we can't see). Synthesizes the most recent turn from the
-  // pikiloom session record so the dashboard still has *something* after the
-  // live snapshot expires.
   const record = findPikiloomSession(opts.workdir, 'hermes', opts.sessionId);
   if (!record || (!record.lastQuestion && !record.lastAnswer && !record.lastThinking)) {
     return { ok: true, messages: [], totalTurns: 0, error: null };
@@ -622,10 +517,6 @@ async function getHermesSessionMessages(opts: SessionMessagesOpts): Promise<Sess
 }
 
 async function listHermesModels(_opts: ModelListOpts): Promise<ModelListResult> {
-  // When Hermes has its own working config (typical case — user ran `hermes auth`
-  // and `hermes config`), surface the configured default model so the dashboard
-  // and IM /models reflect what Hermes will actually use without forcing the
-  // user to re-configure inside pikiloom.
   const native = readHermesNativeConfig();
   const models: ModelInfo[] = native?.model
     ? [{ id: native.model, alias: `${native.provider} (Hermes config)` }]
@@ -640,26 +531,12 @@ async function listHermesModels(_opts: ModelListOpts): Promise<ModelListResult> 
   };
 }
 
-// ---------------------------------------------------------------------------
-// Native config reader
-//
-// Pikiloom never writes to ~/.hermes/config.yaml — that is Hermes' own state.
-// We just *read* a few fields so the dashboard can show what Hermes will run
-// with when no BYOK Profile is bound, and so the UI doesn't pretend that an
-// already-configured Hermes "needs" to be re-configured inside pikiloom.
-//
-// Limited surface: only the top-level `model.*` and `agent.reasoning_effort`
-// keys we care about. Implemented with simple string matching (no YAML
-// dependency) since the schema is stable and shallow.
-// ---------------------------------------------------------------------------
-
 let cachedNativeConfig: { value: AgentNativeConfig | null; mtimeMs: number; path: string } | null = null;
 
 function readHermesNativeConfig(): AgentNativeConfig | null {
   const path = join(homedir(), '.hermes', 'config.yaml');
   if (!existsSync(path)) return null;
 
-  // Cheap mtime check — re-read only when the file has changed.
   let mtimeMs: number;
   try {
     mtimeMs = statSync(path).mtimeMs as number;
@@ -674,14 +551,10 @@ function readHermesNativeConfig(): AgentNativeConfig | null {
   try { text = readFileSync(path, 'utf8'); } catch { return null; }
 
   const blockOf = (name: string): string => {
-    // Captures consecutive indented lines under `name:` (a top-level mapping).
-    // Stops at the first non-indented line, which marks the next top-level
-    // key. Plain (no `m` flag) so `.` matches across lines via [^\n].
     const re = new RegExp(`(?:^|\\n)${name}:[ \\t]*\\n((?:[ \\t]+[^\\n]*\\n?)+)`);
     return text.match(re)?.[1] || '';
   };
   const valueOf = (block: string, key: string): string | null => {
-    // The key must be at any indentation level deeper than the parent.
     const m = block.match(new RegExp(`(?:^|\\n)[ \\t]+${key}:[ \\t]*([^\\n]*)`));
     if (!m) return null;
     return m[1].trim().replace(/^["']|["']$/g, '') || null;
@@ -710,7 +583,6 @@ function getHermesUsage(_opts: UsageOpts): UsageResult {
 }
 
 async function getHermesUsageLive(_opts: UsageOpts): Promise<UsageResult> {
-  // Spawn `hermes insights --days 30 --source tool` and parse output.
   return new Promise<UsageResult>(resolve => {
     let stdout = '';
     let stderr = '';
@@ -750,7 +622,6 @@ async function getHermesUsageLive(_opts: UsageOpts): Promise<UsageResult> {
 }
 
 function parseHermesInsightsOutput(text: string): UsageWindowInfo[] {
-  // Minimal parser: extract Sessions / Total tokens summary line.
   const out: UsageWindowInfo[] = [];
   const sessionsMatch = text.match(/Sessions:\s+(\d+)/);
   const totalTokensMatch = text.match(/Total tokens:\s+([\d,]+)/);
@@ -770,19 +641,11 @@ function parseHermesInsightsOutput(text: string): UsageWindowInfo[] {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Driver registration
-// ---------------------------------------------------------------------------
-
 const HermesDriver: AgentDriver = {
   id: 'hermes',
   cmd: 'hermes',
   thinkLabel: 'Reasoning',
-  // Hermes locks the model at profile-binding time. The ACP `session/set_model`
-  // hook exists but is unreliable across providers in current Hermes builds, so
-  // pikiloom treats the model as fixed for the session and hides the picker.
   capabilities: { fork: false, modelSwitch: false, workflow: false },
-  // Hermes is BYOK-only — every Profile kind is fair game.
   acceptedProviderKinds: ['anthropic', 'openai', 'openai-compatible', 'google'],
   doStream: doHermesStream,
   getSessions: getHermesSessions,
@@ -793,7 +656,6 @@ const HermesDriver: AgentDriver = {
   getUsageLive: getHermesUsageLive,
   getNativeConfig: getHermesNativeConfig,
   shutdown() {
-    /* Per-stream AcpClient is closed in doStream finally; nothing process-wide. */
   },
 };
 

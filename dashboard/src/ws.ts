@@ -1,26 +1,5 @@
-/**
- * ws.ts — Singleton push connection + React hook for dashboard live events.
- *
- * The dashboard's ONE inbound transport is pikichannel (`/pikichannel/ws`) — the
- * same universal L2 protocol mobile/web/remote clients use. There is no second
- * stack: the legacy `/ws` path was retired. The wire schema is a single
- * UniversalSnapshot delivered as deltas; this module reconstructs the cumulative
- * snapshot and adapts it (channelToSnapshot) into the StreamSnapshot-shaped
- * object the SPA's applyStreamSnapshot / normalizeLiveSessionState already
- * consume — and which the REST initial-state fetch also returns. That thin
- * wire→view-model adapter is the single, deliberate boundary: the wire protocol
- * stays agent-agnostic; the SPA keeps its own view-model; neither leaks into the
- * other. Components are unchanged — they still see DashboardEvent.
- *
- * The public API — useDashboardEvent / useDashboardReconnect — is unchanged.
- */
-
 import { useEffect, useRef } from 'react';
 import { getEndpoint, isRemote } from './endpoint';
-
-// ---------------------------------------------------------------------------
-// Types — DashboardEvent is the SPA-internal pub/sub envelope (not a wire type).
-// ---------------------------------------------------------------------------
 
 export type DashboardEventType = 'stream-update' | 'sessions-changed';
 
@@ -32,47 +11,34 @@ export interface DashboardEvent {
 
 type Listener = (event: DashboardEvent) => void;
 
-// ---------------------------------------------------------------------------
-// Singleton connection with auto-reconnect
-// ---------------------------------------------------------------------------
-
 const listeners = new Map<DashboardEventType, Set<Listener>>();
 const reconnectListeners = new Set<() => void>();
 
-// A transport pipe: WebSocket (local/direct) or WebRTC datachannel (remote/NAT).
-// The protocol logic runs over it identically. Mirrors the SDK transports.
 interface Pipe { send(frame: string): void; close(): void; isOpen(): boolean; }
 interface PipeCbs { onOpen(): void; onFrame(raw: string): void; onClose(): void; }
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 let pipe: Pipe | null = null;
 let connecting = false;
-let authed = false;       // welcome received on the current connection
+let authed = false;
 let refCount = 0;
-// In remote mode the channel must stay up for the control-plane tunnel even
-// when no stream is subscribed, so connection is not gated on refCount.
 let keepAlive = false;
 let wasConnected = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 500;
 const MAX_RECONNECT_DELAY = 8_000;
 
-// Access token — only needed when the host runs in strict auth (loopback is
-// exempt by default, which covers the local dashboard). Fetched once, best-effort,
-// from the localhost-only pairing endpoint; absent token is fine in the default
-// posture. A remotely-served dashboard gets 403 here and must be paired anyway.
 let token: string | null = null;
 let tokenFetched = false;
 async function ensureToken(): Promise<void> {
   if (tokenFetched) return;
   tokenFetched = true;
   const ep = getEndpoint();
-  if (ep) { token = ep.token || null; return; } // remote: token supplied via config
+  if (ep) { token = ep.token || null; return; }
   try {
-    // local: loopback is exempt, so this is best-effort (covers strict mode).
     const r = await fetch('/pikichannel/pair');
     if (r.ok) { const j = await r.json(); if (j && typeof j.token === 'string') token = j.token; }
-  } catch { /* token optional */ }
+  } catch {  }
 }
 
 function dispatch(event: DashboardEvent) {
@@ -80,7 +46,6 @@ function dispatch(event: DashboardEvent) {
   if (set) for (const fn of set) fn(event);
 }
 
-// Resolve the ws(s):// URL for the configured endpoint (or same origin).
 function wsUrl(path: string): string {
   const loc = window.location;
   const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -102,9 +67,6 @@ function fireReconnect() {
   if (isReconnect) for (const fn of reconnectListeners) fn();
 }
 
-// Delta reconstruction: the wire carries patches, so we keep the cumulative
-// snapshot per session and apply each one. Mirror of applySnapshotPatch() in
-// src/pikichannel/protocol.ts — keep in lockstep.
 const channelSnaps = new Map<string, any>();
 const channelSeqs = new Map<string, number>();
 function applyChannelPatch(prev: any, patch: any): any {
@@ -116,11 +78,6 @@ function applyChannelPatch(prev: any, patch: any): any {
   return next;
 }
 
-/**
- * Adapt a reconstructed UniversalSnapshot into the StreamSnapshot shape the SPA
- * consumes (the same shape the REST stream-state endpoint returns). The session
- * key comes from the envelope — it is not duplicated in the snapshot.
- */
 function channelToSnapshot(key: string, u: any): any {
   if (!u) return null;
   const sessionId = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key;
@@ -159,10 +116,6 @@ function channelToSnapshot(key: string, u: any): any {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Control-plane tunnel — /api/* over the channel (used when remote-pointed).
-// ---------------------------------------------------------------------------
-
 interface ChannelResponse { status: number; headers: Record<string, string>; body: string; encoding: string; error?: string; }
 const channelPending = new Map<string, { resolve: (r: ChannelResponse) => void; reject: (e: Error) => void }>();
 let channelReqSeq = 0;
@@ -181,7 +134,6 @@ function awaitReady(timeoutMs = 10000): Promise<void> {
   });
 }
 
-/** Tunnel an HTTP-style request to the connected host over the channel. */
 export async function channelRequest(
   method: string,
   path: string,
@@ -198,7 +150,7 @@ export async function channelRequest(
 }
 
 function failChannelPending(reason: string) {
-  for (const [, p] of channelPending) { try { p.reject(new Error(reason)); } catch { /* ignore */ } }
+  for (const [, p] of channelPending) { try { p.reject(new Error(reason)); } catch {  } }
   channelPending.clear();
 }
 
@@ -210,7 +162,7 @@ function connect() {
   clearReconnectTimer();
   void ensureToken().finally(() => {
     connecting = false;
-    if ((refCount <= 0 && !keepAlive) || pipe) return; // nobody needs it, or already opened
+    if ((refCount <= 0 && !keepAlive) || pipe) return;
     openConnection();
   });
 }
@@ -227,8 +179,8 @@ function openConnection() {
     onClose: () => { pipe = null; authed = false; failChannelPending('channel closed'); if (refCount > 0 || keepAlive) scheduleReconnect(); },
   };
   pipe = (ep && ep.mode === 'remote' && ep.rendezvous && ep.nodeId)
-    ? openRtcPipe(ep.rendezvous, ep.nodeId, cbs)   // NAT: WebRTC via rendezvous
-    : openWsPipe(wsUrl('/pikichannel/ws'), cbs);    // local / direct: WebSocket
+    ? openRtcPipe(ep.rendezvous, ep.nodeId, cbs)
+    : openWsPipe(wsUrl('/pikichannel/ws'), cbs);
 }
 
 function handleFrame(raw: string) {
@@ -236,7 +188,7 @@ function handleFrame(raw: string) {
   switch (m.type) {
     case 'welcome':
       authed = true;
-      channelSnaps.clear(); channelSeqs.clear(); // fresh baselines per connection
+      channelSnaps.clear(); channelSeqs.clear();
       pipeSend({ type: 'subscribe', sessionKey: '*' });
       fireReconnect();
       break;
@@ -260,25 +212,23 @@ function handleFrame(raw: string) {
     case 'sessions':
       dispatch({ type: 'sessions-changed' });
       break;
-    default: break; // accepted / error / pong
+    default: break;
   }
 }
 
-/** WebSocket pipe — local (same origin) or direct (reachable host:port). */
 function openWsPipe(url: string, cbs: PipeCbs): Pipe {
   const sock = new WebSocket(url);
   sock.onopen = () => cbs.onOpen();
   sock.onmessage = (e) => cbs.onFrame(typeof e.data === 'string' ? e.data : String(e.data));
   sock.onclose = () => cbs.onClose();
-  sock.onerror = () => { /* onclose drives reconnect */ };
+  sock.onerror = () => {  };
   return {
     send: (f) => { if (sock.readyState === WebSocket.OPEN) sock.send(f); },
-    close: () => { try { sock.close(); } catch { /* ignore */ } },
+    close: () => { try { sock.close(); } catch {  } },
     isOpen: () => sock.readyState === WebSocket.OPEN,
   };
 }
 
-/** WebRTC datachannel pipe — dials a NodeID through a rendezvous broker (NAT). */
 function openRtcPipe(rendezvous: string, nodeId: string, cbs: PipeCbs): Pipe {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   const dc = pc.createDataChannel('piki', { ordered: true });
@@ -287,7 +237,7 @@ function openRtcPipe(rendezvous: string, nodeId: string, cbs: PipeCbs): Pipe {
   let remoteSet = false;
   const pendCand: any[] = [];
 
-  dc.onopen = () => { cbs.onOpen(); try { sig.close(); } catch { /* ignore */ } };
+  dc.onopen = () => { cbs.onOpen(); try { sig.close(); } catch {  } };
   dc.onmessage = (e) => cbs.onFrame(typeof e.data === 'string' ? e.data : String(e.data));
   dc.onclose = () => cbs.onClose();
   pc.onconnectionstatechange = () => { const s = pc.connectionState; if (s === 'failed' || s === 'closed' || s === 'disconnected') cbs.onClose(); };
@@ -302,15 +252,15 @@ function openRtcPipe(rendezvous: string, nodeId: string, cbs: PipeCbs): Pipe {
       sig.send(JSON.stringify({ t: 'signal', sessionId, data: { kind: 'offer', type: offer.type, sdp: offer.sdp } }));
     } else if (msg.t === 'signal' && msg.data) {
       const d = msg.data;
-      if (d.kind === 'answer') { await pc.setRemoteDescription({ type: 'answer', sdp: d.sdp }); remoteSet = true; for (const c of pendCand.splice(0)) { try { await pc.addIceCandidate(c); } catch { /* ignore */ } } }
-      else if (d.kind === 'candidate' && d.candidate) { if (remoteSet) { try { await pc.addIceCandidate(d.candidate); } catch { /* ignore */ } } else pendCand.push(d.candidate); }
-    } else if (msg.t === 'error') { cbs.onClose(); } // node offline / unreachable
+      if (d.kind === 'answer') { await pc.setRemoteDescription({ type: 'answer', sdp: d.sdp }); remoteSet = true; for (const c of pendCand.splice(0)) { try { await pc.addIceCandidate(c); } catch {  } } }
+      else if (d.kind === 'candidate' && d.candidate) { if (remoteSet) { try { await pc.addIceCandidate(d.candidate); } catch {  } } else pendCand.push(d.candidate); }
+    } else if (msg.t === 'error') { cbs.onClose(); }
   };
-  sig.onerror = () => { /* pc/dc state drives onClose */ };
+  sig.onerror = () => {  };
 
   return {
     send: (f) => { if (dc.readyState === 'open') dc.send(f); },
-    close: () => { try { dc.close(); } catch { /* ignore */ } try { pc.close(); } catch { /* ignore */ } try { sig.close(); } catch { /* ignore */ } },
+    close: () => { try { dc.close(); } catch {  } try { pc.close(); } catch {  } try { sig.close(); } catch {  } },
     isOpen: () => dc.readyState === 'open',
   };
 }
@@ -353,7 +303,6 @@ function unsubscribe(type: DashboardEventType, fn: Listener) {
   if (refCount === 0 && !keepAlive) disconnect();
 }
 
-// Reconnect on visibility change (tab becomes visible again)
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && (refCount > 0 || keepAlive) && !pipe) {
@@ -363,26 +312,11 @@ if (typeof document !== 'undefined') {
   });
 }
 
-// Remote mode: keep the channel up from load so the control-plane tunnel works
-// before any stream subscription. Local mode stays lazy (connect on first use).
 if (typeof window !== 'undefined' && isRemote()) {
   keepAlive = true;
   connect();
 }
 
-// ---------------------------------------------------------------------------
-// React hook
-// ---------------------------------------------------------------------------
-
-/**
- * Subscribe to dashboard events of a given type.
- *
- * The callback is stable — it is always called with the latest closure
- * without re-subscribing on every render.
- *
- * @param type   The event type to listen for (or null to disable).
- * @param callback  Called when a matching event arrives.
- */
 export function useDashboardEvent(
   type: DashboardEventType | null,
   callback: (event: DashboardEvent) => void,
@@ -398,10 +332,6 @@ export function useDashboardEvent(
   }, [type]);
 }
 
-/**
- * Fires callback when the connection is re-established after a drop.
- * Useful for refreshing stale state that may have been missed during downtime.
- */
 export function useDashboardReconnect(callback: () => void): void {
   const cbRef = useRef(callback);
   cbRef.current = callback;

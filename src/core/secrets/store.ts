@@ -1,8 +1,3 @@
-/**
- * OS keychain access — lazy import of @napi-rs/keyring (optional dep).
- * If keychain is unavailable, callers fall back to inline-seal.
- */
-
 import { KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICES } from './ref.js';
 
 interface KeyringEntryLike {
@@ -15,13 +10,11 @@ interface KeyringModule {
   Entry: new (service: string, account: string) => KeyringEntryLike;
 }
 
-let keyringModule: KeyringModule | null | undefined; // undefined = not tried, null = failed
+let keyringModule: KeyringModule | null | undefined;
 
 async function loadKeyring(): Promise<KeyringModule | null> {
   if (keyringModule !== undefined) return keyringModule;
   try {
-    // Optional dep — tsc can't see it without the package installed; use a
-    // dynamic, untyped import so the build succeeds with or without it.
     const importer = new Function('m', 'return import(m)') as (m: string) => Promise<unknown>;
     const mod = await importer('@napi-rs/keyring');
     keyringModule = (mod as unknown as KeyringModule);
@@ -31,7 +24,6 @@ async function loadKeyring(): Promise<KeyringModule | null> {
   return keyringModule;
 }
 
-/** Reset the cached module — used by tests. */
 export function _resetKeychainCache(): void {
   keyringModule = undefined;
 }
@@ -49,7 +41,6 @@ export async function readKeychain(account: string): Promise<string | null> {
       const value = entry.getPassword();
       return typeof value === 'string' && value.length > 0 ? value : null;
     } catch (e: any) {
-      // keyring-rs returns NoEntry as an error — treat as missing
       if (/NoEntry|no.such|not.found/i.test(e?.message || '')) return null;
       throw e;
     }
@@ -58,15 +49,12 @@ export async function readKeychain(account: string): Promise<string | null> {
   const current = readUnder(KEYCHAIN_SERVICE);
   if (current != null) return current;
 
-  // Pre-rename fallback: recover orphaned items and migrate them forward so the
-  // legacy lookup only ever happens once per account.
   for (const legacy of LEGACY_KEYCHAIN_SERVICES) {
     const value = readUnder(legacy);
     if (value == null) continue;
     try {
       new mod.Entry(KEYCHAIN_SERVICE, account).setPassword(value);
     } catch {
-      // best-effort migration — return the recovered secret regardless
     }
     return value;
   }

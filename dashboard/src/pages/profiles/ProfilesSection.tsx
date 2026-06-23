@@ -1,18 +1,3 @@
-/**
- * "我的模型" / My Models — the curated middle layer.
- *
- * Each card here is one ModelProfileConfig: a user-defined shortcut that pairs
- * a configured Provider with a specific modelId (and optional effort). Agents
- * upstream pick FROM this list — they never reach past it into the provider's
- * raw model catalogue. That keeps the contract narrow: providers are
- * connections, Profiles are choices, agents bind to choices.
- *
- * Backend CRUD already exists at /api/models/profiles; this component is a
- * thin client over that surface, intentionally mirroring the visual rhythm of
- * ModelsTab's provider tiles so the two sections sit comfortably next to each
- * other on the Agent Configuration page.
- */
-
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Input, Label, Modal, ModalHeader, ModelSelect, Select, Spinner } from '../../components/ui';
 import { ActionBar } from '../shared';
@@ -20,12 +5,6 @@ import { BrandIcon } from '../../components/BrandIcon';
 import { useStore } from '../../store';
 import type { Locale } from '../../i18n';
 import type { ModelLayerSnapshot } from '../models/ModelsTab';
-
-// ---------------------------------------------------------------------------
-// Local types — mirror the wire shapes from ModelsTab. We could lift these to
-// a shared module but the duplication is one screen wide and keeps this file
-// usable without circular re-exports.
-// ---------------------------------------------------------------------------
 
 type ProviderKind = 'anthropic' | 'openai' | 'openai-compatible' | 'google';
 
@@ -44,12 +23,6 @@ interface ProfileRow {
   effort?: string | null;
   maxOutputTokens?: number | null;
 }
-
-// ---------------------------------------------------------------------------
-// Brand inference — same heuristic as ModelsTab.brandIdForProvider but trimmed
-// to what we need for the profile tile. Kept local because the source one is
-// not exported; if we end up needing a third copy we should promote it.
-// ---------------------------------------------------------------------------
 
 function formatContextLength(n: number | undefined): string | null {
   if (!n || !Number.isFinite(n)) return null;
@@ -78,10 +51,6 @@ function brandIdForProvider(p: { kind: ProviderKind; baseURL: string }): string 
   if (p.kind === 'openai') return 'openai';
   return 'custom';
 }
-
-// ---------------------------------------------------------------------------
-// i18n
-// ---------------------------------------------------------------------------
 
 interface Copy {
   sectionTitle: string;
@@ -182,10 +151,6 @@ function getCopy(locale: Locale): Copy {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tiny fetch helpers — duplicated locally for parity with ModelsTab.
-// ---------------------------------------------------------------------------
-
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
   const r = await fetch(url, {
     method,
@@ -197,18 +162,13 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 
 const EFFORT_CHOICES = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-// ---------------------------------------------------------------------------
-// Modal — add/edit a Profile
-// ---------------------------------------------------------------------------
-
 interface ProfileDraft {
   name: string;
   providerId: string;
   modelId: string;
-  effort: string;          // '' means "use provider/agent default"
+  effort: string;
 }
 
-/** Subset of the response from GET /api/models/providers/:id/models. */
 interface ProviderModelInfo {
   id: string;
   name?: string;
@@ -224,9 +184,6 @@ interface ProviderModelsResponse {
   error?: string;
 }
 
-/** Cache provider→models inside the modal so flipping back and forth between
- *  providers (in a future multi-provider setup) doesn't re-fetch each time.
- *  Cleared when the modal closes. */
 type ProviderModelCache = Map<string, ProviderModelInfo[]>;
 
 function ProfileModal({
@@ -254,8 +211,6 @@ function ProfileModal({
   const [modelCache, setModelCache] = useState<ProviderModelCache>(() => new Map());
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  // Escape hatch when a provider's /v1/models returns something incomplete and
-  // the user knows a model id pikiloom can't see.
   const [manualEntry, setManualEntry] = useState(false);
 
   useEffect(() => {
@@ -266,9 +221,6 @@ function ProfileModal({
     setModelCache(new Map());
   }, [open, initial]);
 
-  // Fetch the chosen provider's /v1/models list whenever provider changes.
-  // We intentionally don't block save on this — if the fetch fails the user
-  // can still flip to manual entry and proceed.
   useEffect(() => {
     if (!open) return;
     const providerId = draft.providerId;
@@ -347,11 +299,6 @@ function ProfileModal({
               {copy.fieldProviderEmpty}
             </div>
           ) : (() => {
-            // Pick visual treatment by context. The shared <Select> auto-collapses
-            // to a readonly div when options.length <= 1, which makes the field
-            // look broken ("why won't this drop down?") — so we explicitly render
-            // a brand-tagged tile in that case and reserve the dropdown for
-            // multi-provider setups.
             const locked = isEdit || providers.length <= 1;
             const selected = providers.find(p => p.id === draft.providerId) ?? providers[0];
             if (locked) {
@@ -382,9 +329,6 @@ function ProfileModal({
         <div>
           <div className="mb-2 flex items-baseline justify-between gap-2">
             <Label className="mb-0">{copy.fieldModelId}</Label>
-            {/* Toggle is only meaningful once we have a real list to choose
-                from. Without a list, the field is already a manual input — no
-                "switch back to manual" affordance to offer. */}
             {providerModels && providerModels.length > 0 && (
               <button
                 type="button"
@@ -402,10 +346,6 @@ function ProfileModal({
             </div>
           )}
           {!modelsLoading && !manualEntry && providerModels && providerModels.length > 0 && (() => {
-            // Build the option list. If the draft modelId isn't in the
-            // provider's catalogue (custom alias, model not exposed via
-            // /v1/models, etc.), prepend it so the picker stays consistent
-            // with what's actually saved on the Profile.
             const inList = providerModels.some(m => m.id === draft.modelId);
             const options = [
               ...(!inList && draft.modelId
@@ -453,8 +393,6 @@ function ProfileModal({
           <Input
             value={draft.name}
             onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
-            // Mirror the server-side default (just the model id) so the
-            // placeholder previews exactly what gets saved on blank submit.
             placeholder={draft.modelId || 'anthropic/claude-sonnet-4'}
           />
           <div className="mt-1 text-[11px] leading-relaxed text-fg-5">{copy.fieldNameHint}</div>
@@ -491,10 +429,6 @@ function ProfileModal({
     </Modal>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Tile — one Profile card
-// ---------------------------------------------------------------------------
 
 function ProfileTile({
   profile,
@@ -542,10 +476,6 @@ function AddTile({ onClick, label }: { onClick: () => void; label: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main section
-// ---------------------------------------------------------------------------
-
 export default function ProfilesSection({
   snapshot,
 }: {
@@ -587,8 +517,6 @@ export default function ProfilesSection({
     };
   }, [modal]);
 
-  // Empty state hint only when we genuinely have nothing — once at least one
-  // Profile exists, the add tile is enough of an affordance on its own.
   const showEmptyState = profiles.length === 0;
 
   return (

@@ -1,7 +1,3 @@
-/**
- * Channel-agnostic live preview controller for streaming updates.
- */
-
 import type { Agent, ChatId, StreamPreviewMeta, StreamPreviewPlan } from '../../bot/bot.js';
 import { hasPreviewMeta, samePreviewMeta, samePreviewPlan } from '../../bot/streaming.js';
 import type { StreamPreviewRenderInput } from '../../bot/render-shared.js';
@@ -11,30 +7,15 @@ const STREAM_PREVIEW_HEARTBEAT_MS = STREAM_PREVIEW_TIMEOUTS.heartbeat;
 const STREAM_TYPING_HEARTBEAT_MS = STREAM_PREVIEW_TIMEOUTS.typing;
 const STREAM_STALLED_NOTICE_MS = STREAM_PREVIEW_TIMEOUTS.stalledNotice;
 
-// ---------------------------------------------------------------------------
-// Channel-agnostic interfaces
-// ---------------------------------------------------------------------------
-
-/** Minimal channel interface needed for live preview edits. */
 export interface PreviewChannel {
   editMessage(chatId: ChatId, messageId: number | string, text: string, opts?: { parseMode?: string; keyboard?: any }): Promise<void>;
   sendTyping(chatId: ChatId, opts?: { messageThreadId?: number }): Promise<void>;
 }
 
-/**
- * Renderer that converts streaming state into a platform-specific string.
- * Implement this per IM: Telegram HTML, Feishu Markdown, Discord Markdown, etc.
- */
 export interface LivePreviewRenderer {
-  /** Render the initial placeholder text (e.g. "● codex · 0s"). */
   renderInitial(agent: Agent, model?: string | null, effort?: string | null): string;
-  /** Render the streaming preview with current state. */
   renderStream(input: StreamPreviewRenderInput): string;
 }
-
-// ---------------------------------------------------------------------------
-// Options
-// ---------------------------------------------------------------------------
 
 export interface LivePreviewOptions {
   agent: Agent;
@@ -47,19 +28,12 @@ export interface LivePreviewOptions {
   canEditMessages: boolean;
   canSendTyping: boolean;
   messageThreadId?: number;
-  /** Parse mode string passed to editMessage (e.g. 'HTML', 'MarkdownV2'). */
   parseMode?: string;
   keyboard?: any;
-  /** Resolved model id for the active turn — surfaced in initial + streaming footers. */
   model?: string | null;
-  /** Resolved thinking-effort for the active turn — surfaced alongside the model. */
   effort?: string | null;
   log?: (message: string) => void;
 }
-
-// ---------------------------------------------------------------------------
-// LivePreview — generic streaming preview controller
-// ---------------------------------------------------------------------------
 
 export class LivePreview {
   readonly initialText: string;
@@ -263,8 +237,6 @@ export class LivePreview {
       });
   }
 
-  /** True when streaming gave up on the placeholder (e.g. Feishu rejected too many
-   *  consecutive edits). The owner should send the final reply as a fresh card. */
   isPlaceholderAbandoned(): boolean {
     return this.placeholderAbandoned;
   }

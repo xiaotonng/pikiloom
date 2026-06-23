@@ -1,10 +1,3 @@
-/**
- * models.dev catalog — read-only metadata about LLM providers and their
- * models (pricing, context window, capabilities). We hit the public JSON
- * endpoint and cache the result locally for 24h, with a fallback to the
- * cached copy when offline.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,10 +49,6 @@ async function fetchFromNetwork(): Promise<ModelsDevCatalog> {
   return JSON.parse(text) as ModelsDevCatalog;
 }
 
-/**
- * Get the catalog. Returns a cached copy if fresh; otherwise fetches in the
- * background and falls back to the stale cache on failure.
- */
 export async function getModelsDevCatalog(opts: { forceRefresh?: boolean } = {}): Promise<ModelsDevCatalog> {
   const now = Date.now();
   if (!opts.forceRefresh && memCache && now - memCache.fetchedAt < CACHE_TTL_MS) {
@@ -78,7 +67,7 @@ export async function getModelsDevCatalog(opts: { forceRefresh?: boolean } = {})
         writeDiskCache(env);
         return data;
       } catch (e) {
-        if (memCache) return memCache.data; // fall back to stale cache
+        if (memCache) return memCache.data;
         throw e;
       } finally {
         inflight = null;
@@ -88,22 +77,16 @@ export async function getModelsDevCatalog(opts: { forceRefresh?: boolean } = {})
   return inflight;
 }
 
-/** Lookup a single provider by its models.dev id (e.g. "openrouter"). */
 export async function getCatalogProvider(providerId: string): Promise<ModelsDevProvider | null> {
   const cat = await getModelsDevCatalog().catch(() => null);
   return cat?.[providerId] || null;
 }
 
-/** Lookup a model entry within a provider. */
 export async function getCatalogModel(providerId: string, modelId: string): Promise<ModelsDevModel | null> {
   const provider = await getCatalogProvider(providerId);
   return provider?.models?.[modelId] || null;
 }
 
-/**
- * Lightweight search: returns providers whose id/name match the query.
- * If query is empty, returns all providers sorted by id.
- */
 export async function searchCatalogProviders(query: string): Promise<ModelsDevProvider[]> {
   const cat = await getModelsDevCatalog().catch(() => ({} as ModelsDevCatalog));
   const all = Object.values(cat);

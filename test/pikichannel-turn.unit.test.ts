@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Drive resolveTurnConfig's config source without touching ~/.pikiloom/setting.json.
 const { cfgRef } = vi.hoisted(() => ({ cfgRef: { value: { version: 1 } as Record<string, unknown> } }));
 vi.mock('../src/core/config/user-config.js', () => ({ loadUserConfig: () => cfgRef.value }));
-// Keep the minter's logging from writing to the real log file during tests.
 vi.mock('../src/core/logging.js', () => ({ writeScopedLog: () => {} }));
 
 import {
@@ -17,7 +15,6 @@ import {
   type IceServer,
 } from '../src/pikichannel/turn.js';
 
-// The exact shape Cloudflare's generate-ice-servers endpoint returns.
 const CF_RESPONSE = {
   iceServers: [
     { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:53'] },
@@ -68,10 +65,10 @@ describe('resolveTurnConfig', () => {
   it('lets env override config and floors a too-small TTL', () => {
     cfgRef.value = { version: 1, pikichannelTurnKeyId: 'cfgkey', pikichannelTurnApiToken: 'cfgtok', pikichannelTurnTtl: 99999 };
     process.env.PIKICHANNEL_TURN_KEY_ID = 'envkey';
-    process.env.PIKICHANNEL_TURN_TTL = '5'; // below MIN_TTL → floored to 600
+    process.env.PIKICHANNEL_TURN_TTL = '5';
     const c = resolveTurnConfig();
-    expect(c.keyId).toBe('envkey'); // env wins
-    expect(c.apiToken).toBe('cfgtok'); // falls back to config
+    expect(c.keyId).toBe('envkey');
+    expect(c.apiToken).toBe('cfgtok');
     expect(c.ttl).toBe(600);
   });
 });
@@ -134,7 +131,6 @@ describe('Cloudflare minting', () => {
     expect(init.headers['Content-Type']).toBe('application/json');
     expect(JSON.parse(init.body)).toEqual({ ttl: 86400 });
 
-    // 2 stun + 6 turn/turns, each url its own entry; creds only on turn entries.
     expect(servers).toHaveLength(8);
     expect(servers[0]).toEqual({ urls: 'stun:stun.cloudflare.com:3478' });
     expect(servers[0].username).toBeUndefined();
@@ -174,36 +170,33 @@ describe('Cloudflare minting', () => {
   });
 
   it('re-mints just before expiry and never serves expired credentials', async () => {
-    process.env.PIKICHANNEL_TURN_TTL = '600'; // ttl=600s; refresh margin=300s
+    process.env.PIKICHANNEL_TURN_TTL = '600';
     const fetchSpy = okFetch(CF_RESPONSE);
     vi.stubGlobal('fetch', fetchSpy);
     const now = vi.spyOn(Date, 'now');
 
     now.mockReturnValue(1_000_000);
-    await resolveIceServers(); // mint #1 → expiresAt = 1_600_000
+    await resolveIceServers();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    // Inside the fresh window (< expiresAt - 300s): served from cache, no refetch.
     now.mockReturnValue(1_200_000);
     expect(getCachedIceServers().some((s) => s.urls.startsWith('turn:'))).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    // Inside the refresh margin (>= 1_300_000, < expiry): background re-mint fires,
-    // but live creds are still served (not dropped mid-connection).
     now.mockReturnValue(1_350_000);
     expect(getCachedIceServers().some((s) => s.urls.startsWith('turn:'))).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    await new Promise((r) => setImmediate(r)); // let the background re-mint settle
+    await new Promise((r) => setImmediate(r));
   });
 
   it('serves STUN (not stale creds) past expiry when the re-mint fails', async () => {
     process.env.PIKICHANNEL_TURN_TTL = '600';
     const now = vi.spyOn(Date, 'now').mockReturnValue(0);
     vi.stubGlobal('fetch', okFetch(CF_RESPONSE));
-    await resolveIceServers(); // expiresAt = 600_000
+    await resolveIceServers();
 
-    vi.stubGlobal('fetch', okFetch({}, 500)); // re-mint will fail
-    now.mockReturnValue(700_000); // past expiry
+    vi.stubGlobal('fetch', okFetch({}, 500));
+    now.mockReturnValue(700_000);
     expect(getCachedIceServers()).toEqual(STUN_ONLY);
     await new Promise((r) => setImmediate(r));
   });

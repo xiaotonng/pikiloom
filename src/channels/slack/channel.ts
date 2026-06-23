@@ -1,18 +1,3 @@
-/**
- * Slack channel transport — Socket Mode (no public IP needed).
- *
- * Uses @slack/socket-mode + @slack/web-api directly (avoids the heavier Bolt
- * framework so we keep tight control of the receive loop and stay consistent
- * with the other channels).
- *
- * Two tokens are required:
- *   - bot token  (xoxb-…) — REST send/edit
- *   - app token  (xapp-…) — Socket Mode connection
- *
- * Receives DMs and messages where the bot is mentioned in a channel. Messages
- * the bot itself authored are filtered out before dispatch.
- */
-
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient, type WebAPICallResult } from '@slack/web-api';
 import {
@@ -32,7 +17,6 @@ export interface SlackOpts {
   appToken: string;
   workdir?: string;
   allowedChatIds?: Set<string>;
-  /** When true (default), require @mention in shared channels — DMs always pass. */
   requireMentionInChannel?: boolean;
 }
 
@@ -47,9 +31,9 @@ export interface SlackFrom {
 }
 
 export interface SlackContext {
-  chatId: string;          // Slack channel id (Cxxxx / Dxxxx / Gxxxx)
-  messageId: string;        // Slack message ts
-  threadTs: string | null;  // Slack thread root ts, if any
+  chatId: string;
+  messageId: string;
+  threadTs: string | null;
   from: SlackFrom;
   reply: (text: string, opts?: SendOpts) => Promise<string | null>;
   editReply: (msgId: string, text: string, opts?: SendOpts) => Promise<void>;
@@ -70,7 +54,7 @@ export class SlackChannel extends Channel {
   override readonly capabilities = {
     ...DEFAULT_CHANNEL_CAPABILITIES,
     editMessages: true,
-    typingIndicators: false, // chat.postMessage with thread_ts emulates ack
+    typingIndicators: false,
   };
 
   readonly knownChats = new Set<string>();
@@ -89,7 +73,6 @@ export class SlackChannel extends Channel {
   private readonly messageHandlers = new Set<SlackMessageHandler>();
   private readonly errorHandlers = new Set<SlackErrorHandler>();
 
-  /** Dedup: Slack delivers events at-least-once via Socket Mode acks. */
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventQueue: string[] = [];
   private static readonly SEEN_EVENT_CAP = 256;
@@ -104,10 +87,6 @@ export class SlackChannel extends Channel {
 
   onMessage(handler: SlackMessageHandler) { this.messageHandlers.add(handler); return this; }
   onError(handler: SlackErrorHandler) { this.errorHandlers.add(handler); return this; }
-
-  // ========================================================================
-  // Lifecycle
-  // ========================================================================
 
   async connect(): Promise<BotInfo> {
     this.webClient = new WebClient(this.botToken);
@@ -136,7 +115,6 @@ export class SlackChannel extends Channel {
     this.running = true;
     this.socketClient = new SocketModeClient({
       appToken: this.appToken,
-      // We log via our own scope; suppress noisy SDK info logs.
       logLevel: undefined as any,
     });
 
@@ -201,10 +179,6 @@ export class SlackChannel extends Channel {
     this.listenResolve = null;
   }
 
-  // ========================================================================
-  // Outgoing primitives
-  // ========================================================================
-
   async send(chatId: number | string, text: string, opts: SendOpts = {}): Promise<string | null> {
     const channelId = String(chatId);
     const chunks = splitText((text || '').trim() || '(empty)', SLACK_MAX);
@@ -249,12 +223,7 @@ export class SlackChannel extends Channel {
   }
 
   async sendTyping(_chatId: number | string, _opts?: SendOpts): Promise<void> {
-    // Slack does not expose a typing indicator in the public API.
   }
-
-  // ========================================================================
-  // Internal dispatch
-  // ========================================================================
 
   private async dispatchMessageEvent(event: any): Promise<void> {
     if (!event || event.bot_id || event.subtype === 'bot_message') return;

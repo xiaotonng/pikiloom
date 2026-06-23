@@ -1,9 +1,3 @@
-/**
- * Project-level extensions modal — opened from workspace sidebar.
- * Thin wrapper around WorkspaceExtensionsBody; workspace scope operates
- * directly on .mcp.json and .pikiloom/skills/ in the project directory.
- */
-
 import { useStore } from '../../store';
 import { Modal, ModalHeader } from '../../components/ui';
 import { WorkspaceExtensionsBody } from './ExtensionsTab';

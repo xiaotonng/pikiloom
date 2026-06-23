@@ -1,30 +1,3 @@
-/**
- * Dashboard API: Local Model backends (Ollama / mlx-lm).
- *
- * Surfaces a probe endpoint plus a connect action that links a detected
- * backend into the Provider/Profile model layer so the agent cards above
- * pick it up without any further configuration.
- *
- *   GET  /api/local-models/probe    → which backends are running, what models
- *                                     they expose, install/run hints, and
- *                                     whether a Provider already points at each.
- *   POST /api/local-models/connect  → idempotently create the Provider for the
- *                                     named backend.
- *
- * Endpoints we expect:
- *   - Ollama  baseURL → http://127.0.0.1:11434
- *             version  → GET /api/version
- *             models   → GET /api/tags
- *             OpenAI   → /v1/chat/completions, /v1/models
- *
- *   - mlx-lm  baseURL → http://127.0.0.1:8080   (mlx_lm.server default)
- *             probe   → GET /v1/models   (200 OK iff server up; no version)
- *
- * Model downloads stay manual (user runs `ollama pull <tag>` or restarts
- * `mlx_lm.server --model <repo>` in their own terminal). The install spec
- * is shipped alongside detection so the UI can mirror the CLI tools page.
- */
-
 import { Hono } from 'hono';
 import { LOCAL_MODELS, type LocalModelEntry } from '../../catalog/local-models.js';
 import {
@@ -33,11 +6,6 @@ import {
 } from '../../model/index.js';
 
 const router = new Hono();
-
-// ---------------------------------------------------------------------------
-// Backend descriptors — CLI-style install spec lives here so the dashboard
-// renders identical UX to the Extensions → CLI page.
-// ---------------------------------------------------------------------------
 
 type BackendId = 'ollama' | 'mlx';
 type OsKey = 'darwin' | 'linux' | 'win';
@@ -54,19 +22,14 @@ interface InstallSpec {
 interface BackendSpec {
   id: BackendId;
   label: string;
-  baseURL: string;          // host root, no /v1 suffix
-  openAIBaseURL: string;    // passed to ProviderConfig.baseURL
-  /** 200-OK probe — doubles as version source when available. */
+  baseURL: string;
+  openAIBaseURL: string;
   probePath: string;
   homepage: string;
   install: InstallSpec;
-  /** Command to start the server (after install). */
   runHint: InstallCommand;
-  /** Template for "pull/load a specific model". `${model}` is substituted. */
   pullCommandTemplate: string;
-  /** Per-entry id field used to fill `${model}` in pullCommandTemplate. */
   modelField: keyof Pick<LocalModelEntry, 'ollamaTag' | 'mlxModel'>;
-  /** Platforms where this backend can run. mlx is Apple Silicon only. */
   platforms: OsKey[];
 }
 
@@ -101,7 +64,6 @@ const BACKENDS: BackendSpec[] = [
     label: 'mlx-lm',
     baseURL: 'http://127.0.0.1:8080',
     openAIBaseURL: 'http://127.0.0.1:8080/v1',
-    // mlx_lm.server has no /api/version; /v1/models doubles as liveness probe.
     probePath: '/v1/models',
     homepage: 'https://github.com/ml-explore/mlx-lm',
     install: {
@@ -115,8 +77,6 @@ const BACKENDS: BackendSpec[] = [
       label: 'Start the server (replace model)',
       cmd: 'mlx_lm.server --model mlx-community/Qwen2.5-Coder-7B-Instruct-4bit --port 8080',
     },
-    // mlx-lm loads a single model per server instance — "pull" here means
-    // re-launching the server with that model id.
     pullCommandTemplate: 'mlx_lm.server --model ${model} --port 8080',
     modelField: 'mlxModel',
     platforms: ['darwin'],
@@ -124,10 +84,6 @@ const BACKENDS: BackendSpec[] = [
 ];
 
 const PROBE_TIMEOUT_MS = 1500;
-
-// ---------------------------------------------------------------------------
-// HTTP helpers
-// ---------------------------------------------------------------------------
 
 async function fetchJson<T>(url: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<T | null> {
   const controller = new AbortController();
@@ -149,10 +105,6 @@ function currentOs(): OsKey {
   return 'linux';
 }
 
-// ---------------------------------------------------------------------------
-// Per-backend detection
-// ---------------------------------------------------------------------------
-
 interface DetectedModel {
   id: string;
   sizeBytes?: number;
@@ -171,8 +123,6 @@ interface BackendStatus {
   install: InstallSpec;
   runHint: InstallCommand;
   pullCommandTemplate: string;
-  /** True when the current OS is in `platforms` — UI uses this to mark a tile
-   *  unsupported rather than just "not detected". */
   supportedOnThisOs: boolean;
 }
 
@@ -199,10 +149,6 @@ async function probeMlx(spec: BackendSpec): Promise<{ detected: boolean; version
   };
 }
 
-/**
- * Normalize a provider baseURL for comparison: drop trailing slashes and
- * collapse the localhost ↔ 127.0.0.1 distinction.
- */
 function normalizeBaseURL(raw: string): string {
   return raw
     .replace(/\/+$/, '')
@@ -239,10 +185,6 @@ async function probeBackend(spec: BackendSpec, providers: ProviderConfig[]): Pro
   };
 }
 
-// ---------------------------------------------------------------------------
-// Catalog join — recommended models × backend availability
-// ---------------------------------------------------------------------------
-
 function isEntryInstalled(entry: LocalModelEntry, spec: BackendSpec, installed: DetectedModel[]): string | null {
   const target = entry[spec.modelField];
   if (!target) return null;
@@ -270,12 +212,6 @@ function joinCatalog(backends: BackendStatus[]): CatalogJoinEntry[] {
   });
 }
 
-/**
- * For a connected local backend, mirror every detected model as a Profile under
- * its Provider so the unified picker shows them without an extra user gesture.
- * Idempotent. Never deletes Profiles — a model that disappears from probe
- * output might be a transient blip.
- */
 function syncLocalProfilesForBackend(providerId: string, detected: DetectedModel[]): { added: number } {
   if (!providerId || !detected.length) return { added: 0 };
   const existing = new Set(
@@ -289,18 +225,11 @@ function syncLocalProfilesForBackend(providerId: string, detected: DetectedModel
       added += 1;
       existing.add(m.id);
     } catch {
-      // Provider may have been removed between calls — skip; next probe retries.
     }
   }
   return { added };
 }
 
-/**
- * Idempotently create a Provider pointing at this backend. Returns the
- * provider id. The placeholder API key is a sentinel ("local-no-auth") rather
- * than something that looks like a real key, so future code can recognize and
- * special-case local providers.
- */
 async function ensureProviderForBackend(spec: BackendSpec): Promise<string | null> {
   const providers = listProviders();
   const existing = findProviderForBackend(providers, spec);
@@ -318,23 +247,6 @@ async function ensureProviderForBackend(spec: BackendSpec): Promise<string | nul
   }
 }
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
-/**
- * Single probe-and-attach endpoint. The Local Models page no longer asks the
- * user to "connect" — every detected backend becomes a Provider automatically
- * so its models show up in the unified picker without an extra click.
- *
- *   - Backend detected, no existing Provider → create one, then sync Profiles.
- *   - Backend detected, Provider already exists → just sync Profiles.
- *   - Backend not detected → leave existing Provider in place (a transient
- *     blip during a restart shouldn't tear down config).
- *
- * Response includes `addedProviderIds` so the dashboard can refetch the upper
- * Model Providers / agent layer exactly when something new appears.
- */
 router.get('/api/local-models/probe', async c => {
   try {
     const initialProviders = listProviders();

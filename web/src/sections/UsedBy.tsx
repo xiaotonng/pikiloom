@@ -2,8 +2,6 @@ import type { ComponentType, ReactNode } from 'react';
 import { ByteDance, Tencent, Alibaba, Meta, Google, Moonshot, Minimax, Stepfun } from '@lobehub/icons';
 import { LogoLoop, type LogoItem } from '@/components/LogoLoop';
 
-// Social proof. Honest framing: individual engineers from these teams use
-// pikiloom — not corporate endorsements. Real, official brand marks (LobeHub).
 type ColoredIcon = ComponentType<{ size?: number }>;
 function brand(Icon: unknown, size = 22): ReactNode {
   const I = Icon as ColoredIcon & { Color?: ColoredIcon; Mono?: ColoredIcon };

@@ -201,7 +201,6 @@ export function prefetchSessionMessages(query: SessionMessagesQuery) {
     try {
       await loadSessionMessages(query);
     } catch {
-      // Best-effort warm-up only.
     } finally {
       queuedMessagePrefetches.delete(key);
     }

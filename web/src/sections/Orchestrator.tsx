@@ -63,13 +63,11 @@ function Connector({ flow }: { flow: string }) {
 function Core() {
   return (
     <div className="relative grid shrink-0 place-items-center py-6">
-      {/* interactive 3D orb halo (mounts only while in view) */}
       <InView className="absolute h-72 w-72" keepMounted={false} fallback={<div className="h-full w-full" />}>
         <SafeWebGL>
           <Orb hue={150} hoverIntensity={0.45} rotateOnHover />
         </SafeWebGL>
       </InView>
-      {/* soft pulse behind the card */}
       <div
         className="piki-core-pulse pointer-events-none absolute h-44 w-44 rounded-full blur-3xl"
         style={{ background: 'radial-gradient(circle, rgb(var(--brand-glow) / .4), transparent 70%)' }}
@@ -131,7 +129,6 @@ export default function Orchestrator() {
         </p>
       </div>
 
-      {/* Live diagram: entry points → core → workspace actions */}
       <div className="mt-16 flex flex-col items-stretch justify-center gap-6 lg:flex-row lg:items-center lg:gap-0">
         <div className="flex flex-row flex-wrap justify-center gap-3 lg:w-52 lg:flex-col">
           <span className="w-full text-center text-[11px] uppercase tracking-widest text-neutral-600 lg:text-left">Entry points</span>
@@ -152,14 +149,12 @@ export default function Orchestrator() {
         </div>
       </div>
 
-      {/* The pluggable layers, as live marquees */}
       <div className="mt-16 flex flex-col gap-5 rounded-2xl border border-white/10 bg-white/[0.015] p-6">
         <Band label="Pluggable agents" color="#a78bfa" logos={agentLogos} direction="left" />
         <Band label="Model routing" color="#38bdf8" logos={modelLogos} direction="right" />
         <Band label="Tool mesh" color="#7cff67" logos={toolLogos} direction="left" />
       </div>
 
-      {/* The request pipeline */}
       <div className="mt-10 hidden flex-wrap items-center justify-center gap-2 md:flex">
         {PIPELINE.map((step, i) => (
           <div key={step} className="flex items-center gap-2">

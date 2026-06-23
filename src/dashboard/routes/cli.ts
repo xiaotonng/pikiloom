@@ -1,20 +1,3 @@
-/**
- * Dashboard API routes for CLI extension management.
- *
- *   GET  /api/extensions/cli/catalog           — merged recommended + detection
- *   POST /api/extensions/cli/refresh           — { id } re-detect one entry
- *   POST /api/extensions/cli/auth/start        — { id } start oauth-web flow
- *   GET  /api/extensions/cli/auth/stream       — SSE stream of a running session
- *   POST /api/extensions/cli/auth/cancel       — { sessionId } kill the child
- *   POST /api/extensions/cli/auth/token        — { id, values } token auth
- *   POST /api/extensions/cli/install           — { id } start auto-install (npm-only)
- *   POST /api/extensions/cli/logout            — { id } sign out
- *
- * Install sessions share the same SESSIONS map and event protocol as the
- * oauth-web flow — the frontend connects to `/auth/stream` and cancels via
- * `/auth/cancel` regardless of how the session was started.
- */
-
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import {
@@ -26,10 +9,6 @@ import {
 } from '../../agent/index.js';
 
 const app = new Hono();
-
-// ---------------------------------------------------------------------------
-// Catalog
-// ---------------------------------------------------------------------------
 
 app.get('/api/extensions/cli/catalog', async (c) => {
   try {
@@ -51,10 +30,6 @@ app.post('/api/extensions/cli/refresh', async (c) => {
     return c.json({ ok: false, error: e?.message || 'refresh failed' }, 500);
   }
 });
-
-// ---------------------------------------------------------------------------
-// OAuth-web auth flow
-// ---------------------------------------------------------------------------
 
 app.post('/api/extensions/cli/auth/start', async (c) => {
   try {
@@ -83,7 +58,6 @@ app.get('/api/extensions/cli/auth/stream', (c) => {
   return stream(c, async (s) => {
     const format = (ev: AuthSessionEvent): string => `data: ${JSON.stringify(ev)}\n\n`;
 
-    // Replay backlog so a late client still sees what has been printed.
     if (session.backlog.length) {
       for (const chunk of session.backlog) {
         await s.write(format({ type: 'output', chunk }));
@@ -109,7 +83,6 @@ app.get('/api/extensions/cli/auth/stream', (c) => {
       return;
     }
 
-    // Heartbeat every 15s so proxies don't close the stream on us.
     const heartbeat = setInterval(() => {
       if (closed) { clearInterval(heartbeat); return; }
       s.write(':ping\n\n').catch(() => { closed = true; });
@@ -145,10 +118,6 @@ app.post('/api/extensions/cli/auth/cancel', async (c) => {
     return c.json({ ok: false, error: e?.message || 'cancel failed' }, 500);
   }
 });
-
-// ---------------------------------------------------------------------------
-// Token auth
-// ---------------------------------------------------------------------------
 
 app.post('/api/extensions/cli/auth/token', async (c) => {
   try {

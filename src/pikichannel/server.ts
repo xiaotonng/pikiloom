@@ -1,19 +1,3 @@
-/**
- * pikichannel/server.ts — wires pikichannel into the pikiloom dashboard server.
- *
- * Responsibilities:
- *   - build the host over the pikiloom SessionSource,
- *   - stand up BOTH transport bindings (WebSocket always; WebRTC via a guarded
- *     dynamic import so a missing/broken werift never blocks startup),
- *   - register the reference web routes (demo page + browser SDK + status),
- *   - expose `attachUpgrade(server)` so the dashboard's HTTP server can route
- *     `/pikichannel/*` upgrade requests to the right binding.
- *
- * Both bindings funnel into the SAME `host.handleConnection`, so a session
- * behaves identically regardless of transport — that is the pluggability the
- * two bindings exist to demonstrate.
- */
-
 import type http from 'node:http';
 import type internal from 'node:stream';
 import crypto from 'node:crypto';
@@ -32,8 +16,6 @@ import type { RendezvousHostClient } from './rendezvous-host.js';
 import type { ChannelConnection, ChannelTransport } from './transport.js';
 
 export interface PikichannelHandle {
-  /** Try to handle a `/pikichannel/*` WebSocket upgrade. Returns true if the
-   *  path was ours (handled or rejected), false to let the caller deal with it. */
   handleUpgrade(req: http.IncomingMessage, socket: internal.Duplex, head: Buffer): boolean;
   status(): {
     ok: boolean; transports: string[]; peers: number; authedPeers: number;
@@ -44,14 +26,12 @@ export interface PikichannelHandle {
   stop(): void;
 }
 
-/** A remote address label is loopback when it is the local host. */
 function isLoopback(remote: string | undefined): boolean {
   if (!remote) return false;
   const r = remote.toLowerCase();
   return r.startsWith('127.') || r.includes('127.0.0.1') || r === '::1' || r.startsWith('::1:') || r.startsWith('[::1]') || r.includes('::ffff:127.');
 }
 
-/** Constant-time token comparison. */
 function tokenMatches(presented: string | undefined, expected: string): boolean {
   if (!presented || !expected) return false;
   const a = Buffer.from(presented);
@@ -71,13 +51,7 @@ function readWebAsset(name: string): string {
 export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
   const log = (msg: string) => writeScopedLog('pikichannel', msg, { level: 'info' });
 
-  // -- Access token: provision on first run, persist to ~/.pikiloom/setting.json.
-  //    Loopback peers (the local dashboard / same-machine demo) are exempt;
-  //    remote peers must present this token in `hello`. `strict` requires the
-  //    token even from loopback (defense-in-depth / testing). --
   const cfg = loadUserConfig();
-  // Env overrides (docker / headless): PIKICHANNEL_TOKEN pins the token without
-  // persisting; PIKICHANNEL_STRICT=1 forces token even from loopback.
   const envToken = String(process.env.PIKICHANNEL_TOKEN || '').trim();
   let token = envToken || String(cfg.pikichannelToken || '').trim();
   if (!token) {
@@ -91,18 +65,14 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
     return tokenMatches(presented, token);
   };
 
-  // -- NodeID: the stable address a remote client dials over the rendezvous. --
   let nodeId = String(cfg.pikichannelNodeId || '').trim();
   if (!nodeId) {
     nodeId = crypto.randomBytes(8).toString('hex');
-    try { updateUserConfig({ pikichannelNodeId: nodeId }); } catch { /* persisted best-effort */ }
+    try { updateUserConfig({ pikichannelNodeId: nodeId }); } catch {  }
   }
   const rendezvousUrl = String(process.env.PIKICHANNEL_RENDEZVOUS || cfg.pikichannelRendezvous || '').trim();
   let currentPublicHost = String(process.env.PIKICHANNEL_PUBLIC_HOST || cfg.pikichannelPublicHost || '').trim();
 
-  // Control-plane tunnel forwarder: replay a tunneled request against the SAME
-  // Hono router that serves /api/* locally — management logic stays single-sourced.
-  // Text responses ride as utf8; anything else (attachment bytes) as base64.
   const forward: RequestForwarder = async (req) => {
     const init: RequestInit = { method: req.method || 'GET', headers: req.headers };
     if (req.body != null && req.method && req.method !== 'GET' && req.method !== 'HEAD') {
@@ -122,11 +92,9 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
   const host = new PikichannelHost(source, authenticate, log);
   host.start();
 
-  // -- WebSocket binding (always available) --
   const wsTransport = new WebSocketTransport();
   wsTransport.start((conn: ChannelConnection) => host.handleConnection(conn));
 
-  // -- WebRTC binding (guarded; degrades gracefully) --
   let rtcTransport: WsLikeTransport | null = null;
   let webrtcError: string | null = null;
   try {
@@ -140,20 +108,10 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
     log(`webrtc transport unavailable: ${webrtcError}`);
   }
 
-  // Pre-mint Cloudflare TURN credentials (if configured) so the first WebRTC
-  // connection already has a relay to fall back to. Best-effort, non-blocking;
-  // no creds → no-op, and the answerer resolves STUN until/unless minting lands.
   void prewarmTurn();
 
-  // -- Rendezvous broker (NAT traversal): always mounted (no werift dep), so any
-  //    reachable pikiloom can broker signaling for NAT'd peers. Relays signaling
-  //    only; data stays P2P. --
   const broker = new RendezvousBroker();
 
-  // -- Rendezvous registrar: when enabled, this host dials OUT to a broker and
-  //    registers its NodeID so remote clients can reach it through NAT. Can be
-  //    toggled at RUNTIME (one-click from the dashboard) — no restart. Needs
-  //    werift, so the host-client class is loaded only when WebRTC is available. --
   let rendezvousHost: RendezvousHostClient | null = null;
   let HostClientCtor: typeof import('./rendezvous-host.js').RendezvousHostClient | null = null;
   let currentRendezvous = '';
@@ -171,13 +129,12 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
       rendezvousHost.start();
       currentRendezvous = next;
     }
-    if (persist) { try { updateUserConfig({ pikichannelRendezvous: next }); } catch { /* best-effort */ } }
+    if (persist) { try { updateUserConfig({ pikichannelRendezvous: next }); } catch {  } }
     log(`rendezvous ${next ? `enabled url=${next} nodeId=${nodeId}` : 'disabled'}`);
     return { ok: true };
   }
-  if (rendezvousUrl) await setRendezvous(rendezvousUrl, false); // initial from env/config
+  if (rendezvousUrl) await setRendezvous(rendezvousUrl, false);
 
-  // -- Web assets (read once; the demo + SDK double as the OSS reference client) --
   let sdkJs = '';
   let demoHtml = '';
   try { sdkJs = readWebAsset('sdk.js'); demoHtml = readWebAsset('demo.html'); }
@@ -186,9 +143,6 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
   const serveDemo = (c: any) => { c.header('Cache-Control', 'no-cache'); return c.html(demoHtml || '<h1>pikichannel demo asset missing</h1>'); };
   app.get('/pikichannel', serveDemo);
   app.get('/pikichannel/', serveDemo);
-  // QR of a connection code (or any short string) as SVG — reuses the repo's
-  // `qrcode` dep so the browser SDK needs no QR library. Dynamic-imported to
-  // keep startup lean.
   app.get('/pikichannel/qr', async (c: any) => {
     const data = String(c.req.query('data') || '').slice(0, 2048);
     if (!data) return c.text('missing data', 400);
@@ -207,9 +161,6 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
   });
   app.get('/pikichannel/status', (c: any) => c.json(statusObj()));
 
-  // -- Pairing: hand the access token to a trusted LOCAL caller only (the
-  //    dashboard / CLI on this machine). Remote callers get 403 — they must be
-  //    paired out-of-band (token shown in the local dashboard, scanned as a QR). --
   app.get('/pikichannel/pair', (c: any) => {
     let remote: string | undefined;
     try { remote = getConnInfo(c)?.remote?.address; } catch { remote = undefined; }
@@ -217,9 +168,6 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
     return c.json({ ok: true, token, strict, nodeId, rendezvous: currentRendezvous || null, publicHost: currentPublicHost || null, registered: !!rendezvousHost, hint: 'paste the connection code into a client' });
   });
 
-  // -- Remote-access settings: configure how others reach THIS host — a public
-  //    address (direct) and/or internet穿透 (rendezvous). Runtime, one-click,
-  //    localhost-only (it changes who can reach this machine). --
   app.post('/pikichannel/remote', async (c: any) => {
     let remote: string | undefined;
     try { remote = getConnInfo(c)?.remote?.address; } catch { remote = undefined; }
@@ -227,7 +175,7 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
     const body = await c.req.json().catch(() => ({}));
     if ('publicHost' in body) {
       currentPublicHost = String(body.publicHost || '').trim();
-      try { updateUserConfig({ pikichannelPublicHost: currentPublicHost }); } catch { /* best-effort */ }
+      try { updateUserConfig({ pikichannelPublicHost: currentPublicHost }); } catch {  }
     }
     let r: { ok: boolean; error?: string } = { ok: true };
     if ('enabled' in body || 'rendezvous' in body) {
@@ -258,11 +206,11 @@ export async function mountPikichannel(app: Hono): Promise<PikichannelHandle> {
   return {
     handleUpgrade(req, socket, head): boolean {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-      if (!url.pathname.startsWith('/pikichannel/')) return false; // not ours
+      if (!url.pathname.startsWith('/pikichannel/')) return false;
       if (url.pathname === '/pikichannel/ws') { wsTransport.handleUpgrade(req, socket, head); return true; }
       if (url.pathname === '/pikichannel/signal' && rtcTransport) { rtcTransport.handleUpgrade(req, socket, head); return true; }
       if (url.pathname === '/pikichannel/rendezvous') { broker.handleUpgrade(req, socket, head); return true; }
-      socket.destroy(); // unknown /pikichannel/* subpath (or webrtc disabled)
+      socket.destroy();
       return true;
     },
     status: statusObj,

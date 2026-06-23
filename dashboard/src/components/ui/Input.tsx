@@ -2,17 +2,6 @@ import { forwardRef, type InputHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '../../utils';
 import { tv, type VariantProps } from './variants';
 
-/**
- * Input — hairline form control with the same focus ring as Button.
- *
- * Variants:
- *   - size: 'sm' (h-7) | 'md' (h-9 default) | 'lg' (h-10)
- *   - tone: 'default' (transparent w/ hairline) | 'inset' (filled, for modals)
- *
- * The default tone uses `surface[2]` so inputs sit on the same plane as the
- * row they live in. Use 'inset' inside modals where the panel is elevated
- * and the field needs to be visually distinct.
- */
 const input = tv({
   base: [
     'flex w-full text-fg outline-none',
@@ -67,12 +56,6 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   );
 });
 
-/* ─────────────────────────────────────────────────────────────
- * Label — form-field label that sits directly above an Input.
- *
- * Use `<SectionLabel>` (from ./feedback) for the uppercase tracked variant
- * that introduces a *group* of controls.
- * ─────────────────────────────────────────────────────────── */
 export function Label({
   children,
   htmlFor,

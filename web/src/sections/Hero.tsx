@@ -15,7 +15,6 @@ function CopyCommand() {
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
-      /* clipboard blocked — no-op */
     }
   };
 
@@ -37,7 +36,6 @@ function CopyCommand() {
 export default function Hero() {
   return (
     <section className="relative isolate overflow-hidden">
-      {/* 3D particle field — the agent swarm, reactive to the cursor */}
       <div className="absolute inset-0 -z-10">
         <SafeWebGL
           fallback={
@@ -64,7 +62,6 @@ export default function Hero() {
           </InView>
         </SafeWebGL>
       </div>
-      {/* color wash + fade into the page background */}
       <div
         className="pointer-events-none absolute inset-0 -z-10"
         style={{ background: 'radial-gradient(60% 50% at 50% 0%, rgb(var(--brand-glow) / .28), transparent 70%)' }}
@@ -125,8 +122,6 @@ export default function Hero() {
           </div>
         </div>
 
-        {/* trust strip — agents only; the full model/tool lineup rides the
-            logo marquees just below, so listing models here is redundant. */}
         <div className="mt-16 w-full max-w-2xl">
           <p className="mb-4 text-xs uppercase tracking-[0.2em] text-neutral-500">
             Any agent · any model · any tool

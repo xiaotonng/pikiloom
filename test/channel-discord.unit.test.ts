@@ -1,7 +1,3 @@
-/**
- * Unit tests for DiscordChannel — mocks discord.js so we can verify dispatch
- * and the send/edit/delete paths without opening a real gateway connection.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const hoist = vi.hoisted(() => {
@@ -101,7 +97,6 @@ afterEach(() => {
 
 describe('DiscordChannel connect / send / edit', () => {
   it('reads bot identity, sends messages, threads replies, and edits existing messages', async () => {
-    // reads bot identity after gateway ready
     {
       const ch = new DiscordChannel({ botToken: 'token' });
       const bot = await ch.connect();
@@ -112,7 +107,6 @@ describe('DiscordChannel connect / send / edit', () => {
     hoist.sentMessages.length = 0;
     hoist.editedMessages.length = 0;
 
-    // sends a text message and returns the message id
     {
       const ch = new DiscordChannel({ botToken: 'token' });
       await ch.connect();
@@ -124,7 +118,6 @@ describe('DiscordChannel connect / send / edit', () => {
 
     hoist.sentMessages.length = 0;
 
-    // attaches a reply reference when replyTo is provided
     {
       const ch = new DiscordChannel({ botToken: 'token' });
       await ch.connect();
@@ -134,7 +127,6 @@ describe('DiscordChannel connect / send / edit', () => {
 
     hoist.editedMessages.length = 0;
 
-    // edits an existing message
     {
       const ch = new DiscordChannel({ botToken: 'token' });
       await ch.connect();
@@ -158,7 +150,6 @@ describe('DiscordChannel dispatch', () => {
   }
 
   it('strips mention for DMs, skips non-mentions, drops bot messages, and enforces allowlists', async () => {
-    // strips the bot mention and delivers to handler
     {
       const ch = new DiscordChannel({ botToken: 'token' });
       await ch.connect();
@@ -168,7 +159,6 @@ describe('DiscordChannel dispatch', () => {
       expect(seen).toEqual([{ text: 'please ship it', chatId: 'CHAN_1' }]);
     }
 
-    // skips channel messages without bot mention
     {
       const ch = new DiscordChannel({ botToken: 'token' });
       await ch.connect();
@@ -178,7 +168,6 @@ describe('DiscordChannel dispatch', () => {
       expect(seen).toEqual([]);
     }
 
-    // drops bot-authored messages
     {
       const ch = new DiscordChannel({ botToken: 'token' });
       await ch.connect();
@@ -190,7 +179,6 @@ describe('DiscordChannel dispatch', () => {
       expect(seen).toEqual([]);
     }
 
-    // respects allowedChatIds
     {
       const ch = new DiscordChannel({ botToken: 'token', allowedChatIds: new Set(['CHAN_OK']) });
       await ch.connect();

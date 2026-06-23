@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-// Refresh docs/downloads.json — a shields.io "endpoint" badge showing the
-// COMBINED monthly npm installs across the package's whole history: the current
-// name `pikiloom` plus its predecessor `pikiclaw` (renamed; the old name still
-// forwards here). Summing both is the honest measure of reach.
-//
-// Run by .github/workflows/downloads-badge.yml (weekly + manual) and locally to
-// seed the file. Node 20+ (global fetch). No dependencies.
 import { writeFileSync } from 'node:fs';
 
 const PACKAGES = ['pikiloom', 'pikiclaw'];

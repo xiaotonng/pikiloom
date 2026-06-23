@@ -40,7 +40,6 @@ describe('Gemini usage resolution', () => {
   });
 
   it('fetches live quota and caches it, then surfaces an HTTP error when the query fails uncached', async () => {
-    // --- fetches Gemini quota usage live and caches the latest successful snapshot ---
     {
       execSyncMock.mockReturnValue(JSON.stringify({
         buckets: [
@@ -85,13 +84,9 @@ describe('Gemini usage resolution', () => {
       expect(cached.windows.map(window => window.label)).toEqual(['Pro', 'Flash', 'Flash Lite']);
     }
 
-    // Drop the module-level usage cache (the success snapshot above) and the
-    // execSync mock so the next scenario starts uncached — mirrors the
-    // per-test reset the original sibling case relied on via beforeEach.
     vi.resetModules();
     execSyncMock.mockReset();
 
-    // --- returns a surfaced HTTP error when the live quota query fails without cached data ---
     {
       execSyncMock.mockReturnValue(JSON.stringify({ error: { message: 'invalid token' } }) + '\n401');
 
@@ -168,17 +163,13 @@ describe('Gemini prompt builder', () => {
   it('embeds, quotes, and omits @-references depending on attachments', async () => {
     const { buildGeminiPromptText } = await import('../src/agent/drivers/gemini.ts');
 
-    // --- embeds attachment paths as @-references so gemini -p can inline them ---
     const prompt = buildGeminiPromptText('describe this image', ['/tmp/foo/shot.png']);
     expect(prompt).toContain('@/tmp/foo/shot.png');
     expect(prompt).toContain('describe this image');
-    // Reference precedes the question so gemini binds it as input context.
     expect(prompt.indexOf('@/tmp/foo/shot.png')).toBeLessThan(prompt.indexOf('describe'));
 
-    // --- quotes paths that contain whitespace ---
     expect(buildGeminiPromptText('look', ['/tmp/has space/img.png'])).toContain('@"/tmp/has space/img.png"');
 
-    // --- passes the prompt through unchanged when there are no attachments ---
     expect(buildGeminiPromptText('hello', [])).toBe('hello');
   });
 });
@@ -204,8 +195,6 @@ describe('Gemini session listing', () => {
     const { getSessions } = await import('../src/agent/index.ts');
     const workdir = '/tmp/pikiloom';
 
-    // Each scenario gets its own HOME so chats directories never bleed across
-    // segments (the original sibling cases each relied on a fresh beforeEach HOME).
     const freshHome = () => {
       process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-gemini-sessions-'));
       const geminiDir = path.join(process.env.HOME!, '.gemini');
@@ -216,7 +205,6 @@ describe('Gemini session listing', () => {
       return geminiDir;
     };
 
-    // --- reads session titles directly from native Gemini session files ---
     {
       const geminiDir = freshHome();
       const chatsDir = path.join(geminiDir, 'tmp', 'pikiloom', 'chats');
@@ -243,12 +231,10 @@ describe('Gemini session listing', () => {
       expect(execSyncMock).not.toHaveBeenCalled();
     }
 
-    // --- hides Gemini CLI stub session files (no messages, e.g. a2a-server) ---
     {
       const geminiDir = freshHome();
       const chatsDir = path.join(geminiDir, 'tmp', 'pikiloom', 'chats');
       fs.mkdirSync(chatsDir, { recursive: true });
-      // a2a-server stub Gemini CLI writes for its internal bookkeeping.
       fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-00-a2a-serv.jsonl'),
         JSON.stringify({
           sessionId: 'a2a-server',
@@ -257,7 +243,6 @@ describe('Gemini session listing', () => {
           lastUpdated: '2026-03-16T00:00:00.000Z',
           kind: 'main',
         }) + '\n');
-      // Abandoned UUID-named stub with no messages.
       fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-01-abandon.jsonl'),
         JSON.stringify({
           sessionId: '70c89d0f-3276-4c21-9a1e-f9765098ab35',
@@ -266,7 +251,6 @@ describe('Gemini session listing', () => {
           lastUpdated: '2026-03-16T00:01:00.000Z',
           kind: 'main',
         }) + '\n');
-      // Real chat — should appear.
       fs.writeFileSync(path.join(chatsDir, 'session-2026-03-16T00-02-real.json'), JSON.stringify({
         sessionId: 'real-session',
         startTime: '2026-03-16T00:02:00.000Z',
@@ -283,7 +267,6 @@ describe('Gemini session listing', () => {
       expect(result.sessions.map(s => s.sessionId)).toEqual(['real-session']);
     }
 
-    // --- returns an empty native session list when the Gemini chats directory is missing ---
     {
       freshHome();
 
@@ -300,7 +283,6 @@ describe('Gemini session messages content cleanup', () => {
   const originalHome = process.env.HOME;
   let workdir = '';
 
-  // Minimal valid 1x1 PNG used as the staged attachment fixture.
   const PNG_BYTES = Buffer.from(
     '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4'
     + '890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082',
@@ -341,7 +323,6 @@ describe('Gemini session messages content cleanup', () => {
       agent: 'gemini', sessionId: 'gemini-session-clean', workdir, rich: true,
     });
 
-    // --- strips the orchestrator system preamble and referenced-files markers from rich user bubbles ---
     {
       const userContent = [
         '[Browser Automation]',
@@ -371,7 +352,6 @@ describe('Gemini session messages content cleanup', () => {
       });
     }
 
-    // --- promotes staged @<path> image refs into image blocks alongside the user text ---
     {
       const imageDir = path.join(workdir, '.pikiloom', 'sessions', 'gemini', 'pending_abc', 'workspace');
       fs.mkdirSync(imageDir, { recursive: true });
@@ -402,7 +382,6 @@ describe('Gemini session messages content cleanup', () => {
       expect(rich?.blocks?.[1]?.content).toMatch(/^data:image\/png;base64,/);
     }
 
-    // --- leaves @<path> refs that do not resolve as readable images in the text ---
     {
       writeGeminiSession([
         { id: '1', timestamp: '2026-03-16T00:00:00.000Z', type: 'user', content: 'check @docs/intro.md for context' },

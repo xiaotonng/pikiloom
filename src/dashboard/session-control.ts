@@ -1,7 +1,3 @@
-/**
- * Public session task control surface for dashboard and API routes.
- */
-
 import path from 'node:path';
 import { getProjectSkillPaths, listSkills, stageSessionFiles, ensureManagedSession, findPikiloomSession, getDriverCapabilities, isPendingSessionId, type Agent, type HandoverRef } from '../agent/index.js';
 import { loadUserConfig } from '../core/config/user-config.js';
@@ -10,17 +6,6 @@ import { runtime } from './runtime.js';
 
 const KNOWN_AGENTS = new Set<Agent>(['claude', 'codex', 'gemini', 'hermes']);
 
-/**
- * Parse a `/goal[ args]` prompt typed in the dashboard chat box. Returns null
- * when the prompt is not a goal slash command. Sub-commands mirror the IM
- * `handleGoalCommand` semantics (set / clear / pause / resume / status).
- *
- * Routing /goal through the native bridge is the dashboard's analog of what
- * channels/{telegram,feishu,weixin}/bot.ts do via `handleGoalCommand` — before
- * this hook, dashboard /goal was matched by the legacy `goal` skill resolver
- * and silently rewritten to "Read SKILL.md and execute", which bypassed both
- * the claude native /goal slash command and codex's thread/goal RPC.
- */
 function parseGoalSlash(prompt: string): { action: 'set' | 'clear' | 'pause' | 'resume' | 'status'; objective: string } | null {
   const trimmed = prompt.trim();
   const m = trimmed.match(/^\/goal(?:\s+([\s\S]*))?$/);
@@ -34,21 +19,15 @@ function parseGoalSlash(prompt: string): { action: 'set' | 'clear' | 'pause' | '
   return { action: 'set', objective: args };
 }
 
-/**
- * Resolve a `/skill-name [args]` prompt into the full skill execution prompt.
- * Returns null if the prompt is not a skill invocation or the skill is not found.
- */
 function resolveSkillFromPrompt(workdir: string, prompt: string): { resolvedPrompt: string; skillName: string } | null {
   const trimmed = prompt.trim();
   if (!trimmed.startsWith('/')) return null;
-  // Extract command name and args: "/skill-name some args" → name="skill-name", args="some args"
   const match = trimmed.match(/^\/([^\s]+)(?:\s+(.*))?$/s);
   if (!match) return null;
   const name = match[1];
   const args = (match[2] || '').trim();
 
   const { skills } = listSkills(workdir);
-  // Match by exact skill name (case-insensitive)
   const skill = skills.find(s => s.name.toLowerCase() === name.toLowerCase());
   if (!skill) return null;
 
@@ -68,36 +47,19 @@ export interface QueueSessionTaskRequest {
   prompt: string;
   model?: string | null;
   effort?: string | null;
-  /**
-   * Per-send opt-in to Claude's multi-agent Workflow orchestration. Deliberate
-   * per-turn choice from the composer — NOT a persisted default. Defaults off.
-   */
   workflow?: boolean;
   attachments?: string[];
-  /**
-   * When the user just switched agent from a live session, pass the source
-   * (agent, sessionId) so cross-agent handover can replay its context as the
-   * first turn of the new session. Ignored when `sessionId` resolves to an
-   * existing (non-pending) session — we don't replay handover on top of an
-   * agent's own history.
-   */
   previousAgent?: Agent | string | null;
   previousSessionId?: string | null;
 }
 
-/**
- * Resolve a `handoverFrom` ref from the request's `previousAgent` /
- * `previousSessionId` fields, validating that it points to a real, non-self,
- * different-agent session managed by pikiloom. Returns null when the inputs
- * are absent or invalid — handover is best-effort and silent-skip on bad data.
- */
 function resolveHandoverFrom(request: QueueSessionTaskRequest, targetAgent: Agent): HandoverRef | null {
   const prevAgent = typeof request.previousAgent === 'string' ? request.previousAgent.trim() : '';
   const prevSessionId = typeof request.previousSessionId === 'string' ? request.previousSessionId.trim() : '';
   if (!prevAgent || !prevSessionId) return null;
   if (!KNOWN_AGENTS.has(prevAgent as Agent)) return null;
-  if (prevAgent === targetAgent) return null;        // same-agent continuation goes via --resume, not handover
-  if (isPendingSessionId(prevSessionId)) return null; // no native history yet → nothing to compact
+  if (prevAgent === targetAgent) return null;
+  if (isPendingSessionId(prevSessionId)) return null;
   const record = findPikiloomSession(request.workdir, prevAgent as Agent, prevSessionId);
   if (!record) return null;
   return { agent: prevAgent as Agent, sessionId: prevSessionId };
@@ -115,25 +77,17 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     ? request.agent as Agent
     : runtime.getRuntimeDefaultAgent(config);
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
-  // "ultra" is a synthetic effort rung = max depth + Workflow orchestration;
-  // decompose it so the spawn carries a real --effort value plus the workflow
-  // flag (the per-send pick is the single knob — no separate workflow control).
   const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
     typeof request.effort === 'string' ? request.effort : '',
   );
   const thinkingEffort = resolvedAgent === 'gemini' ? '' : splitEffort;
   const workflowEnabled = ultraWorkflow || request.workflow === true;
 
-  // /goal — route directly to the goal bridge (claude native slash, codex RPC,
-  // or portable goal.json for gemini/hermes). Must run BEFORE skill resolution
-  // so the legacy `goal` skill doesn't grab the prompt and rewrite it into a
-  // "Read SKILL.md" instruction.
   const goalCmd = parseGoalSlash(request.prompt || '');
   if (goalCmd && request.sessionId && !isPendingSessionId(request.sessionId)) {
     return runDashboardGoalSlash(bot, resolvedAgent, request, goalCmd, modelId, thinkingEffort);
   }
 
-  // Resolve /skill-name prompts into full skill execution prompts
   let prompt = request.prompt;
   const skillResult = prompt ? resolveSkillFromPrompt(request.workdir, prompt) : null;
   if (skillResult) {
@@ -144,14 +98,9 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
   let sessionId = request.sessionId;
   let attachments = request.attachments || [];
 
-  // Resolve handover source. Only meaningful when we're about to stage a fresh
-  // session (sessionId blank or pending). For an existing session we never
-  // replay handover — that session's own --resume history is canonical.
   const isFreshSession = !sessionId || isPendingSessionId(sessionId);
   const handoverFrom = isFreshSession ? resolveHandoverFrom(request, resolvedAgent) : null;
 
-  // Stage files into the session workspace so temp uploads survive cleanup.
-  // Also creates a new pending session when no sessionId is provided.
   if (!sessionId || attachments.length) {
     const staged = stageSessionFiles({
       agent: resolvedAgent,
@@ -176,9 +125,6 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     attachments,
     ...(modelId ? { modelId } : {}),
     ...(thinkingEffort ? { thinkingEffort } : {}),
-    // Always thread the per-send workflow choice (even when false) so the run
-    // explicitly reflects the picked rung (Ultra ⇒ on) rather than any ambient
-    // default.
     workflowEnabled,
     ...(handoverFrom ? { handoverFrom } : {}),
   });
@@ -194,11 +140,6 @@ async function runDashboardGoalSlash(
 ) {
   const opts = { chatId: 'dashboard' as const, modelId: modelId || undefined, thinkingEffort: thinkingEffort || undefined };
   const sessionKey = `${agent}:${request.sessionId}`;
-  // Synthetic task id — for set / clear / resume on agents that internally
-  // submit a follow-up task (claude native slash, portable continuation),
-  // the real task id is owned by submitSessionTask. The dashboard's SSE
-  // stream listener picks that up via session events; this id is just to
-  // give the HTTP caller a non-empty taskId field.
   const taskId = `goal-${cmd.action}-${Date.now().toString(36)}`;
   try {
     if (cmd.action === 'status') {
@@ -217,7 +158,6 @@ async function runDashboardGoalSlash(
       const goal = await bot.resumeSessionGoal(request.workdir, agent, request.sessionId, opts);
       return { ok: true as const, taskId, sessionKey, queued: false, goal };
     }
-    // set
     const goal = await bot.setSessionGoal(request.workdir, agent, request.sessionId, {
       objective: cmd.objective,
       ...opts,
@@ -255,30 +195,21 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
   }
 
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
-  // Same "ultra" decomposition as the send path — a forked turn launched at
-  // Ultra inherits max depth + Workflow orchestration.
   const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
     typeof request.effort === 'string' ? request.effort : '',
   );
   const thinkingEffort = agent === 'gemini' ? '' : splitEffort;
 
-  // Resolve /skill-name shorthand the same way send/queue does, so a forked
-  // turn that starts with `/skill-name` runs the skill against the child.
   let prompt = request.prompt;
   const skillResult = prompt ? resolveSkillFromPrompt(request.workdir, prompt) : null;
   if (skillResult) prompt = skillResult.resolvedPrompt;
 
-  // Make sure the parent has a managed record so `recordFork` (called after the
-  // child stream completes) can write the lineage on both sides. Native-only
-  // sessions (started outside pikiloom) won't have a record yet.
   ensureManagedSession({
     agent,
     workdir: request.workdir,
     sessionId: request.parentSessionId,
   });
 
-  // Always create a fresh pending session for the child. stageSessionFiles
-  // also handles attachment imports into the new workspace.
   const staged = stageSessionFiles({
     agent,
     workdir: request.workdir,
@@ -317,13 +248,6 @@ export function cancelSessionTask(taskId: string) {
   return { ok: true as const, recalled: result.cancelled || result.interrupted };
 }
 
-/**
- * Stop only the currently running task for a session — queued follow-ups are
- * preserved and run normally once the chain advances. Works on (agent,
- * sessionId) rather than a single taskId so it still functions during the
- * brief window after send/before the queued WS snapshot reaches the client.
- * Per-row × buttons (→ cancelSessionTask) cancel one queued entry at a time.
- */
 export function stopSessionTasks(agent: string, sessionId: string) {
   const bot = runtime.getBotRef();
   if (!bot) return { ok: false as const, error: 'Bot is not running' };
@@ -337,10 +261,6 @@ export async function steerSessionTask(taskId: string) {
   const result = await bot.steerTask(taskId);
   return { ok: true as const, steered: result.steered };
 }
-
-// ---------------------------------------------------------------------------
-// Interaction prompt control (human-in-the-loop)
-// ---------------------------------------------------------------------------
 
 export function interactionSelectOption(promptId: string, optionValue: string, opts?: { requestFreeform?: boolean }) {
   const bot = runtime.getBotRef();

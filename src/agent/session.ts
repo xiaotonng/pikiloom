@@ -1,7 +1,3 @@
-/**
- * Session workspace management, metadata persistence, classification, and export/import.
- */
-
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,10 +41,6 @@ import { getDriver } from './driver.js';
 import { collapseSkillPrompt } from './skills.js';
 import { SESSION_RUNNING_THRESHOLD_MS } from '../core/constants.js';
 
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
 function ensureDir(dirPath: string) { fs.mkdirSync(dirPath, { recursive: true }); }
 
 function readJsonFile<T>(filePath: string, fallback: T): T {
@@ -71,21 +63,12 @@ function trimSessionText(value: unknown, max = 24_000): string | null {
   return `${text.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const PIKILOOM_DIR = '.pikiloom';
 const PIKILOOM_SESSIONS_DIR = path.join(PIKILOOM_DIR, 'sessions');
 const PIKILOOM_SESSION_INDEX = path.join(PIKILOOM_SESSIONS_DIR, 'index.json');
 const PIKILOOM_LEGACY_WORKSPACES_DIR = path.join(PIKILOOM_DIR, 'workspaces');
 const SESSION_WORKSPACE_DIR = 'workspace';
 const SESSION_META_FILE = 'session.json';
-// return.json and artifact constants removed — file return is now handled by MCP bridge
-
-// ---------------------------------------------------------------------------
-// Path helpers
-// ---------------------------------------------------------------------------
 
 function sessionIndexPath(workdir: string): string { return path.join(workdir, PIKILOOM_SESSION_INDEX); }
 function sessionDirPath(workdir: string, agent: Agent, sessionId: string): string { return path.join(workdir, PIKILOOM_SESSIONS_DIR, agent, sessionId); }
@@ -98,21 +81,12 @@ function sessionRootFromWorkspacePath(workspacePath: string): string {
 function sessionMetaPath(workspacePath: string): string { return path.join(sessionRootFromWorkspacePath(workspacePath), SESSION_META_FILE); }
 function legacySessionMetaPath(workspacePath: string): string { return path.join(workspacePath, PIKILOOM_DIR, SESSION_META_FILE); }
 
-// ---------------------------------------------------------------------------
-// ID helpers
-// ---------------------------------------------------------------------------
-
-/** Generate a temporary session ID for new sessions before the agent assigns one. */
 function nextPendingSessionId(): string { return `pending_${crypto.randomBytes(6).toString('hex')}`; }
 function nextThreadId(): string { return `thread_${crypto.randomBytes(6).toString('hex')}`; }
 function legacyThreadId(agent: Agent, sessionId: string): string { return `legacy:${agent}:${sessionId}`; }
 function normalizeThreadId(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
-
-// ---------------------------------------------------------------------------
-// Run state helpers
-// ---------------------------------------------------------------------------
 
 function normalizeSessionRunState(rawState: unknown): SessionRunState {
   const state = typeof rawState === 'string' ? rawState.trim().toLowerCase() : '';
@@ -149,11 +123,6 @@ function incompleteRunDetail(result: Pick<StreamResult, 'error' | 'stopReason' |
   return message ? shortValue(message, 180) : 'Last run did not complete.';
 }
 
-/**
- * Check whether a process is still alive. Returns true when the PID exists and we can
- * signal it, false when the process is definitively gone, and null when we cannot tell
- * (e.g. owned by a different user — permission denied).
- */
 export function isProcessAlive(pid: number | null | undefined): boolean | null {
   if (!pid || !Number.isFinite(pid) || pid <= 0) return null;
   try {
@@ -166,13 +135,6 @@ export function isProcessAlive(pid: number | null | undefined): boolean | null {
   }
 }
 
-/**
- * Heuristic staleness check for a session record marked 'running'. Returns true when
- * the record should be downgraded to 'incomplete' — i.e. the owning process is gone,
- * or (if PID is missing) the last update is older than `ageThresholdMs`.
- *
- * Returns false if the session might still be live and should be left alone.
- */
 export function isRunningSessionStale(
   record: Pick<ManagedSessionRecord, 'runState' | 'runPid' | 'runUpdatedAt'>,
   ageThresholdMs: number,
@@ -185,11 +147,6 @@ export function isRunningSessionStale(
   return age > ageThresholdMs;
 }
 
-/**
- * Scan the session index for a workdir and downgrade any 'running' record whose
- * owning process is no longer alive (or that has gone stale past `ageThresholdMs`).
- * Returns the number of records downgraded. Safe to call at startup and periodically.
- */
 export function reconcileOrphanedRunningSessions(workdir: string, ageThresholdMs = 30 * 60_000): number {
   const resolvedWorkdir = path.resolve(workdir);
   const index = loadSessionIndex(resolvedWorkdir);
@@ -219,22 +176,17 @@ export function applySessionRunResult(
     setSessionRunState(record, 'incomplete', incompleteRunDetail(result));
   }
 
-  // Auto-classify the stream result
   const classification = classifySession({ ...result, activity: result.activity ?? null });
   record.classification = classification;
-  // Only set userStatus if not manually overridden by the user
   if (!record.userStatus) {
     record.userStatus = deriveUserStatus(classification.outcome);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Record normalization
-// ---------------------------------------------------------------------------
-
 interface SessionIndexData {
   version: number;
   sessions: ManagedSessionRecord[];
+  promotions: Record<string, string>;
 }
 
 interface EnsureSessionWorkspaceOpts {
@@ -262,7 +214,6 @@ interface SessionWorkspaceInfo {
 }
 
 function normalizeSessionRecord(raw: any, workdir: string): ManagedSessionRecord | null {
-  // Support both new format (sessionId) and legacy format (localSessionId + engineSessionId)
   const sessionId = typeof raw?.sessionId === 'string' ? raw.sessionId.trim()
     : typeof raw?.engineSessionId === 'string' && raw.engineSessionId.trim() ? raw.engineSessionId.trim()
     : typeof raw?.localSessionId === 'string' ? raw.localSessionId.trim()
@@ -306,22 +257,8 @@ function normalizeSessionRecord(raw: any, workdir: string): ManagedSessionRecord
   };
 }
 
-// ---------------------------------------------------------------------------
-// Index persistence
-// ---------------------------------------------------------------------------
-
-/**
- * Parsed-index cache keyed by index-file identity (mtime + size). loadSessionIndex
- * sits on the per-turn read path (getSessionStoredConfig), every dashboard session
- * read, and is hit several times within a single save flow — each call otherwise
- * does readFileSync + JSON.parse + a per-record normalize pass. A cache hit costs
- * one statSync. writeSessionIndex invalidates the entry, so a write is always
- * re-read fresh; every writer mutates records then writes, so the shared cache is
- * never left serving a half-mutated record.
- */
 const sessionIndexCache = new Map<string, { mtimeMs: number; size: number; data: SessionIndexData }>();
 
-/** Sort session records newest-first, parsing each `updatedAt` only once. */
 function sortByUpdatedAtDesc<T extends { updatedAt: string }>(records: T[]): T[] {
   const at = new Map<T, number>(records.map(r => [r, Date.parse(r.updatedAt) || 0]));
   return records.sort((a, b) => at.get(b)! - at.get(a)!);
@@ -337,21 +274,100 @@ function loadSessionIndex(workdir: string): SessionIndexData {
   }
   const parsed = readJsonFile<any>(filePath, { version: 1, sessions: [] });
   const sessions = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+  const promotions: Record<string, string> = {};
+  if (parsed?.promotions && typeof parsed.promotions === 'object') {
+    for (const [k, v] of Object.entries(parsed.promotions)) {
+      if (typeof k === 'string' && k && typeof v === 'string' && v && k !== v) promotions[k] = v;
+    }
+  }
   const data: SessionIndexData = {
     version: 1,
     sessions: sessions
       .map((entry: any) => normalizeSessionRecord(entry, workdir))
       .filter((entry: ManagedSessionRecord | null): entry is ManagedSessionRecord => !!entry)
       .filter((entry: ManagedSessionRecord) => !isPendingSessionId(entry.sessionId) || fs.existsSync(sessionRootFromWorkspacePath(entry.workspacePath))),
+    promotions,
   };
   if (stat) sessionIndexCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, data });
   return data;
 }
 
-function writeSessionIndex(workdir: string, sessions: ManagedSessionRecord[]) {
+function writeSessionIndex(
+  workdir: string,
+  sessions: ManagedSessionRecord[],
+  promotionsOverride?: Record<string, string>,
+) {
   const filePath = sessionIndexPath(workdir);
-  writeJsonFile(filePath, { version: 1, sessions });
+  const promotions = promotionsOverride ?? loadSessionIndex(workdir).promotions;
+  const payload: { version: number; sessions: ManagedSessionRecord[]; promotions?: Record<string, string> } = { version: 1, sessions };
+  if (promotions && Object.keys(promotions).length) payload.promotions = promotions;
+  writeJsonFile(filePath, payload);
   sessionIndexCache.delete(filePath);
+}
+
+function prunePromotionsForDeletedSession(
+  promotions: Record<string, string>,
+  agent: Agent,
+  deletedId: string,
+): Record<string, string> | null {
+  if (!promotions) return null;
+  const out: Record<string, string> = {};
+  let changed = false;
+  for (const [key, val] of Object.entries(promotions)) {
+    const ci = key.indexOf(':');
+    const kAgent = ci > 0 ? key.slice(0, ci) : '';
+    const kOld = ci > 0 ? key.slice(ci + 1) : '';
+    if (kAgent === agent && (val === deletedId || kOld === deletedId)) { changed = true; continue; }
+    out[key] = val;
+  }
+  return changed ? out : null;
+}
+
+export function resolveCanonicalSessionId(workdir: string, agent: Agent, sessionId: string): string {
+  if (!sessionId) return sessionId;
+  const resolvedWorkdir = path.resolve(workdir);
+  const promotions = loadSessionIndex(resolvedWorkdir).promotions;
+  let id = sessionId;
+  const seen = new Set<string>();
+  while (!seen.has(id)) {
+    seen.add(id);
+    let next = promotions?.[`${agent}:${id}`];
+    if (!next && isPendingSessionId(id)) {
+      const aliased = readSessionDirAliasTarget(resolvedWorkdir, agent, id);
+      if (aliased) {
+        recordSessionPromotion(resolvedWorkdir, agent, id, aliased);
+        next = aliased;
+      }
+    }
+    if (!next || next === id) break;
+    id = next;
+  }
+  return id;
+}
+
+function readSessionDirAliasTarget(workdir: string, agent: Agent, sessionId: string): string | null {
+  try {
+    const dir = sessionDirPath(workdir, agent, sessionId);
+    if (!fs.lstatSync(dir).isSymbolicLink()) return null;
+    const native = path.basename(fs.readlinkSync(dir).replace(/[/\\]+$/, ''));
+    return native && native !== sessionId && !isPendingSessionId(native) ? native : null;
+  } catch { return null; }
+}
+
+export function getSessionPromotions(workdir: string): Record<string, string> {
+  return { ...loadSessionIndex(path.resolve(workdir)).promotions };
+}
+
+function recordSessionPromotion(workdir: string, agent: Agent, oldId: string, newId: string): void {
+  if (!oldId || !newId || oldId === newId) return;
+  const resolvedWorkdir = path.resolve(workdir);
+  const index = loadSessionIndex(resolvedWorkdir);
+  const promotions = { ...index.promotions };
+  for (const k of Object.keys(promotions)) {
+    if (promotions[k] === oldId && k.startsWith(`${agent}:`)) promotions[k] = newId;
+  }
+  promotions[`${agent}:${oldId}`] = newId;
+  writeSessionIndex(resolvedWorkdir, index.sessions, promotions);
 }
 
 function writeSessionMeta(record: ManagedSessionRecord) {
@@ -378,10 +394,6 @@ function writeSessionMeta(record: ManagedSessionRecord) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// File / directory helpers
-// ---------------------------------------------------------------------------
-
 function copyPath(sourcePath: string, targetPath: string) {
   const stat = fs.statSync(sourcePath);
   if (stat.isDirectory()) { fs.cpSync(sourcePath, targetPath, { recursive: true, force: true }); return; }
@@ -397,10 +409,6 @@ function createSessionDirAlias(aliasPath: string, targetPath: string) {
     fs.symlinkSync(relativeTarget, aliasPath, process.platform === 'win32' ? 'junction' : 'dir');
   } catch {}
 }
-
-// ---------------------------------------------------------------------------
-// Migration
-// ---------------------------------------------------------------------------
 
 function migrateSessionLayout(workdir: string, record: ManagedSessionRecord): ManagedSessionRecord {
   const targetSessionDir = sessionDirPath(workdir, record.agent, record.sessionId);
@@ -424,10 +432,6 @@ function migrateSessionLayout(workdir: string, record: ManagedSessionRecord): Ma
   return record;
 }
 
-// ---------------------------------------------------------------------------
-// Save / update
-// ---------------------------------------------------------------------------
-
 export function saveSessionRecord(workdir: string, record: ManagedSessionRecord): ManagedSessionRecord {
   record = migrateSessionLayout(workdir, record);
   ensureDir(sessionDirPath(workdir, record.agent, record.sessionId));
@@ -444,10 +448,6 @@ export function saveSessionRecord(workdir: string, record: ManagedSessionRecord)
   return record;
 }
 
-/**
- * Update mutable session metadata (classification, userStatus, userNote, links, migration)
- * for an existing pikiloom-managed session. Returns true if the record was found and updated.
- */
 export function updateSessionMeta(
   workdir: string,
   agent: Agent,
@@ -480,10 +480,6 @@ export function updateSessionMeta(
   return true;
 }
 
-/**
- * Promote a pending session to a real session ID. Renames the workspace directory
- * and updates the index. Called after the first stream returns the agent's native ID.
- */
 export function promoteSessionId(workdir: string, agent: Agent, pendingId: string, nativeId: string): void {
   if (!isPendingSessionId(pendingId) || !nativeId.trim()) return;
   const resolvedWorkdir = path.resolve(workdir);
@@ -494,9 +490,8 @@ export function promoteSessionId(workdir: string, agent: Agent, pendingId: strin
   const oldDir = sessionDirPath(resolvedWorkdir, agent, pendingId);
   const newDir = sessionDirPath(resolvedWorkdir, agent, nativeId);
 
-  // Move workspace directory if it exists
   if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) {
-    try { fs.renameSync(oldDir, newDir); } catch { /* cross-device: copy+delete */ try { fs.cpSync(oldDir, newDir, { recursive: true }); fs.rmSync(oldDir, { recursive: true, force: true }); } catch {} }
+    try { fs.renameSync(oldDir, newDir); } catch {  try { fs.cpSync(oldDir, newDir, { recursive: true }); fs.rmSync(oldDir, { recursive: true, force: true }); } catch {} }
     createSessionDirAlias(oldDir, newDir);
   }
 
@@ -509,20 +504,6 @@ export function promoteSessionId(workdir: string, agent: Agent, pendingId: strin
   saveSessionRecord(resolvedWorkdir, record);
 }
 
-// ---------------------------------------------------------------------------
-// Fork lineage
-// ---------------------------------------------------------------------------
-
-/**
- * Record a fork relationship between two pikiloom-managed sessions.
- *
- * Sets `migratedFrom` (with kind='fork' + forkedAtTurn) on the child and
- * appends the reverse link on the parent's `linkedSessions`. Both sides also
- * get `migratedTo` set on the parent so the child is a discoverable twin.
- *
- * No-op if either record is missing — call sites are expected to ensure both
- * managed records exist (the child is created via the fork stream completion).
- */
 export function recordFork(workdir: string, opts: {
   parent: { agent: Agent; sessionId: string };
   child: { agent: Agent; sessionId: string };
@@ -553,10 +534,6 @@ export function recordFork(workdir: string, opts: {
   writeSessionMeta(child);
 }
 
-// ---------------------------------------------------------------------------
-// Identity sync
-// ---------------------------------------------------------------------------
-
 export function syncManagedSessionIdentity(session: SessionWorkspaceInfo, workdir: string, nativeId: string): boolean {
   const resolvedId = nativeId.trim();
   if (!resolvedId || session.sessionId === resolvedId) return false;
@@ -564,15 +541,8 @@ export function syncManagedSessionIdentity(session: SessionWorkspaceInfo, workdi
   const resolvedWorkdir = path.resolve(workdir);
   const previousId = session.sessionId;
   if (isPendingSessionId(previousId)) {
-    // Pending → native: move the workspace dir into the native slot and
-    // remove the pending index entry (handled by promoteSessionId).
     promoteSessionId(resolvedWorkdir, session.record.agent, previousId, resolvedId);
   } else {
-    // Native → native rotation (Claude `--resume` can rewrite the session id
-    // mid-stream). Drop the old index entry so the dashboard does not show a
-    // stale duplicate; both jsonl files stay on disk and the workspace stays
-    // under its original native id (the next saveSessionRecord will lay down
-    // a fresh dir under the new id).
     const index = loadSessionIndex(resolvedWorkdir);
     const filtered = index.sessions.filter(e => !(e.agent === session.record.agent && e.sessionId === previousId));
     if (filtered.length !== index.sessions.length) writeSessionIndex(resolvedWorkdir, filtered);
@@ -582,12 +552,9 @@ export function syncManagedSessionIdentity(session: SessionWorkspaceInfo, workdi
   session.workspacePath = sessionWorkspacePath(resolvedWorkdir, session.record.agent, resolvedId);
   session.record.sessionId = resolvedId;
   session.record.workspacePath = session.workspacePath;
+  recordSessionPromotion(resolvedWorkdir, session.record.agent, previousId, resolvedId);
   return true;
 }
-
-// ---------------------------------------------------------------------------
-// Title / filename helpers
-// ---------------------------------------------------------------------------
 
 export function summarizePromptTitle(prompt: string | null | undefined): string | null {
   const raw = String(prompt || '').replace(/\r\n?/g, '\n');
@@ -612,23 +579,12 @@ function uniqueWorkspaceFilename(workspacePath: string, desiredName: string): st
   return candidate;
 }
 
-// ---------------------------------------------------------------------------
-// Workspace file import
-// ---------------------------------------------------------------------------
-
 export function importFilesIntoWorkspace(workspacePath: string, files: string[]): string[] {
   const imported: string[] = [];
   const realWorkspace = fs.realpathSync(workspacePath);
   for (const filePath of files) {
     const resolved = path.resolve(filePath);
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) continue;
-    // Resolve symlinks on the source too — realWorkspace is already realpath'd,
-    // so comparing it against a merely path.resolve'd source makes a file that
-    // ALREADY lives in the workspace look "outside" whenever a path component is
-    // a symlink (macOS /tmp → /private/tmp, or an iCloud-synced ~/Desktop). That
-    // mis-detection re-copies an already-staged attachment under a collision
-    // name, so the same image lands in the prompt TWICE and renders twice.
-    // realpath'ing both sides keeps the in-workspace check symlink-safe.
     const sourcePath = fs.realpathSync(resolved);
     const relPath = path.relative(realWorkspace, sourcePath);
     if (relPath && !relPath.startsWith('..') && !path.isAbsolute(relPath)) {
@@ -641,10 +597,6 @@ export function importFilesIntoWorkspace(workspacePath: string, files: string[])
   }
   return dedupeStrings(imported);
 }
-
-// ---------------------------------------------------------------------------
-// Ensure session workspace
-// ---------------------------------------------------------------------------
 
 export function ensureSessionWorkspace(opts: EnsureSessionWorkspaceOpts): SessionWorkspaceInfo {
   const workdir = path.resolve(opts.workdir);
@@ -671,7 +623,6 @@ export function ensureSessionWorkspace(opts: EnsureSessionWorkspaceOpts): Sessio
     };
   }
   if (!record.threadId) record.threadId = normalizeThreadId(opts.threadId) || legacyThreadId(record.agent, record.sessionId);
-  // Backfill handoverFrom on first staging only — never overwrite an existing one.
   if (!record.handoverFrom) record.handoverFrom = normalizeHandoverRef(opts.handoverFrom);
   if (!record.title && opts.title) record.title = summarizePromptTitle(opts.title);
   record.workspacePath = path.resolve(record.workspacePath);
@@ -679,15 +630,7 @@ export function ensureSessionWorkspace(opts: EnsureSessionWorkspaceOpts): Sessio
   return { sessionId: record.sessionId, workspacePath: record.workspacePath, record };
 }
 
-// ---------------------------------------------------------------------------
-// Record to SessionInfo
-// ---------------------------------------------------------------------------
-
 export function managedRecordToSessionInfo(record: ManagedSessionRecord): SessionInfo {
-  // Collapse pre-fix records that stored the canonical skill expansion as the
-  // title / lastQuestion / lastMessageText. New records get collapsed at write
-  // time in `prepareStreamOpts`; this read-time pass keeps existing sessions
-  // from showing the long instruction in the sidebar after the fix lands.
   const title = collapseSkillPrompt(record.title) ?? record.title;
   const lastQuestion = collapseSkillPrompt(record.lastQuestion) ?? record.lastQuestion;
   const lastMessageText = collapseSkillPrompt(record.lastMessageText) ?? record.lastMessageText;
@@ -722,11 +665,6 @@ export function managedRecordToSessionInfo(record: ManagedSessionRecord): Sessio
   };
 }
 
-// ---------------------------------------------------------------------------
-// Public session queries
-// ---------------------------------------------------------------------------
-
-// Exported for drivers
 export function listPikiloomSessions(workdir: string, agent: Agent, limit?: number): ManagedSessionRecord[] {
   const records = sortByUpdatedAtDesc(
     loadSessionIndex(path.resolve(workdir)).sessions.filter(entry => entry.agent === agent),
@@ -742,47 +680,17 @@ export interface DeleteAgentSessionOpts {
   workdir: string;
   agent: Agent;
   sessionId: string;
-  /**
-   * Also delete the agent's native session file (Claude jsonl / Codex rollout /
-   * Gemini chat). Defaults to false — by default we only clean pikiloom's own
-   * index and per-session directory so the agent CLI can still resume the
-   * conversation outside pikiloom.
-   */
   purgeNative?: boolean;
 }
 
 export interface DeleteAgentSessionResult {
   ok: boolean;
-  /** True if a managed session record was removed from the index. */
   recordRemoved: boolean;
-  /** Absolute paths of pikiloom-owned directories that were removed. */
   pikiloomPathsRemoved: string[];
-  /** Absolute paths of native agent files removed when purgeNative was set. */
   nativePathsRemoved: string[];
-  /**
-   * Set when the operation refused to act because the session is still running
-   * (record marked 'running' AND not stale). Caller should surface this to the
-   * user, not auto-force.
-   */
   refusedReason: 'session-running' | null;
 }
 
-/**
- * Delete a pikiloom-managed session. Two scopes:
- *   - default: drop the index entry + recursively delete the per-session dir
- *     under `<workdir>/.pikiloom/sessions/<agent>/<sessionId>/` (and the legacy
- *     `workspaces/` path). Native agent transcript is left in place so the
- *     user can still resume the conversation outside pikiloom.
- *   - `purgeNative: true`: also call the driver's `deleteNativeSession` to
- *     remove the underlying jsonl/rollout file.
- *
- * Refuses to delete a session whose record is currently marked running and
- * not stale (active process or recent mtime) — caller should stop the
- * stream first.
- *
- * Sessions that exist only in the agent's native store (no pikiloom record)
- * are still purgeable when `purgeNative` is set.
- */
 export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<DeleteAgentSessionResult> {
   const resolvedWorkdir = path.resolve(opts.workdir);
   const { agent, sessionId } = opts;
@@ -805,7 +713,8 @@ export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<
 
   if (record) {
     index.sessions.splice(recordIdx, 1);
-    writeSessionIndex(resolvedWorkdir, index.sessions);
+    const prunedPromotions = prunePromotionsForDeletedSession(index.promotions, agent, sessionId);
+    writeSessionIndex(resolvedWorkdir, index.sessions, prunedPromotions ?? undefined);
     result.recordRemoved = true;
   }
 
@@ -835,11 +744,6 @@ export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<
   return result;
 }
 
-/**
- * Look up the persisted model, thinkingEffort, and bound profileId for an
- * existing session. Returns null values when the session is not found or
- * fields are not set.
- */
 export function getSessionStoredConfig(workdir: string, agent: Agent, sessionId: string): { model: string | null; thinkingEffort: string | null; workflowEnabled: boolean | null; profileId: string | null } {
   const record = findPikiloomSession(workdir, agent, sessionId);
   return {
@@ -889,7 +793,6 @@ export function stageSessionFiles(opts: StageSessionFilesOpts): StageSessionFile
   const importedFiles = importFilesIntoWorkspace(session.workspacePath, opts.files);
   if (importedFiles.length) {
     session.record.stagedFiles = dedupeStrings([...session.record.stagedFiles, ...importedFiles]);
-    /* title will be set when the first text prompt arrives */
     saveSessionRecord(opts.workdir, session.record);
   }
   return {
@@ -900,10 +803,6 @@ export function stageSessionFiles(opts: StageSessionFilesOpts): StageSessionFile
     handoverFrom: session.record.handoverFrom ?? null,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Merge managed and native sessions
-// ---------------------------------------------------------------------------
 
 function sessionTimelineAt(session: Pick<SessionInfo, 'runUpdatedAt' | 'createdAt'>): number {
   const ts = Date.parse(session.runUpdatedAt || session.createdAt || '');
@@ -949,13 +848,6 @@ export function mergeManagedAndNativeSessions(managedSessions: SessionInfo[], na
       runUpdatedAt: useNativeTimeline ? (native.runUpdatedAt ?? managed.runUpdatedAt) : (managed.runUpdatedAt ?? native.runUpdatedAt),
       title: native.title || managed.title,
       model: native.model || managed.model,
-      // Pikiloom-owned metadata: the native session file (Claude JSONL etc.)
-      // carries none of these, so the `...native` spread would clobber them with
-      // `undefined`/`null`. The managed record (our centralized index) is the
-      // source of truth — recover each like `model` above. Without this the list
-      // silently drops the user's per-session choices: effort/Workflow fold back
-      // to the global default (per-send `ultra` → `max` after the turn) and the
-      // BYOK Profile binding is lost on resume.
       thinkingEffort: managed.thinkingEffort ?? native.thinkingEffort ?? null,
       workflowEnabled: managed.workflowEnabled ?? native.workflowEnabled ?? null,
       profileId: managed.profileId ?? native.profileId ?? null,
@@ -988,10 +880,6 @@ export function mergeManagedAndNativeSessions(managedSessions: SessionInfo[], na
   return merged;
 }
 
-// ---------------------------------------------------------------------------
-// getSessions / getSessionTail / getSessionMessages
-// ---------------------------------------------------------------------------
-
 export function getSessions(opts: SessionListOpts): Promise<SessionListResult> {
   const workdir = path.resolve(opts.workdir);
   agentLog(`[sessions] request agent=${opts.agent} workdir=${workdir} limit=${opts.limit ?? 'all'}`);
@@ -1009,16 +897,11 @@ export function getSessionMessages(opts: SessionMessagesOpts & { agent: Agent })
   return getDriver(opts.agent).getSessionMessages(opts);
 }
 
-// ---------------------------------------------------------------------------
-// Turn windowing
-// ---------------------------------------------------------------------------
-
 function normalizeTurnWindowValue(value: number | undefined, fallback: number): number {
   if (!Number.isFinite(value) || value == null) return fallback;
   return Math.max(0, Math.floor(value));
 }
 
-/** Slice messages by turn window and count total turns. Exported for drivers. */
 export function applyTurnWindow(
   allMsgs: TailMessage[],
   opts: Pick<SessionMessagesOpts, 'lastNTurns' | 'turnOffset' | 'turnLimit'> = {},
@@ -1033,8 +916,6 @@ export function applyTurnWindow(
     }
   }
 
-  // If no rich messages provided, synthesize from plain messages so the
-  // API always returns a consistent richMessages array.
   const rich = richMsgs ?? allMsgs.map(m => ({ role: m.role, text: m.text, blocks: [{ type: 'text' as const, content: m.text }] }));
 
   if (totalTurns <= 0) {
@@ -1107,14 +988,9 @@ export function applyTurnWindow(
   };
 }
 
-/** Filter messages to last N turns and count total turns. Exported for drivers. */
 export function applyTurnFilter(allMsgs: TailMessage[], lastNTurns?: number, richMsgs?: RichMessage[]): SessionMessagesResult {
   return applyTurnWindow(allMsgs, { lastNTurns }, richMsgs);
 }
-
-// ---------------------------------------------------------------------------
-// Session classification
-// ---------------------------------------------------------------------------
 
 const PROPOSAL_PATTERNS = /方案|option[s ]?[A-C]|plan|approach|建议|recommend|alternatively|trade-?off|pros?\s+(and|&)\s+cons?|选择|比较/i;
 const IMPLEMENTATION_PATTERNS = /已完成|committed|done|implemented|fixed|created|wrote|修复|完成|写入|提交|applied|updated|modified|refactored/i;
@@ -1128,7 +1004,6 @@ export function classifySession(
   const firstLine = message.split('\n').find(l => l.trim())?.trim() || '';
   const summaryText = firstLine.length > 120 ? firstLine.slice(0, 117) + '...' : firstLine;
 
-  // 1. Structural signals from StreamResult
   if (result.incomplete) {
     return {
       outcome: 'partial',
@@ -1148,7 +1023,6 @@ export function classifySession(
     };
   }
 
-  // 2. Activity signals (tool use indicates implementation)
   const activity = result.activity || '';
   if (/\b(Edit|Write|Bash)\b/.test(activity)) {
     return {
@@ -1159,7 +1033,6 @@ export function classifySession(
     };
   }
 
-  // 3. Content-based classification
   if (BLOCKED_PATTERNS.test(message.slice(0, 500))) {
     return {
       outcome: 'blocked',
@@ -1187,7 +1060,6 @@ export function classifySession(
     };
   }
 
-  // 4. Default: informational answer
   return {
     outcome: 'answer',
     suggestedNextAction: null,
@@ -1196,7 +1068,6 @@ export function classifySession(
   };
 }
 
-/** Derive a default userStatus from classification outcome */
 export function deriveUserStatus(outcome: SessionClassification['outcome']): 'review' | 'done' | 'active' {
   switch (outcome) {
     case 'answer': return 'done';
@@ -1205,15 +1076,8 @@ export function deriveUserStatus(outcome: SessionClassification['outcome']): 're
   }
 }
 
-// ---------------------------------------------------------------------------
-// Session export/import
-// ---------------------------------------------------------------------------
-
 export async function exportSession(opts: ExportSessionOpts): Promise<ExportSessionResult> {
   try {
-    // Rich mode so we can include image blocks in the export. The session
-    // pipeline always returns plain messages even when rich is set; rich is
-    // additive.
     const result = await getSessionMessages({ ...opts, agent: opts.agent, rich: true });
     if (!result.ok) return { ok: false, content: '', filename: '', error: result.error };
 
@@ -1225,8 +1089,6 @@ export async function exportSession(opts: ExportSessionOpts): Promise<ExportSess
 
     switch (opts.format) {
       case 'json': {
-        // Materialize image bytes into inline data URLs so the JSON is a
-        // self-contained artefact (no dangling filesystem references).
         const { materializeImage } = await import('./images.js');
         const enrichedRichMessages = richMessages?.map(message => ({
           ...message,
@@ -1268,12 +1130,6 @@ export async function exportSession(opts: ExportSessionOpts): Promise<ExportSess
   }
 }
 
-/**
- * Render an export-friendly markdown view. Each turn renders the role header,
- * the text body, and (for image blocks) an inlined `![caption](data:…)` ref
- * so the markdown is self-contained and renders correctly in any viewer
- * (VSCode preview, GitHub, etc.) without external file lookups.
- */
 async function renderMarkdownExport(
   agent: Agent,
   timestamp: string,
@@ -1282,7 +1138,6 @@ async function renderMarkdownExport(
 ): Promise<string> {
   const lines: string[] = [`# Session Export (${agent}, ${timestamp})`, ''];
   const { materializeImage } = await import('./images.js');
-  // Walk by index so we can pair messages[i] with richMessages[i] when present.
   const indexed = richMessages?.length === messages.length ? richMessages : null;
   const sections: string[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -1347,11 +1202,6 @@ function parseMarkdownConversation(content: string): TailMessage[] {
   for (const section of sections) {
     const firstLine = section.split('\n')[0].trim().toLowerCase();
     const role: 'user' | 'assistant' = firstLine.includes('user') ? 'user' : 'assistant';
-    // Strip inlined image data URLs (`![alt](data:image/...;base64,...)`) so
-    // the imported text body stays readable. The base64 payload itself isn't
-    // re-attached as a MessageBlock because the import API returns plain
-    // TailMessages; downstream agents that re-process the export will see the
-    // alt text "[image: alt]" placeholder where the markdown image stood.
     const stripped = section
       .split('\n')
       .slice(1)

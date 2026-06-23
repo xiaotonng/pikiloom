@@ -1,41 +1,6 @@
-/**
- * CLI tool catalog — single source of truth for what the Dashboard shows under
- * Extensions → CLI.
- *
- * ─── How this plugs into the rest of the stack ───────────────────────────────
- *
- *   Dashboard → GET /api/extensions/cli/catalog
- *     → dashboard/routes/cli.ts
- *       → agent/cli/catalog.ts    (merge + live detection)
- *         → agent/cli/registry.ts (types + re-exports this array)
- *           ← src/catalog/cli-tools.ts ← YOU ARE HERE
- *
- * The registry module defines the `RecommendedCli` type and other helpers; the
- * detector spawns `which <binary>` + the status command, and the auth runner
- * streams the login sub-process. This file owns only the *data*.
- *
- * ─── How to add a CLI ────────────────────────────────────────────────────────
- *
- *   1. Append an entry to `CLI_TOOLS`.
- *   2. Pick an `auth.type`:
- *        - 'oauth-web' if the CLI has a first-party `<cli> ... login --web`
- *          flavor (gh, wrangler, vercel, …). The runner spawns that command,
- *          streams stdout/stderr to the UI, and polls `statusArgv` until it
- *          reports authed.
- *        - 'token' if the user pastes an API key. Implement the write-path in
- *          `agent/cli/auth.ts` → `applyCliToken` for that id (keeps secret
- *          handling explicit per CLI).
- *        - 'none' for CLIs that don't need sign-in (docker, pnpm).
- *   3. Fill `install.{darwin,linux,win}` with canonical commands. The UI shows
- *      the current OS's list and always renders a "Copy" button. We deliberately
- *      do NOT auto-run installers — package managers often need sudo or
- *      interactive confirmation and we'd rather keep the user in charge.
- */
-
 import type { RecommendedCli } from '../agent/cli/registry.js';
 
 export const CLI_TOOLS: RecommendedCli[] = [
-  // ── Dev: source control & platforms ────────────────────────────────────────
   {
     id: 'gh',
     binary: 'gh',
@@ -66,7 +31,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
   },
 
-  // ── Cloud platforms ────────────────────────────────────────────────────────
   {
     id: 'wrangler',
     binary: 'wrangler',
@@ -115,8 +79,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
       statusArgv: ['vercel', 'whoami'],
       loginArgv:  ['vercel', 'login'],
       logoutArgv: ['vercel', 'logout'],
-      // `vercel login` opens an interactive picker (email / GitHub / GitLab /
-      // Bitbucket / SAML) that needs a real TTY. Surface the official command.
       manualLoginCommands: [
         { label: 'Sign in to Vercel', cmd: 'vercel login' },
       ],
@@ -198,8 +160,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
       statusArgv: ['heroku', 'whoami'],
       loginArgv:  ['heroku', 'login'],
       logoutArgv: ['heroku', 'logout'],
-      // `heroku login` prompts "Press any key to open up the browser to login
-      // or q to exit" — a hard TTY dependency. Surface the official command.
       manualLoginCommands: [
         { label: 'Sign in to Heroku', cmd: 'heroku login' },
       ],
@@ -208,7 +168,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
   },
 
-  // ── Commerce & payments ────────────────────────────────────────────────────
   {
     id: 'stripe',
     binary: 'stripe',
@@ -236,7 +195,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
   },
 
-  // ── Cloud giants (token-based profile flows) ───────────────────────────────
   {
     id: 'aws',
     binary: 'aws',
@@ -285,15 +243,10 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
     auth: {
       type: 'oauth-web',
-      // `gcloud auth list ... --format=value(account)` exits 0 even when no
-      // account is signed in (just prints an empty line). Require non-empty
-      // output so an empty list isn't mistaken for ready.
       statusArgv:         ['gcloud', 'auth', 'list', '--filter=status:ACTIVE', '--format=value(account)'],
       statusReadyPattern: '\\S',
       loginArgv:  ['gcloud', 'auth', 'login'],
       logoutArgv: ['gcloud', 'auth', 'revoke'],
-      // `gcloud auth login` orchestrates a local callback server + interactive
-      // prompts — needs a real TTY. ADC for SDK code is a separate command.
       manualLoginCommands: [
         { label: 'Sign in (user credentials)',                    cmd: 'gcloud auth login' },
         { label: 'Optional: Application Default Credentials',     cmd: 'gcloud auth application-default login' },
@@ -303,7 +256,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
   },
 
-  // ── Social & messaging ─────────────────────────────────────────────────────
   {
     id: 'lark-cli',
     binary: 'lark-cli',
@@ -326,10 +278,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
       statusArgv: ['lark-cli', 'auth', 'status'],
       loginArgv:  ['lark-cli', 'auth', 'login', '--recommend'],
       logoutArgv: ['lark-cli', 'auth', 'logout'],
-      // Lark CLI sign-in has two ordered steps and renders a terminal QR that
-      // doesn't fit a streamed-output panel. Both commands run in the user's
-      // own terminal; only after step 2 does `lark-cli auth status` exit 0,
-      // so re-check naturally rejects "only step 1 completed".
       manualLoginCommands: [
         { label: 'Step 1 — Register a Feishu app (one-time setup)', cmd: 'lark-cli config init --new' },
         { label: 'Step 2 — Sign in via Device Flow OAuth',          cmd: 'lark-cli auth login --recommend' },
@@ -339,7 +287,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
   },
 
-  // ── Content & creation ─────────────────────────────────────────────────────
   {
     id: 'mocli',
     binary: 'mocli',
@@ -369,7 +316,6 @@ export const CLI_TOOLS: RecommendedCli[] = [
     },
   },
 
-  // ── No-auth utilities (detect only) ────────────────────────────────────────
   {
     id: 'opencli',
     binary: 'opencli',

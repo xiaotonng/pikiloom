@@ -2,7 +2,6 @@ import type { TgContext } from '../../src/channels/telegram/channel.ts';
 import { TelegramBot } from '../../src/channels/telegram/bot.ts';
 import { vi } from 'vitest';
 
-// Prevent Bot constructor from touching real filesystem (skills merge, gitignore, etc.)
 vi.mock('../../src/agent/index.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/agent/index.ts')>();
   return { ...actual, initializeProjectSkills: vi.fn() };

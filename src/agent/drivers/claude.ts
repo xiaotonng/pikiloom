@@ -1,7 +1,3 @@
-/**
- * Claude Code CLI driver: stream parsing, session reads, model listing, usage.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawn } from 'node:child_process';
@@ -15,7 +11,6 @@ import {
   type ModelListOpts, type ModelListResult, type ModelInfo,
   type UsageOpts, type UsageResult, type UsageWindowInfo,
   type SessionInfo,
-  // shared helpers
   Q, run, agentError, agentLog, agentWarn,
   appendSystemPrompt, buildStreamPreviewMeta, computeContext, pushRecentActivity,
   summarizeClaudeToolUse, summarizeClaudeToolResult, joinErrorMessages, parseTodoWriteAsPlan,
@@ -36,10 +31,6 @@ import {
 import { AGENT_STREAM_HARD_KILL_GRACE_MS, AGENT_GRACEFUL_ABORT_GRACE_MS, SESSION_RUNNING_THRESHOLD_MS } from '../../core/constants.js';
 import { terminateProcessTree } from '../../core/process-control.js';
 import { getHome, IS_MAC, encodePathAsDirName } from '../../core/platform.js';
-
-// ---------------------------------------------------------------------------
-// Multimodal stdin
-// ---------------------------------------------------------------------------
 
 function buildClaudeUserMessage(prompt: string, attachments: string[]): string {
   const content: any[] = [];
@@ -69,20 +60,6 @@ function claudeUsesStreamJsonInput(o: StreamOpts): boolean {
 
 const CLAUDE_STEER_IDLE_CLOSE_MS = 1200;
 
-/**
- * Effort + multi-agent-Workflow gate args, shared by BOTH Claude spawn paths
- * (`claude -p` in claudeCmd below and the PTY/TUI driver in claude-tui.ts).
- * Kept in one place so the gate can never drift between them — the omission
- * that once left the Workflow tool always-on under the TUI driver.
- *
- * "ultra" is a synthetic picker rung (max depth + Workflow orchestration), never
- * a real --effort value — translate it to `max` so a stray "ultra" can't reach
- * and break the CLI, and treat it as an implicit workflow opt-in. The Workflow
- * tool ships in the default toolset and triggers on a bare "workflow" keyword;
- * under the bypassPermissions mode pikiloom runs by default that could auto-spawn
- * a fleet of sub-agents, so drop it entirely unless orchestration was explicitly
- * enabled (the workflow flag or the "ultra" rung).
- */
 export function claudeEffortAndWorkflowArgs(
   o: Pick<StreamOpts, 'thinkingEffort' | 'claudeWorkflowEnabled'>,
 ): string[] {
@@ -93,25 +70,6 @@ export function claudeEffortAndWorkflowArgs(
   return args;
 }
 
-/**
- * Env keys the claude CLI exports to its own subprocesses (Bash tool, hooks)
- * to mark them as children of a running session. If pikiloom itself was
- * launched from inside a Claude Code session — agent-driven `npm run dev`
- * restarts, `! npx pikiloom` typed into the TUI, the self-bootstrap path —
- * these leak into the daemon's environment and every claude it spawns
- * inherits them. A claude started with `CLAUDE_CODE_CHILD_SESSION` set runs
- * in child-session mode: it mirrors transcript persistence to its (absent)
- * SDK parent instead of writing `~/.claude/projects/<dir>/<id>.jsonl`.
- * The TUI driver tails that JSONL as its only text source, so a contaminated
- * spawn streams nothing, returns "(no textual response)", and loses the whole
- * turn on SIGTERM. Verified on 2.1.173: with these vars set the transcript
- * never grows past the ai-title line; with them scrubbed every event lands
- * 0.2–1.2s after it happens.
- *
- * Deliberately a closed list: config-style vars users set on purpose
- * (CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_MAX_OUTPUT_TOKENS, …) must survive.
- * Shared by both spawn paths (`claude -p` here and the PTY/TUI driver).
- */
 const CLAUDE_SESSION_CONTEXT_ENV_KEYS = [
   'CLAUDECODE',
   'CLAUDE_CODE_CHILD_SESSION',
@@ -127,20 +85,11 @@ export function scrubClaudeSessionContextEnv(env: Record<string, string | undefi
   for (const key of CLAUDE_SESSION_CONTEXT_ENV_KEYS) delete env[key];
 }
 
-// ---------------------------------------------------------------------------
-// Command & parser
-// ---------------------------------------------------------------------------
-
 function claudeCmd(o: StreamOpts): string[] {
   const args = ['claude', '-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages'];
   const model = normalizeClaudeModelId(o.claudeModel);
   if (model) args.push('--model', model);
   if (o.claudePermissionMode) args.push('--permission-mode', o.claudePermissionMode);
-  // Fork: branch off the parent's full history into a fresh sessionId. The
-  // claude CLI exposes this via `--resume <parent> --fork-session`; the new
-  // session inherits the parent's transcript and gets its own JSONL file.
-  // We record `forkedAtTurn` as lineage metadata only — the agent's actual
-  // context is the full parent history.
   if (o.forkOf) {
     args.push('--resume', o.forkOf.parentSessionId, '--fork-session');
   } else if (o.sessionId) {
@@ -151,8 +100,6 @@ function claudeCmd(o: StreamOpts): string[] {
     if (o.onSteerReady) args.push('--replay-user-messages');
     if (o.attachments?.length) o._stdinOverride = buildClaudeUserMessage(o.prompt, o.attachments);
   }
-  // Effort + Workflow gate — shared with the TUI driver (claude-tui.ts) so the
-  // two spawn paths can never drift. See claudeEffortAndWorkflowArgs.
   args.push(...claudeEffortAndWorkflowArgs(o));
   if (o.claudeAppendSystemPrompt) args.push('--append-system-prompt', o.claudeAppendSystemPrompt);
   if (o.mcpConfigPath) args.push('--mcp-config', o.mcpConfigPath);
@@ -160,15 +107,9 @@ function claudeCmd(o: StreamOpts): string[] {
   return args;
 }
 
-/**
- * Route a JSONL event that belongs to a sub-agent (parent_tool_use_id is set).
- * The event is owned by the Task tool_use whose id matches `parentToolUseId`;
- * we accumulate the sub-agent's model and tool calls without ever touching
- * `s.recentActivity` or `s.text` (those stay scoped to the parent agent).
- */
 function routeClaudeSubAgentEvent(ev: any, t: string, parentToolUseId: string, s: any): void {
   const sub: StreamSubAgent | undefined = s.subAgents.get(parentToolUseId);
-  if (!sub) return; // Task tool_use should always precede sub-agent events; ignore stragglers.
+  if (!sub) return;
 
   if (t === 'system' || t === 'assistant') {
     const model = ev.model ?? ev.message?.model;
@@ -212,18 +153,10 @@ function buildClaudeTurnUsage(
   return meta;
 }
 
-/** Hard cap beyond which a native Claude session is treated as idle regardless
- *  of the last JSONL event — guards against sessions abandoned mid-turn (Ctrl-C
- *  during a tool call, terminal crash) so they don't stick on "running". */
 const CLAUDE_NATIVE_RUNNING_HARD_CAP_MS = 5 * 60 * 1000;
 
 const CLAUDE_TURN_TERMINAL_STOP_REASONS = new Set(['end_turn', 'stop_sequence', 'max_tokens', 'refusal']);
 
-/** Inspect a native Claude JSONL to decide whether a turn is currently in
- *  progress. Pure-mtime detection misses cases where Claude is mid-tool-use and
- *  hasn't appended for >10s; this checks the trailing event for a non-terminal
- *  state (user message awaiting reply, or assistant message with a non-end stop
- *  reason like `tool_use`). */
 function isClaudeNativeSessionRunning(filePath: string, mtimeMs: number): boolean {
   const age = Date.now() - mtimeMs;
   if (age < SESSION_RUNNING_THRESHOLD_MS) return true;
@@ -235,14 +168,12 @@ function isClaudeNativeSessionRunning(filePath: string, mtimeMs: number): boolea
     let ev: any;
     try { ev = JSON.parse(line); } catch { continue; }
     const t = ev?.type;
-    // Skip auto-title events — they fire after a turn completes and are not a liveness signal.
     if (t === 'ai-title' || t === 'system') continue;
     if (t === 'user') return true;
     if (t === 'assistant') {
       const stop = ev?.message?.stop_reason;
       return stop != null ? !CLAUDE_TURN_TERMINAL_STOP_REASONS.has(stop) : true;
     }
-    // Unknown event type — be conservative.
     return false;
   }
   return false;
@@ -257,15 +188,6 @@ export function claudeContextWindowFromModel(model: unknown): number | null {
   return null;
 }
 
-// Mirrors Claude Code 2.1.112's `Yn()` + `v38()` denominator (and `pj()` display
-// formula) — verified by extracting cli.js from the last JS-source release.
-//   uDY = 20_000  // max output reservation cap
-//   t_7 = 13_000  // auto-compact buffer
-// Effective denominator with autoCompact enabled (cc's default) is
-// `window - 20K - 13K`. Without these subtractions the percent we display
-// drifts from the number cc itself reports (e.g. Opus 1M shows the user
-// `Context left until auto-compact: X%` against a 967_000 denominator, not
-// against a flat 1_000_000).
 const CLAUDE_MAX_OUTPUT_RESERVE = 20_000;
 const CLAUDE_AUTOCOMPACT_BUFFER = 13_000;
 const CLAUDE_USABLE_WINDOW_RESERVE = CLAUDE_MAX_OUTPUT_RESERVE + CLAUDE_AUTOCOMPACT_BUFFER;
@@ -276,11 +198,6 @@ export function claudeEffectiveContextWindow(advertised: number | null): number 
   return advertised - CLAUDE_USABLE_WINDOW_RESERVE;
 }
 
-// cc's `ey6` (was `hYB` pre-2.1.112) — context size of one assistant call. The
-// `output_tokens` slice matters: cc walks back to the latest assistant message
-// and adds its output to the input/cached/creation counters because that
-// generated content already exists in conversation history and would be
-// re-fed to the next call.
 function claudeContextUsedFromUsage(u: {
   input?: number | null;
   cached?: number | null;
@@ -300,30 +217,12 @@ function recomputeClaudeContextUsed(s: any): void {
   s.contextUsedTokens = total > 0 ? total : null;
 }
 
-/**
- * Tool names whose `tool_result` image content does NOT count as
- * assistant-generated output and must NOT be re-rendered in the assistant
- * card. These tools merely read existing files (user attachments, project
- * assets) — the bytes already lived somewhere the user can see them, so
- * surfacing them again in the assistant block creates a duplicate of the
- * user's own upload below Claude's text reply.
- *
- * Genuine image producers (MCP image-gen tools, mermaid-mcp, chart, dalle-mcp,
- * Codex built-in image_gen, …) are NOT in this set and continue to render
- * normally.
- */
 const CLAUDE_FILE_READING_TOOLS = new Set(['Read']);
 
 function isClaudeFileReadingTool(toolName: string | null | undefined): boolean {
   return !!toolName && CLAUDE_FILE_READING_TOOLS.has(toolName);
 }
 
-/**
- * Walk a content array (assistant message body OR a tool_result.content array)
- * and push any image entries into the stream state's `imageBlocks`, deduped by
- * the first 64 chars of base64 data. Used during live parsing so the final
- * StreamResult carries every image the turn produced.
- */
 function accumulateClaudeImagesFromContent(content: any, s: any): void {
   if (!Array.isArray(content)) return;
   for (const entry of content) {
@@ -336,9 +235,6 @@ function accumulateClaudeImagesFromContent(content: any, s: any): void {
       if (key) s.seenImageKeys?.add(key);
       s.imageBlocks?.push(block);
     } else if (entry.type === 'tool_result' && Array.isArray(entry.content)) {
-      // MCP / Skill tool_result with multimodal content — recurse for images,
-      // but skip tools that just read existing files (the bytes are already
-      // visible in the user's own upload bubble).
       const toolName = entry.tool_use_id ? s.claudeToolsById?.get(entry.tool_use_id)?.name : null;
       if (isClaudeFileReadingTool(toolName)) continue;
       accumulateClaudeImagesFromContent(entry.content, s);
@@ -346,12 +242,6 @@ function accumulateClaudeImagesFromContent(content: any, s: any): void {
   }
 }
 
-/**
- * Read the server-assigned task id from a TaskCreate tool_result. Claude
- * surfaces it via the structured `ev.toolUseResult.task.id` companion field,
- * with a textual fallback ("Task #N created successfully: …") that we parse
- * if the structured form is missing.
- */
 function readClaudeTaskCreateId(ev: any, block: any): string | null {
   const structured = ev?.toolUseResult?.task?.id;
   if (structured != null && String(structured).trim()) return String(structured).trim();
@@ -363,15 +253,8 @@ function readClaudeTaskCreateId(ev: any, block: any): string | null {
   return null;
 }
 
-/**
- * Rebuild s.plan from the accumulated TaskCreate / TaskUpdate state so the
- * dashboard + IM plan card show the canonical Claude Code 2.x task progress.
- * Order follows insertion order (matches the on-screen Claude task list).
- */
 function rebuildClaudePlanFromTasks(s: any): void {
   if (!s.claudeTaskOrder?.length) {
-    // Nothing to render — leave s.plan alone so TodoWrite-era data (if any)
-    // doesn't get clobbered by an empty rebuild.
     return;
   }
   const steps: StreamPreviewPlanStep[] = [];
@@ -387,19 +270,6 @@ function rebuildClaudePlanFromTasks(s: any): void {
   s.plan = { explanation: null, steps };
 }
 
-// ---------------------------------------------------------------------------
-// Background sub-agent lifecycle (`run_in_background` Task/Agent launches)
-//
-// A backgrounded agent's tool_result returns immediately as a launch ack; the
-// agent itself keeps running *inside the claude process* and its completion is
-// announced later via a `<task-notification>` user event. The parser tracks
-// launched/completed tool_use ids on the stream state so:
-//   1. the sub-agent preview card stays "running" until the agent truly ends;
-//   2. the TUI driver can refuse to SIGTERM the PTY while agents are pending
-//      (killing the process would destroy them mid-flight — the exact failure
-//      the awaiting logic in claude-tui.ts exists to prevent).
-// ---------------------------------------------------------------------------
-
 export interface ClaudeTaskNotification {
   taskId: string | null;
   toolUseId: string | null;
@@ -414,7 +284,6 @@ function ensureClaudeBgAgentState(s: any): void {
   if (typeof s.lastTaskNotificationAt !== 'number') s.lastTaskNotificationAt = 0;
 }
 
-/** Record a Task/Agent tool_use launched with `run_in_background: true`. */
 export function registerClaudeBackgroundAgentLaunch(s: any, toolUseId: string): void {
   const id = String(toolUseId || '').trim();
   if (!id) return;
@@ -422,18 +291,6 @@ export function registerClaudeBackgroundAgentLaunch(s: any, toolUseId: string): 
   s.bgAgentLaunchedToolUseIds.add(id);
 }
 
-/**
- * Record a `Bash` tool_use launched with `run_in_background: true`.
- *
- * Background Bash lives *inside the claude process* exactly like a
- * backgrounded sub-agent: its tool_result is a launch ack, the real
- * completion arrives later as a `<task-notification>` which re-invokes the
- * model in the same process. Before this registration existed only Task/Agent
- * launches counted as "pending background work" — a turn that backgrounded a
- * Bash command would hit Stop, decideClaudeTuiStop saw pending=0 and
- * terminated the PTY, killing the command and its future report-back turn
- * (the「claude 后台任务一停止就被掐死」failure).
- */
 export function registerClaudeBackgroundBashLaunch(s: any, toolUseId: string): void {
   const id = String(toolUseId || '').trim();
   if (!id) return;
@@ -442,7 +299,6 @@ export function registerClaudeBackgroundBashLaunch(s: any, toolUseId: string): v
   s.bgBashToolUseIds.add(id);
 }
 
-/** Launched background tasks (agents + bash) whose <task-notification> hasn't arrived yet. */
 export function pendingClaudeBackgroundAgentCount(s: any): number {
   const launched: Set<string> | undefined = s?.bgAgentLaunchedToolUseIds;
   if (!launched?.size) return 0;
@@ -454,9 +310,6 @@ export function pendingClaudeBackgroundAgentCount(s: any): number {
   return pending;
 }
 
-/** Pending background *Bash* tasks specifically. Unlike agents (whose sidecar
- *  JSONL keeps emitting events while alive), a background command is silent by
- *  nature — callers use this to pick a longer hold/stall budget. */
 export function pendingClaudeBackgroundBashCount(s: any): number {
   const bash: Set<string> | undefined = s?.bgBashToolUseIds;
   if (!bash?.size) return 0;
@@ -468,13 +321,6 @@ export function pendingClaudeBackgroundBashCount(s: any): number {
   return pending;
 }
 
-/**
- * Pull the background task id out of a launch ack. Claude Code's backgrounded
- * Bash tool_result reads like "Command running in background with ID: bash_3
- * (output: …)" — the id is what the later <task-notification> carries (its
- * <tool-use-id> is often omitted for bash), so mapping id → tool_use here is
- * what lets applyClaudeTaskNotification resolve the completion.
- */
 export function extractClaudeBackgroundTaskId(content: any): string | null {
   let text = '';
   if (typeof content === 'string') text = content;
@@ -491,13 +337,6 @@ export function extractClaudeBackgroundTaskId(content: any): string | null {
   return m ? m[1] : null;
 }
 
-/**
- * Pull the workflow runId (`wf_…`) out of a Workflow launch ack. The Workflow
- * tool returns immediately with `{ runId }` and the orchestration runs in the
- * background; its later `<task-notification>` may carry only that id (no
- * `<tool-use-id>`), so mapping runId → tool_use here is what lets
- * applyClaudeTaskNotification resolve the completion and release the PTY hold.
- */
 export function extractClaudeWorkflowRunId(content: any): string | null {
   let text = '';
   if (typeof content === 'string') text = content;
@@ -514,17 +353,6 @@ export function extractClaudeWorkflowRunId(content: any): string | null {
   return m ? m[0] : null;
 }
 
-/**
- * Parse a `<task-notification>` wrapper out of a user event's content.
- * Shape (observed, Claude Code 2.x):
- *   <task-notification>
- *     <task-id>a7a61bd5e0e76e0f3</task-id>
- *     <tool-use-id>toolu_01MsPk…</tool-use-id>   ← omitted for orphaned tasks
- *     <output-file>…</output-file>
- *     <status>completed | failed | killed</status>
- *     <summary>…</summary>
- *   </task-notification>
- */
 export function extractClaudeTaskNotification(content: any): ClaudeTaskNotification | null {
   let text = '';
   if (typeof content === 'string') text = content;
@@ -542,18 +370,8 @@ export function extractClaudeTaskNotification(content: any): ClaudeTaskNotificat
   return { taskId: tag('task-id'), toolUseId: tag('tool-use-id'), status: tag('status') };
 }
 
-/**
- * Fold a task-notification into the stream state: mark the matching background
- * agent completed and flip its preview card status. Notifications for unknown
- * tasks (orphans from a previous process, background Bash, …) still bump
- * `lastTaskNotificationAt` — the TUI driver uses that timestamp to tell a
- * pre-notification Stop hook apart from the model's post-resume Stop.
- */
 export function applyClaudeTaskNotification(s: any, notification: ClaudeTaskNotification, eventAtMs?: number | null): void {
   ensureClaudeBgAgentState(s);
-  // Prefer the event's own timestamp: when a JSONL flush delivers the
-  // notification and the wrap-up segment's Stop in one burst, parse-time would
-  // postdate the Stop and make a genuinely-fresh Stop look stale.
   s.lastTaskNotificationAt = eventAtMs && Number.isFinite(eventAtMs) ? eventAtMs : Date.now();
   const toolUseId = notification.toolUseId
     || (notification.taskId ? s.bgTaskIdToToolUse.get(notification.taskId) : undefined)
@@ -575,11 +393,6 @@ export function applyClaudeTaskNotification(s: any, notification: ClaudeTaskNoti
 
 export function claudeParse(ev: any, s: any) {
   const t = ev.type || '';
-  // Sub-agent events (Task tool spawns a child agent) carry parent_tool_use_id
-  // pointing back to the parent's Task tool_use_id. They share the JSONL stream
-  // with parent events but must be isolated so their tool calls don't pollute
-  // the parent's activity list and their model/effort don't override the
-  // parent's runtime context.
   const parentToolUseId: string | null = (typeof ev.parent_tool_use_id === 'string' && ev.parent_tool_use_id)
     ? ev.parent_tool_use_id : null;
   if (parentToolUseId) {
@@ -600,12 +413,6 @@ export function claudeParse(ev: any, s: any) {
     const inner = ev.event || {};
     if (inner.type === 'message_start') {
       const u = inner.message?.usage;
-      // Per-call semantics: each LLM call inside a turn resets the counters,
-      // so the displayed In/Cached/Out and contextPercent describe the same
-      // call (matches cc's `LX(messages)` which returns the latest assistant
-      // usage, not a cumulative across calls).
-      // The finished call's output is folded into the turn-cumulative base
-      // first so `turnOutputTokens` keeps climbing across tool roundtrips.
       s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
       s.inputTokens = u?.input_tokens ?? 0;
       s.cachedInputTokens = u?.cache_read_input_tokens ?? 0;
@@ -613,10 +420,6 @@ export function claudeParse(ev: any, s: any) {
       s.outputTokens = 0;
       recomputeClaudeContextUsed(s);
     }
-    // When a new text/thinking block starts after an earlier one (e.g. between
-    // a text block and a tool_use and back to text), insert a paragraph break
-    // so deltas from distinct blocks don't collapse into a single markdown
-    // paragraph.
     if (inner.type === 'content_block_start') {
       const blockType = inner.content_block?.type;
       if (blockType === 'text' && s.text && !s.text.endsWith('\n\n')) {
@@ -635,8 +438,6 @@ export function claudeParse(ev: any, s: any) {
       s.stopReason = d.stop_reason ?? s.stopReason;
       const u = inner.usage;
       if (u) {
-        // message_delta reports running totals for the active call. Per-call
-        // semantics: just overwrite — last value wins.
         if (u.input_tokens != null) s.inputTokens = u.input_tokens;
         if (u.cache_read_input_tokens != null) s.cachedInputTokens = u.cache_read_input_tokens;
         if (u.cache_creation_input_tokens != null) s.cacheCreationInputTokens = u.cache_creation_input_tokens;
@@ -654,17 +455,7 @@ export function claudeParse(ev: any, s: any) {
 
   if (t === 'assistant') {
     const msg = ev.message || {};
-    // Skip Claude CLI's synthetic feedback events on the live channel — they
-    // arrive as `assistant` events but represent runtime notices (no response,
-    // model error, …), not real Claude output. The historical jsonl reader
-    // converts them into `system_notice` blocks; on the live stream we just
-    // drop them so they don't pollute s.text / s.thinking.
     if (msg.model === '<synthetic>') {
-      // …except the "selected model is unavailable" notice (404 model_not_found):
-      // a hard, non-retryable failure. The result event's text fallback below
-      // also catches it, but recording s.errors here upgrades the turn from a
-      // bare "(no textual response)" reply to a clear error + non-retryable
-      // stopReason (so doClaudeWithRetry won't loop on the same dead model).
       if (!s.errors) {
         const synthText = (msg.content || [])
           .filter((b: any) => b?.type === 'text').map((b: any) => b.text || '').join(' ');
@@ -686,7 +477,6 @@ export function claudeParse(ev: any, s: any) {
       const toolId = String(block?.id || '').trim();
       if (!toolId || s.seenClaudeToolIds.has(toolId)) continue;
       const toolName = String(block?.name || 'Tool').trim() || 'Tool';
-      // TodoWrite → update plan instead of adding activity noise (Claude Code 1.x)
       if (toolName === 'TodoWrite') {
         const plan = parseTodoWriteAsPlan(block?.input);
         if (plan) s.plan = plan;
@@ -694,11 +484,6 @@ export function claudeParse(ev: any, s: any) {
         s.claudeToolsById.set(toolId, { name: toolName, summary: 'Update plan' });
         continue;
       }
-      // TaskCreate / TaskUpdate → 2.x plan tools. Same intent as TodoWrite, but
-      // emitted one task at a time. Buffer TaskCreate inputs until the matching
-      // tool_result arrives with the server-assigned id; apply TaskUpdate status
-      // changes against the running map. Both rebuild s.plan so the dashboard /
-      // IM plan card keeps surfacing total + current progress.
       if (toolName === 'TaskCreate') {
         const subject = typeof block?.input?.subject === 'string' ? block.input.subject.trim() : '';
         if (subject) s.pendingClaudeTaskCreates.set(toolId, { subject });
@@ -723,9 +508,6 @@ export function claudeParse(ev: any, s: any) {
         s.claudeToolsById.set(toolId, { name: toolName, summary: `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}` });
         continue;
       }
-      // Task → represents a sub-agent invocation. Carve it out as its own
-      // streamed unit so the child's tool stream and model don't bleed into
-      // the parent's activity card.
       if (toolName === 'Task' || toolName === 'Agent') {
         const input = block?.input || {};
         const subAgent: StreamSubAgent = {
@@ -742,20 +524,9 @@ export function claudeParse(ev: any, s: any) {
         s.claudeToolsById.set(toolId, { name: toolName, summary: subAgent.description || 'Run task' });
         continue;
       }
-      // Background Bash — same in-process lifecycle as a backgrounded agent:
-      // launch ack now, <task-notification> later. Register so the TUI driver
-      // holds the PTY open instead of SIGTERMing the command mid-flight.
       if (toolName === 'Bash' && block?.input?.run_in_background === true) {
         registerClaudeBackgroundBashLaunch(s, toolId);
       }
-      // Workflow → multi-agent orchestration. ALWAYS backgrounded: the tool
-      // returns immediately with a runId and the orchestration keeps running
-      // *inside the claude process*, reporting completion via a later
-      // `<task-notification>` — the same in-process lifecycle as a
-      // run_in_background Task. Register it so decideClaudeTuiStop holds the PTY
-      // open instead of SIGTERMing the in-flight workflow when the launch
-      // segment's Stop fires (the「ultra 下 workflow 离线跑、TUI 误判结束退出把
-      // workflow 打断」failure — the workflow analogue of the bg-Bash fix above).
       if (toolName === 'Workflow') {
         registerClaudeBackgroundAgentLaunch(s, toolId);
       }
@@ -778,10 +549,6 @@ export function claudeParse(ev: any, s: any) {
   if (t === 'user') {
     const msg = ev.message || {};
     const contents = Array.isArray(msg.content) ? msg.content : [];
-    // Background-task completion notice. Claude Code injects these as user
-    // events when a `run_in_background` task finishes (or dies); they are the
-    // only completion signal backgrounded agents ever get — the Task tool's
-    // own tool_result fired back at launch time as an ack.
     const notification = extractClaudeTaskNotification(msg.content);
     if (notification) {
       const eventAtMs = typeof ev.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
@@ -790,19 +557,12 @@ export function claudeParse(ev: any, s: any) {
     const toolResults = contents.filter((b: any) => b?.type === 'tool_result');
     for (const block of toolResults) {
       const toolId = String(block?.tool_use_id || '').trim();
-      // Dedup against tool_results already pushed by the TUI hook stream —
-      // PreToolUse / PostToolUse arrive in real time, JSONL eventually
-      // delivers the same events at end-of-turn and would otherwise re-push
-      // each summary into activity / re-process TaskCreate's plan entry.
       if (toolId && s.seenClaudeToolResultIds?.has(toolId)) continue;
       if (toolId) {
         if (!s.seenClaudeToolResultIds) s.seenClaudeToolResultIds = new Set<string>();
         s.seenClaudeToolResultIds.add(toolId);
       }
       const tool = toolId ? s.claudeToolsById.get(toolId) : undefined;
-      // Skip TodoWrite / TaskCreate / TaskUpdate results from activity — plan
-      // card handles them. TaskCreate's tool_result carries the assigned task
-      // id, which we splice into the running task list before skipping.
       if (tool?.name === 'TodoWrite') continue;
       if (tool?.name === 'TaskCreate') {
         const pending = toolId ? s.pendingClaudeTaskCreates.get(toolId) : undefined;
@@ -816,13 +576,6 @@ export function claudeParse(ev: any, s: any) {
         continue;
       }
       if (tool?.name === 'TaskUpdate') continue;
-      // Sub-agent tool_result closes out the sub-agent's lifecycle — flip its
-      // status and skip the regular activity append (the sub-agent card carries
-      // it). The result content text is the sub-agent's full response which
-      // would otherwise leak into the parent activity feed.
-      // Exception: a `run_in_background` launch returns its tool_result
-      // immediately as a mere ack — the agent is still running. Its real
-      // completion is the later <task-notification> (see the user branch).
       if (tool?.name === 'Task' || tool?.name === 'Agent') {
         const sub = s.subAgents.get(toolId);
         if (sub) {
@@ -837,28 +590,17 @@ export function claudeParse(ev: any, s: any) {
         tool.result = previewToolCallResult(block?.content);
         tool.status = block?.is_error ? 'failed' : 'done';
       }
-      // Background Bash launch ack → map its task id to the tool_use so the
-      // later <task-notification> (which usually omits <tool-use-id> for bash)
-      // can resolve and decrement the pending count.
       if (tool?.name === 'Bash' && s.bgBashToolUseIds?.has(toolId)
           && !s.bgAgentCompletedToolUseIds?.has(toolId)) {
         const taskId = extractClaudeBackgroundTaskId(block?.content);
         if (taskId && !s.bgTaskIdToToolUse.has(taskId)) s.bgTaskIdToToolUse.set(taskId, toolId);
       }
-      // Workflow launch ack carries the runId (wf_…). Map it → tool_use so a
-      // later <task-notification> that identifies the workflow only by task id
-      // (no <tool-use-id>) still resolves and decrements the pending count.
       if (tool?.name === 'Workflow' && s.bgAgentLaunchedToolUseIds?.has(toolId)
           && !s.bgAgentCompletedToolUseIds?.has(toolId)) {
         const runId = extractClaudeWorkflowRunId(block?.content);
         if (runId && !s.bgTaskIdToToolUse.has(runId)) s.bgTaskIdToToolUse.set(runId, toolId);
       }
       pushRecentActivity(s.recentActivity, summarizeClaudeToolResult(tool, block, ev.tool_use_result));
-      // MCP / Skill tool_result with multimodal content — recurse for image
-      // entries so the final StreamResult carries them. Filesystem-reading
-      // tools (Read) are skipped: their image content is a copy of an
-      // existing file (often the user's own upload) and would otherwise be
-      // re-rendered below the assistant text.
       if (Array.isArray(block.content) && !isClaudeFileReadingTool(tool?.name)) {
         accumulateClaudeImagesFromContent(block.content, s);
       }
@@ -871,15 +613,9 @@ export function claudeParse(ev: any, s: any) {
     s.model = ev.model ?? s.model;
     if (ev.is_error && ev.errors?.length) s.errors = ev.errors;
     if (ev.result && !s.text.trim()) s.text = ev.result;
-    // A model-unavailable turn carries a normal stop_reason on its result event
-    // (e.g. 'stop_sequence') that would otherwise clobber the 'model_error' the
-    // synthetic handler set — preserve it so the failure stays diagnosable.
     if (s.stopReason !== 'model_error') s.stopReason = ev.stop_reason ?? s.stopReason;
     const u = ev.usage;
     if (u) {
-      // Per-call semantics: the last message_start/message_delta snapshot is
-      // authoritative. Only fall back to result.usage when nothing arrived via
-      // stream_event (e.g. an early-exit error before any message_start).
       const cached = u.cache_read_input_tokens ?? u.cached_input_tokens;
       if (s.inputTokens == null && u.input_tokens != null) s.inputTokens = u.input_tokens;
       if (s.cachedInputTokens == null && cached != null) s.cachedInputTokens = cached;
@@ -892,9 +628,6 @@ export function claudeParse(ev: any, s: any) {
     const mu = ev.modelUsage;
     if (mu && typeof mu === 'object' && !s.byokContextWindow) {
       for (const info of Object.values(mu) as any[]) {
-        // cc reports the *advertised* contextWindow on result.modelUsage; we
-        // store the *effective* (post-reservation) window so the percent
-        // matches cc's UM6 display formula.
         if (info?.contextWindow > 0) {
           s.contextWindow = claudeEffectiveContextWindow(info.contextWindow) ?? info.contextWindow;
           break;
@@ -905,11 +638,6 @@ export function claudeParse(ev: any, s: any) {
 }
 
 export function createClaudeStreamState(opts: StreamOpts) {
-  // When BYOK is bound, the real context window (e.g. 1M for DeepSeek v4 Pro
-  // via OpenRouter) comes from the provider's cached /models listing — cc
-  // reports its own Claude-shaped fallback (200k) for unknown model ids, so
-  // we lock in the real value upfront and refuse to overwrite it from cc's
-  // event stream below.
   const byokWindow = opts.byokContextWindow && opts.byokContextWindow > 0
     ? opts.byokContextWindow
     : null;
@@ -927,16 +655,10 @@ export function createClaudeStreamState(opts: StreamOpts) {
     outputTokens: null as number | null,
     cachedInputTokens: null as number | null,
     cacheCreationInputTokens: null as number | null,
-    /** Output tokens from this turn's finished LLM calls — folded in when a
-     *  new call resets the per-call counter, so the turn total only climbs. */
     turnOutputTokensBase: 0 as number,
-    /** message.id of the LLM call whose usage `outputTokens` currently
-     *  reflects (TUI/JSONL mode, where there is no message_start marker). */
     turnUsageMsgId: null as string | null,
     contextWindow: byokWindow as number | null,
-    /** When set, ignore cc-advertised contextWindow updates from the stream. */
     byokContextWindow: byokWindow as number | null,
-    /** BYOK provider display name surfaced in preview meta + IM footers. */
     byokProviderName: byokProvider as string | null,
     contextUsedTokens: null as number | null,
     codexCumulative: null,
@@ -944,49 +666,19 @@ export function createClaudeStreamState(opts: StreamOpts) {
     activity: '',
     recentActivity: [] as string[],
     plan: null as StreamPreviewPlan | null,
-    // Claude Code 2.x replaced the single `TodoWrite` plan tool with two
-    // separate tools — `TaskCreate` (one task per call, server-assigned id)
-    // and `TaskUpdate` (taskId + status). We maintain an ordered map and
-    // rebuild s.plan whenever either fires so the dashboard / IM plan card
-    // keeps showing total / current progress just like the TodoWrite era.
     claudeTaskList: new Map<string, { subject: string; status: string }>(),
     claudeTaskOrder: [] as string[],
-    /** Pending TaskCreate tool_uses indexed by tool_use id — the input
-     *  carries the subject but Claude assigns the numeric task id only in
-     *  the matching tool_result, so we have to bridge the two halves. */
     pendingClaudeTaskCreates: new Map<string, { subject: string }>(),
     claudeToolsById: new Map<string, { name: string; summary: string; input?: string | null; result?: string | null; status?: 'running' | 'done' | 'failed' }>(),
-    /** Insertion order of expandable tool-call rows (parent activity tools
-     *  only — plan tools and sub-agent launches have their own cards). Feeds
-     *  `StreamPreviewMeta.toolCalls` via buildStreamPreviewMeta. */
     claudeToolCallOrder: [] as string[],
     seenClaudeToolIds: new Set<string>(),
     subAgents: new Map<string, StreamSubAgent>(),
-    /** Tool_use ids of Task/Agent launches with `run_in_background: true`.
-     *  Their immediate tool_result is only a launch ack — real completion
-     *  arrives later as a `<task-notification>` user event. The TUI driver
-     *  reads the launched/completed delta to keep the PTY alive until every
-     *  background agent has actually finished (they live inside the claude
-     *  process; killing it would destroy them mid-flight). */
     bgAgentLaunchedToolUseIds: new Set<string>(),
-    /** Subset of bgAgentLaunchedToolUseIds whose <task-notification> arrived. */
     bgAgentCompletedToolUseIds: new Set<string>(),
-    /** Background task id (the `agent-<id>` sidecar stem / `<task-id>` tag) →
-     *  parent tool_use id. Fallback matcher for notifications that omit the
-     *  `<tool-use-id>` tag. */
     bgTaskIdToToolUse: new Map<string, string>(),
-    /** Wall-clock ms of the most recent <task-notification> parsed this turn. */
     lastTaskNotificationAt: 0 as number,
-    // Image blocks accumulated during the turn (user-attached on the request
-    // side, MCP / Skill tool_result on the response side). Surfaced in the
-    // final StreamResult so IM channels can dispatch images at end-of-turn.
     imageBlocks: [] as MessageBlock[],
-    /** Stable dedupe keys (sha-ish data prefixes) for image blocks already
-     *  added to `imageBlocks`. Lets repeated stream_event / assistant deltas
-     *  for the same image not pile up duplicates. */
     seenImageKeys: new Set<string>(),
-    // Wired to opts.onSessionId so claudeParse can broadcast id changes the
-    // instant cc surfaces them (see emitSessionIdUpdate in agent/utils.ts).
     _emitSessionId: opts.onSessionId ?? null,
   };
 }
@@ -1063,11 +755,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     try { proc.stdin?.end(); } catch {}
   };
 
-  // Simulated streaming smoothing — mirrors the TUI driver's TuiStreamBuffer.
-  // `claude -p` surfaces text via stream-json deltas that arrive in irregular
-  // SSE bursts; without metering, the dashboard/IM preview jumps "一卡一卡".
-  // Reveal `s.text` into the preview at a steady ~1000 chars/s so it reads as
-  // fluid typing. Display-only: the returned result still uses the full `s.text`.
   const PRINT_STREAM_CHUNK_CHARS = 20;
   const PRINT_STREAM_CHUNK_INTERVAL_MS = 20;
   let displayedLen = 0;
@@ -1090,7 +777,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     displayedLen = s.text.length;
     rawEmit();
   };
-  // New text → show what's revealed now, then keep the typewriter draining.
   const emit = () => { rawEmit(); scheduleStreamTick(); };
 
   const abortStream = () => {
@@ -1099,15 +785,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     s.stopReason = 'interrupted';
     closeInput();
     agentWarn(`[abort] user interrupt, closing stdin for graceful shutdown pid=${proc.pid}`);
-    // Wait until the session JSONL has stopped being written before SIGTERM.
-    // Claude CLI streams events on stdout (which we observe in real time) BEFORE
-    // flushing the matching JSONL line — and its signal handler is just
-    // `process.exit()`, which doesn't drain the async write queue. SIGTERMing
-    // on a fixed window races that flush: the dashboard's live snapshot would
-    // show N tool calls, then once it reloads from disk the persisted turn
-    // regresses below N (e.g. 30 → 27). Poll the JSONL size and SIGTERM only
-    // after it's been stable for FILE_STABLE_MS, or after MAX_WAIT_MS as a
-    // hard cap (a still-active LLM stream would never go stable on its own).
     const sessionFile = s.sessionId
       ? path.join(getHome(), '.claude', 'projects', claudeProjectDirName(opts.workdir), `${s.sessionId}.jsonl`)
       : null;
@@ -1121,7 +798,7 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
       if (proc.exitCode != null || proc.killed) return;
       let curSize = lastSize;
       if (sessionFile) {
-        try { curSize = fs.statSync(sessionFile).size; } catch { /* file not yet created */ }
+        try { curSize = fs.statSync(sessionFile).size; } catch {  }
       }
       if (curSize !== lastSize) {
         lastSize = curSize;
@@ -1129,8 +806,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
       }
       const stableFor = Date.now() - lastChangedAt;
       const totalElapsed = Date.now() - startedAt;
-      // Without a JSONL path (very early abort, before sessionId is known) fall
-      // back to the legacy fixed grace window.
       const shouldKill = !sessionFile
         ? totalElapsed >= AGENT_GRACEFUL_ABORT_GRACE_MS
         : (stableFor >= FILE_STABLE_MS || totalElapsed >= MAX_WAIT_MS);
@@ -1237,8 +912,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
         awaitingSteeredResponseStart = false;
         steerQueued = false;
         resetClaudeTurnState(s);
-        // New segment: restart the typewriter from empty so the next response
-        // reveals from its first character instead of jumping.
         displayedLen = 0;
         if (streamTickTimer) { clearTimeout(streamTickTimer); streamTickTimer = null; }
       }
@@ -1264,7 +937,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
         } else {
           closeInput();
         }
-        // Segment complete — reveal any buffered tail at once.
         flushDisplay();
       }
       emit();
@@ -1304,15 +976,8 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
 
   if (!s.text.trim() && s.msgs.length) s.text = s.msgs.join('\n\n');
   if (!s.thinking.trim() && s.thinkParts.length) s.thinking = s.thinkParts.join('\n\n');
-  // Reveal anything still buffered by the typewriter so the final live preview
-  // matches the returned message (smoothing can lag a fast final burst).
   flushDisplay();
 
-  // Catch the Claude CLI's synthetic "API Error: …" assistant body (transient
-  // Anthropic 5xx / 529 Overloaded). Without this rewrite the raw error string
-  // gets surfaced into the IM card as if it were Claude's reply, and the
-  // retry wrapper in `doClaudeStream` can't tell a transient failure apart
-  // from a real short reply.
   const apiErrorReason = detectClaudeApiError(s.text);
   if (apiErrorReason) {
     agentWarn(`[claude] upstream API error detected: ${apiErrorReason}`);
@@ -1349,10 +1014,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     cacheCreationInputTokens: s.cacheCreationInputTokens,
     contextWindow: s.contextWindow,
     contextUsedTokens: s.contextUsedTokens,
-    // Reuse the same calc as the live preview (computeContext) so the final
-    // footer % matches the running %. Previously this passed a fraction
-    // (used/window) into roundPercent, which expects a percent — divide-by-100
-    // bug that made the final read ~12% as ~0.1%.
     contextPercent: computeContext(s).contextPercent,
     codexCumulative: null,
     error,
@@ -1363,10 +1024,6 @@ async function doClaudeInteractiveStream(opts: StreamOpts): Promise<StreamResult
     assistantBlocks: s.imageBlocks.length ? [...s.imageBlocks] : undefined,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Stream
-// ---------------------------------------------------------------------------
 
 export async function doClaudeStream(opts: StreamOpts): Promise<StreamResult> {
   const result = opts.onSteerReady
@@ -1379,17 +1036,9 @@ export async function doClaudeStream(opts: StreamOpts): Promise<StreamResult> {
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Sessions
-// ---------------------------------------------------------------------------
-
 export const claudeProjectDirName = encodePathAsDirName;
 
-/** Read native Claude Code sessions from ~/.claude/projects/{dirName}/*.jsonl */
 function extractClaudeTailQA(filePath: string): { lastQuestion: string | null; lastAnswer: string | null; lastMessageText: string | null } {
-  // Use a larger tail (1 MB) so we can reach past tool-result / assistant
-  // exchanges that follow the last real user question (which may be multi-MB
-  // due to embedded images).
   const lines = readTailLines(filePath, 1024 * 1024);
   let lastQuestion: string | null = null;
   let lastAnswer: string | null = null;
@@ -1411,12 +1060,11 @@ function extractClaudeTailQA(filePath: string): { lastQuestion: string | null; l
           lastMessageText = shortValue(text, 500);
         }
       }
-    } catch { /* skip */ }
+    } catch {  }
   }
   return { lastQuestion, lastAnswer, lastMessageText };
 }
 
-/** Content-derived native-session fields — everything except time-relative state. */
 interface NativeClaudeContent {
   title: string | null;
   model: string | null;
@@ -1427,18 +1075,10 @@ interface NativeClaudeContent {
   lastMessageText: string | null;
 }
 
-// Per-file cache of the expensive content-derived fields. getNativeClaudeSessions
-// runs per dashboard session-list request AND per workspace×agent in the overview
-// fan-out; without this each call re-read + JSON-parsed every transcript in the
-// project dir. Keyed by (mtime,size) so any append/edit re-reads just that file.
-// `running`/`runState` are NOT cached — they depend on Date.now() - mtime, so they
-// are recomputed per call below.
 const nativeClaudeContentCache = new Map<string, { mtimeMs: number; size: number; content: NativeClaudeContent }>();
 
 function readNativeClaudeContent(filePath: string, stat: fs.Stats): NativeClaudeContent | null {
   try {
-    // Read enough bytes to get past the system_prompt line (can be 20KB+) and
-    // reach the first user/assistant events for title and model extraction.
     const fd = fs.openSync(filePath, 'r');
     const buf = Buffer.alloc(65536);
     const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
@@ -1463,11 +1103,8 @@ function readNativeClaudeContent(filePath: string, stat: fs.Stats): NativeClaude
           model = ev.message.model;
         }
         if (title && model) break;
-      } catch { /* skip */ }
+      } catch {  }
     }
-    // Fallback: if the first user message line is too large (e.g. contains
-    // base64 images) JSON.parse above will fail.  Read a bigger chunk and
-    // regex-extract text blocks to find the actual user question.
     if (!title) {
       let scanStr = head;
       if (stat.size > 65536) {
@@ -1477,7 +1114,7 @@ function readNativeClaudeContent(filePath: string, stat: fs.Stats): NativeClaude
           const bigRead = fs.readSync(fd2, bigBuf, 0, bigBuf.length, 0);
           fs.closeSync(fd2);
           scanStr = bigBuf.toString('utf8', 0, bigRead);
-        } catch { /* keep using head */ }
+        } catch {  }
       }
       const re = /"type":"text","text":"((?:[^"\\]|\\.)*)"/g;
       let m: RegExpExecArray | null;
@@ -1495,8 +1132,6 @@ function readNativeClaudeContent(filePath: string, stat: fs.Stats): NativeClaude
       }
     }
 
-    // Quick turn count: count real user messages (exclude tool_result and
-    // system-injected isMeta events — Skill outputs, resume prompts, etc.).
     let numTurns = 0;
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
@@ -1506,7 +1141,7 @@ function readNativeClaudeContent(filePath: string, stat: fs.Stats): NativeClaude
         if (rl.includes('"tool_result"') || rl.includes('"isMeta":true')) continue;
         numTurns++;
       }
-    } catch { /* ignore count errors */ }
+    } catch {  }
 
     const tailQA = extractClaudeTailQA(filePath);
     return {
@@ -1530,16 +1165,11 @@ function getNativeClaudeSessions(workdir: string, limit?: number): SessionInfo[]
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(projectDir, { withFileTypes: true }); } catch { return []; }
 
-  // Stat first (cheap), sort newest-first, then read bodies only for as many as
-  // can surface: `limit` is applied to a recency-sorted merge downstream, so a
-  // transcript older than the top-`limit` can never appear in that view. Unchanged
-  // files come straight from the per-file content cache, so repeated list calls
-  // (dashboard polls, workspace×agent overview fan-out) don't re-parse the dir.
   const files: { sessionId: string; filePath: string; stat: fs.Stats }[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
     const filePath = path.join(projectDir, entry.name);
-    try { files.push({ sessionId: entry.name.slice(0, -6), filePath, stat: fs.statSync(filePath) }); } catch { /* skip */ }
+    try { files.push({ sessionId: entry.name.slice(0, -6), filePath, stat: fs.statSync(filePath) }); } catch {  }
   }
   files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
   const selected = typeof limit === 'number' ? files.slice(0, Math.max(0, limit)) : files;
@@ -1586,11 +1216,6 @@ function getNativeClaudeSessions(workdir: string, limit?: number): SessionInfo[]
 
 function getClaudeSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
-  // Merge pikiloom-tracked sessions with native Claude sessions
-  // Canonical record→SessionInfo mapper (single source of truth). Hand-rolling
-  // this projection silently dropped pikiloom-owned metadata (thinkingEffort,
-  // workflowEnabled, profileId), so the merged list lost the user's per-session
-  // effort / Workflow / BYOK choices. Centralizing it keeps every field in sync.
   const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'claude').map(managedRecordToSessionInfo);
   const nativeSessions = getNativeClaudeSessions(resolvedWorkdir, limit);
   const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
@@ -1603,10 +1228,6 @@ function getClaudeSessions(workdir: string, limit?: number): SessionListResult {
   return { ok: true, sessions, error: null };
 }
 
-// ---------------------------------------------------------------------------
-// Session tail
-// ---------------------------------------------------------------------------
-
 function extractClaudeText(content: any, skipSystemBlocks = false): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -1617,7 +1238,6 @@ function extractClaudeText(content: any, skipSystemBlocks = false): string {
       parts.push(block.text);
     }
   }
-  // Join with blank line so consecutive text blocks render as separate markdown paragraphs.
   return parts.join('\n\n');
 }
 
@@ -1644,7 +1264,7 @@ function getClaudeSessionTail(opts: SessionTailOpts): SessionTailResult {
           const text = extractClaudeText(ev.message?.content, true);
           if (text) allMsgs.push({ role: 'assistant', text });
         }
-      } catch { /* skip */ }
+      } catch {  }
     }
     return { ok: true, messages: allMsgs.slice(-limit), error: null };
   } catch (e: any) {
@@ -1652,34 +1272,15 @@ function getClaudeSessionTail(opts: SessionTailOpts): SessionTailResult {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Session messages (full content)
-// ---------------------------------------------------------------------------
-
-/** Build an image MessageBlock from a Claude content entry of the shape
- *  `{ type: 'image', source: { type: 'base64', media_type, data } }`. Returns
- *  null when the source is missing or the encoded size exceeds the cap. */
 function claudeImageBlockFromEntry(entry: any): MessageBlock | null {
   if (!entry || entry.type !== 'image' || !entry.source) return null;
   const source = entry.source;
   if (source.type !== 'base64' || typeof source.data !== 'string') return null;
-  // 12MB base64 ≈ 9MB binary — keep API payloads sane.
   if (source.data.length > 12 * 1024 * 1024) return null;
   const mime = (source.media_type || 'image/png').toLowerCase();
   return { type: 'image', content: `data:${mime};base64,${source.data}`, imageMime: mime };
 }
 
-/** Extract structured content blocks from Claude message content.
- *  When `todoWriteToolIds` is provided, TodoWrite tool_use blocks are emitted
- *  as `plan` blocks and their IDs are tracked so tool_results can be skipped.
- *
- *  When a `tool_result` block carries multimodal content (`content: [{type:'image',...}, ...]`),
- *  the inner image entries are emitted as siblings of the textual tool_result —
- *  this is the path MCP image-returning tools (mermaid-mcp, chart, dalle-mcp, …)
- *  travel through. Filesystem-reading tools (Claude's `Read`) are excluded
- *  via `toolNamesByUseId`: their image content is just an echo of an existing
- *  file (often the user's own attachment) and re-rendering it under the
- *  assistant card produces a confusing duplicate. */
 function extractClaudeBlocks(
   content: any,
   skipSystemBlocks = false,
@@ -1697,7 +1298,6 @@ function extractClaudeBlocks(
     } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
       blocks.push({ type: 'thinking', content: block.thinking });
     } else if (block.type === 'tool_use') {
-      // TodoWrite → emit as plan block instead of generic tool_use
       if (block.name === 'TodoWrite' && todoWriteToolIds) {
         const plan = parseTodoWriteAsPlan(block.input);
         if (plan) {
@@ -1715,10 +1315,6 @@ function extractClaudeBlocks(
           ? block.content.filter((c: any) => c?.type === 'text').map((c: any) => c.text).join('\n')
           : '';
       blocks.push({ type: 'tool_result', content: resultText, toolId: block.tool_use_id });
-      // Recurse into multimodal tool_result content so MCP-returned images
-      // (and any future non-text inner types) surface alongside the textual
-      // tool_result rather than being silently dropped. Skip file-reading
-      // tools — their image content is an echo, not a new asset.
       const toolName = block.tool_use_id ? toolNamesByUseId?.get(block.tool_use_id) : undefined;
       if (Array.isArray(block.content) && !isClaudeFileReadingTool(toolName)) {
         for (const inner of block.content) {
@@ -1734,12 +1330,6 @@ function extractClaudeBlocks(
   return blocks;
 }
 
-/**
- * Top-level XML wrapper tags that Claude Code injects into "user" events for
- * non-user-authored content: background-task results, system reminders, IDE
- * state, persisted output truncations, slash-command stdout, etc. The dashboard
- * should never render these as a user bubble — they're conversation infra.
- */
 const SYSTEM_INJECTED_USER_TAGS = new Set([
   'task-notification',
   'system-reminder',
@@ -1757,38 +1347,18 @@ const SYSTEM_INJECTED_USER_TAGS = new Set([
   'output-file',
 ]);
 
-/**
- * Detect Claude CLI's boilerplate `<synthetic>` responses that surface only
- * because of TUI-resume bookkeeping — they carry no information for the user.
- *
- * The reproducible case: every `claude --resume <id>` in interactive mode
- * writes a sentinel turn into the JSONL on startup, consisting of an
- * `isMeta:true` user "Continue from where you left off." plus a `<synthetic>`
- * "No response requested." acknowledgment. The print-mode driver doesn't hit
- * this because `-p` skips the interactive resume nudge. Filtering it out here
- * keeps the dashboard timeline clean across all driver paths.
- */
 function isClaudeSyntheticResumeNoise(text: string): boolean {
   const t = (text || '').trim().toLowerCase();
   if (!t) return true;
   return t === 'no response requested.' || t === 'no response requested';
 }
 
-/** Detect system-injected user events (compression summaries, interruption
- *  markers, task-notifications, IDE state, etc.) that should not render as a
- *  user message when parsing session JSONL. */
 function isSystemInjectedUserEvent(text: string): boolean {
   const trimmed = (text || '').trim();
   if (!trimmed) return true;
-  // Interruption markers injected by Claude Code
   if (/^\[Request interrupted by user(?: for tool use)?\]$/i.test(trimmed)) return true;
-  // Leading XML wrapper from a known infra tag — these are never user-authored.
   const leading = trimmed.match(/^<([a-z][a-z0-9_-]*)\b/i);
   if (leading && SYSTEM_INJECTED_USER_TAGS.has(leading[1].toLowerCase())) return true;
-  // Context compression summaries carry a recognizable opening marker. Detect
-  // by that marker, not length — long, legitimate user prompts (multi-paragraph
-  // briefs, pasted documents) routinely exceed any size threshold and must
-  // render as real user turns.
   const lower = trimmed.toLowerCase();
   const markers = ['continued from a previous', 'summary below covers', 'earlier portion of the conversation', 'here is a summary of', 'conversation summary'];
   return markers.some(m => lower.includes(m));
@@ -1806,40 +1376,17 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
     const content = fs.readFileSync(filePath, 'utf-8');
     const lines = content.split('\n').filter(l => l.trim());
 
-    // Parse raw events, merging consecutive same-role events into one message.
-    // Claude JSONL writes one event per content block (thinking, text, tool_use, tool_result).
-    // Consecutive assistant events form a single assistant message.
-    // User events with tool_result are system-injected and should be hidden;
-    // only user events with actual user text start a new user message.
     const allMsgs: TailMessage[] = [];
     const richMsgs: RichMessage[] = [];
 
     let pendingRole: 'user' | 'assistant' | null = null;
     let pendingTextParts: string[] = [];
     let pendingBlocks: MessageBlock[] = [];
-    /** Latest assistant-event usage snapshot — overwritten on each LLM call within a
-     *  turn so the flushed RichMessage carries the final call's context state, matching
-     *  the live `StreamPreviewMeta` semantics. */
     let pendingUsage: { input: number | null; output: number | null; cacheRead: number | null; cacheCreation: number | null; model: string | null } | null = null;
-    /** Per-call output tokens keyed by message.id — events of one call share an
-     *  id and carry running totals, so last-write-wins per id and the turn's
-     *  cumulative output is the sum across ids (→ `turnOutputTokens`). */
     let pendingCallOutputs = new Map<string, number>();
     const todoWriteToolIds = new Set<string>();
-    /**
-     * Sub-agent blocks live in `pendingBlocks` like any other block but we keep
-     * a side-table of references keyed by the Task tool_use_id so subsequent
-     * sub-agent assistant events (which carry parent_tool_use_id) can mutate
-     * the captured `subAgent` payload in place — that way the rendered turn
-     * shows the sub-agent's full tool stream without polluting the parent's
-     * tool list.
-     */
     const subAgentBlocksById = new Map<string, MessageBlock>();
-    /** Tool ids belonging to sub-agents — their tool_results in user events are skipped from the parent activity. */
     const subAgentToolIds = new Set<string>();
-    /** Tool name keyed by tool_use_id — populated from assistant tool_use
-     *  events so the user-event tool_result loop can filter image content for
-     *  filesystem-reading tools (Read). */
     const toolNamesByUseId = new Map<string, string>();
 
     const flush = () => {
@@ -1871,8 +1418,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
         const parentToolUseId: string | null = (typeof ev.parent_tool_use_id === 'string' && ev.parent_tool_use_id) ? ev.parent_tool_use_id : null;
 
         if (parentToolUseId) {
-          // Sub-agent emission — fold tool calls into the matching sub_agent block
-          // and never let them surface as siblings of the parent's blocks.
           const block = subAgentBlocksById.get(parentToolUseId);
           if (!block?.subAgent) continue;
           const sub = block.subAgent;
@@ -1896,15 +1441,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
         }
 
         if (ev.type === 'user') {
-          // System-injected meta events (Skill tool results, /command stdout,
-          // resume prompts) come through with `type:user` + `isMeta:true`. The
-          // accompanying `message.content` is plain text (NOT a tool_result
-          // block), so the regular `isToolResult` check below misses them and
-          // they would otherwise render as a fake user bubble — splitting the
-          // conversation into a phantom new turn (visible as a fresh
-          // "Claude Code" divider mid-session). Re-attach the text to the
-          // originating tool's activity feed when sourceToolUseID is known,
-          // otherwise drop silently.
           if (ev.isMeta === true) {
             if (pendingRole === 'assistant') {
               const toolUseId = typeof ev.sourceToolUseID === 'string' ? ev.sourceToolUseID : '';
@@ -1928,13 +1464,7 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
               for (const block of contentArr) {
                 const toolUseId = block.tool_use_id;
                 if (todoWriteToolIds.has(toolUseId)) continue;
-                // Sub-agent inner tool results — already accounted for by the sub_agent block.
                 if (subAgentToolIds.has(toolUseId)) continue;
-                // Top-level tool_result for a sub-agent (Task / Agent) — close
-                // out its lifecycle. The result content text is the sub-agent's
-                // full final answer; surface it on the sub_agent block so the
-                // dedicated card can render it instead of leaking into the
-                // parent's tool_result feed.
                 const subBlock = subAgentBlocksById.get(toolUseId);
                 if (subBlock?.subAgent) {
                   subBlock.subAgent.status = block?.is_error ? 'failed' : 'done';
@@ -1954,12 +1484,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
                 if (resultText) {
                   pendingBlocks.push({ type: 'tool_result', content: resultText, toolId: toolUseId });
                 }
-                // Multimodal tool_result content from MCP servers can include
-                // image entries — surface them as siblings of the textual
-                // tool_result so the rendered turn carries the image. Skip
-                // filesystem-reading tools (Read): their image content is an
-                // echo of an existing file (e.g. the user's own attachment)
-                // and would otherwise be duplicated below the assistant text.
                 const toolName = toolNamesByUseId.get(toolUseId);
                 if (Array.isArray(block.content) && !isClaudeFileReadingTool(toolName)) {
                   for (const inner of block.content) {
@@ -1981,19 +1505,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
           const rawText = stripInjectedPrompts(extractClaudeText(ev.message?.content, true));
           const userBlocks = extractClaudeBlocks(ev.message?.content, true);
           const imageBlocks: MessageBlock[] = userBlocks.filter(b => b.type === 'image');
-          // TUI mode (claude-tui.ts) persists user `content` as a plain string
-          // with leading `@/abs/path/image.png` mentions — that's how the TUI
-          // ingests local images (it can't accept stream-json image blocks like
-          // `-p` mode). The `extractClaudeBlocks` call above yields no image
-          // blocks for that shape; lift the mentions into structured image
-          // blocks via the shared pipeline so the dashboard renders thumbnails
-          // instead of raw paths. Also resolves the "first message drops the
-          // image" + "queued message drops the image" symptoms because the
-          // optimisticBridgesImages bridge (SessionPanel) was previously
-          // falling open: the server-side user text contained the @-path while
-          // the optimistic pendingPrompt did not, so the bridge's text-equality
-          // check failed and the no-image server bubble replaced the
-          // optimistic one.
           let displayText = rawText;
           if (typeof ev.message?.content === 'string' && imageBlocks.length === 0) {
             const recoveredPaths = new Set<string>();
@@ -2003,9 +1514,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
               imageBlocks.push(block);
               recoveredPaths.add(absPath);
             }
-            // Only strip the mentions we successfully turned into image blocks;
-            // leave unresolved ones (file deleted/moved) in the text so the
-            // user sees what was attached even when we can't render it.
             if (recoveredPaths.size) {
               displayText = rawText.replace(
                 CLAUDE_AT_MENTION_IMAGE_RE,
@@ -2020,21 +1528,8 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
             pendingBlocks = text ? [{ type: 'text', content: text }, ...imageBlocks] : [...imageBlocks];
           }
         } else if (ev.type === 'assistant') {
-          // `model:"<synthetic>"` is Claude CLI's out-of-band channel — emitted
-          // when the runtime needs to tell the user something *as if* the
-          // assistant spoke ("No response requested.", "There's an issue with
-          // the selected model…", etc.). Surface it as a `system_notice` block
-          // rather than a real text reply: the content stays visible (so model
-          // errors and other meaningful feedback aren't lost), but it renders
-          // as a notice tile instead of impersonating a Claude turn.
           if (ev.message?.model === '<synthetic>') {
             const noticeText = extractClaudeText(ev.message?.content, true).trim();
-            // Suppress TUI-resume startup noise. When `claude --resume <id>`
-            // boots in interactive mode it injects a sentinel turn — an
-            // `isMeta:true` user "Continue from where you left off." followed
-            // by a `<synthetic>` "No response requested." acknowledgment.
-            // This is harmless internal book-keeping; rendering it as a
-            // yellow notice on every TUI-mode turn just pollutes the UI.
             if (isClaudeSyntheticResumeNoise(noticeText)) continue;
             if (pendingRole === 'user') flush();
             pendingRole = 'assistant';
@@ -2054,8 +1549,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
               cacheCreation: numOrNull(u.cache_creation_input_tokens),
               model: typeof ev.message?.model === 'string' ? ev.message.model : prevModel,
             };
-            // Per-call output for the turn-cumulative counter. Same-id events
-            // carry running totals → keep the last value per call.
             const output = numOrNull(u.output_tokens);
             if (output != null) {
               const msgId = typeof ev.message?.id === 'string' && ev.message.id ? ev.message.id : '(no-id)';
@@ -2064,9 +1557,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
           }
           const text = extractClaudeText(ev.message?.content, true);
           if (text) pendingTextParts.push(text);
-          // Record tool names from this assistant turn before extracting blocks
-          // so any tool_result that follows in a later user event can be
-          // attributed to the right tool (Read → skip image recursion, etc.).
           const assistantContents = Array.isArray(ev.message?.content) ? ev.message.content : [];
           for (const inner of assistantContents) {
             if (inner?.type === 'tool_use' && typeof inner.id === 'string' && typeof inner.name === 'string') {
@@ -2074,10 +1564,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
             }
           }
           const blocks = extractClaudeBlocks(ev.message?.content, true, todoWriteToolIds, toolNamesByUseId);
-          // Convert sub-agent tool_use blocks into sub_agent placeholders we
-          // can later mutate. Claude Code surfaces the Task tool as `Agent` in
-          // its v2 stream format; accept both names so older sessions still
-          // parse correctly.
           const contents = Array.isArray(ev.message?.content) ? ev.message.content : [];
           for (let i = 0; i < blocks.length; i++) {
             const block = blocks[i];
@@ -2099,16 +1585,10 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
           }
           pendingBlocks.push(...blocks);
         }
-      } catch { /* skip malformed lines */ }
+      } catch {  }
     }
     flush();
 
-    // Hydrate sub_agent blocks from sidecar files. Claude Code stores each
-    // sub-agent's full transcript in
-    //   ~/.claude/projects/<dir>/<session-id>/subagents/agent-<id>.jsonl
-    // alongside an `agent-<id>.meta.json` carrying the agentType. The parent
-    // session only records the Agent tool_use + tool_result; without this step
-    // the sub-agent card has no tool list.
     const subAgentsDir = path.join(projectDir, opts.sessionId, 'subagents');
     if (fs.existsSync(subAgentsDir)) hydrateSubAgentBlocksFromSidecar(richMsgs, subAgentsDir);
 
@@ -2118,12 +1598,6 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
   }
 }
 
-/**
- * Walk a session's `subagents/` directory and merge each sidecar's tool stream
- * onto the matching `sub_agent` block (matched by description, the only stable
- * shared field between parent and child sessions). Best-effort — silent on any
- * I/O or parse failure.
- */
 function hydrateSubAgentBlocksFromSidecar(richMsgs: RichMessage[], subAgentsDir: string): void {
   let entries: string[];
   try { entries = fs.readdirSync(subAgentsDir); } catch { return; }
@@ -2138,7 +1612,7 @@ function hydrateSubAgentBlocksFromSidecar(richMsgs: RichMessage[], subAgentsDir:
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
       metaKind = typeof meta?.agentType === 'string' ? meta.agentType : null;
       metaDescription = typeof meta?.description === 'string' ? meta.description : null;
-    } catch { /* meta optional */ }
+    } catch {  }
     const tools: Array<{ id: string; name: string; summary: string }> = [];
     let model: string | null = null;
     try {
@@ -2178,10 +1652,6 @@ function hydrateSubAgentBlocksFromSidecar(richMsgs: RichMessage[], subAgentsDir:
   }
 }
 
-// ---------------------------------------------------------------------------
-// Models
-// ---------------------------------------------------------------------------
-
 const CLAUDE_MODELS: ModelInfo[] = [
   { id: 'claude-fable-5', alias: 'fable' },
   { id: 'claude-opus-4-8', alias: 'opus' },
@@ -2189,24 +1659,10 @@ const CLAUDE_MODELS: ModelInfo[] = [
   { id: 'claude-haiku-4-5-20251001', alias: 'haiku' },
 ];
 
-// ---------------------------------------------------------------------------
-// Usage
-// ---------------------------------------------------------------------------
-
-// The account-usage query below hits api.anthropic.com/api/oauth/usage, which is
-// itself rate-limited. The dashboard rebuilds agent status ~every 30s (plus a
-// forced refresh on usage-ring hover), and querying that often trips the
-// endpoint's 429 — which (since we treat a query error as "unknown") blanks the
-// header usage ring entirely. Quota windows (5h/7d) move slowly, so we query at
-// most once per this interval and serve the last good result in between
-// (including across transient 429s), decoupling usage cadence from how often
-// agent status is rebuilt.
 const CLAUDE_USAGE_QUERY_TTL_MS = 5 * 60_000;
 const claudeUsageCache: { lastGood: UsageResult | null; lastAttemptAt: number } = { lastGood: null, lastAttemptAt: 0 };
 
 function getClaudeOAuthToken(): string | null {
-  // `security` is macOS-only; other platforms store Claude creds differently
-  // (DPAPI on Windows, libsecret on Linux) and Claude Code manages those itself.
   if (!IS_MAC) return null;
   try {
     const raw = execSync('security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null', {
@@ -2233,10 +1689,6 @@ function getClaudeUsageFromOAuth(): UsageResult | null {
     const capturedAt = new Date().toISOString();
     const apiError = data?.error;
     if (apiError && typeof apiError === 'object') {
-      // The usage query endpoint itself returned an error (e.g. 429 rate
-      // limit on the query API).  This does NOT reflect the user's actual
-      // Claude usage status, so fall through to telemetry instead of
-      // reporting a misleading "limit_reached".
       return null;
     }
 
@@ -2321,7 +1773,6 @@ function getClaudeUsageFromTelemetry(home: string, model?: string | null): Usage
   const status = normalizeUsageStatus(chosen.status);
   const resetAfterSeconds = chosen.hoursTillReset == null ? null : Math.max(0, Math.round(chosen.hoursTillReset * 3600));
   const resetAt = resetAfterSeconds == null ? null : new Date(chosen.capturedAtMs + resetAfterSeconds * 1000).toISOString();
-  // Build a locale-neutral label from capture age (e.g. "3h ago", "2d ago")
   const ageMs = Date.now() - chosen.capturedAtMs;
   const ageMins = Math.round(ageMs / 60_000);
   const ageLabel = ageMins < 1 ? '<1m ago' : ageMins < 60 ? `${ageMins}m ago` : ageMins < 1440 ? `${Math.round(ageMins / 60)}h ago` : `${Math.round(ageMins / 1440)}d ago`;
@@ -2330,32 +1781,12 @@ function getClaudeUsageFromTelemetry(home: string, model?: string | null): Usage
   return { ok: true, agent: 'claude', source: 'telemetry', capturedAt: chosen.capturedAt, status, windows, error: null };
 }
 
-// ---------------------------------------------------------------------------
-// Native /goal bridge — Claude Code v2.x ships a built-in `/goal <condition>`
-// slash command that installs a session-scoped Stop hook (auto-clears when the
-// Haiku-driven completion check returns met:true). State lives in the session
-// transcript JSONL as `attachment` events of shape:
-//
-//   { "type": "goal_status", "met": <bool>, "sentinel": <bool>, "condition": "..." }
-//
-// The latest `goal_status` line wins. `met:false` ⇒ active goal; `met:true` ⇒
-// the Stop hook just judged the condition satisfied and cleared the goal.
-//
-// pikiloom treats this as the source of truth for claude sessions (the
-// continuation engine runs inside `claude -p` itself; pikiloom's portable
-// continuation loop must short-circuit so we don't double-loop). Set/clear go
-// through the normal task queue by sending `/goal <objective>` or `/goal clear`
-// as the prompt — claude's slash parser handles it the same way it does in
-// interactive mode.
-// ---------------------------------------------------------------------------
-
 export type ClaudeNativeGoalStatus = 'active' | 'complete';
 
 export interface ClaudeNativeGoal {
   condition: string;
   status: ClaudeNativeGoalStatus;
   met: boolean;
-  /** Wall-clock ms timestamp of the line that produced this snapshot (best-effort, parsed from the surrounding event). */
   updatedAtMs: number;
 }
 
@@ -2365,21 +1796,13 @@ function claudeSessionTranscriptPath(workdir: string, sessionId: string): string
   return path.join(home, '.claude', 'projects', encodePathAsDirName(workdir), `${sessionId}.jsonl`);
 }
 
-/**
- * Scan a claude session transcript for the latest native /goal state. Returns
- * null when no `goal_status` attachment is present.
- */
 export function getClaudeNativeGoal(workdir: string, sessionId: string): ClaudeNativeGoal | null {
   const file = claudeSessionTranscriptPath(workdir, sessionId);
   if (!file || !fs.existsSync(file)) return null;
-  // Goal status lines are tiny attachments. Walk the tail (1 MB) to find the
-  // last one — tail covers all realistic session sizes without parsing every
-  // line of a long transcript.
   const lines = readTailLines(file, 1024 * 1024);
   let latest: ClaudeNativeGoal | null = null;
   for (const raw of lines) {
     if (!raw || raw[0] !== '{') continue;
-    // Cheap pre-filter so we only JSON.parse the relevant subset.
     if (!raw.includes('"goal_status"')) continue;
     try {
       const ev = JSON.parse(raw);
@@ -2394,67 +1817,28 @@ export function getClaudeNativeGoal(workdir: string, sessionId: string): ClaudeN
         status: met || !condition ? 'complete' : 'active',
         updatedAtMs: Number.isFinite(ts) ? ts : Date.now(),
       };
-    } catch { /* skip */ }
+    } catch {  }
   }
-  // After auto-clear (met:true) claude still leaves the goal_status line in the
-  // transcript; pikiloom treats "no active goal" as null so the bridge mirrors
-  // the codex semantics where `goal_get` returns null after a clear.
   if (latest && latest.met) return null;
   return latest;
 }
 
-/** Build the user-prompt that triggers claude's native `/goal <condition>` slash command. */
 export function buildClaudeSetGoalPrompt(objective: string): string {
   return `/goal ${objective.trim()}`;
 }
 
-/** Build the user-prompt that triggers claude's native `/goal clear` slash command. */
 export function buildClaudeClearGoalPrompt(): string {
   return '/goal clear';
 }
 
-// ---------------------------------------------------------------------------
-// Driver
-// ---------------------------------------------------------------------------
-
-/**
- * Claude turns default to the real interactive TUI under PTY — usage stays
- * inside the Pro/Max subscription quota. `claude -p` calls (headless / print
- * mode) bill against the separate Agent SDK credit pool that Anthropic split
- * out on 2026-06-15, so we keep that off the hot path.
- *
- * Opt out to the legacy print path with `PIKILOOM_CLAUDE_PRINT=1` (also
- * accepts `=true` / `=yes` / `=on`). For backwards compat the older
- * `PIKILOOM_CLAUDE_TUI=0` / `=false` / `=no` / `=off` is honoured too.
- *
- * When TUI startup fails (node-pty missing, prebuilt helper unusable, PTY
- * allocation refused in a sandbox, …) the dispatcher automatically falls
- * through to the print-mode driver so pikiloom still works — at the cost of
- * the calls landing on the Agent SDK credit pool. The fallback is logged so
- * users can investigate.
- */
 export function isClaudePrintModeForced(): boolean {
   const print = (process.env.PIKILOOM_CLAUDE_PRINT ?? '').trim().toLowerCase();
   if (print === '1' || print === 'true' || print === 'yes' || print === 'on') return true;
-  // Legacy env var: PIKILOOM_CLAUDE_TUI=0 (or false/no/off) explicitly opts
-  // back to print mode. Truthy values are now the default behaviour and a
-  // no-op.
   const tui = (process.env.PIKILOOM_CLAUDE_TUI ?? '').trim().toLowerCase();
   if (tui === '0' || tui === 'false' || tui === 'no' || tui === 'off') return true;
   return false;
 }
 
-/**
- * Single-attempt dispatch: print mode when the resolved access mode is 'api'
- * (or, when no explicit mode was threaded, when forced via env), otherwise TUI
- * mode with print-mode fallback if TUI prerequisites are missing (node-pty
- * absent, PTY allocation refused, …).
- *
- * `opts.claudeAccessMode` is authoritative when set — the bot resolves it from
- * the per-agent config so a live dashboard toggle takes effect on the next
- * spawned turn. Env (isClaudePrintModeForced) is only the fallback for callers
- * that don't thread a mode (the `pikiloom run` one-shot path).
- */
 async function doClaudeStreamOnce(opts: StreamOpts): Promise<StreamResult> {
   const printMode = opts.claudeAccessMode
     ? opts.claudeAccessMode === 'api'
@@ -2467,20 +1851,11 @@ async function doClaudeStreamOnce(opts: StreamOpts): Promise<StreamResult> {
     const mod = await import('./claude-tui.js');
     return await mod.doClaudeTuiStream(opts);
   } catch (err: any) {
-    // TUI prerequisite failed (node-pty missing, PTY allocation refused, etc.).
-    // Fall back to print mode so pikiloom stays functional — with the caveat
-    // that this turn lands on the Agent SDK credit pool.
     agentWarn(`[claude] TUI unavailable (${err?.message || err}); falling back to -p — this turn bills the Agent SDK credit pool`);
     return doClaudeStream(opts);
   }
 }
 
-/**
- * Backoff schedule (in ms) for retrying transient Anthropic upstream failures
- * — 529 Overloaded, 5xx, gateway timeouts. Total wait budget ~30s before we
- * surface the failure to the user. Non-retryable errors (auth, quota,
- * context-length) skip the loop and fail fast.
- */
 const CLAUDE_API_RETRY_BACKOFFS_MS = [4000, 12000];
 
 function makeOverloadFriendlyResult(result: StreamResult, reason: string, attempts: number): StreamResult {
@@ -2501,33 +1876,14 @@ function makeOverloadFriendlyResult(result: StreamResult, reason: string, attemp
   };
 }
 
-/**
- * Driver-entry wrapper. Detects the Claude CLI's synthetic "API Error: …"
- * assistant turn and re-issues the request with backoff for retryable upstream
- * conditions (Overloaded, 5xx, timeouts). Non-retryable failures surface
- * immediately. After the budget is exhausted, the final result carries a
- * friendly human-readable explanation in `message` so the IM card doesn't
- * dump raw "API Error: Overloaded" text on the user.
- */
-/**
- * Continuation prompt for stall recovery. The frozen process already accepted
- * and partially executed the user's prompt (it sits in the transcript), so the
- * resumed process must NOT receive the original prompt again — it gets an
- * explicit "pick up where you left off" instead.
- */
 const CLAUDE_STALL_RESUME_PROMPT =
   '[pikiloom] The previous agent process stalled mid-turn and was restarted. '
   + 'Continue the task from where it left off — do not start over or repeat work that already completed.';
 
-/** At most one automatic resume per turn; a second stall surfaces to the user. */
 const CLAUDE_STALL_RESUME_LIMIT = 1;
 
 async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
   let lastResult = await doClaudeStreamOnce(opts);
-  // Mid-turn stall recovery. The TUI driver SIGTERMs a frozen claude process
-  // (stopReason 'stalled' — see decideClaudeTuiStall in claude-tui.ts) instead
-  // of letting the IM card spin forever. Resume the same session once with a
-  // continuation prompt so the turn picks up where the frozen process died.
   let stallResumes = 0;
   while (
     lastResult.stopReason === 'stalled'
@@ -2547,8 +1903,6 @@ async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
     });
   }
   if (lastResult.stopReason === 'stalled') {
-    // Still stalled after the resume budget (or no session id to resume).
-    // Surface a self-explanatory failure instead of the raw error text.
     return {
       ...lastResult,
       ok: false,
@@ -2560,9 +1914,6 @@ async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
     };
   }
   let attempts = 0;
-  // Use the error text recorded by detectClaudeApiError-driven branches to
-  // decide retry: lastResult.error is "Anthropic API error: <reason>" on
-  // detection, undefined otherwise.
   const reasonOf = (r: StreamResult): string | null => {
     if (r.stopReason !== 'api_error') return null;
     const m = (r.error || '').match(/^Anthropic API error:\s*(.+)$/i);
@@ -2583,9 +1934,6 @@ async function doClaudeWithRetry(opts: StreamOpts): Promise<StreamResult> {
       agentWarn('[claude] retry skipped after backoff — abort signal fired');
       break;
     }
-    // Resume the same session so we don't restart from scratch. The previous
-    // attempt may have written a synthetic "API Error" assistant block into
-    // the JSONL; Claude resumes past it and re-answers the user's prompt.
     const nextOpts: StreamOpts = {
       ...opts,
       sessionId: lastResult.sessionId || opts.sessionId,
@@ -2604,10 +1952,6 @@ class ClaudeDriver implements AgentDriver {
   readonly cmd = 'claude';
   readonly thinkLabel = 'Thinking';
   readonly capabilities = { fork: true, modelSwitch: true, workflow: true };
-  // Claude Code BYOK routes through ANTHROPIC_BASE_URL — accepts both
-  // first-party Anthropic and any openai-compatible provider that exposes an
-  // Anthropic-protocol-shaped endpoint (OpenRouter `/api/v1`, DeepSeek
-  // `/anthropic/v1`, …). cf. src/model/injector.ts:claudeInjector.
   readonly acceptedProviderKinds = ['anthropic', 'openai-compatible'] as const;
 
   async doStream(opts: StreamOpts): Promise<StreamResult> {
@@ -2636,10 +1980,6 @@ class ClaudeDriver implements AgentDriver {
     const telemetry = () => getClaudeUsageFromTelemetry(home, opts.model)
       || emptyUsage('claude', 'No recent Claude usage data found.');
 
-    // Throttle the rate-limited OAuth usage query (see CLAUDE_USAGE_QUERY_TTL_MS).
-    // Within the window we reuse the last good result rather than re-querying on
-    // every agent-status rebuild, so a transient query-API 429 can't blank the
-    // ring between successful polls.
     const now = Date.now();
     if (now - claudeUsageCache.lastAttemptAt < CLAUDE_USAGE_QUERY_TTL_MS) {
       return claudeUsageCache.lastGood ?? telemetry();
@@ -2650,8 +1990,6 @@ class ClaudeDriver implements AgentDriver {
       claudeUsageCache.lastGood = oauth;
       return oauth;
     }
-    // OAuth unavailable (non-mac, no token, or transient 429): keep showing the
-    // last good windows if we have any; otherwise fall back to telemetry.
     return claudeUsageCache.lastGood ?? telemetry();
   }
 

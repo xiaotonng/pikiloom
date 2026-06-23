@@ -1,18 +1,3 @@
-/**
- * MCP OAuth 2.1 + Dynamic Client Registration subsystem.
- *
- * Implements the MCP auth spec flow for remote HTTP MCP servers:
- *   1. Discover auth server (Protected Resource Metadata + WWW-Authenticate header).
- *   2. Fetch Authorization Server Metadata.
- *   3. Register client dynamically (RFC 7591) if no pre-registered client_id.
- *   4. Drive authorization_code + PKCE — returns auth URL for user's browser.
- *   5. Exchange code for tokens on callback.
- *   6. Refresh tokens when expired.
- *
- * Tokens are persisted via the token store (setting.json `extensions.mcpTokens`).
- * State for in-flight authorizations is kept in memory only.
- */
-
 import crypto from 'node:crypto';
 import {
   loadUserConfig,
@@ -20,10 +5,6 @@ import {
   type McpOAuthTokenRecord,
 } from '../../core/config/user-config.js';
 import type { McpAuthSpec } from './registry.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface OAuthAuthorizationServerMetadata {
   issuer: string;
@@ -67,10 +48,6 @@ export interface CompleteOAuthResult {
   serverId: string;
 }
 
-// ---------------------------------------------------------------------------
-// Token store (setting.json-backed)
-// ---------------------------------------------------------------------------
-
 export function getMcpToken(serverId: string): McpOAuthTokenRecord | undefined {
   const cfg = loadUserConfig();
   return cfg.extensions?.mcpTokens?.[serverId];
@@ -100,10 +77,6 @@ export function hasValidMcpToken(serverId: string): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// PKCE helpers
-// ---------------------------------------------------------------------------
-
 function randomUrlSafe(bytes: number): string {
   return crypto.randomBytes(bytes).toString('base64url');
 }
@@ -111,10 +84,6 @@ function randomUrlSafe(bytes: number): string {
 function pkceChallenge(verifier: string): string {
   return crypto.createHash('sha256').update(verifier).digest('base64url');
 }
-
-// ---------------------------------------------------------------------------
-// Discovery
-// ---------------------------------------------------------------------------
 
 async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 8_000): Promise<T> {
   const controller = new AbortController();
@@ -129,29 +98,10 @@ async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 8_000):
 }
 
 interface DiscoveredResource {
-  /** Authorization server issuer URL. */
   authorizationServer: string;
-  /**
-   * Canonical resource indicator (RFC 8707) — what the AS expects in the
-   * `resource` parameter. Often differs from the raw transport URL when the
-   * server publishes a normalized identifier (e.g. Sentry's PRM declares
-   * `https://mcp.sentry.dev/mcp` even when the client knows `/mcp/sse`).
-   * Per the MCP authorization spec, clients MUST use the value from PRM.
-   */
   canonicalResource: string;
 }
 
-/**
- * Discover the authorization server for a remote MCP resource and the
- * canonical `resource` indicator the AS will validate against.
- *
- * Strategy:
- *   1. Try GET {resourceBase}/.well-known/oauth-protected-resource (RFC 9728).
- *   2. Fall back to probing the MCP endpoint for a 401 with WWW-Authenticate
- *      and follow the resource_metadata link.
- *   3. Last resort: treat the origin as the AS and the input URL as the
- *      canonical resource.
- */
 async function discoverAuthorizationServer(resourceUrl: string): Promise<DiscoveredResource> {
   const origin = new URL(resourceUrl).origin;
 
@@ -164,16 +114,14 @@ async function discoverAuthorizationServer(resourceUrl: string): Promise<Discove
     };
   };
 
-  // Strategy 1: Protected Resource Metadata at the origin
   try {
     const meta = await fetchJson<OAuthProtectedResourceMetadata>(
       `${origin}/.well-known/oauth-protected-resource`,
     );
     const out = adopt(meta);
     if (out) return out;
-  } catch { /* try next */ }
+  } catch {  }
 
-  // Strategy 2: probe resource for WWW-Authenticate, follow resource_metadata
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8_000);
@@ -187,9 +135,6 @@ async function discoverAuthorizationServer(resourceUrl: string): Promise<Discove
 
     if (res.status === 401) {
       const auth = res.headers.get('www-authenticate') || '';
-      // A header may declare resource_metadata twice; prefer the most specific
-      // (last) match since servers commonly emit both origin-level and
-      // per-resource paths in one header.
       const matches = [...auth.matchAll(/resource_metadata="([^"]+)"/gi)];
       const link = matches.length ? matches[matches.length - 1][1] : null;
       if (link) {
@@ -198,14 +143,12 @@ async function discoverAuthorizationServer(resourceUrl: string): Promise<Discove
         if (out) return out;
       }
     }
-  } catch { /* fall through */ }
+  } catch {  }
 
-  // Last resort: assume the resource origin is itself the authorization server
   return { authorizationServer: origin, canonicalResource: resourceUrl };
 }
 
 async function fetchAuthorizationServerMetadata(issuer: string): Promise<OAuthAuthorizationServerMetadata> {
-  // Try OAuth AS metadata first (RFC 8414), then OIDC fallback
   const candidates = [
     `${issuer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`,
     `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`,
@@ -220,10 +163,6 @@ async function fetchAuthorizationServerMetadata(issuer: string): Promise<OAuthAu
   }
   throw new Error(`no AS metadata at ${issuer}: ${lastErr}`);
 }
-
-// ---------------------------------------------------------------------------
-// Dynamic Client Registration (RFC 7591)
-// ---------------------------------------------------------------------------
 
 interface DynamicRegistrationResponse {
   client_id: string;
@@ -253,19 +192,11 @@ async function registerClient(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Resolve endpoints — either from auth spec hints or via discovery
-// ---------------------------------------------------------------------------
-
 interface ResolvedEndpoints {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint?: string;
   issuer?: string;
-  /**
-   * Canonical resource indicator from PRM, falling back to the input URL when
-   * the spec entry hard-codes endpoints (no discovery happens in that path).
-   */
   canonicalResource: string;
 }
 
@@ -293,10 +224,6 @@ async function resolveEndpoints(auth: McpAuthSpec, resourceUrl: string): Promise
   };
 }
 
-// ---------------------------------------------------------------------------
-// Pending state (in-memory, short-lived)
-// ---------------------------------------------------------------------------
-
 const pendingFlows = new Map<string, PendingOAuthFlow>();
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
@@ -307,19 +234,6 @@ function sweepPending(): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Public API: start authorization, handle callback, refresh
-// ---------------------------------------------------------------------------
-
-/**
- * Kick off an OAuth flow for the given MCP server.
- *
- * @param serverId  The catalog id / installed-extension key.
- * @param auth      The auth spec from registry.
- * @param resourceUrl  The MCP server URL (http transport url).
- * @param redirectUri  Callback URL (http://localhost:<port>/api/extensions/mcp/oauth/callback).
- * @param clientName  Human-readable client name shown to the provider.
- */
 export async function startAuthorization(opts: {
   serverId: string;
   auth: McpAuthSpec;
@@ -388,9 +302,6 @@ interface TokenResponse {
   scope?: string;
 }
 
-/**
- * Exchange the authorization code for tokens and persist the result.
- */
 export async function completeAuthorization(opts: {
   state: string;
   code: string;
@@ -438,10 +349,6 @@ export async function completeAuthorization(opts: {
   return { ok: true, serverId: flow.serverId };
 }
 
-/**
- * Refresh an expired token. Returns the updated record or null if refresh failed
- * (e.g., no refresh_token available, or refresh rejected).
- */
 export async function refreshMcpToken(serverId: string): Promise<McpOAuthTokenRecord | null> {
   const token = getMcpToken(serverId);
   if (!token?.refreshToken) return null;
@@ -477,10 +384,6 @@ export async function refreshMcpToken(serverId: string): Promise<McpOAuthTokenRe
   }
 }
 
-/**
- * Inject Authorization: Bearer headers for remote MCP configs that have a token.
- * Called by bridge.ts before handing merged config to agents.
- */
 export function injectOAuthHeaders(name: string, config: { headers?: Record<string, string> }): Record<string, string> {
   const token = getMcpToken(name);
   if (!token?.accessToken) return config.headers || {};

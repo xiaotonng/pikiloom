@@ -1,20 +1,3 @@
-/**
- * pikichannel/adapter-pikiloom.ts — the reference {@link SessionSource}.
- *
- * Binds the universal protocol to pikiloom's live runtime *without touching the
- * bot*. It is a peer consumer of the very same surfaces the Web Dashboard uses:
- *   - data plane: the `runtime.events` 'dashboard-event' bus (same bus the
- *     dashboard WebSocket layer listens to). We must NOT call
- *     `bot.onStreamSnapshot` — that is a single-slot callback already owned by
- *     the runtime; re-registering it would silently break the dashboard.
- *   - control plane: the exported session-control functions
- *     (`queueDashboardSessionTask`, `stopSessionTasks`, …) — the same entry
- *     points the dashboard REST routes call.
- *
- * The StreamSnapshot → UniversalSnapshot projection lives here, keeping the
- * protocol package free of any pikiloom-internal type.
- */
-
 import { EventEmitter } from 'node:events';
 import { runtime, type DashboardEvent } from '../dashboard/runtime.js';
 import {
@@ -40,7 +23,6 @@ import type { PromptCommand, CommandResult, SessionSource, TunnelRequest, Tunnel
 
 const CAPABILITIES: HostCapability[] = ['prompt', 'stop', 'steer', 'recall', 'interact', 'subscribe-all', 'artifacts', 'tunnel'];
 
-/** Forwards a tunneled control-plane request to the host's HTTP router. */
 export type RequestForwarder = (req: TunnelRequest) => Promise<TunnelResponse>;
 
 function splitKey(sessionKey: string): { agent: string; sessionId: string } {
@@ -68,8 +50,6 @@ function projectInteractions(snap: StreamSnapshot): UniversalInteraction[] | und
   }));
 }
 
-/** Strip empty optionals so the projection is lean AND deterministic (the diff
- *  baseline must be stable: a field is either consistently present or absent). */
 function compact<T extends Record<string, any>>(obj: T): T {
   for (const k of Object.keys(obj)) {
     const v = obj[k];
@@ -80,7 +60,6 @@ function compact<T extends Record<string, any>>(obj: T): T {
   return obj;
 }
 
-/** Project pikiloom's StreamSnapshot into the agent-agnostic wire snapshot. */
 export function projectSnapshot(sessionKey: string, snap: StreamSnapshot): UniversalSnapshot {
   const { agent } = splitKey(sessionKey);
   const meta = snap.previewMeta;
@@ -130,34 +109,24 @@ function metaFromSnapshot(sessionKey: string, snap: UniversalSnapshot): SessionM
   return { sessionKey, agent: snap.agent, title, phase: snap.phase, updatedAt: snap.updatedAt };
 }
 
-/**
- * The pikiloom SessionSource. One instance per process; it attaches to the
- * runtime event bus lazily on first `onUpdate`.
- */
 export class PikiloomSessionSource implements SessionSource {
   private seqs = new Map<string, number>();
   private known = new Map<string, SessionMeta>();
   private bus = new EventEmitter();
   private wired = false;
 
-  /** @param forwarder forwards tunneled `/api/*` requests to the HTTP router. */
   constructor(private readonly forwarder?: RequestForwarder) {}
 
   hostInfo() {
     return { name: 'pikiloom', version: VERSION, capabilities: CAPABILITIES, authRequired: true };
   }
 
-  /** Control-plane HTTP tunnel — delegates to the embedder-supplied forwarder
-   *  (the dashboard's Hono router). The host has already enforced auth + the
-   *  `/api/*` allowlist before we get here. */
   async handleRequest(req: TunnelRequest): Promise<TunnelResponse> {
     if (!this.forwarder) return { status: 503, body: 'tunnel forwarder not configured' };
     return this.forwarder(req);
   }
 
   listSessions(): SessionMeta[] {
-    // Most-recent first, bounded so a long-lived host never ships an unbounded
-    // list over the wire (remote clients want a recent picker, not all history).
     return Array.from(this.known.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 50);
   }
 
@@ -182,7 +151,6 @@ export class PikiloomSessionSource implements SessionSource {
     return () => this.bus.off('sessions', handler);
   }
 
-  /** Subscribe once to the runtime's dashboard-event bus and fan out internally. */
   private ensureWired(): void {
     if (this.wired) return;
     this.wired = true;
@@ -198,8 +166,6 @@ export class PikiloomSessionSource implements SessionSource {
       }
     });
   }
-
-  // -- control plane (delegates to the shared session-control surface) -----
 
   async prompt(cmd: PromptCommand): Promise<CommandResult> {
     const config = loadUserConfig();

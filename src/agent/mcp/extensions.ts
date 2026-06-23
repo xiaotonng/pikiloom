@@ -1,18 +1,3 @@
-/**
- * MCP extension management — CRUD, catalog merge, health check, session merge.
- *
- * Global extensions live in ~/.pikiloom/setting.json under extensions.mcp.
- * Workspace extensions live in <workdir>/.mcp.json (standard format).
- *
- * getCatalogItems() produces the unified list the dashboard renders:
- * recommended-registry entries merged with installed entries, with a single
- * state field per item (recommended | needs_auth | disabled | ready | unhealthy).
- *
- * mergeExtensionsForSession() is called by bridge.ts before spawning an agent —
- * it resolves disabled flags, expands OAuth Bearer headers from the token store,
- * and hands the final config map to the agent CLI.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,17 +14,12 @@ import {
 } from './registry.js';
 import { hasValidMcpToken, injectOAuthHeaders } from './oauth.js';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export type ExtensionScope = 'global' | 'workspace' | 'builtin';
 
 export interface McpExtensionEntry {
   name: string;
   config: McpServerConfig;
   scope: ExtensionScope;
-  /** Source file path (setting.json or .mcp.json). */
   source?: string;
 }
 
@@ -51,15 +31,15 @@ export interface McpHealthResult {
 }
 
 export type McpCatalogState =
-  | 'recommended'   // Not installed yet — show install/authorize CTA
-  | 'needs_auth'    // Installed but missing credentials or OAuth token
-  | 'disabled'      // Installed but turned off
-  | 'ready'         // Installed, authorized, enabled
-  | 'unhealthy';    // Installed+enabled but last health check failed
+  | 'recommended'
+  | 'needs_auth'
+  | 'disabled'
+  | 'ready'
+  | 'unhealthy';
 
 export interface McpCatalogItem {
-  id: string;                       // catalogId if from registry, else installed name
-  name: string;                     // Display name
+  id: string;
+  name: string;
   description: string;
   descriptionZh: string;
   category: McpCategory | 'custom';
@@ -69,34 +49,15 @@ export interface McpCatalogItem {
   transport: { type: 'stdio' | 'http'; summary: string };
   auth: McpAuthSpec;
   state: McpCatalogState;
-  /** True when this item comes from the recommended registry. */
   isRecommended: boolean;
-  /** True when the item is in the user's config (global or workspace). */
   installed: boolean;
-  /** Scope of installed entry; undefined when not installed. */
   scope?: ExtensionScope;
-  /** Raw config if installed. */
   config?: McpServerConfig;
-  /** Installed key (may differ from id for custom entries — custom uses name as key). */
   installedKey?: string;
-  /** Intended scope from the recommended registry (undefined for custom). */
   recommendedScope?: RecommendedScope;
-  /**
-   * Builtin entries surface alongside catalog items but are managed by pikiloom
-   * (state derived from a config flag, no `extensions.mcp` storage). Rendered
-   * in a dedicated "Built-in" section at the top of the catalog UI.
-   */
   isBuiltin?: boolean;
 }
 
-/**
- * Server descriptor consumed by agent-specific registration paths
- * (Codex `mcp add`, Gemini settings.json, Claude `--mcp-config`).
- *
- * Stdio entries set `command` (and optionally `args`, `env`).
- * HTTP entries set `type: 'http'` plus `url` and optional `headers`.
- * `type` defaults to `'stdio'` when omitted, preserving the original shape.
- */
 interface RegisteredMcpServer {
   name: string;
   type?: 'stdio' | 'http';
@@ -106,10 +67,6 @@ interface RegisteredMcpServer {
   url?: string;
   headers?: Record<string, string>;
 }
-
-// ---------------------------------------------------------------------------
-// Global extensions (setting.json)
-// ---------------------------------------------------------------------------
 
 export function loadGlobalMcpExtensions(): McpExtensionEntry[] {
   const config = loadUserConfig();
@@ -154,10 +111,6 @@ export function updateGlobalMcpExtension(name: string, patch: Partial<McpServerC
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Workspace extensions (.mcp.json)
-// ---------------------------------------------------------------------------
-
 function workspaceMcpJsonPath(workdir: string): string {
   return path.join(workdir, '.mcp.json');
 }
@@ -170,7 +123,7 @@ function readMcpJson(filePath: string): Record<string, McpServerConfig> {
     if (typeof servers === 'object' && servers !== null && !Array.isArray(servers)) {
       return servers as Record<string, McpServerConfig>;
     }
-  } catch { /* not found or invalid */ }
+  } catch {  }
   return {};
 }
 
@@ -216,10 +169,6 @@ export function updateWorkspaceMcpExtension(workdir: string, name: string, patch
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Unified listing
-// ---------------------------------------------------------------------------
-
 export function listAllMcpExtensions(workdir?: string): McpExtensionEntry[] {
   const global = loadGlobalMcpExtensions();
   const workspace = workdir ? loadWorkspaceMcpExtensions(workdir) : [];
@@ -234,10 +183,6 @@ export function listAllMcpExtensions(workdir?: string): McpExtensionEntry[] {
   return [...global, ...workspace, ...claudeMcp];
 }
 
-// ---------------------------------------------------------------------------
-// Catalog — merged recommended + installed with state computation
-// ---------------------------------------------------------------------------
-
 function cmdSummary(config: McpServerConfig): string {
   if (config.type === 'http' && config.url) return config.url;
   const cmd = config.command || '';
@@ -245,13 +190,6 @@ function cmdSummary(config: McpServerConfig): string {
   return [cmd, ...args].join(' ').trim();
 }
 
-/**
- * Generic @modelcontextprotocol/server-* demos that historically shipped in the
- * recommended list but were later removed (no product identity, overlap with
- * built-in agent capabilities like search/time). We hide them from the catalog
- * UI so old installs don't clutter the Connected section. The configs are kept
- * in setting.json untouched — users can still edit by hand if they want.
- */
 const HIDDEN_GENERIC_DEMO_PACKAGES = new Set([
   '@modelcontextprotocol/server-time',
   '@modelcontextprotocol/server-fetch',
@@ -296,16 +234,6 @@ function computeStateForInstalled(
   return 'ready';
 }
 
-/**
- * Produce the unified catalog for the dashboard: every recommended registry
- * entry, plus any custom installed entries the user added, each with a
- * computed state field.
- *
- * When `scope` is provided, recommended entries are filtered to those whose
- * `recommendedScope` matches (or is `'both'`). Custom entries are filtered
- * by where they are installed — `scope: 'global'` excludes workspace entries
- * and vice versa.
- */
 export function getCatalogItems(opts: {
   workdir?: string;
   unhealthyIds?: Set<string>;
@@ -317,7 +245,6 @@ export function getCatalogItems(opts: {
     ...(opts.workdir ? loadWorkspaceMcpExtensions(opts.workdir) : []),
   ];
 
-  // Build lookup: catalogId -> installed entry (preferring global).
   const installedByCatalogId = new Map<string, McpExtensionEntry>();
   const customEntries: McpExtensionEntry[] = [];
 
@@ -342,9 +269,6 @@ export function getCatalogItems(opts: {
   };
 
   const items: McpCatalogItem[] = [];
-  // Builtin items derive their installed/state from a top-level config flag
-  // rather than `extensions.mcp`. Each catalogId maps to one flag — extend the
-  // switch when adding a new builtin.
   const userConfig = loadUserConfig();
   const builtinInstalled = (catalogId: string): boolean => {
     if (catalogId === 'pikiloom-browser') return userConfig.browserEnabled === true;
@@ -352,7 +276,6 @@ export function getCatalogItems(opts: {
     return false;
   };
 
-  // 1. Registry entries — preserve registry ordering.
   for (const rec of recommended) {
     if (!scopeMatchesRec(rec)) continue;
     const entry = installedByCatalogId.get(rec.id);
@@ -365,8 +288,6 @@ export function getCatalogItems(opts: {
       installed = builtinInstalled(rec.id);
       state = installed ? 'ready' : 'recommended';
       installedKey = installed ? rec.id : undefined;
-      // Leave scope undefined: builtins aren't tied to global/workspace
-      // storage, and the catalog UI's scope filter ignores items with no scope.
       scope = undefined;
     } else {
       state = entry
@@ -399,7 +320,6 @@ export function getCatalogItems(opts: {
     });
   }
 
-  // 2. Custom entries — user-added servers not in the recommended registry.
   for (const entry of customEntries) {
     if (!scopeMatchesEntry(entry)) continue;
     if (isGenericDemoEntry(entry)) continue;
@@ -432,10 +352,6 @@ export function getCatalogItem(id: string, opts: { workdir?: string } = {}): Mcp
   return getCatalogItems(opts).find(i => i.id === id);
 }
 
-/**
- * Build an `McpServerConfig` from a recommended entry plus user-supplied
- * credentials. Used when installing a recommended server via the catalog flow.
- */
 export function buildInstalledConfigFromRecommended(
   rec: RecommendedMcpServer,
   opts: { enabled: boolean; credentials?: Record<string, string> } = { enabled: false },
@@ -459,8 +375,6 @@ export function buildInstalledConfigFromRecommended(
 
   const headers: Record<string, string> = {};
   if (rec.auth.type === 'credentials') {
-    // Convention: first non-empty credential becomes Authorization: Bearer <value>.
-    // Matches how Stripe, Perplexity, and similar providers expect the token.
     const first = rec.auth.fields.find(f => creds[f.key]);
     if (first) headers.Authorization = `Bearer ${creds[first.key]}`;
   }
@@ -473,23 +387,12 @@ export function buildInstalledConfigFromRecommended(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Merge for session — called by bridge.ts
-// ---------------------------------------------------------------------------
-
-/**
- * Build the merged MCP server list for a session.
- * Priority (low → high): global → workspace .mcp.json → .claude/.mcp.json → ~/.claude/.mcp.json → builtins.
- * Disabled servers are filtered out. OAuth Bearer headers are injected for
- * any http-type server that has a valid token in the token store.
- */
 export function mergeExtensionsForSession(
   builtinServers: RegisteredMcpServer[],
   workdir?: string,
 ): Record<string, any> {
   const merged: Record<string, any> = {};
 
-  // 1. Global extensions from setting.json (lowest priority)
   const userConfig = loadUserConfig();
   const globalMcp = userConfig.extensions?.mcp;
   if (globalMcp) {
@@ -514,7 +417,6 @@ export function mergeExtensionsForSession(
     }
   }
 
-  // 2. Workspace .mcp.json files (overwrite global)
   if (workdir) {
     for (const candidate of [
       path.join(workdir, '.mcp.json'),
@@ -534,11 +436,10 @@ export function mergeExtensionsForSession(
             }
           }
         }
-      } catch { /* skip */ }
+      } catch {  }
     }
   }
 
-  // 3. Built-in servers (highest priority)
   for (const server of builtinServers) {
     merged[server.name] = {
       type: 'stdio',
@@ -548,7 +449,6 @@ export function mergeExtensionsForSession(
     };
   }
 
-  // Filter out any remaining disabled entries
   for (const [name, cfg] of Object.entries(merged)) {
     if (cfg?.disabled === true || cfg?.enabled === false) {
       delete merged[name];
@@ -558,15 +458,6 @@ export function mergeExtensionsForSession(
   return merged;
 }
 
-/**
- * Convert global + workspace extensions to RegisteredMcpServer[] for Codex
- * and Gemini agents that consume server arrays instead of merged configs.
- *
- * Supports both stdio and HTTP transports. For HTTP entries, OAuth Bearer
- * headers are injected from the token store (same path as
- * mergeExtensionsForSession), so a one-time global authorization carries
- * across every workspace.
- */
 export function getGlobalExtensionsAsServers(workdir?: string): RegisteredMcpServer[] {
   const merged: Map<string, RegisteredMcpServer> = new Map();
 
@@ -617,10 +508,6 @@ export function getGlobalExtensionsAsServers(workdir?: string): RegisteredMcpSer
 
   return [...merged.values()];
 }
-
-// ---------------------------------------------------------------------------
-// Health check — spawn + MCP initialize handshake
-// ---------------------------------------------------------------------------
 
 interface CachedHealth {
   result: McpHealthResult;
@@ -740,7 +627,7 @@ export async function checkMcpHealth(config: McpServerConfig, timeoutMs = 10_000
       });
       const toolsHeader = `Content-Length: ${Buffer.byteLength(toolsRequest)}\r\n\r\n`;
 
-      try { child.stdin?.write(toolsHeader + toolsRequest); } catch { /* best-effort */ }
+      try { child.stdin?.write(toolsHeader + toolsRequest); } catch {  }
 
       setTimeout(() => {
         stopChildTree();
@@ -757,10 +644,10 @@ export async function checkMcpHealth(config: McpServerConfig, timeoutMs = 10_000
                 if (parsed.result?.tools) {
                   for (const tool of parsed.result.tools) if (tool.name) tools.push(tool.name);
                 }
-              } catch { /* try next match */ }
+              } catch {  }
             }
           }
-        } catch { /* best effort */ }
+        } catch {  }
 
         finish({ ok: true, tools: tools.length ? tools : undefined, elapsedMs: Date.now() - start });
       }, 1500);

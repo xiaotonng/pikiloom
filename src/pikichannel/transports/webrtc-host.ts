@@ -1,17 +1,3 @@
-/**
- * pikichannel/transports/webrtc-host.ts — the DIRECT WebRTC binding (host).
- *
- * SDP/ICE over a same-origin `/pikichannel/signal` WebSocket, for clients that
- * can already reach the host (localhost / LAN / public IP). The cross-NAT path —
- * where the host dials OUT to a public broker — lives in rendezvous.ts. Both
- * paths share the same werift answerer (webrtc-shared.ts), so a connection from
- * either is identical downstream.
- *
- * werift is imported (transitively) here; the server wiring loads this module via
- * a guarded dynamic import, so a missing/broken werift disables WebRTC while the
- * WebSocket binding and the dashboard keep working.
- */
-
 import type http from 'node:http';
 import type internal from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -31,7 +17,6 @@ export class WebRTCTransport implements ChannelTransport {
     this.wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => this.runSignaling(ws, req));
   }
 
-  /** Server wiring routes a matching signaling upgrade request here. */
   handleUpgrade(req: http.IncomingMessage, socket: internal.Duplex, head: Buffer): void {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
   }
@@ -40,7 +25,6 @@ export class WebRTCTransport implements ChannelTransport {
     this.wss.close();
   }
 
-  /** One signaling WebSocket brokers exactly one peer connection. */
   private runSignaling(ws: WebSocket, req: http.IncomingMessage): void {
     const remote = req.socket.remoteAddress ? `${req.socket.remoteAddress}:${req.socket.remotePort}` : undefined;
     const answerer = createAnswerer({
@@ -55,9 +39,6 @@ export class WebRTCTransport implements ChannelTransport {
       void answerer.onSignal(msg);
     });
 
-    // The signaling socket is only needed for the handshake; once the datachannel
-    // carries traffic it can close. If it drops before a channel was adopted,
-    // tear the half-open peer down.
     const cleanup = () => { if (!answerer.isAdopted()) answerer.close(); };
     ws.on('close', cleanup);
     ws.on('error', cleanup);

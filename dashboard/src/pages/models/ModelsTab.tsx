@@ -1,22 +1,3 @@
-/**
- * Model Provider Configuration — commercial-grade UI.
- *
- *   Quick Templates (top)         — 5 logo cards: OpenRouter / Anthropic /
- *                                   DeepSeek / Google / Custom. Click → opens
- *                                   the Add modal with kind/baseURL/envVar
- *                                   pre-filled for that provider.
- *   Configured Providers (below)  — clean cards: brand mark, name, status,
- *                                   model + effort, bound-agent chips,
- *                                   inline validate/edit/delete.
- *
- * One row in the UI = one (Provider, Profile) pair under the hood. The user
- * never sees the split. Add modal asks for everything in one form; backend
- * creates Provider then Profile, or PATCHes both.
- *
- * Agent bindings live on the agent cards (see AgentTab.tsx) per option B —
- * here we just render a read-only "bound to" chip strip.
- */
-
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Input, Label, Modal, ModalHeader, Select, Spinner } from '../../components/ui';
 import { ActionBar, SectionCard } from '../shared';
@@ -25,10 +6,6 @@ import { useStore } from '../../store';
 import { cn, getAgentMeta } from '../../utils';
 import type { Locale } from '../../i18n';
 import type { LocalBackendStatus } from '../../types';
-
-// ---------------------------------------------------------------------------
-// Wire types
-// ---------------------------------------------------------------------------
 
 type ProviderKind = 'anthropic' | 'openai' | 'openai-compatible' | 'google';
 
@@ -61,12 +38,8 @@ interface ProfileRow {
   updatedAt: string;
 }
 
-// ---------------------------------------------------------------------------
-// Templates
-// ---------------------------------------------------------------------------
-
 interface ProviderTemplate {
-  id: string;             // brand id used by BrandIcon
+  id: string;
   kind: ProviderKind;
   name: { zh: string; en: string };
   blurb: { zh: string; en: string };
@@ -75,17 +48,7 @@ interface ProviderTemplate {
   defaultModel?: string;
 }
 
-/**
- * Quick-connect templates. Two rows × 5:
- *   Row 1 — providers that *expand* the user's reach beyond the native agents
- *           (OpenRouter aggregator + 4 leading Chinese model series). For the
- *           pikiloom audience these are the highest-leverage BYOK paths.
- *   Row 2 — direct API alternatives for providers that already have a native
- *           agent CLI in pikiloom (Anthropic via Claude Code, Google via
- *           Gemini CLI), plus DeepSeek / OpenAI / Custom.
- */
 const TEMPLATES: ProviderTemplate[] = [
-  // ── Row 1 ──────────────────────────────────────────────────────────────
   {
     id: 'openrouter',
     kind: 'openai-compatible',
@@ -131,7 +94,6 @@ const TEMPLATES: ProviderTemplate[] = [
     envVar: 'MINIMAX_API_KEY',
     defaultModel: 'MiniMax-M2',
   },
-  // ── Row 2 ──────────────────────────────────────────────────────────────
   {
     id: 'deepseek',
     kind: 'openai-compatible',
@@ -177,10 +139,6 @@ const TEMPLATES: ProviderTemplate[] = [
     envVar: '',
   },
 ];
-
-// ---------------------------------------------------------------------------
-// i18n
-// ---------------------------------------------------------------------------
 
 interface Copy {
   sectionTitle: string;
@@ -341,10 +299,6 @@ function kindLabel(kind: ProviderKind, locale: Locale): string {
 
 const EFFORT_CHOICES = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-// ---------------------------------------------------------------------------
-// Tiny fetch helpers
-// ---------------------------------------------------------------------------
-
 async function get<T>(url: string): Promise<T> {
   const r = await fetch(url);
   return r.json() as Promise<T>;
@@ -358,13 +312,10 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
   return r.json() as Promise<T>;
 }
 
-// Best-effort brand-id from baseURL host (used to pick a logo for configured cards).
 function brandIdForProvider(p: { kind: ProviderKind; baseURL: string }): string {
   const url = (() => { try { return new URL(p.baseURL); } catch { return null; } })();
   const host = url?.host.toLowerCase() ?? '';
   const port = url?.port ?? '';
-  // Local backends — recognised by their default loopback ports so the
-  // configured provider card picks up the right brand mark after Connect.
   if ((host.startsWith('127.0.0.1') || host.startsWith('localhost')) && port === '11434') return 'ollama';
   if ((host.startsWith('127.0.0.1') || host.startsWith('localhost')) && port === '8080') return 'mlx';
   if (host.includes('openrouter')) return 'openrouter';
@@ -382,10 +333,6 @@ function brandIdForProvider(p: { kind: ProviderKind; baseURL: string }): string 
   return 'custom';
 }
 
-// ---------------------------------------------------------------------------
-// Validation status badge
-// ---------------------------------------------------------------------------
-
 function ValidationBadge({ v, copy }: { v: ValidationStatus | null; copy: Copy }) {
   if (!v || v.state === 'unknown') return <Badge variant="muted">{copy.validationUnvalidated}</Badge>;
   if (v.state === 'ready') {
@@ -396,16 +343,7 @@ function ValidationBadge({ v, copy }: { v: ValidationStatus | null; copy: Copy }
   return <Badge variant="warn">{copy.validationError}</Badge>;
 }
 
-// ---------------------------------------------------------------------------
-// Provider tile — unified for both unbound templates and connected providers.
-// Bound tiles get an accent border + "已接入" badge and surface validation
-// state in place of the marketing blurb so the user can see status without
-// opening the modal. Click semantics: bound → edit modal, unbound → add modal.
-// ---------------------------------------------------------------------------
-
 interface TileDescriptor {
-  /** A connected provider OR a marketing template (or both, when a template
-   *  has an existing matching provider). */
   provider?: ProviderRow;
   template?: ProviderTemplate;
 }
@@ -428,10 +366,6 @@ function ProviderTile({
     ?? (template ? (locale === 'zh-CN' ? template.name.zh : template.name.en) : '');
   const blurb = template ? (locale === 'zh-CN' ? template.blurb.zh : template.blurb.en) : '';
 
-  // Status indicator: a 6px colored dot in front of the provider name carries
-  // ready/invalid/error/unvalidated. The model count moves to a small muted
-  // numeric next to the dot — full label ("可用 N 个模型") is reserved for the
-  // tile's hover tooltip and the edit modal where space is not a concern.
   const validationState = provider?.validation?.state ?? null;
   const modelCount = provider?.validation?.modelCount;
 
@@ -453,8 +387,6 @@ function ProviderTile({
     }
   }
 
-  // Subtitle below the name. Connected providers without ready validation
-  // surface the failure detail; everything else shows the template blurb.
   const subtitle = isBound && provider!.validation?.detail && validationState !== 'ready'
     ? provider!.validation.detail
     : blurb;
@@ -491,10 +423,6 @@ function ProviderTile({
     </button>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Add / Edit modal
-// ---------------------------------------------------------------------------
 
 interface ConfigDraft {
   name: string;
@@ -537,17 +465,11 @@ function ConfigModal({
   existingProvider?: ProviderRow;
   onClose: () => void;
   onSaved: () => void;
-  /** Only meaningful when editing — surfaces a Remove action in the footer. */
   onRemove?: () => void | Promise<void>;
 }) {
   const [draft, setDraft] = useState<ConfigDraft>(() => initial || draftFromTemplate(TEMPLATES[0], locale));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Id of the provider this modal has already created in an Add flow. Once a
-  // Save creates the provider (even if its validation then fails and the modal
-  // stays open), subsequent Saves must PATCH this same provider rather than
-  // POST a second one — otherwise fixing a bad key/URL spawns a duplicate
-  // "configured but wrong" provider alongside the corrected one.
   const [createdId, setCreatedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -558,11 +480,6 @@ function ConfigModal({
   }, [open, initial, locale]);
 
   const isEdit = !!existingProvider;
-  // Lock the API-kind selector when entering via a known template (kind is
-  // determined by the template) or when editing (changing kind would
-  // invalidate the existing credential). Only the "Custom" template path
-  // surfaces a Kind picker, since that's where the user is genuinely
-  // declaring a new endpoint shape.
   const kindLocked = !!initialTemplateName || isEdit;
 
   const submit = useCallback(async () => {
@@ -575,9 +492,6 @@ function ConfigModal({
           ? { source: 'command', argv: draft.cmdLine.trim().split(/\s+/).filter(Boolean) }
           : null;
 
-      // 1) Persist the provider (create or update). `editTargetId` is the
-      //    existing provider when editing, OR one this Add flow already
-      //    created on a prior Save attempt — in both cases we PATCH in place.
       const editTargetId = existingProvider?.id ?? createdId;
       let providerId: string;
       if (editTargetId) {
@@ -601,13 +515,9 @@ function ConfigModal({
         const provRes = await send<{ ok: boolean; provider?: ProviderRow; error?: string }>('POST', '/api/models/providers', providerBody);
         if (!provRes.ok || !provRes.provider) { setError(provRes.error || 'Failed to create provider'); return; }
         providerId = provRes.provider.id;
-        // Remember it so a retry after a failed validation edits this provider
-        // instead of creating another.
         setCreatedId(providerId);
       }
 
-      // 2) Validate immediately. Only close the modal if the credential is healthy;
-      //    otherwise keep the modal open with the provider's failure message inline.
       const valRes = await send<{ ok: boolean; validation?: ValidationStatus; error?: string }>(
         'POST', `/api/models/providers/${providerId}/validate`,
       );
@@ -627,8 +537,6 @@ function ConfigModal({
   const canSave = !submitting
     && draft.name.trim().length > 0
     && draft.baseURL.trim().length > 0
-    // Key already stored once we're editing (a real edit, or a retry on a
-    // provider this Add flow created) — let the user re-save without re-typing.
     && (draft.credMode !== 'paste' || (isEdit || createdId ? true : draft.apiKey.length > 0))
     && (draft.credMode !== 'env' || draft.envVar.trim().length > 0)
     && (draft.credMode !== 'command' || draft.cmdLine.trim().length > 0);
@@ -649,9 +557,6 @@ function ConfigModal({
             placeholder={copy.fieldNamePlaceholder}
           />
         </div>
-        {/* API kind is fixed for known templates and for edits — only the
-            "Custom" template lets the user pick. Hide the select otherwise to
-            avoid asking a question with one right answer. */}
         {kindLocked ? (
           <div>
             <Label>{copy.fieldBaseURL}</Label>
@@ -730,8 +635,6 @@ function ConfigModal({
         )}
       </div>
       <div className="mt-6 flex items-center justify-between gap-2 border-t border-edge pt-4">
-        {/* Remove is only shown when editing — gives users a way back to the
-            unbound tile without leaving the modal. */}
         <div>
           {isEdit && onRemove && (
             <button
@@ -751,10 +654,6 @@ function ConfigModal({
     </Modal>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Public hook (shared with AgentTab)
-// ---------------------------------------------------------------------------
 
 export interface ModelLayerSnapshot {
   providers: ProviderRow[];
@@ -792,15 +691,6 @@ export function useModelLayer(): ModelLayerSnapshot {
   return { providers, profiles, bindings, reload, setActiveProfile };
 }
 
-// ---------------------------------------------------------------------------
-// Provider card
-// ---------------------------------------------------------------------------
-
-/**
- * Drop trailing slashes and collapse localhost ↔ 127.0.0.1 — matches the
- * normalization done on the server when reconciling local backends with
- * existing providers, so we can recognize a local-backend provider here.
- */
 function normalizeProviderBaseURL(raw: string): string {
   return raw
     .replace(/\/+$/, '')
@@ -816,21 +706,11 @@ function providerMatchesLocalBackend(
   return localBackends.some(b => normalizeProviderBaseURL(b.openAIBaseURL) === target);
 }
 
-// ---------------------------------------------------------------------------
-// Main section
-// ---------------------------------------------------------------------------
-
 export default function ModelsSection({
   snapshot,
   localBackends,
 }: {
   snapshot?: ModelLayerSnapshot;
-  /**
-   * Optional list of detected local backends (Ollama / mlx-lm). When
-   * provided, a provider card whose baseURL matches a local backend renders
-   * the backend's installed-model list inline so users immediately see what's
-   * on disk after connecting it.
-   */
   localBackends?: LocalBackendStatus[];
 } = {}) {
   const localState = useModelLayer();
@@ -877,8 +757,6 @@ export default function ModelsSection({
     ? (locale === 'zh-CN' ? modal.template.name.zh : modal.template.name.en)
     : null;
 
-  // Map each template id → an existing Provider (if any) so a second click on
-  // the same template routes to edit instead of creating a duplicate.
   const providerByTemplateId = useMemo(() => {
     const m = new Map<string, ProviderRow>();
     for (const p of providers) {
@@ -888,14 +766,6 @@ export default function ModelsSection({
     return m;
   }, [providers]);
 
-  // Build the unified tile list. Layout, in order:
-  //   1. Every known template — bound to its matching Provider when one
-  //      exists, otherwise rendered as an unbound marketing tile.
-  //   2. Any configured Provider that doesn't map to a known template (i.e.
-  //      Custom endpoints), each as its own bound tile.
-  //   3. The "+ Custom" add tile, always last.
-  // Local-backend providers are filtered out everywhere — they're managed by
-  // the Local Models section below, no point duplicating them here.
   const tiles = useMemo<TileDescriptor[]>(() => {
     const visibleProviders = providers.filter(p => !providerMatchesLocalBackend(p, backendsForLookup));
     const claimedProviderIds = new Set<string>();

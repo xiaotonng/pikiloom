@@ -12,23 +12,14 @@ import type { Turn } from './utils';
 
 export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork }: {
   turn: Turn; turnIndex?: number; agent: string; meta: ReturnType<typeof getAgentMeta>; model?: string | null; effort?: string | null; t: (k: string) => string; workdir?: string | null;
-  /** BYOK provider name shown on the assistant turn header — set when the
-   *  agent is currently bound to a Profile. Saved turns lack this in their
-   *  usage payload, so we accept it from the caller as a session-level prop. */
   providerName?: string | null;
   onResend?: (text: string) => void;
   onEdit?: (text: string) => void;
-  /** When defined, the user-bubble shows a fork action that opens a fork composer scoped to this turn. */
   onFork?: (atTurn: number) => void;
 }) {
-  // Detect system continuation messages stored as user role (context compression summaries,
-  // interruption markers). These should not render as user bubbles regardless of whether
-  // the turn also contains an assistant response.
   const isSystemMsg = turn.user && isContinuationSummary(turn.user.text);
   const handleFork = onFork && typeof turnIndex === 'number' ? () => onFork(turnIndex) : undefined;
   const markdownComponents = useMemo(() => createMarkdownComponents({ workdir }), [workdir]);
-  // Skip the assistant header entirely when there's nothing to put under it —
-  // a phantom header reads as "Claude said something invisible" to users.
   const showAssistant = !!turn.assistant && hasRenderableAssistant(turn.assistant);
 
   return (
@@ -55,7 +46,6 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
   );
 });
 
-/** Lightbox for full-screen image preview */
 export function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -78,12 +68,8 @@ export function ImageLightbox({ src, onClose }: { src: string; onClose: () => vo
   );
 }
 
-/** Threshold above which a user bubble's text starts collapsed behind a toggle.
- *  Picked to comfortably fit a paragraph or short snippet inline while folding
- *  large pastes (logs, code, the cross-agent `<handover>` seed). */
 const LONG_USER_TEXT_CHAR_THRESHOLD = 1500;
 const LONG_USER_TEXT_LINE_THRESHOLD = 16;
-/** Lines kept visible above the "show all" toggle when collapsed. */
 const COLLAPSED_PREVIEW_LINES = 8;
 
 function previewFromText(text: string): string {
@@ -92,14 +78,12 @@ function previewFromText(text: string): string {
   return lines.slice(0, COLLAPSED_PREVIEW_LINES).join('\n');
 }
 
-/** User message bubble with actions */
 export function UserBubble({ text, blocks, t, onResend, onEdit, onFork }: {
   text: string;
   blocks?: MessageBlock[];
   t: (k: string) => string;
   onResend?: (text: string) => void;
   onEdit?: (text: string) => void;
-  /** When provided, hover action bar shows a fork button that branches off this turn. */
   onFork?: () => void;
 }) {
   const [showActions, setShowActions] = useState(false);
@@ -156,7 +140,6 @@ export function UserBubble({ text, blocks, t, onResend, onEdit, onFork }: {
         )}
       </div>
       {lightboxSrc && <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />}
-      {/* Action bar — appears below the bubble on hover */}
       {hasActions && (
         <div className={cn(
           'flex items-center gap-1 mt-1.5 mr-1 transition-all duration-200',
@@ -213,29 +196,15 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
   meta: ReturnType<typeof getAgentMeta>;
   model?: string | null;
   effort?: string | null;
-  /** Session-level BYOK provider fallback used when previewMeta lacks one
-   *  (saved messages don't carry usage / providerName). */
   providerName?: string | null;
-  /** Live token / context-window stats — when present, rendered as a trailing chip. */
   previewMeta?: StreamPreviewMeta | null;
-  /** Wall-clock ms when the in-flight turn started. When set, a ticking
-   *  elapsed chip renders next to the token stats — the liveness signal that
-   *  survives long silent tool calls (no text, no activity for minutes). */
   liveStartedAt?: number | null;
 }) {
   const ctxPct = previewMeta?.contextPercent ?? null;
-  // Use the per-call context occupancy (input + cache_read + cache_creation
-  // for the latest LLM call) — NOT the cumulative inputTokens/cachedInputTokens,
-  // which double-count the same cached prefix on every tool roundtrip.
   const ctxTokens = previewMeta?.contextUsedTokens ?? 0;
-  // Turn-cumulative output — keeps climbing through thinking, text and tool
-  // roundtrips (per-call outputTokens resets to 0 on each new LLM call), so
-  // the header is the one stable home for "how much has this turn generated".
   const turnOutTokens = previewMeta?.turnOutputTokens ?? 0;
   const showCtx = ctxPct != null || ctxTokens > 0 || turnOutTokens > 0;
   const showLiveElapsed = liveStartedAt != null && liveStartedAt > 0;
-  // Prefer live preview's providerName (most accurate per-turn); fall back to
-  // the session-level prop for saved turns whose `usage` lacks the field.
   const providerName = previewMeta?.providerName ?? providerNameProp ?? null;
   return (
     <div className="flex items-center gap-1.5 mt-1 mb-3">
@@ -269,11 +238,6 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
   );
 }
 
-/**
- * Ticking elapsed-time chip for the in-flight turn. Re-renders once a second
- * — the reliable "still running" signal when a long tool call (live e2e, big
- * build) produces neither text nor activity updates for minutes.
- */
 function LiveElapsedChip({ startedAt, leadingDot }: { startedAt: number; leadingDot: boolean }) {
   const [, forceTick] = useState(0);
   useEffect(() => {
@@ -288,7 +252,6 @@ function LiveElapsedChip({ startedAt, leadingDot }: { startedAt: number; leading
   );
 }
 
-/** 42s → "42s"; 754s → "12m34s"; 4321s → "1h12m". */
 export function formatElapsedCompact(ms: number): string {
   const totalS = Math.floor(ms / 1000);
   if (totalS < 60) return `${totalS}s`;
@@ -303,7 +266,6 @@ export function formatTokens(n: number): string {
   return `${formatTokensShort(n)} tok`;
 }
 
-/** Compact count without the " tok" suffix — for tight chips like "↑2.3k". */
 export function formatTokensShort(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;

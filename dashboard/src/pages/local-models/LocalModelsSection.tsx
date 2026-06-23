@@ -1,30 +1,3 @@
-/**
- * Local Models section — sits on the Agents page after `<ModelsSection>`.
- *
- * Two pluggable backends today: Ollama (cross-platform default) and mlx-lm
- * (Apple Silicon native peak performance). UX shape mirrors the Extensions →
- * CLI page on purpose:
- *
- *   1. Tile grid: Ollama + mlx-lm, each opens a modal.
- *   2. Modal step A — Status: probe + version + brew/pipx install commands
- *      for the current OS, plus the "start the server" command.
- *   3. Modal step B — Models: list installed; for the recommended catalog, show
- *      the user-runnable shell command (`ollama pull <tag>` / `mlx_lm.server
- *      --model <repo>`) with a copy button. We deliberately do NOT stream
- *      downloads from the dashboard — they take minutes-to-hours and the user
- *      is better served running them in a real terminal where Ctrl-C works.
- *
- * There is no "connect to agents" step: a detected backend is auto-attached
- * server-side and shows up as a Provider in the Model Providers list above.
- * When that happens during a probe, we call `onConnected` so the upper layers
- * refetch and the agent dropdowns see the new provider without a page reload.
- *
- * Hardware fit: host total RAM from /api/host vs each entry's `minRamGb`.
- *   totalGb ≥ minRamGb + 4   → ok
- *   totalGb ≥ minRamGb        → tight
- *   otherwise                 → no-go
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
 import { useStore } from '../../store';
@@ -40,10 +13,6 @@ import { ActionBar } from '../shared';
 
 const RAM_HEADROOM_GB = 4;
 
-// ---------------------------------------------------------------------------
-// i18n
-// ---------------------------------------------------------------------------
-
 interface Copy {
   sectionLabel: string;
   hostLabel: string;
@@ -52,7 +21,6 @@ interface Copy {
   refreshing: string;
   loadFailed: string;
 
-  // Tile
   tileStatusDetected: string;
   tileStatusNotDetected: string;
   tileStatusUnsupported: string;
@@ -189,10 +157,6 @@ function getCopy(locale: Locale): Copy {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 type Fit = 'ok' | 'tight' | 'no-go';
 
 function fitFor(totalGb: number | null, minRamGb: number): Fit {
@@ -235,10 +199,6 @@ function entryInstalledOn(entry: LocalModelCatalogEntry, backend: LocalBackendSt
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Shared probe hook
-// ---------------------------------------------------------------------------
-
 export interface LocalBackendsSnapshot {
   backends: LocalBackendStatus[];
   catalog: LocalModelCatalogEntry[];
@@ -278,10 +238,6 @@ export function useLocalBackends(): LocalBackendsSnapshot {
   return { backends, catalog, currentOs, loading, error, refresh };
 }
 
-// ---------------------------------------------------------------------------
-// Tile
-// ---------------------------------------------------------------------------
-
 function BackendTile({
   backend,
   copy,
@@ -295,8 +251,6 @@ function BackendTile({
   const unsupported = !backend.supportedOnThisOs;
   const blurb = backend.id === 'ollama' ? copy.tileBlurbOllama : copy.tileBlurbMlx;
 
-  // Single status: detected backends are auto-attached, so the only signal we
-  // need is "running with N models" vs "not detected".
   const badge = unsupported
     ? <Badge variant="muted">{copy.tileStatusUnsupported}</Badge>
     : backend.detected
@@ -324,10 +278,6 @@ function BackendTile({
     </button>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Shared step header / chips / command row
-// ---------------------------------------------------------------------------
 
 function StepHeader({ index, label, done }: { index: number; label: string; done?: boolean }) {
   return (
@@ -386,10 +336,6 @@ function CommandRow({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Catalog row
-// ---------------------------------------------------------------------------
-
 function CatalogRow({
   entry,
   backend,
@@ -444,10 +390,6 @@ function CatalogRow({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Modal — status + models. No connect step: detected backends auto-attach.
-// ---------------------------------------------------------------------------
 
 function LocalBackendModal({
   open,
@@ -505,7 +447,6 @@ function LocalBackendModal({
         onClose={onClose}
       />
       <div className="space-y-5">
-        {/* Step 1 — Backend status */}
         <section className="space-y-2">
           <StepHeader index={1} label={copy.stepStatus} done={backend.detected} />
           <div className="space-y-2 rounded-md border border-edge bg-panel-alt px-3.5 py-3">
@@ -554,16 +495,12 @@ function LocalBackendModal({
               </div>
             </div>
 
-            {/* Auto-attached confirmation when the backend is running — gives a
-                clear answer to "did pikiloom see it?" without making the user
-                click anything. */}
             {!unsupported && backend.detected && backend.existingProviderId && (
               <div className="rounded-md border border-emerald-700/20 bg-emerald-700/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-emerald-700 dark:text-emerald-300">
                 {copy.statusAutoAttachedHint(backend.label)}
               </div>
             )}
 
-            {/* Install + run commands — CLI-style. Hidden once detected. */}
             {!unsupported && !backend.detected && (
               <div className="space-y-2 pt-1">
                 {installCommands.length > 0 && (
@@ -602,7 +539,6 @@ function LocalBackendModal({
           </div>
         </section>
 
-        {/* Step 2 — Models */}
         <section className="space-y-2">
           <StepHeader index={2} label={copy.stepModels} done={backend.detected && backend.models.length > 0} />
 
@@ -659,20 +595,11 @@ function LocalBackendModal({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Public section
-// ---------------------------------------------------------------------------
-
 export function LocalModelsSection({
   snapshot,
   onConnected,
 }: {
   snapshot?: LocalBackendsSnapshot;
-  /**
-   * Called whenever a probe auto-attaches a new local backend as a Provider,
-   * so the host page can refetch upper-layer state (Model Providers, agent
-   * dropdowns) without the user reloading the page.
-   */
   onConnected?: () => void | Promise<void>;
 }) {
   const locale = useStore(s => s.locale);
@@ -690,8 +617,6 @@ export function LocalModelsSection({
     [backends, openId],
   );
 
-  // Auto-attach happens server-side on every probe. When the probe response
-  // reports new provider ids, ping upper layers exactly once per event.
   const lastAttachKeyRef = useRef<string>('');
   useEffect(() => {
     const ids = backends.map(b => b.existingProviderId || '').join(',');
@@ -718,7 +643,6 @@ export function LocalModelsSection({
     ? `${host.cpuModel || host.arch} · ${formatGb(host.totalMem)} RAM`
     : copy.hostUnknown;
 
-  // Two-tile placeholder while the first probe runs.
   const tiles: LocalBackendStatus[] = backends.length > 0
     ? backends
     : [

@@ -1,8 +1,3 @@
-/**
- * Persistence for Provider / Profile / activeProfileByAgent.
- * Reads and writes the `models` section of ~/.pikiloom/setting.json.
- */
-
 import { randomUUID } from 'node:crypto';
 import { loadUserConfig, saveUserConfig } from '../core/config/user-config.js';
 import { persistSecret, forgetSecret, type CredentialRef } from '../core/secrets/index.js';
@@ -10,10 +5,6 @@ import type {
   ProviderConfig, ModelProfileConfig, ModelLayerConfig,
   ProviderKind, ProviderValidationStatus,
 } from './types.js';
-
-// ---------------------------------------------------------------------------
-// Read helpers
-// ---------------------------------------------------------------------------
 
 function getModelLayer(): ModelLayerConfig {
   const config = loadUserConfig();
@@ -25,17 +16,11 @@ function writeModelLayer(layer: ModelLayerConfig): void {
   saveUserConfig({ ...config, models: layer });
 }
 
-// ---------------------------------------------------------------------------
-// Provider CRUD
-// ---------------------------------------------------------------------------
-
 export interface AddProviderInput {
   kind: ProviderKind;
   name: string;
   baseURL: string;
-  /** New plaintext key (will be persisted via secrets store) — exclusive with credentialRef. */
   apiKey?: string;
-  /** Pre-built credential reference (e.g. user picked env source) — exclusive with apiKey. */
   credentialRef?: CredentialRef;
   extraHeaders?: Record<string, string>;
 }
@@ -96,10 +81,8 @@ export async function updateProvider(id: string, patch: UpdateProviderInput): Pr
   if (patch.credentialRef) credential = patch.credentialRef;
   else if (patch.apiKey !== undefined) {
     if (existing.credential.source === 'keychain') {
-      // overwrite same keychain slot
       credential = await persistSecret(existing.credential.account, patch.apiKey);
     } else {
-      // upgrade from inline/env/command to keychain
       credential = await persistSecret(`provider/${id}`, patch.apiKey);
     }
   }
@@ -126,12 +109,10 @@ export async function removeProvider(id: string): Promise<boolean> {
   const existing = providers[id];
   if (!existing) return false;
   delete providers[id];
-  // also drop any profiles bound to this provider
   const profiles = { ...(layer.profiles || {}) };
   for (const [pid, prof] of Object.entries(profiles)) {
     if (prof.providerId === id) delete profiles[pid];
   }
-  // and any active bindings
   const bindings = { ...(layer.activeProfileByAgent || {}) };
   for (const agentId of Object.keys(bindings)) {
     const profileId = bindings[agentId];
@@ -150,10 +131,6 @@ export function setProviderValidation(id: string, status: ProviderValidationStat
   providers[id] = { ...existing, validation: status, updatedAt: new Date().toISOString() };
   writeModelLayer({ ...layer, providers });
 }
-
-// ---------------------------------------------------------------------------
-// Profile CRUD
-// ---------------------------------------------------------------------------
 
 export interface AddProfileInput {
   name?: string;
@@ -175,9 +152,6 @@ export function getProfile(id: string): ModelProfileConfig | null {
 }
 
 function defaultProfileName(_providerName: string, modelId: string, _effort?: string | null): string {
-  // Keep the auto-generated label short: the brand icon already carries the
-  // provider, and effort lives in its own pill on the card. Just the model id
-  // gives the cleanest tile + IM list, with the user free to override.
   return modelId;
 }
 
@@ -237,10 +211,6 @@ export function removeProfile(id: string): boolean {
   writeModelLayer({ ...layer, profiles, activeProfileByAgent: bindings });
   return true;
 }
-
-// ---------------------------------------------------------------------------
-// Active binding
-// ---------------------------------------------------------------------------
 
 export function getActiveProfileId(agentId: string): string | null {
   const layer = getModelLayer();

@@ -1,8 +1,3 @@
-/**
- * Unit coverage for the shared git-status helper (#28). Both the IM /status
- * command and the Dashboard workspace view render from this single source, so
- * the porcelain-v2 parser and the friendly one-line formatter are pinned here.
- */
 import { describe, expect, it } from 'vitest';
 import { parseGitStatusV2, formatGitStatusLine } from '../src/core/git.ts';
 
@@ -38,8 +33,8 @@ describe('parseGitStatusV2', () => {
     const g = parseGitStatusV2(out);
     expect(g.ahead).toBe(2);
     expect(g.behind).toBe(1);
-    expect(g.staged).toBe(2); // M. + MM
-    expect(g.unstaged).toBe(3); // .M + MM + conflict (u)
+    expect(g.staged).toBe(2);
+    expect(g.unstaged).toBe(3);
     expect(g.untracked).toBe(1);
     expect(g.changed).toBe(6);
   });

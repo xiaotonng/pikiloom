@@ -1,17 +1,3 @@
-/**
- * Extensions tab — global MCP servers, Skills, and built-in automation.
- *
- * Two-section layout:
- *   1. Connected — installed items in "ready" / "needs_auth" / "disabled" state,
- *      presented as polished brand-coloured cards.
- *   2. Available — remaining recommended items grouped by category, cards use
- *      tinted brand backgrounds with stagger-in animation on first paint.
- *
- * Scope filtering keeps global-only integrations (GitHub, Atlassian, Notion…)
- * out of the workspace modal, and workspace-specific tools (Filesystem, SQLite,
- * Postgres) out of the global tab. Registry ↔ UI sync is via `recommendedScope`.
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { api } from '../../api';
@@ -31,10 +17,6 @@ import { BrandIcon } from '../../components/BrandIcon';
 import { Badge, Button, Input, Modal, ModalHeader, Spinner, SectionLabel, TabsList, TabsTrigger } from '../../components/ui';
 import { SettingRowAction, SettingRowCard, SettingRowLead } from '../shared';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function L(locale: string, zh: string, en: string): string {
   return locale === 'zh-CN' ? zh : en;
 }
@@ -45,7 +27,6 @@ function authKindLabel(locale: string, auth: McpAuthSpec): string {
   return L(locale, '无需配置', 'No auth');
 }
 
-/** Signature colour for a brand, used for gradient tints and avatar fills. */
 const BRAND_PALETTE: Record<string, { hex: string; letter?: string }> = {
   github:           { hex: '#24292f', letter: 'GH' },
   atlassian:        { hex: '#0052cc', letter: 'A' },
@@ -83,7 +64,6 @@ function brandInfo(slug?: string, fallbackName?: string) {
   return { hex: brand.hex, letter };
 }
 
-/** Hex → rgba with given alpha. */
 function withAlpha(hex: string, alpha: number): string {
   const m = hex.replace('#', '');
   const full = m.length === 3
@@ -94,10 +74,6 @@ function withAlpha(hex: string, alpha: number): string {
   const b = parseInt(full.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
-
-// ---------------------------------------------------------------------------
-// Cached catalog hook — SWR via localStorage
-// ---------------------------------------------------------------------------
 
 function useCachedResource<T>(
   key: string,
@@ -122,7 +98,7 @@ function useCachedResource<T>(
       const next = await fetcher();
       if (!mountedRef.current) return;
       setData(next);
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* quota */ }
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch {  }
     } finally {
       if (mountedRef.current) setLoading(false);
     }
@@ -133,10 +109,6 @@ function useCachedResource<T>(
 
   return { data, loading, refresh };
 }
-
-// ---------------------------------------------------------------------------
-// Small UI atoms
-// ---------------------------------------------------------------------------
 
 const ExternalLinkIcon = () => (
   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -180,29 +152,12 @@ const UpdateIcon = ({ size = 12 }: { size?: number }) => (
   </svg>
 );
 
-/**
- * Slugs we use for the built-in brands that ship as local SVGs (Claude, Codex,
- * Telegram icons, etc.). Anything else is resolved against the SimpleIcons CDN.
- */
 const LOCAL_BRAND_SLUGS = new Set([
   'claude', 'codex', 'gemini', 'telegram', 'feishu', 'weixin',
   'playwright', 'vscode', 'cursor', 'windsurf', 'finder',
 ]);
 
-/**
- * Map our internal iconSlug values to an Iconify icon id. Iconify aggregates
- * multiple icon sets — we use `logos:*` (multi-colored brand logos) as the
- * primary source, falling back to `icon-park:*` for brands only ByteDance-era
- * sets cover (Lark), and `simple-icons:*` when logos:* doesn't exist.
- *
- * Anything not in `ICONIFY_ICONS` falls through to the letter avatar — this
- * avoids console 404s and keeps generic utility items (no brand identity) from
- * pretending to have a real logo.
- */
 const ICONIFY_ICONS: Record<string, string> = {
-  // Prefer `-icon` (mark-only) variants over wordmarks so the logo renders
-  // legibly inside a 32–36px avatar. Fall back to wordmark only if no
-  // mark-only icon exists in the iconify catalogs.
   github:                    'logos:github-icon',
   atlassian:                 'logos:atlassian',
   notion:                    'logos:notion-icon',
@@ -215,9 +170,9 @@ const ICONIFY_ICONS: Record<string, string> = {
   slack:                     'logos:slack-icon',
   lark:                      'icon-park:lark',
   feishu:                    'icon-park:lark',
-  stripe:                    'logos:stripe',          // no -icon variant; wordmark only
+  stripe:                    'logos:stripe',
   perplexity:                'logos:perplexity-icon',
-  brave:                     'logos:brave',           // no -icon variant; lion mark
+  brave:                     'logos:brave',
   'brave-search':            'logos:brave',
   huggingface:               'logos:hugging-face-icon',
   postgres:                  'logos:postgresql',
@@ -235,11 +190,6 @@ const ICONIFY_ICONS: Record<string, string> = {
   amazonwebservices:         'logos:aws',
 };
 
-/**
- * Logos that are wordmarks (text-heavy) rather than icon-only marks. These need
- * extra rendered size so the text inside the avatar circle stays legible.
- * Everything else uses the standard square mark ratio.
- */
 const WORDMARK_ICONS = new Set(['stripe']);
 
 function resolveBrandLogoUrl(iconSlug?: string, iconUrl?: string): string | undefined {
@@ -251,15 +201,6 @@ function resolveBrandLogoUrl(iconSlug?: string, iconUrl?: string): string | unde
   return `https://api.iconify.design/${iconId}.svg`;
 }
 
-/**
- * Two render modes:
- *   - Real-logo mode (iconify `logos:*`): neutral white/panel avatar with a
- *     subtle brand-tint ring and soft shadow. The multi-color SVG renders in
- *     its authentic palette — no filter, no invert.
- *   - Letter-fallback mode (no logo available): brand-color gradient square
- *     with white initials. Keeps the visual hierarchy when a brand has no
- *     stable CDN logo (Gamma, generic utilities, custom MCPs).
- */
 function BrandAvatar({
   iconSlug,
   iconUrl,
@@ -273,8 +214,6 @@ function BrandAvatar({
   const useLocalBrand = iconSlug && LOCAL_BRAND_SLUGS.has(iconSlug);
   const useRemote = !!remoteUrl && !imgFailed;
   const useRealLogo = useLocalBrand || useRemote;
-  // Mark-only logos render at ~76% of the avatar; wordmarks need ~92% so the
-  // text inside the chip is still readable at 32–36px.
   const isWordmark = !!iconSlug && WORDMARK_ICONS.has(iconSlug);
   const logoSize = Math.round(size * (isWordmark ? 0.92 : 0.76));
 
@@ -339,10 +278,6 @@ function BrandAvatar({
   );
 }
 
-// ---------------------------------------------------------------------------
-// State pill
-// ---------------------------------------------------------------------------
-
 function StatePill({ state, locale }: { state: McpCatalogState; locale: string }) {
   if (state === 'ready') {
     return (
@@ -377,10 +312,6 @@ function StatePill({ state, locale }: { state: McpCatalogState; locale: string }
   }
   return null;
 }
-
-// ---------------------------------------------------------------------------
-// Credentials Dialog
-// ---------------------------------------------------------------------------
 
 function CredentialsDialog({
   open, onClose, locale, item, initial, onSubmit,
@@ -452,10 +383,6 @@ function CredentialsDialog({
     </Modal>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Custom MCP Dialog
-// ---------------------------------------------------------------------------
 
 function CustomMcpDialog({
   open, onClose, locale, scope, workdir, onAdded,
@@ -588,10 +515,6 @@ function CustomMcpDialog({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Custom Skill Dialog
-// ---------------------------------------------------------------------------
-
 function CustomSkillDialog({
   open, onClose, locale, scope, workdir, onInstalled,
 }: {
@@ -651,10 +574,6 @@ function CustomSkillDialog({
   );
 }
 
-// ---------------------------------------------------------------------------
-// OAuth popup helper
-// ---------------------------------------------------------------------------
-
 function openOAuthPopup(authUrl: string, expectedState: string): Promise<boolean> {
   return new Promise((resolve) => {
     const popup = window.open(authUrl, 'pikiloom_mcp_oauth', 'width=640,height=780,noopener=no');
@@ -684,10 +603,6 @@ function openOAuthPopup(authUrl: string, expectedState: string): Promise<boolean
   });
 }
 
-// ---------------------------------------------------------------------------
-// Connected Card — rich visual for installed services
-// ---------------------------------------------------------------------------
-
 function ConnectedCard({
   item, locale, busy, index,
   onPrimary, onRemove, onReauth, onReconfigure,
@@ -712,9 +627,6 @@ function ConnectedCard({
     }
   })();
 
-  // Neutral card surface — color identity lives in the brand avatar, not in
-  // the card background. Matches Linear's March 2026 "remove colored team
-  // icon backgrounds" rule.
   const cardStyle: CSSProperties = {
     animationDelay: `${Math.min(index, 8) * 40}ms`,
   };
@@ -783,10 +695,6 @@ function ConnectedCard({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Available Card — for discoverable recommended services
-// ---------------------------------------------------------------------------
-
 function AvailableCard({
   item, locale, busy, index, onPrimary,
 }: {
@@ -796,9 +704,6 @@ function AvailableCard({
   index: number;
   onPrimary: () => void;
 }) {
-  // Two-state button: needs setup vs zero-config. The OAuth/API-Key/none
-  // distinction shows up in the auth-kind label at the card's bottom-left;
-  // here we only signal "extra step" vs "one click".
   const primaryLabel = item.auth.type === 'none'
     ? L(locale, '一键启用', 'One-click enable')
     : L(locale, '授权并启用', 'Authorize & enable');
@@ -843,15 +748,6 @@ function AvailableCard({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Skill cards — CLI-style two-tier (installed vs available)
-//
-// A SkillCatalogItem represents a *collection* (one GitHub repo). The card is
-// a summary; the detail modal lists the repo's individual sub-skills with per-
-// skill install/remove. Mirrors CliConnectedCard / CliAvailableCard structure
-// so heights stay consistent across both tabs.
-// ---------------------------------------------------------------------------
 
 function skillCountSummary(item: SkillCatalogItem, locale: string): string {
   const installed = item.installedNames.length;
@@ -1000,13 +896,6 @@ function SkillAvailableCard({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Local skill card — an installed skill that no catalog repo claims
-// (hand-authored under ~/.pikiloom/skills or installed from an unlisted
-// source). Removal is destructive (`rm -rf` of the skill dir, no reinstall
-// path for hand-written ones), so the remove button is a two-step arm/confirm.
-// ---------------------------------------------------------------------------
-
 function LocalSkillCard({
   skill, locale, animationDelay, busy, onRemove,
 }: {
@@ -1060,14 +949,6 @@ function LocalSkillCard({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Skill Detail Modal — the per-collection management surface
-//
-// Lazy-loads the repo's full skill list when the modal opens. Cross-references
-// against locally installed skills (by name, case-insensitive) to render the
-// per-skill install/remove buttons.
-// ---------------------------------------------------------------------------
 
 function SkillDetailModal({
   item, open, onClose, onChanged, locale, scope, workdir, installedSkills,
@@ -1432,10 +1313,6 @@ function formatRelativeTime(iso: string, locale: string): string {
   return locale === 'zh-CN' ? `${years} 年前` : `${years}y ago`;
 }
 
-// ---------------------------------------------------------------------------
-// Category grouping
-// ---------------------------------------------------------------------------
-
 const CATEGORY_META: Record<string, { zh: string; en: string; order: number }> = {
   dev:           { zh: '开发工具',     en: 'Development',     order: 0 },
   productivity:  { zh: '生产力',       en: 'Productivity',    order: 1 },
@@ -1457,10 +1334,6 @@ function groupByCategory(items: McpCatalogItem[]): Array<{ key: string; items: M
     .sort((a, b) => (CATEGORY_META[a[0]]?.order ?? 99) - (CATEGORY_META[b[0]]?.order ?? 99))
     .map(([key, items]) => ({ key, items }));
 }
-
-// ---------------------------------------------------------------------------
-// MCP Catalog Section — connected + available two-part layout
-// ---------------------------------------------------------------------------
 
 function McpCatalogSection({
   scope, workdir, locale, onOpenBrowserSetup,
@@ -1485,8 +1358,6 @@ function McpCatalogSection({
 
   const items = data || [];
   const scopedItems = useMemo(() => {
-    // When showing workspace, also show items already installed in workspace; when global,
-    // restrict to items that are either not installed or installed globally.
     return items.filter(i => !i.installed || i.scope === scope || !i.scope);
   }, [items, scope]);
 
@@ -1505,9 +1376,6 @@ function McpCatalogSection({
     () => filtered.filter(i => i.isBuiltin),
     [filtered],
   );
-  // "在用" = currently active (state ready/unhealthy). "可添加" = everything
-  // else: pure recommended, plus installed-but-disabled and needs-auth items
-  // (those keep their saved creds so re-enable / re-auth is one click).
   const activeItems = useMemo(
     () => filtered.filter(i => !i.isBuiltin && (i.state === 'ready' || i.state === 'unhealthy')),
     [filtered],
@@ -1589,14 +1457,11 @@ function McpCatalogSection({
   }, [runToggle, runOAuth]);
 
   const handleAvailablePrimary = useCallback((item: McpCatalogItem) => {
-    // Already-installed item that's just paused — flip the toggle, reuse creds.
     if (item.state === 'disabled') { void runToggle(item, true); return; }
-    // Already-installed but missing creds/token — go straight to auth flow.
     if (item.state === 'needs_auth') {
       if (item.auth.type === 'mcp-oauth') { void runOAuth(item); return; }
       if (item.auth.type === 'credentials') { setCredsTarget(item); return; }
     }
-    // Pure recommended (not installed yet).
     if (item.auth.type === 'mcp-oauth') { void runOAuth(item); return; }
     if (item.auth.type === 'credentials') { setCredsTarget(item); return; }
     void runInstall(item);
@@ -1636,7 +1501,6 @@ function McpCatalogSection({
         <div className="flex items-center justify-center py-10"><Spinner /></div>
       ) : (
         <div className="space-y-5">
-          {/* Built-in (pikiloom-managed) */}
           {builtinItems.length > 0 && (
             <div>
               <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-fg-5">
@@ -1670,7 +1534,6 @@ function McpCatalogSection({
             </div>
           )}
 
-          {/* In use */}
           {activeItems.length > 0 && (
             <div>
               <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-fg-5">
@@ -1695,7 +1558,6 @@ function McpCatalogSection({
             </div>
           )}
 
-          {/* Available — recommended + previously-configured (disabled / needs_auth) */}
           {availableGroups.length > 0 && (
             <div>
               <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-fg-5">
@@ -1789,10 +1651,6 @@ function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Skills Catalog Section
-// ---------------------------------------------------------------------------
-
 function SkillsCatalogSection({
   scope, workdir, locale,
 }: {
@@ -1823,14 +1681,9 @@ function SkillsCatalogSection({
     return installedAll.filter(s => s.scope === targetScope);
   }, [installedAll, scope]);
 
-  // Two-tier split — repos with at least one installed sub-skill float to the
-  // top, mirroring the CLI tab's "signed in / available" layout.
   const connected = useMemo(() => items.filter(i => i.installedNames.length > 0), [items]);
   const available = useMemo(() => items.filter(i => i.installedNames.length === 0), [items]);
 
-  // Installed skills not claimed by any catalog repo — hand-authored or
-  // installed from unlisted sources. They drive the header count, so they
-  // must be visible and removable here too, not just counted.
   const localSkills = useMemo(() => {
     const claimed = new Set<string>();
     for (const it of items) for (const n of it.installedNames) claimed.add(n.toLowerCase());
@@ -1989,10 +1842,6 @@ function SkillsCatalogSection({
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  CLI tools — detection, install hints, and streaming sign-in
-// ═══════════════════════════════════════════════════════════════════════════
-
 const CLI_CATEGORY_META: Record<string, { zh: string; en: string; order: number }> = {
   dev:      { zh: '研发工具', en: 'Developer', order: 1 },
   cloud:    { zh: '云与部署', en: 'Cloud',     order: 2 },
@@ -2036,7 +1885,6 @@ function cliStatePill({
   );
 }
 
-/** A read-only terminal pane. Takes a stream of chunks and prints them. */
 function StreamingTerminal({
   chunks,
   running,
@@ -2068,12 +1916,6 @@ function StreamingTerminal({
   );
 }
 
-/**
- * Auto-install panel — spawns `npm install -g <pkg>` server-side and streams
- * stdout/stderr over the same SSE channel the oauth-web flow uses. Surfaces a
- * single "Install" button up front; runs the child, refreshes the catalog when
- * it exits successfully, and stays in place with a retry on failure.
- */
 function CliInstallPanel({
   cli,
   locale,
@@ -2091,7 +1933,7 @@ function CliInstallPanel({
   const sourceRef = useRef<EventSource | null>(null);
 
   const cleanup = useCallback(() => {
-    try { sourceRef.current?.close(); } catch { /* ignore */ }
+    try { sourceRef.current?.close(); } catch {  }
     sourceRef.current = null;
   }, []);
   useEffect(() => cleanup, [cleanup]);
@@ -2120,7 +1962,7 @@ function CliInstallPanel({
             cleanup();
             if (ev.ok) onInstalled();
           }
-        } catch { /* malformed */ }
+        } catch {  }
       };
       es.addEventListener('close', () => {
         setRunning(false);
@@ -2138,7 +1980,7 @@ function CliInstallPanel({
 
   const cancelInstall = useCallback(async () => {
     if (sessionId) {
-      try { await api.cancelCliAuth(sessionId); } catch { /* ignore */ }
+      try { await api.cancelCliAuth(sessionId); } catch {  }
     }
     cleanup();
     setRunning(false);
@@ -2189,14 +2031,6 @@ function CliInstallPanel({
   );
 }
 
-/**
- * Manual sign-in panel — shown when a CLI declares `manualLoginCommands`.
- *
- * Some CLIs (`lark-cli` today) emit interactive output during login — QR codes,
- * full-screen prompts — that render badly in a cramped streamed-output box. For
- * those we show the official command(s) instead and let the user run them in
- * their own terminal. The "Re-check status" button re-detects auth state.
- */
 function CliManualSignInPanel({
   cliId,
   locale,
@@ -2216,9 +2050,6 @@ function CliManualSignInPanel({
   const [checkMsg, setCheckMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Guard against double-counting "all steps done" — recheck must observe a
-  // fresh `ready` from the backend before reporting sign-in success. Multi-step
-  // CLIs (Lark) only flip status to ready after the *final* step.
   const recheck = useCallback(async () => {
     setChecking(true);
     setCheckMsg(null);
@@ -2287,12 +2118,6 @@ function CliManualSignInPanel({
   );
 }
 
-/**
- * Interactive sign-in panel.
- *   - For oauth-web: starts the auth session, streams output via SSE, polls until
- *     the CLI reports ready, then closes.
- *   - For token: renders the credential form, posts values, reports ready.
- */
 function CliSignInPanel({
   cli,
   locale,
@@ -2312,7 +2137,7 @@ function CliSignInPanel({
   const sourceRef = useRef<EventSource | null>(null);
 
   const cleanup = useCallback(() => {
-    try { sourceRef.current?.close(); } catch { /* ignore */ }
+    try { sourceRef.current?.close(); } catch {  }
     sourceRef.current = null;
   }, []);
 
@@ -2345,7 +2170,7 @@ function CliSignInPanel({
             cleanup();
             if (ev.ok) onSignedIn();
           }
-        } catch { /* malformed */ }
+        } catch {  }
       };
       es.addEventListener('close', () => {
         setRunning(false);
@@ -2363,14 +2188,13 @@ function CliSignInPanel({
 
   const cancelOAuth = useCallback(async () => {
     if (sessionId) {
-      try { await api.cancelCliAuth(sessionId); } catch { /* ignore */ }
+      try { await api.cancelCliAuth(sessionId); } catch {  }
     }
     cleanup();
     setRunning(false);
     onCancel();
   }, [sessionId, cleanup, onCancel]);
 
-  // Token flow
   const [tokenValues, setTokenValues] = useState<Record<string, string>>({});
   const [applying, setApplying] = useState(false);
   const applyToken = useCallback(async () => {
@@ -2479,7 +2303,6 @@ function CliSignInPanel({
   return null;
 }
 
-/** Show a neat, copyable block of install commands. */
 function InstallCommandBlock({ commands, locale }: { commands: { cmd: string; label?: string }[]; locale: string }) {
   return (
     <div className="space-y-2">
@@ -2525,7 +2348,6 @@ function CliDetailModal({
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutErr, setLogoutErr] = useState<string | null>(null);
 
-  // Close flow when sign-in state changes away from the dialog.
   useEffect(() => {
     if (!open) { setSigningIn(false); setLogoutErr(null); }
   }, [open]);
@@ -2770,7 +2592,7 @@ function CliCatalogSection({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const items = useMemo(() => {
     const all = data || [];
-    if (scope === 'workspace') return all; // CLI tools are machine-wide; we still show the list
+    if (scope === 'workspace') return all;
     return all;
   }, [data, scope]);
   const selected = selectedId ? items.find(i => i.id === selectedId) || null : null;
@@ -2876,10 +2698,6 @@ function CliCatalogSection({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Public: tab (global scope) and modal body (workspace scope)
-// ---------------------------------------------------------------------------
-
 type ExtensionTab = 'mcp' | 'cli' | 'skill';
 
 function ExtensionTabNav({
@@ -2973,7 +2791,7 @@ export function ExtensionsTab({
   });
   const switchTab = useCallback((next: ExtensionTab) => {
     setTab(next);
-    try { localStorage.setItem('pikiloom:extensions:tab', next); } catch { /* quota */ }
+    try { localStorage.setItem('pikiloom:extensions:tab', next); } catch {  }
   }, []);
 
   return (
@@ -3003,9 +2821,6 @@ export function ExtensionsTab({
   );
 }
 
-/**
- * Workspace-scoped catalog body — rendered inside WorkspaceExtensionsModal.
- */
 export function WorkspaceExtensionsBody({ workdir }: { workdir: string }) {
   const locale = useStore(s => s.locale);
   const [tab, setTab] = useState<ExtensionTab>(() => {
@@ -3016,7 +2831,7 @@ export function WorkspaceExtensionsBody({ workdir }: { workdir: string }) {
   });
   const switchTab = useCallback((next: ExtensionTab) => {
     setTab(next);
-    try { localStorage.setItem('pikiloom:extensions-ws:tab', next); } catch { /* quota */ }
+    try { localStorage.setItem('pikiloom:extensions-ws:tab', next); } catch {  }
   }, []);
   return (
     <div className="space-y-6">

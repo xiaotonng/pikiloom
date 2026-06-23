@@ -1,7 +1,3 @@
-/**
- * Shared selection UI models and action executor for interactive commands.
- */
-
 import type { Bot, ChatId, Agent, SessionRuntime } from './bot.js';
 import { normalizeAgent } from './bot.js';
 import { getDriverCapabilities } from '../agent/driver.js';
@@ -23,13 +19,6 @@ export type CommandAction =
   | { kind: 'agent.switch'; agent: Agent }
   | { kind: 'model.switch'; modelId: string }
   | { kind: 'effort.set'; effort: string }
-  /**
-   * `modelId` always carries the model identifier the agent CLI / provider
-   * expects. `profileId` distinguishes BYOK Profile rows from native rows:
-   *   - `null` (or absent) → user picked a native model
-   *   - `'<uuid>'`         → user picked that Profile (and `modelId` is the
-   *     Profile's modelId, kept for display consistency)
-   */
   | { kind: 'models.select.model'; modelId: string; profileId?: string | null }
   | { kind: 'models.select.effort'; effort: string }
   | { kind: 'models.confirm' }
@@ -105,8 +94,6 @@ export function encodeCommandAction(action: CommandAction): string {
     case 'effort.set':
       return `eff:${action.effort}`;
     case 'models.select.model':
-      // Encode native vs profile selection on the wire so decode is unambiguous.
-      // `md:n:<modelId>` = native; `md:p:<profileId>:<modelId>` = BYOK profile.
       return action.profileId
         ? `md:p:${action.profileId}:${action.modelId}`
         : `md:n:${action.modelId}`;
@@ -160,8 +147,6 @@ export function decodeCommandAction(data: string): CommandAction | null {
       return { kind: 'models.select.model', modelId, profileId: null };
     }
     if (rest.startsWith('p:')) {
-      // p:<profileId>:<modelId> — profileId is a uuid (no colons), so split on
-      // the first remaining colon yields a clean (profileId, modelId) pair.
       const sep = rest.indexOf(':', 2);
       if (sep < 0) return null;
       const profileId = rest.slice(2, sep);
@@ -169,8 +154,6 @@ export function decodeCommandAction(data: string): CommandAction | null {
       if (!profileId || !modelId) return null;
       return { kind: 'models.select.model', modelId, profileId };
     }
-    // Legacy callback payloads (pre-union) carried `md:<modelId>` directly.
-    // Treat them as native selections so old buttons in the wild still work.
     if (!rest) return null;
     return { kind: 'models.select.model', modelId: rest, profileId: null };
   }
@@ -205,9 +188,6 @@ export async function buildSessionsCommandView(
   pageSize = 5,
 ): Promise<CommandSelectionView> {
   const data = await getSessionsPageData(bot, chatId, page, pageSize);
-  // Multi-row: one button per session on its own line, prefixed with the
-  // agent badge so a mixed workspace list reads cleanly. Avoid cramming
-  // multiple buttons onto one row (some IM clients truncate).
   const sessionButtons: CommandActionButton[][] = data.sessions.map(session => [{
     label: `[${session.agent}] ${session.title} · ${session.time}`,
     action: { kind: 'session.switch', sessionId: session.key } as CommandAction,
@@ -249,8 +229,6 @@ export function buildAgentsCommandView(bot: Bot, chatId: ChatId): CommandSelecti
   const data = getAgentsListData(bot, chatId);
   const installed = data.agents.filter(a => a.installed);
 
-  // Buttons stay short — friendly label + optional ✓ marker — so they don't
-  // truncate on narrow IM clients.
   const actions = installed.map(agent => ({
     label: agent.label,
     action: { kind: 'agent.switch', agent: agent.agent as Agent } as CommandAction,
@@ -258,8 +236,6 @@ export function buildAgentsCommandView(bot: Bot, chatId: ChatId): CommandSelecti
     primary: agent.isCurrent,
   }));
 
-  // Details (version + bound provider) live in the items list above the
-  // buttons, where the renderer can show them in full without truncation.
   const items = installed.map(agent => {
     const main = agent.versionShort
       ? `${agent.label} · v${agent.versionShort}`
@@ -288,13 +264,8 @@ export function buildAgentsCommandView(bot: Bot, chatId: ChatId): CommandSelecti
   };
 }
 
-// ---------------------------------------------------------------------------
-// Models draft state — "select then confirm" pattern
-// ---------------------------------------------------------------------------
-
 interface ModelsDraft {
   modelId: string;
-  /** null = native selection; uuid = BYOK Profile selection. */
   profileId: string | null;
   effort: string | null;
 }
@@ -314,18 +285,12 @@ async function initModelsDraft(bot: Bot, chatId: ChatId): Promise<ModelsDraft> {
   return draft;
 }
 
-/**
- * Section headings for the unified picker. The trailing em-dash padding gives
- * the row a "label" look in Telegram/Feishu — clicking it falls through to a
- * harmless confirm which is a no-op when nothing has changed.
- */
 const MODEL_GROUP_LABELS: Record<'native' | 'cloud' | 'local', string> = {
   native: '— Native —',
   cloud: '— Cloud Profiles —',
   local: '— Local Profiles —',
 };
 
-/** Match a picker row against the live draft so the "current" pip is unambiguous. */
 function modelRowMatchesDraft(
   agent: Agent,
   row: { id: string; profileId?: string | null; group?: 'native' | 'cloud' | 'local' },
@@ -350,8 +315,6 @@ export async function buildModelsCommandView(
   };
   modelsDrafts.set(String(chatId), d);
 
-  // Bucket rows by group while preserving the order resolveAgentModels gave us
-  // (native → cloud → local). We render each non-empty group with a header.
   const groups: Record<'native' | 'cloud' | 'local', typeof data.models> = {
     native: [],
     cloud: [],
@@ -366,9 +329,6 @@ export async function buildModelsCommandView(
   for (const group of ['native', 'cloud', 'local'] as const) {
     const rawItems = groups[group];
     if (!rawItems.length) continue;
-    // Promote the currently-selected row to the top of its group so the user
-    // sees their active pick first without having to scroll. This matches the
-    // pre-union picker's behaviour, just scoped per-group instead of globally.
     const items = [...rawItems].sort((a, b) =>
       Number(modelRowMatchesDraft(data.agent, b, d)) - Number(modelRowMatchesDraft(data.agent, a, d))
     );
@@ -381,9 +341,6 @@ export async function buildModelsCommandView(
     for (const model of items) {
       const selected = modelRowMatchesDraft(data.agent, model, d);
       const labelBase = model.alias || model.id;
-      // For BYOK rows the alias is the Profile name — include provider tag so
-      // two Profiles sharing a model id (e.g. "Sonnet 4.6 · OpenRouter" vs
-      // "Sonnet 4.6 · Anthropic Direct") stay distinguishable in 1-column mode.
       const label = group === 'native' || !model.providerName
         ? labelBase
         : `${labelBase} · ${model.providerName}`;
@@ -490,10 +447,6 @@ export function buildModeCommandView(bot: Bot, chatId: ChatId): CommandSelection
 
   const metaLines: string[] = [];
   if (!isClaude) metaLines.push('Permission mode is only available for Claude.');
-  // Workflow orchestration is no longer a standalone toggle here — it folded
-  // into the effort picker as the top "Ultra" rung (max depth + multi-agent
-  // fan-out). Surface its state and point users to /models so the capability
-  // stays discoverable.
   if (supportsWorkflow) {
     metaLines.push(`Workflow orchestration: ${workflowOn ? 'On (Ultra effort)' : 'Off'} — pick the Ultra rung in /models to toggle.`);
   }
@@ -536,8 +489,6 @@ export async function executeCommandAction(
 
     case 'session.switch': {
       const chat = bot.chat(chatId);
-      // Workspace-wide lookup (no agent filter) so a row from any agent can be
-      // resumed directly from a single mixed list.
       const result = await bot.fetchSessions(undefined, bot.chatWorkdir(chatId));
       if (!result.ok) return { kind: 'noop', message: 'Failed to load sessions' };
 
@@ -546,13 +497,9 @@ export async function executeCommandAction(
 
       const prevAgent = chat.agent;
       const runtime = bot.adoptExistingSessionForChat(chatId, session);
-      // Restore the agent's persistent model / effort / Profile binding so the
-      // next stream — and the IM picker chips — match the resumed session.
       if (session.model) {
         bot.switchModelForChat(chatId, session.model, session.profileId ?? null);
       } else if (session.profileId !== undefined) {
-        // Session was native (profileId === null) — explicitly clear any
-        // active Profile so we don't run with a stale BYOK binding.
         bot.switchModelForChat(chatId, bot.modelForAgent(session.agent), null);
       }
       if (session.thinkingEffort) {
@@ -642,8 +589,6 @@ export async function executeCommandAction(
     case 'models.select.model': {
       const draft = modelsDrafts.get(String(chatId)) ?? await initModelsDraft(bot, chatId);
       draft.modelId = action.modelId;
-      // profileId can be null (native pick) or a uuid (BYOK pick). Treating
-      // `undefined` as "leave alone" preserves the action shape's old contract.
       if (action.profileId !== undefined) draft.profileId = action.profileId;
       return { kind: 'view', view: await buildModelsCommandView(bot, chatId, draft), callbackText: '' };
     }
@@ -674,9 +619,6 @@ export async function executeCommandAction(
 
       const parts: string[] = [];
       if (modelChanged) {
-        // Pass profileId explicitly: a null clears any active Profile binding,
-        // a uuid binds the picked Profile. switchModelForChat handles both
-        // sides of the dual path so call sites stay agnostic.
         bot.switchModelForChat(chatId, draft.modelId, draft.profileId ?? null);
         parts.push(draft.profileId ? `Profile: ${draft.modelId}` : `Model: ${draft.modelId}`);
       }

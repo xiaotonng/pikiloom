@@ -1,6 +1,3 @@
-/**
- * Unit tests for code-agent.ts
- */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -64,11 +61,6 @@ function baseOpts(agent: 'codex' | 'claude' | 'gemini', extra: Partial<StreamOpt
 beforeEach(() => {
   fs.mkdirSync(fakeBin, { recursive: true });
   process.env.PATH = `${fakeBin}:${process.env.PATH}`;
-  // The fake `claude` scripts in this suite are designed for the print-mode
-  // driver: they emit JSONL to stdout and exit. The default TUI driver
-  // expects a real interactive `claude` writing a JSONL transcript file plus
-  // hook lifecycle events. Force print mode so the existing fixtures keep
-  // exercising the path they were written for.
   process.env.PIKILOOM_CLAUDE_PRINT = '1';
   shutdownCodexServer();
 });
@@ -79,7 +71,6 @@ afterEach(() => {
 
 describe('buildCodexTurnInput and usage helpers', () => {
   it('builds turn input, normalizes windows, sanitizes previews, and merges managed/native sessions', async () => {
-    // --- uses localImage for images, explicit file references for documents, and normalizes rate-limit windows ---
     const imagePath = path.join(tmpDir, 'shot.png');
     const docPath = path.join(tmpDir, 'notes.txt');
 
@@ -94,22 +85,16 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(labelFromWindowMinutes(301, 'Primary')).toBe('5h');
     expect(labelFromWindowMinutes(10081, 'Secondary')).toBe('7d');
 
-    // --- filters interrupted placeholder prompts out of session previews ---
     expect(sanitizeSessionUserPreviewText('[Request interrupted by user]')).toBe('');
     expect(sanitizeSessionUserPreviewText('[Request interrupted by user for tool use]')).toBe('');
     expect(sanitizeSessionUserPreviewText('[Image: original 2316x1558, displayed at 2000x1338]')).toBe('');
     expect(sanitizeSessionUserPreviewText('[Attached file: /tmp/shot.png]')).toBe('');
     expect(sanitizeSessionUserPreviewText('[Image: original 2316x1558] 帮我看一下这里为什么有间距')).toBe('帮我看一下这里为什么有间距');
     expect(sanitizeSessionUserPreviewText('正常问题')).toBe('正常问题');
-    // Claude TUI's `@/abs/path/file.ext` image mentions should not leak into
-    // session-list previews — they're an ingestion mechanism for the TUI, not
-    // user-authored text.
     expect(sanitizeSessionUserPreviewText('@/Users/me/.pikiloom/sessions/claude/x/workspace/image.png\n\n看一下截图')).toBe('看一下截图');
     expect(sanitizeSessionUserPreviewText('@/tmp/a.jpg @/tmp/b.webp prompt')).toBe('prompt');
-    // Leaves unmatched bare @ tokens alone (not an image extension).
     expect(sanitizeSessionUserPreviewText('@user mentions are not paths')).toBe('@user mentions are not paths');
 
-    // --- prefers native session metadata while keeping pikiloom workspace and run state ---
     {
     const merged = mergeManagedAndNativeSessions([
       {
@@ -164,11 +149,6 @@ describe('buildCodexTurnInput and usage helpers', () => {
     });
     }
 
-    // --- managed-owned fields (effort + Workflow) survive the native spread ---
-    // The native session file carries neither, so `...native` would clobber them
-    // to undefined; without explicit recovery the list dropped the user's
-    // per-session pick and saved-turn effort fell back to the global default
-    // (the "picked ultra, reverts to max after the turn" bug).
     {
     const merged = mergeManagedAndNativeSessions([
       {
@@ -195,7 +175,6 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(merged[0].workflowEnabled).toBe(true);
     }
 
-    // --- prefers newer native previews when the native session has advanced further ---
     {
     const merged = mergeManagedAndNativeSessions([
       {
@@ -244,7 +223,6 @@ describe('buildCodexTurnInput and usage helpers', () => {
     });
     }
 
-    // --- keeps managed preview when managed is newer than native ---
     {
     const merged = mergeManagedAndNativeSessions([
       {
@@ -284,7 +262,6 @@ describe('buildCodexTurnInput and usage helpers', () => {
 
     expect(merged).toHaveLength(1);
     const s = merged[0];
-    // managed runUpdatedAt (10:05) > native runUpdatedAt (10:03) → keep managed preview
     expect(s.runState).toBe('completed');
     expect(s.runDetail).toBe('managed detail');
     expect(s.runUpdatedAt).toBe('2026-03-20T10:05:00.000Z');
@@ -293,7 +270,6 @@ describe('buildCodexTurnInput and usage helpers', () => {
     expect(s.lastMessageText).toBe('managed answer (latest)');
     }
 
-    // --- switches to native preview when native is updated after managed ---
     {
     const merged = mergeManagedAndNativeSessions([
       {
@@ -333,18 +309,15 @@ describe('buildCodexTurnInput and usage helpers', () => {
 
     expect(merged).toHaveLength(1);
     const s = merged[0];
-    // native runUpdatedAt (10:08) > managed runUpdatedAt (10:05) → use native preview
     expect(s.runState).toBe('completed');
     expect(s.runDetail).toBe('native detail');
     expect(s.runUpdatedAt).toBe('2026-03-20T10:08:00.000Z');
     expect(s.lastQuestion).toBe('native question (latest)');
     expect(s.lastAnswer).toBe('native answer (latest)');
     expect(s.lastMessageText).toBe('native answer (latest)');
-    // but managed workspace is preserved
     expect(s.workspacePath).toBe('/tmp/pikiloom/workspace');
     }
 
-    // --- filters codex subagent native sessions from session listings ---
     await withTempHome(async (homeDir) => {
       const workdir = makeTmpDir('pikiloom-workdir-');
       const otherWorkdir = makeTmpDir('pikiloom-other-workdir-');
@@ -397,7 +370,6 @@ describe('buildCodexTurnInput and usage helpers', () => {
 
 describe('stageSessionFiles', () => {
   it('stages/migrates uploads, sets titles, promotes pending sessions, and keeps per-agent records distinct', () => {
-    // --- stores uploads in managed workspaces and migrates legacy sessions ---
     {
     const uploadDir = makeTmpDir('pikiloom-upload-');
     const uploadPath = path.join(uploadDir, 'report.txt');
@@ -452,7 +424,6 @@ describe('stageSessionFiles', () => {
     expect(fs.existsSync(legacyWorkspacePath)).toBe(false);
     }
 
-    // --- uses the first question line as the new session title prefix ---
     {
     const staged = stageSessionFiles({
       agent: 'claude',
@@ -465,7 +436,6 @@ describe('stageSessionFiles', () => {
     expect(record?.title).toBe('第一行问题前缀');
     }
 
-    // --- promotes pending sessions without leaving stale pending records or breaking old workspace paths ---
     {
     const workdir = makeTmpDir('pikiloom-promote-');
     const uploadDir = makeTmpDir('pikiloom-image-');
@@ -493,7 +463,6 @@ describe('stageSessionFiles', () => {
     expect(records.map(entry => entry.sessionId)).not.toContain(staged.sessionId);
     }
 
-    // --- keeps per-agent records distinct even when session ids match, and resolves thread bindings by agent ---
     {
     ensureManagedSession({
       agent: 'claude',
@@ -529,7 +498,6 @@ describe('stageSessionFiles', () => {
 
 describe('codex stream', () => {
   it('resumes with instructions, surfaces plans/usage, keeps commentary, and runs turns in parallel', async () => {
-    // --- passes developerInstructions on resume and surfaces structured plans and file changes ---
     {
     const callsFile = path.join(tmpDir, 'codex-rpc-calls.jsonl');
     const script = `#!/usr/bin/env node
@@ -586,7 +554,6 @@ rl.on('line', (line) => {
     const resumeCall = calls.find(call => call.method === 'thread/resume');
     expect(resumeCall?.params?.developerInstructions).toContain('[Telegram Artifact Return]');
 
-    // --- surfaces structured plans and file changes through callbacks ---
     shutdownCodexServer();
 
     const script2 = `#!/usr/bin/env node
@@ -679,7 +646,6 @@ rl.on('line', (line) => {
     expect(activities.some(activity => activity.includes('Edit files...'))).toBe(true);
     expect(result2.activity).toContain('Updated src/bot-telegram.ts');
 
-    // --- parses nested token usage into session context percent ---
     shutdownCodexServer();
 
     const script3 = `#!/usr/bin/env node
@@ -774,11 +740,8 @@ rl.on('line', (line) => {
     expect(previewMeta.some(meta => meta?.contextPercent === 4.5)).toBe(true);
     }
 
-    // Reset the codex app-server singleton between merged scenarios, mirroring
-    // the per-test `shutdownCodexServer()` the beforeEach would have run.
     shutdownCodexServer();
 
-    // --- keeps long codex commentary lines intact and runs turns in parallel across sessions ---
     {
     const commentary = 'I am verifying the release workflow, the npm publish result, and the final changelog content before I close this out. Tail marker: KEEP_THIS_VISIBLE_AT_THE_END';
     const script = `#!/usr/bin/env node
@@ -868,7 +831,6 @@ rl.on('line', (line) => {
     expect(previews.some(text => text.includes('KEEP_THIS_VISIBLE_AT_THE_END'))).toBe(true);
     expect(activities.some(activity => activity.includes('KEEP_THIS_VISIBLE_AT_THE_END'))).toBe(false);
 
-    // --- runs codex turns in parallel across sessions ---
     shutdownCodexServer();
 
     const spawnLog = path.join(tmpDir, 'codex-app-server-spawns.log');
@@ -958,7 +920,6 @@ rl.on('line', (line) => {
 
 describe('gemini stream', () => {
   it('injects MCP/defaults, dedupes flags, computes context percent, parses tools, and normalizes errors', async () => {
-    // --- injects MCP through temporary Gemini settings and enables full-access defaults ---
     {
     const argvFile = path.join(tmpDir, 'gemini-argv.json');
     const envFile = path.join(tmpDir, 'gemini-env.json');
@@ -1012,7 +973,6 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(settings.mcpServers?.pikiloom?.trust).toBe(true);
     }
 
-    // --- does not duplicate Gemini approval or sandbox flags when extra args already override them ---
     {
     const argvFile = path.join(tmpDir, 'gemini-argv-override.json');
     const script = `#!/usr/bin/env node
@@ -1039,7 +999,6 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(argv).toContain('true');
     }
 
-    // --- computes Gemini context percent from model fallback and input-side tokens ---
     {
     writeFakeScript('gemini', [
       { type: 'init', session_id: 'gemini-ctx', model: 'gemini-2.5-pro' },
@@ -1053,15 +1012,10 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
 
     expect(result.ok).toBe(true);
     expect(result.contextWindow).toBe(1_048_576);
-    // Gemini's `cached` is a subset of `input_tokens` (per Gemini API:
-    // `cached_content_token_count` is part of `prompt_token_count`), so the
-    // context occupancy is just `input_tokens` — adding `cached` would
-    // double-count the cached portion.
     expect(result.contextUsedTokens).toBe(9302);
     expect(result.contextPercent).toBe(0.9);
     }
 
-    // --- parses Gemini tool_use and tool_result events into readable activity previews ---
     {
     const activities: string[] = [];
     writeFakeScript('gemini', [
@@ -1085,7 +1039,6 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
     expect(activities.some(activity => activity.includes('List files: . -> Listed 38 item(s). (2 ignored)'))).toBe(true);
     }
 
-    // --- normalizes structured Gemini result errors without crashing ---
     {
     writeFakeScript('gemini', [
       { type: 'init', session_id: 'gemini-error', model: 'gemini-2.5-pro' },
@@ -1109,7 +1062,6 @@ process.stdout.write(JSON.stringify({ type: 'result', session_id: 'gemini-sessio
 
 describe('claude stream', () => {
   it('streams claude/codex turns: text, thinking, tool activity, retries, steering, and codex session ids', async () => {
-    // --- parses text, thinking, tool activity, retries expired sessions, and marks edge cases correctly ---
     {
     const activities: string[] = [];
     writeFakeScript('claude', [
@@ -1150,9 +1102,6 @@ describe('claude stream', () => {
     expect(parsed.inputTokens).toBe(150);
     expect(parsed.cachedInputTokens).toBe(30);
     expect(parsed.outputTokens).toBe(60);
-    // contextWindow stores the *effective* usable window (advertised − 20K
-    // max-output reserve − 13K auto-compact buffer), matching cc 2.1.112's
-    // `Yn() − t_7` denominator. 200_000 − 33_000 = 167_000.
     expect(parsed.contextWindow).toBe(167000);
     expect(parsed.activity).toContain('Read src/bot.ts');
     expect(activities.some(activity => activity.includes('Read src/bot.ts done'))).toBe(true);
@@ -1177,10 +1126,7 @@ describe('claude stream', () => {
       },
     }));
     expect(claudeFallback.ok).toBe(true);
-    // 1_000_000 advertised − 33_000 (20K maxOut + 13K autoCompact buffer) = 967_000
     expect(claudeFallback.contextWindow).toBe(967000);
-    // contextUsedTokens = input(25000) + cached(1000) + cache_creation(0) + output(0)
-    //                   = 26000; 26000 / 967000 ≈ 2.689 → 2.7
     expect(claudeFallback.contextPercent).toBe(2.7);
     expect(claudePreviewPercents).toContain(2.7);
 
@@ -1198,7 +1144,6 @@ describe('claude stream', () => {
     expect(fallback.message).toBe('Final answer');
     expect(fallback.thinking).toBe('Deep thought');
 
-    // --- retries expired sessions and marks incomplete states and edge cases ---
     const stateFile = path.join(tmpDir, 'call_count');
     fs.writeFileSync(stateFile, '0');
     const retryScript = `#!/bin/sh
@@ -1258,7 +1203,6 @@ exit 1`;
     expect(empty.message).toBe('(no textual response)');
     }
 
-    // --- hides system-injected user events (task-notification, system-reminder, IDE state) from rendered history ---
     await withTempHome(async (homeDir) => {
       const workdir = '/Users/test/sysinj';
       const projectDir = path.join(homeDir, '.claude', 'projects', workdir.replace(/[/\\:]/g, '-'));
@@ -1268,11 +1212,8 @@ exit 1`;
       const events = [
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'real user message' }] } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'assistant reply A' }] } },
-        // Background task completion injection — would otherwise render as a user bubble.
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '<task-notification>\n<task-id>abc</task-id>\n<status>failed</status>\n<summary>Background command failed</summary>\n</task-notification>\nRead the output file at /tmp/foo.' }] } },
-        // IDE state injection.
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '<ide_opened_file>src/foo.ts</ide_opened_file>' }] } },
-        // System reminder injection.
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>Be concise.</system-reminder>' }] } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'assistant reply B' }] } },
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'second real user message' }] } },
@@ -1283,22 +1224,14 @@ exit 1`;
       const result = await getSessionMessages({ agent: 'claude', sessionId, workdir, rich: true } as any);
       expect(result.ok).toBe(true);
       const userMsgs = (result.richMessages || []).filter(m => m.role === 'user').map(m => m.text);
-      // Only the two genuine user messages should remain.
       expect(userMsgs).toEqual(['real user message', 'second real user message']);
-      // No rendered text should contain a leaked task-notification / system-reminder / IDE wrapper.
       const allText = (result.richMessages || []).map(m => m.text).join('\n');
       expect(allText).not.toContain('<task-notification>');
       expect(allText).not.toContain('<system-reminder>');
       expect(allText).not.toContain('<ide_opened_file>');
     });
 
-    // --- resolves session JSONL when workdir contains underscores or dots (matching Claude Code's project-dir encoding) ---
     await withTempHome(async (homeDir) => {
-      // Claude Code collapses every non-alphanumeric character (including `_`
-      // and `.`) to `-` when writing `~/.claude/projects/<dir>/`. If our
-      // encoder only handled path separators, the lookup would miss the file
-      // and silently fall back to a truncated tail instead of returning the
-      // full history. Regression: harness_ppt was reporting totalTurns: 1.
       const workdir = '/Users/test/proj_with.dots';
       const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-proj-with-dots');
       const sessionId = 'sess-underscored-workdir';
@@ -1321,19 +1254,13 @@ exit 1`;
       expect(userMsgs).toEqual(['first turn', 'second turn', 'third turn']);
     });
 
-    // --- preserves long legitimate user prompts (no length-based system-injected heuristic) ---
     await withTempHome(async (homeDir) => {
-      // Compression-summary detection used to fire on any user text > 800
-      // chars, which silently dropped multi-paragraph user prompts (briefs,
-      // pasted documents) — they would appear nowhere in the rendered
-      // history. Detection is now marker-based; length alone must not
-      // disqualify a user turn.
       const workdir = '/Users/test/longprompt';
       const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-longprompt');
       const sessionId = 'sess-long-user';
       fs.mkdirSync(projectDir, { recursive: true });
 
-      const longPrompt = '我需要对团队做一些长期规划用于向上汇报。'.repeat(60); // ≈1.5k chars, no compression marker
+      const longPrompt = '我需要对团队做一些长期规划用于向上汇报。'.repeat(60);
       expect(longPrompt.length).toBeGreaterThan(800);
       const events = [
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'short opener' }] } },
@@ -1355,7 +1282,6 @@ exit 1`;
       expect(userTexts[2]).toBe('follow-up');
     });
 
-    // --- still hides genuine compression summaries injected as user events (marker-based) ---
     await withTempHome(async (homeDir) => {
       const workdir = '/Users/test/compress';
       const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-compress');
@@ -1366,7 +1292,6 @@ exit 1`;
       const events = [
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'pre-compaction opener' }] } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'pre-compaction reply' }] } },
-        // Compression injection — should NOT render as a user turn.
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: compressionSummary }] } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'continuing after compaction' }] } },
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'post-compaction prompt' }] } },
@@ -1380,21 +1305,12 @@ exit 1`;
       expect(userTexts).toEqual(['pre-compaction opener', 'post-compaction prompt']);
     });
 
-    // --- lifts Claude TUI @/path image mentions into structured image blocks for the user bubble ---
     await withTempHome(async (homeDir) => {
-      // Claude TUI persists user `content` as a plain string with leading
-      // `@/abs/path/image.png` mentions because that's how it ingests local
-      // files (no stream-json image blocks like `-p` mode). The parser must
-      // recover those into structured `image` blocks so the dashboard renders
-      // thumbnails — and strip them from displayed text so the user bubble
-      // doesn't show a long absolute path.
       const workdir = '/Users/test/tui';
       const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-tui');
       const sessionId = 'sess-tui-images';
       fs.mkdirSync(projectDir, { recursive: true });
 
-      // attachAgentImage only checks file existence + mime-by-extension; we
-      // don't need valid PNG bytes for the parser to succeed.
       const imageA = path.join(homeDir, 'shot-a.png');
       const imageB = path.join(homeDir, 'shot-b.jpg');
       const missing = path.join(homeDir, 'gone.png');
@@ -1402,14 +1318,10 @@ exit 1`;
       fs.writeFileSync(imageB, Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
 
       const events = [
-        // Single attachment, image lift + path strip from text.
         { type: 'user', message: { role: 'user', content: `@${imageA}\n\nfirst question with screenshot` } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'first reply' }] } },
-        // Multiple attachments — both should lift, both paths should be stripped.
         { type: 'user', message: { role: 'user', content: `@${imageA} @${imageB} side-by-side compare` } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'second reply' }] } },
-        // Missing file — keep the @-path in displayed text so the user sees
-        // what was attached when the underlying bytes are gone.
         { type: 'user', message: { role: 'user', content: `@${missing}\n\nimage was deleted` } },
         { type: 'assistant', message: { content: [{ type: 'text', text: 'third reply' }] } },
       ];
@@ -1421,14 +1333,12 @@ exit 1`;
       const userTurns = (result.richMessages || []).filter(m => m.role === 'user');
       expect(userTurns).toHaveLength(3);
 
-      // Turn 1: path stripped from text, one image block lifted.
       expect(userTurns[0].text).toBe('first question with screenshot');
       const t1Images = userTurns[0].blocks.filter(b => b.type === 'image');
       expect(t1Images).toHaveLength(1);
       expect(t1Images[0].imagePath).toBe(imageA);
       expect(t1Images[0].imageMime).toBe('image/png');
 
-      // Turn 2: both paths stripped, both image blocks lifted in order.
       expect(userTurns[1].text).toBe('side-by-side compare');
       const t2Images = userTurns[1].blocks.filter(b => b.type === 'image');
       expect(t2Images).toHaveLength(2);
@@ -1436,13 +1346,11 @@ exit 1`;
       expect(t2Images[1].imagePath).toBe(imageB);
       expect(t2Images[1].imageMime).toBe('image/jpeg');
 
-      // Turn 3: missing file → mention stays in text, no image block.
       expect(userTurns[2].text).toContain(missing);
       const t3Images = userTurns[2].blocks.filter(b => b.type === 'image');
       expect(t3Images).toHaveLength(0);
     });
 
-    // --- hydrates historical sub-agent blocks from sidecar JSONL/meta files and hides the result text from parent activity ---
     await withTempHome(async (homeDir) => {
       const workdir = '/Users/test/workspace';
       const projectDir = path.join(homeDir, '.claude', 'projects', workdir.replace(/[/\\:]/g, '-'));
@@ -1451,17 +1359,13 @@ exit 1`;
       fs.mkdirSync(subDir, { recursive: true });
 
       const parentEvents = [
-        // Initial user message
         { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Look up the auth handler' }] } },
-        // Parent assistant emits an Agent (sub-agent) tool_use — Claude Code v2 stream uses "Agent".
         { type: 'assistant', message: { content: [
           { type: 'tool_use', id: 'toolu_sub_1', name: 'Agent', input: { subagent_type: 'Explore', description: 'auth handler search', prompt: 'find it' } },
         ] } },
-        // Top-level tool_result for the sub-agent — content is the sub-agent's full response. Must NOT leak into parent activity.
         { type: 'user', message: { content: [
           { type: 'tool_result', tool_use_id: 'toolu_sub_1', content: [{ type: 'text', text: 'SUB AGENT FINAL ANSWER LEAKED' }], is_error: false },
         ] } },
-        // Parent's own Read tool — should appear normally in the parent activity.
         { type: 'assistant', message: { content: [
           { type: 'tool_use', id: 'toolu_parent_1', name: 'Read', input: { file_path: 'src/auth.ts' } },
         ] } },
@@ -1471,8 +1375,6 @@ exit 1`;
       ];
       fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), parentEvents.map(e => JSON.stringify(e)).join('\n'));
 
-      // Sidecar: agent-<id>.meta.json + agent-<id>.jsonl. Claude Code stores the
-      // sub-agent's full transcript here; we match by description.
       const subId = 'agent-aaa1';
       fs.writeFileSync(path.join(subDir, `${subId}.meta.json`), JSON.stringify({ agentType: 'Explore', description: 'auth handler search' }));
       const subEvents = [
@@ -1492,15 +1394,10 @@ exit 1`;
       expect(assistantTurn).toBeDefined();
       const blocks = assistantTurn!.blocks;
 
-      // The sub-agent's final-answer text must live ONLY on the sub_agent
-      // block (rendered inside its dedicated card) — never on a parent-level
-      // tool_result that would leak into the activity feed.
       const nonSubBlocks = blocks.filter(b => b.type !== 'sub_agent');
       const leakedText = nonSubBlocks.map(b => b.content || '').join('|');
       expect(leakedText).not.toContain('SUB AGENT FINAL ANSWER LEAKED');
 
-      // The Agent tool_use is replaced by a sub_agent block carrying the
-      // sub-agent's tools (hydrated from the sidecar) and final answer text.
       const subAgentBlocks = blocks.filter(b => b.type === 'sub_agent');
       expect(subAgentBlocks).toHaveLength(1);
       const sub = subAgentBlocks[0].subAgent!;
@@ -1511,7 +1408,6 @@ exit 1`;
       expect(sub.tools.map(t => t.name).sort()).toEqual(['Grep', 'Read']);
       expect(subAgentBlocks[0].content).toBe('SUB AGENT FINAL ANSWER LEAKED');
 
-      // Parent's own activity is preserved.
       const parentToolUses = blocks.filter(b => b.type === 'tool_use');
       expect(parentToolUses).toHaveLength(1);
       expect(parentToolUses[0].toolName).toBe('Read');
@@ -1519,16 +1415,12 @@ exit 1`;
   });
 
   it('isolates sub-agents, exposes claude+codex steering, and surfaces codex session ids and raw response items', async () => {
-    // --- isolates Task sub-agent tool calls into their own group, leaving parent activity clean ---
     {
     writeFakeScript('claude', [
       { type: 'system', session_id: 's-sub', model: 'claude-opus-4-7' },
-      // Parent invokes the sub-agent tool (rebranded "Agent" in v2 stream output, but Task still flows through)
-      // — should NOT appear in parent activity, becomes a sub-agent block.
       { type: 'assistant', message: { content: [
         { type: 'tool_use', id: 'task-1', name: 'Agent', input: { subagent_type: 'Explore', description: 'Find login handler', prompt: '...' } },
       ] } },
-      // Sub-agent emits its own assistant events (parent_tool_use_id set, model differs).
       {
         type: 'assistant',
         parent_tool_use_id: 'task-1',
@@ -1540,7 +1432,6 @@ exit 1`;
           ],
         },
       },
-      // Sub-agent's tool_result — parent_tool_use_id is set so it must NOT pollute parent activity.
       {
         type: 'user',
         parent_tool_use_id: 'task-1',
@@ -1548,7 +1439,6 @@ exit 1`;
           { type: 'tool_result', tool_use_id: 'sub-grep-1', content: 'matches found', is_error: false },
         ] },
       },
-      // Parent's normal tool call AFTER the Task — should appear in parent activity.
       { type: 'assistant', message: { content: [
         { type: 'tool_use', id: 'parent-read-1', name: 'Read', input: { file_path: 'src/auth.ts' } },
       ] } },
@@ -1558,7 +1448,6 @@ exit 1`;
           { type: 'tool_result', tool_use_id: 'parent-read-1', content: 'auth code', is_error: false },
         ] },
       },
-      // Top-level tool_result for the Task — closes the sub-agent's lifecycle.
       {
         type: 'user',
         message: { content: [
@@ -1577,12 +1466,10 @@ exit 1`;
     }));
 
     expect(result.ok).toBe(true);
-    // Parent activity contains only parent-level tools — no Task entry, no sub-agent's Grep.
     expect(result.activity || '').toContain('Read src/auth.ts');
     expect(result.activity || '').not.toContain('Run task');
     expect(result.activity || '').not.toContain('Search text: login');
     expect(result.activity || '').not.toContain('matches found');
-    // The sub-agent surfaces in the streaming preview meta with its own model and tool stream.
     const lastMeta = previewSubAgents[previewSubAgents.length - 1] || [];
     expect(lastMeta).toHaveLength(1);
     expect(lastMeta[0].id).toBe('task-1');
@@ -1593,7 +1480,6 @@ exit 1`;
     expect(lastMeta[0].tools.map((t: any) => t.name)).toEqual(['Grep']);
     }
 
-    // --- exposes in-process Claude steering and keeps only the latest steered response ---
     {
     const argsFile = path.join(tmpDir, 'claude-steer-args.txt');
     const inputsFile = path.join(tmpDir, 'claude-steer-inputs.jsonl');
@@ -1676,7 +1562,6 @@ rl.on('close', () => setTimeout(() => process.exit(0), 30));`;
     ]));
     }
 
-    // --- auto-closes Claude stdin after a coalesced steered result without dropping the answer ---
     {
     const inputsFile = path.join(tmpDir, 'claude-steer-coalesced-inputs.jsonl');
     const script = `#!/usr/bin/env node
@@ -1735,11 +1620,8 @@ rl.on('close', () => process.exit(0));`;
     expect(inputs).toHaveLength(2);
     }
 
-    // Switching from claude to codex scenarios: reset the codex app-server
-    // singleton, mirroring the per-test `shutdownCodexServer()` in beforeEach.
     shutdownCodexServer();
 
-    // --- exposes the native codex session id before the turn finishes ---
     {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -1805,10 +1687,8 @@ rl.on('line', (line) => {
     expect(result.sessionId).toBe('thread-early');
     }
 
-    // Reset codex app-server singleton before the next codex scenario.
     shutdownCodexServer();
 
-    // --- exposes native codex steering and forwards steer input to turn/steer ---
     {
     const callsFile = path.join(tmpDir, 'codex-steer-calls.jsonl');
     const script = `#!/usr/bin/env node
@@ -1900,10 +1780,8 @@ rl.on('line', (line) => {
     });
     }
 
-    // Reset codex app-server singleton before the next codex scenario.
     shutdownCodexServer();
 
-    // --- surfaces raw response items like web search calls in codex activity ---
     {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -1955,7 +1833,6 @@ rl.on('line', (line) => {
 
 describe('doStream and attachments', () => {
   it('promotes codex sessions, persists run states, routes attachments, and gates the Workflow tool', async () => {
-    // --- promotes codex sessions to native ids and keeps the native workspace path ---
     {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -2012,10 +1889,8 @@ rl.on('line', (line) => {
     expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiloom', 'sessions', 'codex', 'thread-native', 'workspace'));
     }
 
-    // Reset codex app-server singleton before the next codex scenario.
     shutdownCodexServer();
 
-    // --- forwards early native codex session ids through doStream while promoting the managed session ---
     {
     const script = `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -2085,10 +1960,8 @@ rl.on('line', (line) => {
     expect(record?.workspacePath).toBe(path.join(tmpDir, '.pikiloom', 'sessions', 'codex', 'thread-forwarded', 'workspace'));
     }
 
-    // Done with codex scenarios; reset the singleton before the claude cases.
     shutdownCodexServer();
 
-    // --- persists completed and incomplete run states in managed session records ---
     {
     writeFakeScript('claude', [
       { type: 'system', session_id: 'sess-status' },
@@ -2118,7 +1991,6 @@ exit 1`;
     expect(record?.runDetail).toContain('quota exceeded');
     }
 
-    // --- routes to claude, clears stale manifests, and uses stream-json attachments only when needed ---
     {
     writeFakeScript('claude', [
       { type: 'system', session_id: 's-unified' },
@@ -2189,7 +2061,6 @@ echo '{"type":"result","session_id":"s-no"}'`;
     expect(fs.readFileSync(emptyArgsFile, 'utf-8')).not.toContain('--input-format');
     }
 
-    // --- hard-disables the Workflow tool by default and re-enables it only when claudeWorkflowEnabled is set ---
     {
     const argsFile = path.join(tmpDir, 'claude-wf-args.txt');
     const script = `#!/bin/sh
@@ -2198,21 +2069,14 @@ echo '{"type":"system","session_id":"s-wf"}'
 echo '{"type":"result","session_id":"s-wf"}'`;
     fs.writeFileSync(path.join(fakeBin, 'claude'), script, { mode: 0o755 });
 
-    // Default (workflow off): the Workflow tool is dropped from the toolset so a
-    // bare "workflow" keyword can't auto-spawn sub-agents under bypassPermissions.
     const off = await doClaudeStream(baseOpts('claude', { prompt: 'a' }));
     expect(off.ok).toBe(true);
     expect(fs.readFileSync(argsFile, 'utf-8')).toContain('--disallowed-tools Workflow');
 
-    // Explicitly enabled: the tool is left available (no disallow).
     const on = await doClaudeStream(baseOpts('claude', { prompt: 'b', claudeWorkflowEnabled: true }));
     expect(on.ok).toBe(true);
     expect(fs.readFileSync(argsFile, 'utf-8')).not.toContain('--disallowed-tools Workflow');
 
-    // "ultra" is the synthetic max+workflow rung — never a real --effort value.
-    // The driver's safety net translates it to `--effort max` (so the CLI never
-    // sees "ultra") and leaves the Workflow tool available even without the
-    // explicit flag.
     const ultra = await doClaudeStream(baseOpts('claude', { prompt: 'c', thinkingEffort: 'ultra' }));
     expect(ultra.ok).toBe(true);
     const ultraArgs = fs.readFileSync(argsFile, 'utf-8');
@@ -2333,7 +2197,6 @@ exit 0`;
       expect(claudeUsage.windows[0].status).toBe('warning');
       expect(claudeUsage.windows[0].resetAfterSeconds).toBe(39 * 3600);
 
-      // --- getSessionTail: falls back to codex rollout files ---
       const emptyBin = makeTmpDir('pikiloom-empty-bin-');
       const oldPath = process.env.PATH;
       process.env.PATH = emptyBin;
@@ -2382,37 +2245,30 @@ exit 0`;
 
 describe('sessionListDisplayTitle', () => {
   it('prefers title, ignores sub-agent prompts, falls back to lastQuestion/sessionId, and skips placeholders', () => {
-    // --- prefers the session title (set from the original prompt) over lastQuestion ---
     expect(sessionListDisplayTitle({
       title: 'Refactor logger',
       lastQuestion: 'Investigate auth bug',
       sessionId: 'sess-1',
     })).toBe('Refactor logger');
 
-    // --- does not surface sub-agent prompts that landed in lastQuestion ---
-    // Simulates the Task-tool case where a Claude sub-agent prompt
-    // overwrites lastQuestion mid-conversation. Title must still win.
     expect(sessionListDisplayTitle({
       title: 'Implement signup flow',
       lastQuestion: 'You are a security review sub-agent. Audit auth/login.ts...',
       sessionId: 'sess-2',
     })).toBe('Implement signup flow');
 
-    // --- falls back to lastQuestion when title is missing ---
     expect(sessionListDisplayTitle({
       title: null,
       lastQuestion: 'Fix flaky CI',
       sessionId: 'sess-3',
     })).toBe('Fix flaky CI');
 
-    // --- falls back to sessionId when both title and lastQuestion are empty ---
     expect(sessionListDisplayTitle({
       title: null,
       lastQuestion: null,
       sessionId: 'sess-4',
     })).toBe('sess-4');
 
-    // --- skips "[Request interrupted by user]" placeholders ---
     expect(sessionListDisplayTitle({
       title: null,
       lastQuestion: '[Request interrupted by user]',
@@ -2422,9 +2278,6 @@ describe('sessionListDisplayTitle', () => {
 });
 
 describe('claudeEffortAndWorkflowArgs (shared effort + Workflow gate)', () => {
-  // The gate must behave identically for both spawn paths — the `claude -p`
-  // driver and the PTY/TUI driver both build their argv through this helper, so
-  // the TUI path can never again leave Workflow always-on.
   it('drops the Workflow tool by default (orchestration off)', () => {
     const args = claudeEffortAndWorkflowArgs({ thinkingEffort: 'high', claudeWorkflowEnabled: false });
     expect(args.join(' ')).toContain('--effort high');
@@ -2452,12 +2305,6 @@ describe('claudeEffortAndWorkflowArgs (shared effort + Workflow gate)', () => {
 });
 
 describe('claude Workflow background-launch tracking', () => {
-  // A Workflow is ALWAYS backgrounded: the tool returns immediately with a
-  // runId and the orchestration keeps running inside the claude process,
-  // signalling completion via a later <task-notification>. The driver must
-  // count it as pending background work so decideClaudeTuiStop holds the PTY
-  // open instead of SIGTERMing the in-flight workflow on the launch segment's
-  // Stop (otherwise: "ultra workflow 离线跑、TUI 误判结束退出把 workflow 打断").
   const baseState = () =>
     createClaudeStreamState({ sessionId: 's', model: null, thinkingEffort: 'max' } as any);
 
@@ -2469,10 +2316,8 @@ describe('claude Workflow background-launch tracking', () => {
       type: 'assistant',
       message: { content: [{ type: 'tool_use', id: WF, name: 'Workflow', input: { script: 'export const meta={}' } }] },
     }, s);
-    // Registered on launch — no run_in_background flag needed (always async).
     expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
 
-    // The launch ack is NOT completion — the workflow is still running.
     claudeParse({
       type: 'user',
       message: { content: [{ type: 'tool_result', tool_use_id: WF, content: 'Workflow started. runId: wf_run012345' }] },
@@ -2480,8 +2325,6 @@ describe('claude Workflow background-launch tracking', () => {
     expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
     expect(s.bgTaskIdToToolUse.get('wf_run012345')).toBe(WF);
 
-    // Completion notification (carries the tool-use-id) → pending drops to 0,
-    // releasing the hold for a normal Stop.
     claudeParse({
       type: 'user',
       message: { content: [{ type: 'text', text: `<task-notification>\n<task-id>wf_run012345</task-id>\n<tool-use-id>${WF}</tool-use-id>\n<status>completed</status>\n</task-notification>` }] },
@@ -2494,11 +2337,9 @@ describe('claude Workflow background-launch tracking', () => {
     const WF = 'toolu_wf_2';
 
     claudeParse({ type: 'assistant', message: { content: [{ type: 'tool_use', id: WF, name: 'Workflow', input: {} }] } }, s);
-    // JSON-shaped ack, as the real tool returns { runId, scriptPath, ... }.
     claudeParse({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: WF, content: '{"runId":"wf_zzz99aaa","scriptPath":"/x.js"}' }] } }, s);
     expect(pendingClaudeBackgroundAgentCount(s)).toBe(1);
 
-    // Notification omits <tool-use-id> — must resolve via the runId→tool_use map.
     claudeParse({ type: 'user', message: { content: [{ type: 'text', text: '<task-notification>\n<task-id>wf_zzz99aaa</task-id>\n<status>completed</status>\n</task-notification>' }] } }, s);
     expect(pendingClaudeBackgroundAgentCount(s)).toBe(0);
   });

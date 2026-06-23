@@ -7,8 +7,6 @@ vi.mock('../src/agent/index.ts', async importOriginal => {
   return {
     ...actual,
     doStream: vi.fn(),
-    // Pin agent detection so the install-aware default-agent resolution is
-    // deterministic regardless of which agent CLIs the test host has on PATH.
     listAgents: () => ({
       agents: [
         { agent: 'claude', installed: false, path: null, version: null },
@@ -43,8 +41,6 @@ afterEach(() => {
 
 describe('Bot.runStream', () => {
   it('manages codex cumulative totals across turns/workdir switches and resumes from a session workdir', async () => {
-    // === manages codex cumulative totals across turns and workdir switches ===
-    // --- defaults to codex when DEFAULT_AGENT is unset ---
     delete process.env.DEFAULT_AGENT;
 
     const defaultBot = new Bot();
@@ -52,7 +48,6 @@ describe('Bot.runStream', () => {
     expect(defaultBot.defaultAgent).toBe('codex');
     expect(defaultBot.chat(1).agent).toBe('codex');
 
-    // --- passes prior Codex cumulative totals into resumed turns and stores updated totals ---
     process.env.DEFAULT_AGENT = 'codex';
 
     const doStreamMock = vi.mocked(doStream);
@@ -92,7 +87,6 @@ describe('Bot.runStream', () => {
     expect(result.outputTokens).toBe(60);
     expect(cs.codexCumulative).toEqual({ input: 8300, output: 360, cached: 6500 });
 
-    // --- clears cached Codex cumulative totals when switching workdirs ---
     const bot2 = new Bot();
     const cs2 = bot2.chat(1);
     cs2.agent = 'codex';
@@ -105,8 +99,6 @@ describe('Bot.runStream', () => {
     expect(cs2.sessionId).toBeNull();
     expect(cs2.codexCumulative).toBeUndefined();
 
-    // === uses the session workdir when continuing a session from another project ===
-    // Fresh mock queue so the resume turn below is the only implementation left.
     vi.mocked(doStream).mockReset();
     {
     const doStreamMock = vi.mocked(doStream);
@@ -142,7 +134,6 @@ describe('Bot.runStream', () => {
 
 describe('Bot task lifecycle (steer / stop / reset)', () => {
   it('handoff-steers, stop-aborts-but-keeps-queued, and resets selection without interrupting tasks', async () => {
-    // === steering handoff: interrupts the running task and preserves its preview instead of using in-process steer ===
     {
     const bot = new Bot() as any;
     const runtime = bot.upsertSessionRuntime({
@@ -187,7 +178,6 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
     expect(bot.activeTasks.get('queued-1')?.cancelled).toBe(false);
     }
 
-    // === stopAllSessionTasks: aborts the running task but leaves queued tasks in place to run next ===
     {
     const bot = new Bot() as any;
     const runtime = bot.upsertSessionRuntime({
@@ -241,7 +231,6 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
     expect(bot.activeTasks.get('queued-2')?.status).toBe('queued');
     }
 
-    // === resetConversationForChat: clears the chat selection without interrupting running or queued tasks ===
     {
     const bot = new Bot() as any;
     const runtime = bot.upsertSessionRuntime({
@@ -284,7 +273,6 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
     expect(bot.chat(1).sessionId).toBeNull();
     }
 
-    // === resetConversationForChat: clears chat selection when previous session is idle ===
     {
     const bot = new Bot() as any;
     const runtime = bot.upsertSessionRuntime({
@@ -305,7 +293,6 @@ describe('Bot task lifecycle (steer / stop / reset)', () => {
 
 describe('Bot emitStream queue tracking', () => {
   it('tracks queued ids through start/cancel/done and drops the snapshot on active cancel', () => {
-    // === accumulates multiple queued task ids while a task is streaming ===
     {
     const bot = new Bot() as any;
     const sessionKey = 'claude:sess-multi-queue';
@@ -319,26 +306,22 @@ describe('Bot emitStream queue tracking', () => {
     expect(snap?.taskId).toBe('run-1');
     expect(snap?.queuedTaskIds).toEqual(['q-1', 'q-2', 'q-3']);
 
-    // Cancelling a queued task removes it from the list, keeps the active task.
     bot.emitStream(sessionKey, { type: 'cancelled', taskId: 'q-2' });
     snap = bot.getStreamSnapshot(sessionKey);
     expect(snap?.taskId).toBe('run-1');
     expect(snap?.queuedTaskIds).toEqual(['q-1', 'q-3']);
 
-    // Active task finishing keeps the remaining queued list.
     bot.emitStream(sessionKey, { type: 'done', taskId: 'run-1', sessionId: 'sess-multi-queue' });
     snap = bot.getStreamSnapshot(sessionKey);
     expect(snap?.phase).toBe('done');
     expect(snap?.queuedTaskIds).toEqual(['q-1', 'q-3']);
 
-    // Next task starting drops itself from the queued list.
     bot.emitStream(sessionKey, { type: 'start', taskId: 'q-1', agent: 'claude', sessionId: 'sess-multi-queue' });
     snap = bot.getStreamSnapshot(sessionKey);
     expect(snap?.phase).toBe('streaming');
     expect(snap?.taskId).toBe('q-1');
     expect(snap?.queuedTaskIds).toEqual(['q-3']);
 
-    // Last queued task starting clears the queued list entirely.
     bot.emitStream(sessionKey, { type: 'done', taskId: 'q-1', sessionId: 'sess-multi-queue' });
     bot.emitStream(sessionKey, { type: 'start', taskId: 'q-3', agent: 'claude', sessionId: 'sess-multi-queue' });
     snap = bot.getStreamSnapshot(sessionKey);
@@ -346,7 +329,6 @@ describe('Bot emitStream queue tracking', () => {
     expect(snap?.queuedTaskIds).toBeUndefined();
     }
 
-    // === cancelling the active task drops the whole snapshot ===
     {
     const bot = new Bot() as any;
     const sessionKey = 'claude:sess-active-cancel';
@@ -362,7 +344,6 @@ describe('Bot emitStream queue tracking', () => {
 
 describe('Bot selection switching (model / effort)', () => {
   it('switches model inline or as a default, and decomposes/clears the ultra effort rung', () => {
-    // === switchModelForChat: applies the new model to the active session inline without dropping it ===
     {
     const bot = new Bot() as any;
     const runtime = bot.upsertSessionRuntime({
@@ -377,18 +358,13 @@ describe('Bot selection switching (model / effort)', () => {
 
     bot.switchModelForChat(1, 'new-model');
 
-    // Active selection preserved — user can keep talking to the same session
     expect(bot.chat(1).activeSessionKey).toBe(runtime.key);
     expect(bot.chat(1).sessionId).toBe('sess-active');
-    // Session + chat now both report the new model so the next runStream
-    // will pick it up regardless of which fallback layer wins
     expect(bot.chat(1).modelId).toBe('new-model');
     expect(runtime.modelId).toBe('new-model');
-    // Global agent default is updated too (so a brand-new session inherits)
     expect(bot.modelForAgent('claude')).toBe('new-model');
     }
 
-    // === switchModelForChat: updates global default even when no session is active ===
     {
     const bot = new Bot() as any;
     bot.chat(1).agent = 'claude';
@@ -401,23 +377,17 @@ describe('Bot selection switching (model / effort)', () => {
     expect(bot.chat(1).activeSessionKey).toBeNull();
     }
 
-    // === switchEffortForChat (ultra rung): decomposes the synthetic "ultra" rung into max effort + workflow on ===
     {
     const bot = new Bot() as any;
     bot.chat(1).agent = 'claude';
 
     bot.switchEffortForChat(1, 'ultra');
 
-    // "ultra" is never stored verbatim — the claude CLI rejects it as an
-    // --effort value, so it maps to "max" depth plus the orthogonal workflow
-    // opt-in. The CLI only ever sees a real effort value.
     expect(bot.effortForAgent('claude')).toBe('max');
     expect(bot.workflowEnabledForAgent('claude')).toBe(true);
-    // ...but the picker folds that pairing back into the single "ultra" rung.
     expect(bot.effortSelectionForAgent('claude')).toBe('ultra');
     }
 
-    // === switchEffortForChat (ultra rung): clears the workflow opt-in when a concrete rung is picked ===
     {
     const bot = new Bot() as any;
     bot.chat(1).agent = 'claude';
@@ -425,8 +395,6 @@ describe('Bot selection switching (model / effort)', () => {
     bot.switchEffortForChat(1, 'ultra');
     expect(bot.workflowEnabledForAgent('claude')).toBe(true);
 
-    // Rungs are mutually exclusive: stepping down to a concrete effort turns
-    // orchestration back off so "Max" and "Ultra" stay distinct.
     bot.switchEffortForChat(1, 'xhigh');
     expect(bot.effortForAgent('claude')).toBe('xhigh');
     expect(bot.workflowEnabledForAgent('claude')).toBe(false);
@@ -436,7 +404,6 @@ describe('Bot selection switching (model / effort)', () => {
 
   it('folds the live-stream effort to ultra from the per-turn workflow, independent of the agent-global flag', () => {
     const bot = new Bot() as any;
-    // Unknown session id → no stored config; cs.thinkingEffort drives the rung.
     const cs = {
       agent: 'claude',
       sessionId: 'sess-live',
@@ -445,15 +412,10 @@ describe('Bot selection switching (model / effort)', () => {
       thinkingEffort: 'max',
     };
 
-    // The dashboard composer picks ultra per-send and threads workflow per-turn
-    // WITHOUT flipping the agent-global flag. The live divider regressed to a
-    // bare "max" because resolveSessionStreamConfig only read the global flag.
     expect(bot.workflowEnabledForAgent('claude')).toBe(false);
     expect(bot.resolveSessionStreamConfig(cs).effort).toBe('max');
     expect(bot.resolveSessionStreamConfig(cs, { workflowEnabled: true }).effort).toBe('ultra');
 
-    // A concrete per-turn pick (workflow off) must win over a global ON (e.g. IM
-    // /mode left orchestration on) so one-off "max" sends don't mislabel as ultra.
     bot.setWorkflowEnabledForAgent('claude', true);
     expect(bot.resolveSessionStreamConfig(cs).effort).toBe('ultra');
     expect(bot.resolveSessionStreamConfig(cs, { workflowEnabled: false }).effort).toBe('max');
@@ -511,7 +473,6 @@ describe('Bot thread-aware agent switching', () => {
 
 describe('Bot external session control', () => {
   it('submits dashboard tasks/publishes stream state and migrates state on codex session-id promotion', async () => {
-    // === submits dashboard session tasks through the public API and publishes stream state ===
     {
     const doStreamMock = vi.mocked(doStream);
     doStreamMock.mockImplementationOnce(async opts => {
@@ -544,10 +505,8 @@ describe('Bot external session control', () => {
     });
     }
 
-    // Fresh mock queue so the promotion turn below is the only implementation left.
     vi.mocked(doStream).mockReset();
 
-    // === migrates dashboard stream state and runtime tracking when codex promotes a pending session id ===
     {
     const doStreamMock = vi.mocked(doStream);
     doStreamMock.mockImplementationOnce(async opts => {
@@ -583,7 +542,6 @@ describe('Bot external session control', () => {
       text: 'partial reply',
       thinking: 'thinking...',
     });
-    // After promotion, the old key transparently redirects to the promoted snapshot
     expect(bot.getStreamSnapshot('codex:pending_dashboard')).toMatchObject({
       sessionId: 'sess-promoted',
     });

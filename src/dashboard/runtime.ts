@@ -1,11 +1,3 @@
-/**
- * runtime.ts — Singleton module holding the runtime state previously
- * scattered across startDashboard() closure variables.
- *
- * Provides bot ref management, runtime prefs (agent/model/effort),
- * channel state caching, and validated setup state construction.
- */
-
 import { EventEmitter } from 'node:events';
 import type { Bot } from '../bot/bot.js';
 import type { Agent, AgentDetectOptions } from '../agent/index.js';
@@ -41,36 +33,18 @@ import {
   type ClaudeAccessMode,
 } from '../core/config/runtime-config.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const CHANNEL_STATUS_VALIDATION_TIMEOUT_MS = DASHBOARD_TIMEOUTS.channelStatusValidation;
 const CHANNEL_STATUS_CACHE_TTL_MS = DASHBOARD_TIMEOUTS.channelStatusCacheTtl;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface RuntimePrefs {
   defaultAgent?: Agent;
   models: Partial<Record<Agent, string>>;
   efforts: Partial<Record<Agent, string>>;
-  /** Multi-agent Workflow orchestration toggle, per agent (claude today). */
   workflow: Partial<Record<Agent, boolean>>;
-  /** Claude access mode (subscription TUI vs `claude -p` API credits). Per
-   *  agent for shape parity, but only claude is meaningful today. */
   accessMode: Partial<Record<Agent, ClaudeAccessMode>>;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function buildLocalChannelStates(rawConfig: Partial<UserConfig>): NonNullable<SetupState['channels']> {
-  // Hydrate env-only channel tokens (docker / systemd) so the dashboard
-  // doesn't report "missing" when the operator passed `-e TELEGRAM_BOT_TOKEN=…`
-  // instead of editing setting.json.
   const config = applyChannelEnvFallback(rawConfig);
   const weixinBaseUrl = String(config.weixinBaseUrl || '').trim();
   const weixinBotToken = String(config.weixinBotToken || '').trim();
@@ -177,48 +151,23 @@ function buildLocalChannelStates(rawConfig: Partial<UserConfig>): NonNullable<Se
   ];
 }
 
-// ---------------------------------------------------------------------------
-// Dashboard event bus — pushes changes to WebSocket clients
-// ---------------------------------------------------------------------------
-
-/**
- * Events emitted on the dashboard event bus.
- *
- * - `stream-update`    — a stream snapshot changed (new text, phase transition)
- * - `sessions-changed` — session list may have changed (stream done, status update)
- */
 export type DashboardEventType = 'stream-update' | 'sessions-changed';
 
 export interface DashboardEvent {
   type: DashboardEventType;
-  /** agent:sessionId key for stream events, or workdir for session-list events */
   key?: string;
-  /** Inline snapshot for stream-update (avoids a round-trip fetch) */
   snapshot?: unknown;
 }
-
-// ---------------------------------------------------------------------------
-// Runtime singleton
-// ---------------------------------------------------------------------------
 
 class Runtime {
   private botRef: Bot | null = null;
   readonly runtimePrefs: RuntimePrefs = { models: {}, efforts: {}, workflow: {}, accessMode: {} };
 
-  /** Dashboard event bus — WebSocket connections subscribe to this. */
   readonly events = new EventEmitter();
 
-  /** Emit a dashboard event to all connected WebSocket clients. */
   emitDashboardEvent(event: DashboardEvent): void {
     this.events.emit('dashboard-event', event);
   }
-  /**
-   * Per-channel validation cache. Keyed by channel name so that changing
-   * one channel's credentials (or the channels array) doesn't invalidate
-   * the cached validation result for unrelated channels — which would
-   * otherwise flicker their UI status to "Validating…" until the next
-   * poll completes.
-   */
   private channelStateCache = new Map<NonNullable<SetupState['channels']>[number]['channel'], {
     key: string;
     expiresAt: number;
@@ -230,8 +179,6 @@ class Runtime {
   readonly defaultModels: Record<Agent, string> = DEFAULT_AGENT_MODELS;
 
   readonly defaultEfforts: Partial<Record<Agent, string>> = DEFAULT_AGENT_EFFORTS;
-
-  // -- Bot ref management --
 
   getBotRef(): Bot | null {
     return this.botRef;
@@ -252,29 +199,22 @@ class Runtime {
     for (const [agent, mode] of Object.entries(this.runtimePrefs.accessMode)) {
       if (agent === 'claude' && (mode === 'subscription' || mode === 'api')) bot.setClaudeAccessMode(mode);
     }
-    // Wire stream snapshots → dashboard WebSocket
     const prevPhases = new Map<string, string | null>();
     bot.onStreamSnapshot((sessionKey, snapshot) => {
       this.emitDashboardEvent({ type: 'stream-update', key: sessionKey, snapshot });
-      // Emit sessions-changed on phase *transitions* (not every snapshot update)
-      // so the sidebar refreshes when a session starts running, finishes, etc.
       const phase = snapshot && typeof snapshot === 'object' ? (snapshot as any).phase : null;
       const prev = prevPhases.get(sessionKey) ?? null;
       if (phase !== prev) {
         prevPhases.set(sessionKey, phase);
-        if (!phase) prevPhases.delete(sessionKey); // clean up null entries
+        if (!phase) prevPhases.delete(sessionKey);
         this.emitDashboardEvent({ type: 'sessions-changed', key: sessionKey });
       }
     });
   }
 
-  // -- Type guards --
-
   isAgent(value: unknown): value is Agent {
     return typeof value === 'string' && this.knownAgents.has(value as Agent);
   }
-
-  // -- Workdir --
 
   getRuntimeWorkdir(config: Partial<UserConfig>): string {
     return this.botRef?.workdir || resolveUserWorkdir({ config });
@@ -284,13 +224,8 @@ class Runtime {
     return this.getRuntimeWorkdir(config);
   }
 
-  // -- Agent / model / effort --
-
   getRuntimeDefaultAgent(config: Partial<UserConfig>): Agent {
     if (this.botRef) return this.botRef.defaultAgent;
-    // No bot yet (e.g. setup flow): resolve the stored preference (baseline
-    // 'codex' when unset) against installed CLIs so the dashboard never
-    // surfaces an uninstalled default the user can't run.
     const preferred = this.runtimePrefs.defaultAgent || config.defaultAgent || 'codex';
     return resolveDefaultAgent(preferred, listAgents().agents);
   }
@@ -335,8 +270,6 @@ class Runtime {
     if (pref === 'subscription' || pref === 'api') return pref;
     return resolveClaudeAccessMode(config);
   }
-
-  // -- Channel state cache --
 
   private credKeyForChannel(
     channel: NonNullable<SetupState['channels']>[number]['channel'],
@@ -385,13 +318,6 @@ class Runtime {
   ): Promise<NonNullable<SetupState['channels']>[number]> {
     switch (channel) {
       case 'weixin':
-        // The Weixin getupdates endpoint is a long-poll that holds the
-        // connection open for ~8s by default. For dashboard validation we
-        // only care whether the credentials are accepted (bad creds return
-        // an errcode quickly; good creds simply hold the poll). Use a
-        // tight internal timeout so we resolve well within the dashboard's
-        // CHANNEL_STATUS_VALIDATION_TIMEOUT_MS window — the abort path
-        // returns ret=0 which is treated as "valid".
         return validateWeixinConfig(
           config.weixinBaseUrl,
           config.weixinBotToken,
@@ -417,7 +343,6 @@ class Runtime {
     const config = applyChannelEnvFallback(rawConfig);
     const now = Date.now();
     const fallback = buildLocalChannelStates(config);
-    // Channels listed in the same order as buildLocalChannelStates().
     const channelOrder = fallback.map(state => state.channel);
 
     type Plan = {
@@ -442,10 +367,6 @@ class Runtime {
       return withTimeoutFallback(plan.livePromise!, CHANNEL_STATUS_VALIDATION_TIMEOUT_MS, plan.fallback);
     }));
 
-    // Persist freshly-validated channels into the per-channel cache. If a
-    // channel's validation timed out, keep the live promise alive in the
-    // background so the next dashboard poll can pick up the real result
-    // instantly instead of re-issuing the network call.
     plans.forEach((plan, i) => {
       if (!plan.livePromise) return;
       const state = resolved[i];
@@ -459,7 +380,6 @@ class Runtime {
       }
       void plan.livePromise.then(bgState => {
         if (!shouldCacheChannelStates([bgState])) return;
-        // Skip if newer credentials have replaced the cache for this channel.
         const current = this.channelStateCache.get(plan.channel);
         if (current && current.key !== plan.key) return;
         this.channelStateCache.set(plan.channel, {
@@ -472,8 +392,6 @@ class Runtime {
 
     return resolved;
   }
-
-  // -- Setup state --
 
   getSetupState(config = loadUserConfig(), agentOptions: AgentDetectOptions = {}): SetupState {
     const agents = listAgents(agentOptions).agents;
@@ -501,8 +419,6 @@ class Runtime {
     });
   }
 
-  // -- Logging --
-
   log(message: string, level: LogLevel = 'info'): void {
     writeScopedLog('dashboard', message, { level });
   }
@@ -515,9 +431,5 @@ class Runtime {
     this.log(message, 'warn');
   }
 }
-
-// ---------------------------------------------------------------------------
-// Singleton export
-// ---------------------------------------------------------------------------
 
 export const runtime = new Runtime();

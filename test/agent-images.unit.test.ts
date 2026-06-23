@@ -13,7 +13,6 @@ import {
 } from '../src/agent/images.ts';
 import type { MessageBlock } from '../src/agent/types.ts';
 
-// Minimal 1×1 transparent PNG.
 const PNG_BYTES = Buffer.from(
   '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4'
   + '890000000a49444154789c63000100000005000156c2c4360000000049454e44ae426082',
@@ -30,7 +29,6 @@ describe('attachAgentImage', () => {
   });
 
   it('inlines small images, uses file:// sentinel above threshold, and returns null for missing files', () => {
-    // --- inlines small images as data URLs and records imagePath/imageMime ---
     const smallFile = path.join(tmpDir, 'cover.png');
     fs.writeFileSync(smallFile, PNG_BYTES);
     const inlined = attachAgentImage({ imagePath: smallFile, caption: 'pikiloom cover' });
@@ -41,7 +39,6 @@ describe('attachAgentImage', () => {
     expect(inlined!.imageMime).toBe('image/png');
     expect(inlined!.imageCaption).toBe('pikiloom cover');
 
-    // --- file:// sentinel for images above the inline threshold ---
     const bigFile = path.join(tmpDir, 'big.png');
     fs.writeFileSync(bigFile, PNG_BYTES);
     const sentinel = attachAgentImage({ imagePath: bigFile, inlineThresholdBytes: 1 });
@@ -49,23 +46,21 @@ describe('attachAgentImage', () => {
     expect(sentinel!.content).toBe(`file://${bigFile}`);
     expect(sentinel!.imagePath).toBe(bigFile);
 
-    // --- null when the file does not exist ---
     expect(attachAgentImage({ imagePath: path.join(tmpDir, 'missing.png') })).toBeNull();
   });
 });
 
 describe('attachInlineImage', () => {
   it('persists when requested, inlines as data URL otherwise, and rejects non-image MIME types', () => {
-    // --- persists bytes under the per-session attachments dir when persist is set ---
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
     const homeSnapshot = process.env.HOME;
-    process.env.HOME = tmp; // sessionAttachmentsDir resolves under $HOME
+    process.env.HOME = tmp;
     try {
       const persisted = attachInlineImage({
         bytes: PNG_BYTES,
         mime: 'image/png',
         persist: { agent: 'codex', sessionId: 'abc', hint: 'cover' },
-        inlineThresholdBytes: 1, // force file:// path
+        inlineThresholdBytes: 1,
       });
       expect(persisted).not.toBeNull();
       expect(persisted!.imagePath).toBeDefined();
@@ -78,20 +73,17 @@ describe('attachInlineImage', () => {
       else process.env.HOME = homeSnapshot;
     }
 
-    // --- inlines as data URL when no persistence is requested ---
     const inlined = attachInlineImage({ bytes: PNG_BYTES, mime: 'image/png' });
     expect(inlined).not.toBeNull();
     expect(inlined!.content.startsWith('data:image/png;base64,')).toBe(true);
     expect(inlined!.imagePath).toBeUndefined();
 
-    // --- rejects non-image MIME types ---
     expect(attachInlineImage({ bytes: Buffer.from('hello'), mime: 'text/plain' })).toBeNull();
   });
 });
 
 describe('materializeImage & rewriteAttachmentBlocksForTransport', () => {
   it('materializes from imagePath/data URL, rejects non-images, and rewrites transport blocks', () => {
-    // --- materializeImage prefers imagePath when present ---
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
     const file = path.join(tmp, 'inline.png');
     fs.writeFileSync(file, PNG_BYTES);
@@ -111,7 +103,6 @@ describe('materializeImage & rewriteAttachmentBlocksForTransport', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
 
-    // --- materializeImage falls back to decoding a data: URL when imagePath is unset ---
     const fromDataUrl = materializeImage({
       type: 'image',
       content: `data:image/png;base64,${PNG_BYTES.toString('base64')}`,
@@ -120,10 +111,8 @@ describe('materializeImage & rewriteAttachmentBlocksForTransport', () => {
     expect(fromDataUrl).not.toBeNull();
     expect(fromDataUrl!.bytes.equals(PNG_BYTES)).toBe(true);
 
-    // --- materializeImage returns null for non-image blocks ---
     expect(materializeImage({ type: 'text', content: 'hi' })).toBeNull();
 
-    // --- rewriteAttachmentBlocksForTransport leaves small inline data URLs untouched ---
     const dataUrl = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
     const untouched = rewriteAttachmentBlocksForTransport(
       [{ type: 'image', content: dataUrl, imageMime: 'image/png' }],
@@ -131,7 +120,6 @@ describe('materializeImage & rewriteAttachmentBlocksForTransport', () => {
     );
     expect(untouched[0].content).toBe(dataUrl);
 
-    // --- rewriteAttachmentBlocksForTransport rewrites file:// sentinels to attachment HTTP URLs ---
     const rewritten = rewriteAttachmentBlocksForTransport(
       [{
         type: 'image',
@@ -144,7 +132,6 @@ describe('materializeImage & rewriteAttachmentBlocksForTransport', () => {
     expect(rewritten[0].content.startsWith('/api/sessions/codex/s1/attachment?p=')).toBe(true);
     expect(rewritten[0].imagePath).toBe('/tmp/codex/img.png');
 
-    // --- rewriteAttachmentBlocksForTransport preserves the original path through encode → decode round-trip ---
     const original = '/Users/admin/.codex/generated_images/abc/img.png';
     const roundTrip = rewriteAttachmentBlocksForTransport(
       [{
@@ -158,13 +145,10 @@ describe('materializeImage & rewriteAttachmentBlocksForTransport', () => {
     const token = new URL(roundTrip[0].content, 'http://localhost').searchParams.get('p') || '';
     expect(decodeAttachmentPathParam(token)).toBe(original);
 
-    // --- rewriteAttachmentBlocksForTransport passes through non-image blocks unchanged ---
     const textBlocks: MessageBlock[] = [{ type: 'text', content: 'hello' }];
     const passthrough = rewriteAttachmentBlocksForTransport(textBlocks, { agent: 'codex', sessionId: 's1' });
     expect(passthrough[0]).toEqual(textBlocks[0]);
 
-    // --- rewriteAttachmentBlocksForTransport rewrites file blocks and carries the
-    //     pristine download name as the `n` query param ---
     const fileBlocks: MessageBlock[] = [{
       type: 'file',
       content: 'file:///tmp/codex/report final.pdf',
@@ -193,7 +177,6 @@ describe('attachmentUrl', () => {
       .toBe('/Users/admin/.pikiloom/attachments/claude/sess-1/delivered/x-out.zip');
     expect(parsed.searchParams.get('n')).toBe('out.zip');
 
-    // No download name → no `n` param.
     const bare = new URL(attachmentUrl('claude', 'sess-1', '/tmp/a.png'), 'http://localhost');
     expect(bare.searchParams.has('n')).toBe(false);
   });
@@ -201,10 +184,8 @@ describe('attachmentUrl', () => {
 
 describe('resolveAllowedAttachmentPath', () => {
   it('enforces the allowlist across single workdir, no workdir, and multi-workspace setups', () => {
-    // --- rejects paths outside the allowlist ---
     expect(resolveAllowedAttachmentPath('/etc/passwd')).toBeNull();
 
-    // --- accepts files under the configured workdir ---
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-img-test-'));
     const file = path.join(tmp, 'asset.png');
     fs.writeFileSync(file, PNG_BYTES);
@@ -216,18 +197,8 @@ describe('resolveAllowedAttachmentPath', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
 
-    // --- rejects paths outside every allowed root (no workdir) ---
-    // /etc/hosts always exists and is outside every default allowlist root
-    // (~/.codex, ~/.claude, ~/.gemini, ~/.pikiloom/attachments, os.tmpdir()).
-    // Verifies the post-realpath allowlist check correctly denies it.
     expect(resolveAllowedAttachmentPath('/etc/hosts')).toBeNull();
 
-    // --- accepts files under any of multiple workdirs (multi-workspace setup) ---
-    // The dashboard attachment endpoint passes every registered workspace
-    // root — a session living in a non-primary workspace must still resolve.
-    // Workspaces are staged under the repo's gitignored .scratch/ dir because
-    // os.tmpdir() is itself an allowed root and would make both assertions
-    // pass trivially.
     const scratch = path.join(process.cwd(), '.scratch');
     fs.mkdirSync(scratch, { recursive: true });
     const wsA = fs.mkdtempSync(path.join(scratch, 'img-ws-a-'));
@@ -239,7 +210,6 @@ describe('resolveAllowedAttachmentPath', () => {
       const real = resolveAllowedAttachmentPath(wsFile, [wsA, wsB]);
       expect(real).not.toBeNull();
       expect(fs.realpathSync(real!)).toBe(fs.realpathSync(wsFile));
-      // Still rejected when the hosting workspace is absent from the list.
       expect(resolveAllowedAttachmentPath(wsFile, [wsA])).toBeNull();
     } finally {
       fs.rmSync(wsA, { recursive: true, force: true });

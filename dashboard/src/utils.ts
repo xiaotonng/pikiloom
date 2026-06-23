@@ -1,16 +1,6 @@
 import type { Agent } from './types';
 import type { SessionInfo } from './types';
 
-/**
- * Which ProviderKinds each agent driver can route BYOK Profiles through.
- * Mirrors the static `acceptedProviderKinds` declarations on the driver
- * classes in src/agent/drivers/*.ts and the runtime-time check in
- * src/model/injector.ts — those are the authority; this constant lets the
- * dashboard pre-filter the "我的模型" group without an extra API round-trip.
- *
- * Gemini is the strict one: the CLI doesn't accept a custom baseURL, so
- * only `google` (Google AI Studio keys) is a valid BYOK target.
- */
 export const AGENT_ACCEPTED_PROVIDER_KINDS: Record<Agent, readonly string[]> = {
   claude: ['anthropic', 'openai-compatible'],
   codex: ['openai', 'openai-compatible'],
@@ -59,7 +49,6 @@ export function cn(...classes: (string | false | undefined | null)[]): string {
 
 export interface AgentMeta {
   label: string;
-  /** Shortened label for compact UI (sidebar cards, etc.) */
   shortLabel: string;
   color: string;
   bg: string;
@@ -128,27 +117,12 @@ export function getAgentMeta(agent: string): AgentMeta {
 }
 
 export const EFFORT_OPTIONS: Record<Agent, string[]> = {
-  // "ultra" is the top rung: max reasoning depth + multi-agent Workflow
-  // orchestration, the same bundle as Claude's native `ultracode`. It is not a
-  // real --effort value — the backend decomposes it into (max, workflow=on) on
-  // every write path (decomposeEffortSelection), and picking any concrete rung
-  // turns orchestration back off. This is the single knob; there is no separate
-  // workflow toggle.
   claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   codex: ['low', 'medium', 'high', 'xhigh'],
   gemini: ['low', 'high'],
-  // The Hermes driver forwards the chosen value via ACP `session/set_mode`;
-  // upstream may or may not act on it depending on the bound model, but we
-  // surface the standard knob so users can change it from any picker.
   hermes: ['low', 'medium', 'high', 'xhigh'],
 };
 
-/**
- * Effort value to *display* as the current pick. Workflow is orthogonal under
- * the hood, but the UI folds "orchestration on" into the synthetic `ultra`
- * rung (claude only), mirroring the backend's decomposeEffortSelection. Pass
- * the raw stored effort + the agent's workflow flag.
- */
 export function foldUltraEffort(
   agentId: string,
   effort: string | null | undefined,
@@ -158,39 +132,38 @@ export function foldUltraEffort(
   return effort || '';
 }
 
-/**
- * Shorten a model ID for compact display.
- *   claude-opus-4-7          → opus-4-7
- *   claude-sonnet-4-6        → sonnet-4-6
- *   claude-haiku-4-5-20251001 → haiku-4-5
- *   gemini-2.5-pro-preview   → 2.5-pro
- *   gpt-4o-mini              → 4o-mini
- *   o3                       → o3
- */
 export function shortenModel(model: string): string {
   let s = model;
-  // strip trailing date stamps like -20251001
   s = s.replace(/-\d{8,}$/, '');
-  // strip trailing -preview / -latest
   s = s.replace(/-(preview|latest|exp)$/, '');
-  // strip agent prefixes
   s = s.replace(/^(claude-|gemini-|gpt-)/, '');
   return s;
 }
 
-/** Mirror of the backend `isPendingSessionId` (src/agent/utils.ts): a brand-new
- *  session's optimistic stub id before the agent CLI hands back its native id.
- *  The pending→native swap is the SAME logical session, not a navigation. */
 export function isPendingSessionId(sessionId: string | null | undefined): boolean {
   return typeof sessionId === 'string' && sessionId.startsWith('pending_');
+}
+
+export function resolveCanonicalSessionId(
+  promotions: Record<string, string> | null | undefined,
+  agent: string,
+  sessionId: string,
+): string {
+  if (!promotions || !sessionId) return sessionId;
+  let id = sessionId;
+  const seen = new Set<string>();
+  while (!seen.has(id)) {
+    seen.add(id);
+    const next = promotions[`${agent}:${id}`];
+    if (!next || next === id) break;
+    id = next;
+  }
+  return id;
 }
 
 export type SessionDisplayState = 'running' | 'completed' | 'incomplete' | 'waiting';
 export function sessionDisplayState(session: Pick<SessionInfo, 'running' | 'runState' | 'awaiting'>): SessionDisplayState {
   if (session.running || session.runState === 'running') return 'running';
-  // A turn ended, but the agent parked detached background work it intends to
-  // resume — surface "waiting" rather than a terminal "completed". Outranks
-  // completed/incomplete; the marker is cleared the next time the session runs.
   if (session.awaiting) return 'waiting';
   return session.runState === 'incomplete' ? 'incomplete' : 'completed';
 }
@@ -244,27 +217,11 @@ export function normalizeLiveSessionState(sessionKey: string, snapshot: unknown)
   };
 }
 
-// A terminal 'done' snapshot lingers in the live-state map for up to 15 min
-// (its TTL) so the sidebar doesn't flash the stale "running" sessionsMap state
-// in the brief gap between a stream ending and the sessions API confirming
-// completion. The hazard: that retained 'done' must not bury a *new* run.
-//
-// The sessions API is authoritative for "is a turn active" — it reflects the
-// bot's live runningTaskIds. So when the server reports this session running,
-// trust it UNLESS the 'done' we hold is newer than the server's last run update
-// by more than this margin (a stream genuinely just ended and the API hasn't
-// caught up — the flash window). A 'done' that merely coincides with, or
-// predates, the server's run update is stale: a follow-up turn started right
-// after the previous one finished (back-to-back, so done ≈ run-start), or a WS
-// reconnect replayed no fresh 'start'. The margin is small, so a real run that
-// outlasted it still flips to 'completed' on end.
 const DONE_OVERRIDES_RUNNING_MARGIN_MS = 2_000;
 
 export function applyLiveSessionState(session: SessionInfo, liveState?: LiveSessionState | null): SessionInfo {
   if (!liveState) return session;
 
-  // Don't let a stale 'done' paint a server-confirmed running session gray.
-  // (Unknown server timestamp → fall through and apply 'done' as before.)
   if (liveState.phase === 'done' && (session.running || session.runState === 'running')) {
     const serverUpdatedMs = session.runUpdatedAt ? Date.parse(session.runUpdatedAt) : NaN;
     if (Number.isFinite(serverUpdatedMs) && liveState.updatedAt - serverUpdatedMs <= DONE_OVERRIDES_RUNNING_MARGIN_MS) {
@@ -309,11 +266,6 @@ const SESSION_PREVIEW_IGNORED_USER_PATTERNS = [
 
 const SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE = /\[Image:[^\]]+\]/gi;
 const SESSION_PREVIEW_FILE_PLACEHOLDER_RE = /\[Attached file:[^\]]+\]/gi;
-// Claude TUI prepends `@/abs/path/image.png` mentions to the prompt (see
-// src/agent/drivers/claude-tui.ts). The backend's `sanitizeSessionUserPreviewText`
-// already strips these from `lastQuestion`; the client-side strip is defensive
-// for stale cached snapshots that pre-date the backend fix. Keep in lock-step
-// with src/agent/utils.ts:CLAUDE_AT_MENTION_IMAGE_RE.
 const CLAUDE_AT_MENTION_IMAGE_RE = /(^|\s)@(\/[^\s@\n]+\.(?:png|jpe?g|gif|webp|svg))(?=\s|$)/gi;
 
 function cleanSessionPreviewText(text?: string | null): string {
@@ -342,17 +294,6 @@ export function sanitizeSessionQuestionPreview(text?: string | null): string {
   return cleaned;
 }
 
-/**
- * MUST stay in lock-step with `src/agent/utils.ts:sessionListDisplayTitle`
- * (the canonical backend implementation). Same priority order, same
- * filtering — dashboard and IM channels show identical titles for a session.
- *
- * Order:
- *   1. `title`        — set ONCE from the original prompt; stable.
- *   2. `lastQuestion` — fallback only (Claude's Task tool can overwrite this
- *                       with sub-agent prompts; never use it as the primary).
- *   3. `sessionId`    — last-resort identifier.
- */
 export function sessionListDisplayText(session: Pick<SessionInfo, 'lastQuestion' | 'title' | 'sessionId'>): string {
   return cleanSessionPreviewText(session.title) || sanitizeSessionQuestionPreview(session.lastQuestion) || session.sessionId;
 }

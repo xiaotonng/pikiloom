@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makeTmpDir } from './support/env.js';
 
-// Import after side-effectful driver registration runs.
 import {
   findPikiloomSession,
   deleteAgentSession,
@@ -39,7 +38,6 @@ function makeRecord(workdir: string, sessionId: string, opts: Partial<ManagedSes
 
 describe('deleteAgentSession', () => {
   it('deletes sessions correctly: removes entry, preserves siblings, refuses running, handles missing', async () => {
-    // removes the index entry and per-session directory when scope is pikiloom-only
     {
       const workdir = makeTmpDir('pikiloom-del-');
       const record = makeRecord(workdir, 'sess-1');
@@ -60,7 +58,6 @@ describe('deleteAgentSession', () => {
       expect(fs.existsSync(sessionDir)).toBe(false);
     }
 
-    // leaves other sessions in the same workdir alone
     {
       const workdir = makeTmpDir('pikiloom-del-');
       saveSessionRecord(workdir, makeRecord(workdir, 'keep'));
@@ -72,12 +69,11 @@ describe('deleteAgentSession', () => {
       expect(remaining.map(s => s.sessionId)).toEqual(['keep']);
     }
 
-    // refuses to delete a session whose record is actively running
     {
       const workdir = makeTmpDir('pikiloom-del-');
       saveSessionRecord(workdir, makeRecord(workdir, 'running', {
         runState: 'running',
-        runPid: process.pid,         // current process is definitely alive
+        runPid: process.pid,
         runUpdatedAt: new Date().toISOString(),
       }));
 
@@ -86,11 +82,9 @@ describe('deleteAgentSession', () => {
       expect(result.refusedReason).toBe('session-running');
       expect(result.recordRemoved).toBe(false);
 
-      // Session should still be there.
       expect(findPikiloomSession(workdir, 'claude', 'running')).not.toBeNull();
     }
 
-    // returns ok=true with no record removed when the session does not exist (native-only delete)
     {
       const workdir = makeTmpDir('pikiloom-del-');
       const result = await deleteAgentSession({ workdir, agent: 'claude', sessionId: 'never-existed' });

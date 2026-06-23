@@ -5,9 +5,6 @@ import { collectSetupState, isSetupReady } from '../src/cli/onboarding.ts';
 import type { AgentInfo } from '../src/agent/index.ts';
 import { captureEnv, makeTmpDir, restoreEnv } from './support/env.ts';
 
-// Channel transports fall back to these env vars; the dev shell often has some
-// set, which would make resolveConfiguredChannels() see real channels. Clear
-// them so the supervisor truly sees zero channels.
 const CHANNEL_ENV_KEYS = [
   'TELEGRAM_BOT_TOKEN', 'TELEGRAM_ALLOWED_CHAT_IDS',
   'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_ALLOWED_CHAT_IDS',
@@ -18,9 +15,6 @@ const CHANNEL_ENV_KEYS = [
 
 const ISOLATION_ENV_KEYS = ['PIKILOOM_CONFIG', 'PIKILOOM_WORKDIR', 'DEFAULT_AGENT', ...CHANNEL_ENV_KEYS] as const;
 
-/** Point config at an isolated, channel-less setting.json (and strip channel
- *  env vars) so the supervisor resolves zero channels and never loads the
- *  host's real config. */
 function isolatedChannellessConfig(): void {
   for (const key of CHANNEL_ENV_KEYS) delete process.env[key];
   const path = `${makeTmpDir('dash-terminal-config-')}/setting.json`;
@@ -71,7 +65,6 @@ describe('HeadlessBot — dashboard terminal with no IM transport', () => {
     let resolved = false;
     const runPromise = bot.run().then(() => { resolved = true; });
     expect(bot.connected).toBe(true);
-    // run() blocks until stop — it must not resolve on its own.
     await Promise.resolve();
     expect(resolved).toBe(false);
 
@@ -87,7 +80,6 @@ describe('ChannelSupervisor — headless attaches to the dashboard with zero cha
 
   beforeEach(() => {
     restoreEnv(envSnapshot);
-    // No channel credentials → resolveConfiguredChannels() === [].
     isolatedChannellessConfig();
   });
 
@@ -106,8 +98,6 @@ describe('ChannelSupervisor — headless attaches to the dashboard with zero cha
     expect(dashboard.attachBot).toHaveBeenCalledTimes(1);
     expect(attached[0]?.connected).toBe(true);
 
-    // Idempotent: a second reconcile with the same (channel-less) config must
-    // not spawn a second headless bot.
     await supervisor.reconcile(loadUserConfig());
     expect(dashboard.attachBot).toHaveBeenCalledTimes(1);
 

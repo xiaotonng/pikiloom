@@ -1,17 +1,9 @@
-/**
- * Pure utility functions shared across all layers. No filesystem side effects, no state dependencies.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { whichSync as platformWhichSync } from './platform.js';
 
 export type ChatId = number | string;
 
-/**
- * If `dir` has a .gitignore, ignore managed `.pikiloom` state without hiding
- * `.pikiloom/skills`, which may be committed as project skills.
- */
 export function ensureGitignore(dir: string) {
   try {
     const gi = path.join(dir, '.gitignore');
@@ -35,7 +27,7 @@ export function ensureGitignore(dir: string) {
     const current = fs.readFileSync(gi, 'utf8');
     if (current === next) return;
     fs.writeFileSync(gi, next);
-  } catch { /* best-effort */ }
+  } catch {  }
 }
 
 export function envBool(name: string, def: boolean): boolean {
@@ -73,37 +65,11 @@ export function shellSplit(str: string): string[] {
 
 export const whichSync = platformWhichSync;
 
-/**
- * Strip ANSI terminal control sequences from a string. Covers the families
- * pikiloom runs into when scraping PTY screens (cursor positioning, SGR
- * colour / bold / italic, OSC titles, plus orphaned ESC bytes):
- *
- *   CSI:  ESC [ ...                — colours, cursor moves, line clears
- *   OSC:  ESC ] ... (BEL | ESC \)  — set window title, hyperlinks
- *   Other: ESC <single char>       — single-char escapes (RIS, IND, …)
- *
- * Some IM channels strip the raw ESC byte but pass through the trailing
- * `[3G` / `[1m` / `[38;2;…m` payload, which is how the user ends up seeing
- * "[3G你把" in Feishu. The regex matches with-or-without the leading ESC so
- * already-mangled output still gets cleaned. The leading-bracket fallback is
- * conservative — it only fires for known control verbs (digits/`;` then a
- * SGR/cursor letter), so legitimate text like "[3 second timeout]" survives.
- */
 export function stripAnsiEscapes(input: string): string {
   if (!input) return input;
-  // Drop OSC (operating system command) sequences first so their payload
-  // doesn't confuse the CSI matcher.
   let out = input.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-  // CSI with the leading ESC byte — match any final byte, even param-less
-  // (e.g. `\x1b[A` cursor-up, `\x1b[m` reset SGR). The ESC byte unambiguously
-  // signals a control sequence so we can be liberal here.
   out = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-  // CSI without the ESC byte (some IM channels strip the raw \x1b but pass
-  // through the `[3G` / `[38;2;…m` payload). Require at least one digit /
-  // semicolon in the params so legitimate text like "see [issue #42]" or
-  // "[3 second timeout]" doesn't get nibbled.
   out = out.replace(/\[[0-9;?]+[A-Za-z]/g, '');
-  // Any remaining ESC + single byte (RIS, IND, NEL, …).
   out = out.replace(/\x1b[@-Z\\-_]/g, '');
   return out;
 }
@@ -138,8 +104,6 @@ export function parseAllowedChatIds(raw: string): Set<ChatId> {
     const v = t.trim();
     if (!v) continue;
     const n = parseInt(v, 10);
-    // If the string is purely numeric, store as number for backward compat (Telegram).
-    // Otherwise store as string (Feishu, Discord, etc.).
     if (!Number.isNaN(n) && String(n) === v) ids.add(n);
     else if (v) ids.add(v);
   }
@@ -180,7 +144,6 @@ export function buildPrompt(text: string, files: string[]): string {
   return `${text || 'Please analyze this.'}\n\n[Files: ${files.map(f => path.basename(f)).join(', ')}]`;
 }
 
-/** Race a promise against a timeout, resolving with `fallback` on timeout or rejection. */
 export function withTimeoutFallback<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   return new Promise(resolve => {
     let settled = false;

@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { cn } from '../../utils';
 
-/* ── ChevronIcon — shared expand/collapse indicator ── */
 export function ChevronIcon({ open, className }: { open: boolean; className?: string }) {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -11,7 +10,6 @@ export function ChevronIcon({ open, className }: { open: boolean; className?: st
   );
 }
 
-/* ── CollapsibleCard — unified expandable panel ── */
 export function CollapsibleCard({
   open,
   onToggle,

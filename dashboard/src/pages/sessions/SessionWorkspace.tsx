@@ -11,6 +11,7 @@ import {
   fmtRelative,
   getAgentMeta,
   normalizeLiveSessionState,
+  resolveCanonicalSessionId,
   shortenModel,
   sessionDisplayState,
   sessionListContextText,
@@ -26,9 +27,6 @@ import { UserBubble } from './TurnView';
 import { ThinkingDots } from './LivePreview';
 import { WorkspaceExtensionsModal } from '../extensions/WorkspaceExtensionsModal';
 
-// Kick off SessionPanel import the moment this module loads so the lazy boundary
-// resolves before the user can compose & send a new message. The previous
-// "preload on active" effect was reactive to mount and could lose the race.
 let sessionPanelModulePromise: Promise<typeof import('./SessionPanel')> | null = import('./SessionPanel');
 
 function preloadSessionPanel() {
@@ -38,7 +36,6 @@ function preloadSessionPanel() {
 
 const SessionPanel = lazy(async () => ({ default: (await preloadSessionPanel()).SessionPanel }));
 
-/* ── Constants ── */
 const PAGE_SIZE = 5;
 const AUTO_PREFETCH_DELAY_MS = 240;
 const HOVER_PREFETCH_DELAY_MS = 120;
@@ -48,26 +45,17 @@ const sKey = (agent: string, id: string) => `${agent}:${id}`;
 
 type SessionWithDepth = SessionInfo & { __forkDepth: number };
 
-/**
- * Reorder a flat session list so fork descendants render right after their
- * parent (with `__forkDepth` for indentation). Sessions without a `migratedFrom`
- * fork link stay in their natural sort order; orphan forks (parent missing
- * from the list) are demoted to top-level so they remain visible.
- */
 function groupForkDescendants(sessions: SessionInfo[]): SessionWithDepth[] {
   const byKey = new Map<string, SessionInfo>();
   for (const s of sessions) byKey.set(sKey(s.agent || '', s.sessionId), s);
 
-  // Build child map: parentKey -> children that fork off it. Order children
-  // by their original index so the sidebar's most-recent-first ordering carries
-  // through within a fork family.
   const childMap = new Map<string, SessionInfo[]>();
   const isForkChild = new Set<string>();
   for (const s of sessions) {
     const from = s.migratedFrom;
     if (!from || from.kind !== 'fork' || !from.sessionId) continue;
     const parentKey = sKey(from.agent || s.agent || '', from.sessionId);
-    if (!byKey.has(parentKey)) continue; // orphan — fall through as top-level
+    if (!byKey.has(parentKey)) continue;
     isForkChild.add(sKey(s.agent || '', s.sessionId));
     if (!childMap.has(parentKey)) childMap.set(parentKey, []);
     childMap.get(parentKey)!.push(s);
@@ -89,8 +77,6 @@ function groupForkDescendants(sessions: SessionInfo[]): SessionWithDepth[] {
     if (isForkChild.has(key)) continue;
     visit(s, 0);
   }
-  // Catch any orphan children whose parent fell out of the filtered list:
-  // render them as top-level so they don't disappear.
   for (const s of sessions) {
     visit(s, 0);
   }
@@ -100,11 +86,6 @@ function groupForkDescendants(sessions: SessionInfo[]): SessionWithDepth[] {
 let _slotKeySeq = 0;
 function nextMountKey() { return `mk-${Date.now().toString(36)}-${(++_slotKeySeq).toString(36)}`; }
 
-/* ── Persisted workspace-layout storage ──
-   Uses localStorage (NOT sessionStorage) so the set of open session windows
-   survives a full browser restart and is shared across every tab of the same
-   origin. On read we fall back to the legacy sessionStorage key once and
-   migrate it forward, so windows opened before this change aren't lost. */
 function layoutGet(key: string): string | null {
   try {
     const v = localStorage.getItem(key);
@@ -121,30 +102,20 @@ function layoutSet(key: string, value: string) {
   try { localStorage.setItem(key, value); } catch {}
 }
 
-/* ── Workspace layout ladder ──
-   The session grid steps through these slot counts. Opening a window past the
-   current capacity climbs to the next rung (1→2→3→6); closing one descends to
-   the smallest rung that still holds the remaining windows. Auto-degrade never
-   drops below `floorMode` (the resolution default, or the user's last manual
-   pick); at the top rung a new window overlays the active slot instead of
-   growing. The layout therefore tracks the window count without manual toggling. */
 type LayoutMode = 1 | 2 | 3 | 6;
 const LAYOUT_LADDER: readonly LayoutMode[] = [1, 2, 3, 6];
 const MAX_LAYOUT: LayoutMode = 6;
 
-/** Smallest ladder rung that can display `count` windows (capped at the max). */
 function fitLayout(count: number): LayoutMode {
   for (const m of LAYOUT_LADDER) if (m >= count) return m;
   return MAX_LAYOUT;
 }
 
-/** Resolution-derived default slot count — the initial auto-degrade floor. */
 function defaultLayoutMode(): LayoutMode {
   const w = typeof window !== 'undefined' ? window.innerWidth : 1280;
   return w >= 1920 ? 3 : w >= 1280 ? 2 : 1;
 }
 
-/** Target rung for `count` open windows, never below `floor`, never above max. */
 function layoutForCount(count: number, floor: LayoutMode): LayoutMode {
   const fit = fitLayout(count);
   return fit > floor ? fit : floor;
@@ -180,16 +151,11 @@ function targetLabelKey(target: OpenTarget) {
   }
 }
 
-/* ══════════════════════════════════════════════════════
-   Main Three-Column Layout
-   ══════════════════════════════════════════════════════ */
 export const SessionWorkspace = memo(function SessionWorkspace({
   active = true,
 }: {
   active?: boolean;
 }) {
-  // Granular selectors — only re-render when locale or runtimeWorkdir changes.
-  // Store-level changes (toasts, host, tab, theme) do NOT trigger re-render here.
   const locale = useStore(s => s.locale);
   const runtimeWorkdir = useStore(s => s.state?.runtimeWorkdir ?? null);
   const t = useMemo(() => createT(locale), [locale]);
@@ -198,26 +164,13 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   const [sessionsMap, setSessionsMap] = useState<Record<string, SessionInfo[]>>({});
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [sidebarLoading, setSidebarLoading] = useState(true);
-  // Multi-session window state: fixed-size slots determined by layoutMode
-  // mountKey stays stable across session promotion (pending→native) so the
-  // React tree keeps the panel mounted instead of remounting and losing state.
-  // pendingPrompt/pendingImageUrls are TRANSIENT (stripped before persistence):
-  // they carry the just-sent message of a brand-new session ON the slot itself, so
-  // the SessionPanel mounts with the optimistic bubble already in hand. Routing it
-  // through separate state + an isActive gate raced the slot's mount (the bubble
-  // flickered to a spinner right after pressing enter); the slot is one object that
-  // commits atomically with the panel, so there is no race.
   type SessionSlot = { agent: string; sessionId: string; workdir: string; mountKey: string; pendingPrompt?: string | null; pendingImageUrls?: string[] };
 
-  // Restore workspace layout from localStorage (default by screen width)
   const [layoutMode, setLayoutModeRaw] = useState<LayoutMode>(() => {
     const v = layoutGet('pikiloom-layout-mode');
     if (v === '1' || v === '2' || v === '3' || v === '6') return Number(v) as LayoutMode;
     return defaultLayoutMode();
   });
-  // Auto-degrade floor: closing windows never shrinks the grid below this. Seeds
-  // from the resolution default; a manual layout pick (handleSelectLayoutMode)
-  // overrides it so the user's explicit choice becomes the new minimum.
   const [floorMode, setFloorModeRaw] = useState<LayoutMode>(() => {
     const v = layoutGet('pikiloom-layout-floor');
     if (v === '1' || v === '2' || v === '3' || v === '6') return Number(v) as LayoutMode;
@@ -239,7 +192,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     return 0;
   });
 
-  // Persist wrappers — write to localStorage on every change (shared across tabs)
   const setLayoutMode = useCallback((mode: LayoutMode) => {
     setLayoutModeRaw(mode);
     layoutSet('pikiloom-layout-mode', String(mode));
@@ -251,9 +203,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   const setOpenSessions = useCallback((updater: SessionSlot[] | ((prev: SessionSlot[]) => SessionSlot[])) => {
     setOpenSessionsRaw(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      // Strip the transient optimistic prompt fields — they only matter for the
-      // live mount of a fresh session, never across a reload (blob image URLs
-      // would be dead anyway).
       const persistable = next.map(({ pendingPrompt: _p, pendingImageUrls: _i, ...rest }) => rest);
       layoutSet('pikiloom-open-sessions', JSON.stringify(persistable));
       return next;
@@ -266,24 +215,18 @@ export const SessionWorkspace = memo(function SessionWorkspace({
       return next;
     });
   }, []);
-  // Manual layout pick from the footer toggle. The chosen mode also becomes the
-  // new auto-degrade floor — an explicit choice overrides the resolution default
-  // (e.g. picking "Six" keeps six panes even after windows close).
   const handleSelectLayoutMode = useCallback((mode: LayoutMode) => {
     setLayoutMode(mode);
     setFloorMode(mode);
   }, [setLayoutMode, setFloorMode]);
 
-  // When layout shrinks, trim open sessions to fit
   useEffect(() => {
     setOpenSessions(prev => prev.length > layoutMode ? prev.slice(0, layoutMode) : prev);
     setActiveSlotIndex(prev => prev >= layoutMode ? layoutMode - 1 : prev);
   }, [layoutMode]);
 
-  // Floating file-tree panel — at most one open at a time
   const [fileTreeOpen, setFileTreeOpen] = useState(false);
 
-  // Refs so setSelectedSession stays stable and all callers see current values
   const layoutModeRef = useRef(layoutMode);
   layoutModeRef.current = layoutMode;
   const floorModeRef = useRef(floorMode);
@@ -292,10 +235,8 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   activeSlotRef.current = activeSlotIndex;
   const openSessionsRef = useRef(openSessions);
   openSessionsRef.current = openSessions;
-  // Track which grid slot the NewSessionView occupies (updated during render IIFE)
   const newSessionSlotRef = useRef(-1);
 
-  // Compat shim: selectedSession points to the active slot
   const selectedSession = openSessions[activeSlotIndex] ?? null;
   const setSelectedSession = useCallback((next: SessionSlot | null) => {
     if (!next) {
@@ -307,26 +248,20 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     setOpenSessions(prev => {
       const existingIdx = prev.findIndex(s => s.agent === withKey.agent && s.sessionId === withKey.sessionId);
       if (existingIdx >= 0) {
-        // Already open — just activate
         setActiveSlotIndex(existingIdx);
         return prev;
       }
-      // Room available — fill leftmost empty slot (= end of dense array)
       if (prev.length < layoutModeRef.current) {
         const newList = [...prev, withKey];
         setActiveSlotIndex(newList.length - 1);
         return newList;
       }
-      // Grid full but we can still climb the ladder — grow one rung and append
-      // instead of evicting (auto-embed: 2→3→6).
       if (layoutModeRef.current < MAX_LAYOUT) {
         const newList = [...prev, withKey];
         setLayoutMode(layoutForCount(newList.length, floorModeRef.current));
         setActiveSlotIndex(newList.length - 1);
         return newList;
       }
-      // At the top rung — fall back to overlay: replace the active slot (evict
-      // what the user is currently viewing).
       const newList = [...prev];
       newList[activeSlotRef.current] = withKey;
       return newList;
@@ -338,6 +273,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterMode>('all');
   const [liveSessionStates, setLiveSessionStates] = useState<Record<string, LiveSessionState>>({});
+  const [promotionsByWs, setPromotionsByWs] = useState<Record<string, Record<string, string>>>({});
   const deferredSearch = useDeferredValue(search);
   const initializedRef = useRef(false);
   const inflightLoadsRef = useRef<Record<string, boolean>>({});
@@ -354,15 +290,26 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     }
   }, []);
 
-  /* ── Load workspaces (API already includes runtimeWorkdir) ── */
+  useEffect(() => {
+    setOpenSessions(prev => {
+      let changed = false;
+      const next = prev.map(slot => {
+        const promos = promotionsByWs[slot.workdir];
+        if (!promos) return slot;
+        const canonical = resolveCanonicalSessionId(promos, slot.agent, slot.sessionId);
+        if (canonical === slot.sessionId) return slot;
+        changed = true;
+        return { ...slot, sessionId: canonical };
+      });
+      return changed ? next : prev;
+    });
+  }, [promotionsByWs, setOpenSessions]);
+
   const loadWorkspaces = useCallback(async () => {
     try {
       const res = await api.getWorkspaces();
       const list = res.ok ? res.workspaces : [];
       if (list.length) {
-        // Preserve previous reference when content is unchanged so the
-        // `workspaces` dep of downstream effects doesn't fire on benign
-        // refetches (StrictMode double-mount, focus refresh, etc.).
         setWorkspaces(prev => (
           prev.length === list.length
           && prev.every((p, i) => p.path === list[i].path && p.name === list[i].name)
@@ -380,7 +327,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
 
   useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
 
-  /* ── Load sessions for a workspace ── */
   const loadSessionsForWorkspace = useCallback(async (
     wsPath: string,
     opts: { background?: boolean; force?: boolean } = {},
@@ -393,10 +339,16 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     try {
       const res = await loadWorkspaceSessions(wsPath, { force: opts.force });
       startTransition(() => {
+        setPromotionsByWs(prev => {
+          const next = res.promotions || {};
+          const cur = prev[wsPath];
+          if (cur && Object.keys(cur).length === Object.keys(next).length
+              && Object.entries(next).every(([k, v]) => cur[k] === v)) return prev;
+          return { ...prev, [wsPath]: next };
+        });
         setSessionsMap(prev => {
           const incoming = res.sessions || [];
           const existing = prev[wsPath] || [];
-          // Preserve optimistic stubs not yet present in API response
           const incomingIds = new Set(incoming.map(s => sKey(s.agent || '', s.sessionId)));
           const stubs = existing.filter(s => {
             if (s.runState !== 'running') return false;
@@ -422,7 +374,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     }
   }, []);
 
-  // Re-fetch workspace list + sessions when the active workdir changes (e.g. user switches directory)
   const runtimeWorkdirRef = useRef(runtimeWorkdir);
   useEffect(() => {
     if (runtimeWorkdir === runtimeWorkdirRef.current) return;
@@ -484,20 +435,15 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     };
   }, [active, loadSessionsForWorkspace, loadingMap, sessionsMap, workspaces]);
 
-  // SSE-driven: refresh session list when server signals a change (targeted by session key).
-  // Debounce per-workspace to avoid redundant API calls on rapid phase transitions
-  // (e.g. null → queued → streaming within 100ms).
   const sessionsChangedTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   useDashboardEvent(
     active && initializedRef.current && workspaces.length > 0 ? 'sessions-changed' : null,
     useCallback((event) => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       const eventKey = event.key;
-      // Find workspace(s) that contain this session, or refresh all if unknown
       const targets = eventKey
         ? workspaces.filter(ws => (sessionsMapRef.current[ws.path] || []).some(s => sKey(s.agent || '', s.sessionId) === eventKey))
         : workspaces;
-      // If the session isn't in any known workspace yet (new session), refresh all
       const toRefresh = targets.length ? targets : workspaces;
       const timers = sessionsChangedTimers.current;
       for (const ws of toRefresh) {
@@ -523,25 +469,12 @@ export const SessionWorkspace = memo(function SessionWorkspace({
       if (!key) return;
       const live = normalizeLiveSessionState(key, event.snapshot ?? null);
       setLiveSessionStates(prev => {
-        // Stream ended (null snapshot). Keep the entry as phase 'done' so the
-        // sidebar doesn't flash back to the stale sessionsMap 'running' state
-        // before the sessions-changed API refresh completes. No-op once 'done'.
         if (!live) {
           const cur = prev[key];
           if (!cur || cur.phase === 'done') return prev;
           return { ...prev, [key]: { ...cur, phase: 'done', updatedAt: Date.now() } };
         }
 
-        // ── Hot path: coalesce per-token churn ──────────────────────────────
-        // This map feeds ONLY the sidebar row + the open slot's `session` prop
-        // (via applyLiveSessionState) and the pending-stub dedup — none of which
-        // depend on `updatedAt`. A streaming turn keeps phase 'streaming' for its
-        // whole life, so without this guard every token delta minted a new map,
-        // recomputed `filteredByWs`, re-rendered every sidebar row, and flipped
-        // each slot's `session` identity (busting SessionPanel's memo) — the whole
-        // 2k-line shell reconciled tens of times a second, which reads as flicker.
-        // Bail when nothing the sidebar renders changed; the active panel still
-        // streams via its own per-session 'stream-update' subscription.
         const renderEqual = (a?: LiveSessionState, b?: LiveSessionState) =>
           !!a && !!b
           && a.phase === b.phase
@@ -554,9 +487,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
           || renderEqual(prev[live.resolvedKey], { ...live, key: live.resolvedKey });
         if (primaryUnchanged && resolvedUnchanged) return prev;
 
-        // A render-relevant field changed (new run, phase flip, promotion, error).
-        // Rebuild — aging out only stale *done* entries; a still-active stream is
-        // never evicted (its `updatedAt` is intentionally frozen by the bail above).
         const cutoff = Date.now() - LIVE_SESSION_STATE_MAX_AGE_MS;
         const next: Record<string, LiveSessionState> = {};
         for (const [entryKey, entry] of Object.entries(prev)) {
@@ -572,7 +502,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     }, []),
   );
 
-  // Refresh all workspaces after WS reconnect (covers missed events)
   useDashboardReconnect(useCallback(() => {
     if (!active || !initializedRef.current || workspaces.length === 0) return;
     for (const ws of workspaces) {
@@ -626,7 +555,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     };
   }, [active, sessionsMap, warmSession, workspaces]);
 
-  /* ── Add / remove workspace — stable callbacks ── */
   const handleAddWorkspace = useCallback(async (wsPath: string) => {
     try {
       const res = await api.addWorkspace(wsPath);
@@ -665,7 +593,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     void loadSessionsForWorkspace(wsPath, { force: true });
   }, [loadSessionsForWorkspace]);
 
-  /* ── Delete single session ─────────────────────────────── */
   type DeleteSessionTarget = {
     workdir: string;
     agent: string;
@@ -677,9 +604,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   const [deletingSession, setDeletingSession] = useState(false);
   const toastSession = useStore(s => s.toast);
 
-  /* ── Session row actions popover (anchored to kebab button) ─── */
   const [sessionMenu, setSessionMenu] = useState<{
-    /** Bottom-right corner of the kebab — menu's right edge aligns to anchor.right. */
     anchor: { right: number; bottom: number };
     target: DeleteSessionTarget;
   } | null>(null);
@@ -696,7 +621,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     });
   }, []);
 
-  // Close popover on outside click, scroll, resize, or Escape.
   useEffect(() => {
     if (!sessionMenu) return;
     const close = () => setSessionMenu(null);
@@ -730,7 +654,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         toastSession(msg, false);
         return;
       }
-      // Drop from the workspace's session list and any open slots.
       setSessionsMap(prev => {
         const list = prev[target.workdir];
         if (!list) return prev;
@@ -751,9 +674,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     }
   }, [confirmDeleteSession, deleteSessionPurgeNative, t, toastSession]);
 
-  /* ── New session — transition after InputComposer creates it ── */
-  // Clear a slot's optimistic prompt once the panel has consumed it into its own
-  // state (so a later re-render doesn't keep re-feeding it).
   const clearSlotPending = useCallback((mountKey: string) => {
     setOpenSessions(prev => {
       let changed = false;
@@ -785,9 +705,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
       return { ...prev, [next.workdir]: [stub, ...existing] };
     });
     const targetSlot = newSessionSlotRef.current;
-    // The optimistic prompt rides ON the slot — one object that commits with the
-    // panel mount, so the SessionPanel always has the just-sent message on its very
-    // first render (no spinner flash, shows the instant enter is pressed).
     const slot: SessionSlot = {
       ...next,
       mountKey: nextMountKey(),
@@ -807,11 +724,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     void loadSessionsForWorkspace(next.workdir, { background: true, force: true });
   }, [loadSessionsForWorkspace, warmSession, setOpenSessions, setActiveSlotIndex]);
 
-  /* ── Open / cancel the new-session composer ──
-     Opening "+" climbs a rung when every slot is occupied so the composer gets
-     its own pane (instead of overlaying an active session). At the top rung it
-     overlays, mirroring the new-window behavior. Cancelling collapses back to
-     fit the real open windows so the borrowed pane doesn't linger. */
   const handleOpenNewSession = useCallback((wsPath: string) => {
     if (openSessionsRef.current.length >= layoutModeRef.current && layoutModeRef.current < MAX_LAYOUT) {
       setLayoutMode(layoutForCount(layoutModeRef.current + 1, floorModeRef.current));
@@ -824,12 +736,9 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     setLayoutMode(layoutForCount(openSessionsRef.current.length, floorModeRef.current));
   }, [setLayoutMode]);
 
-  /* ── Select session — stable callback that takes wsPath ── */
   const handleSelectSession = useCallback((session: SessionInfo, workdir: string) => {
     warmSession(session, workdir);
     const agent = session.agent || '';
-    // Selecting an already-open session fills no new pane; if the composer had
-    // borrowed a grown pane, collapse it back to fit (no-op in every other case).
     if (openSessionsRef.current.some(s => s.agent === agent && s.sessionId === session.sessionId)) {
       setLayoutMode(layoutForCount(openSessionsRef.current.length, floorModeRef.current));
     }
@@ -843,8 +752,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     warmSession({ agent: next.agent, sessionId: next.sessionId, runState: 'running' }, next.workdir);
     startTransition(() => {
       if (fromSlotIdx != null) {
-        // Session promotion: update sessionId but preserve mountKey so the
-        // panel stays mounted and doesn't lose streaming state.
         setOpenSessions(prev => {
           if (fromSlotIdx >= prev.length) return prev;
           const updated = [...prev];
@@ -859,7 +766,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     void loadSessionsForWorkspace(next.workdir, { background: true, force: true });
   }, [loadSessionsForWorkspace, warmSession]);
 
-  /* ── Filter sessions — memoized per workspace to avoid new-array-on-every-render ── */
   const filterFn = useCallback((sessions: SessionInfo[]): SessionInfo[] => {
     let result = sessions;
     if (filter === 'running') result = result.filter(s => sessionDisplayState(s) === 'running');
@@ -881,36 +787,29 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     const out: Record<string, SessionInfo[]> = {};
     for (const ws of workspaces) {
       const all = (sessionsMap[ws.path] || []).map(hydrateSession);
-      // Collapse pending stubs onto their resolved (native) entry: when a new
-      // session is created, the optimistic stub holds a `pending_xxx` ID while
-      // the API returns the real native ID after promotion. liveSessionStates
-      // links them via resolvedKey; without this dedup, both render until the
-      // next API refresh.
+      const promos = promotionsByWs[ws.path];
       const byCanonical = new Map<string, SessionInfo>();
       for (const s of all) {
         const key = sKey(s.agent || '', s.sessionId);
         const live = liveSessionStates[key];
-        const canonical = live?.resolvedKey && live.resolvedKey !== key ? live.resolvedKey : key;
+        const promoted = promos ? resolveCanonicalSessionId(promos, s.agent || '', s.sessionId) : s.sessionId;
+        const canonical = live?.resolvedKey && live.resolvedKey !== key
+          ? live.resolvedKey
+          : (promoted !== s.sessionId ? sKey(s.agent || '', promoted) : key);
         const prev = byCanonical.get(canonical);
         if (!prev) {
           byCanonical.set(canonical, s);
           continue;
         }
-        // Prefer the entry whose own key matches canonical (the real session over a pending stub).
         const prevKey = sKey(prev.agent || '', prev.sessionId);
         if (prevKey !== canonical && key === canonical) byCanonical.set(canonical, s);
       }
       const filtered = filterFn([...byCanonical.values()]);
-      // Group fork descendants under their parents: render parent first, then
-      // its fork children (recursively) right after, with `forkDepth` for the
-      // sidebar to render an indent. This relies on `migratedFrom.kind === 'fork'`
-      // — sessions without that link stay in their natural sort order.
       out[ws.path] = groupForkDescendants(filtered);
     }
     return out;
-  }, [workspaces, sessionsMap, liveSessionStates, filterFn, hydrateSession]);
+  }, [workspaces, sessionsMap, liveSessionStates, promotionsByWs, filterFn, hydrateSession]);
 
-  /* ── Derived: resolve SessionInfo for each open slot ── */
   const resolveSlotInfo = useCallback((slot: SessionSlot): SessionInfo => {
     const resolved = (sessionsMap[slot.workdir] || []).find(
       s => s.sessionId === slot.sessionId && s.agent === slot.agent,
@@ -922,22 +821,17 @@ export const SessionWorkspace = memo(function SessionWorkspace({
     return hydrateSession(resolved);
   }, [hydrateSession, sessionsMap]);
 
-  // All open session keys for sidebar highlight
   const openSessionKeys = useMemo(() => new Set(openSessions.map(s => sKey(s.agent, s.sessionId))), [openSessions]);
   const selectedKey = selectedSession ? sKey(selectedSession.agent, selectedSession.sessionId) : null;
 
-  /* ── Close a session slot ── */
   const handleCloseSlot = useCallback((index: number) => {
     setOpenSessions(prev => {
       const next = prev.filter((_, i) => i !== index);
-      // Adjust activeSlotIndex
       if (next.length === 0) {
         setActiveSlotIndex(0);
       } else if (activeSlotRef.current >= next.length) {
         setActiveSlotIndex(next.length - 1);
       }
-      // Auto-degrade: shrink to the smallest rung that still fits what's left,
-      // but never below the floor (6→3→2…).
       setLayoutMode(layoutForCount(next.length, floorModeRef.current));
       return next;
     });
@@ -945,9 +839,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
 
   return (
     <div className="h-full overflow-hidden p-4 flex gap-3 mx-auto">
-      {/* ═══ Left Panel — Session Navigator ═══ */}
       <div className="panel-isolated w-[252px] shrink-0 flex flex-col overflow-hidden rounded-xl border border-edge bg-panel backdrop-blur-sm" style={{ boxShadow: 'var(--th-card-shadow)' }}>
-        {/* Search + Filter */}
         <div className="px-3 pt-3 pb-2 space-y-2">
           <div className="relative group">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-5/40 group-focus-within:text-fg-4 transition-colors">
@@ -988,7 +880,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
           </div>
         </div>
 
-        {/* Workspace list */}
         <div className="flex-1 overflow-y-auto">
           {sidebarLoading ? (
             <div className="flex items-center justify-center py-12">
@@ -1020,9 +911,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
           )}
         </div>
 
-        {/* Footer: layout toggle + add workspace */}
         <div className="shrink-0 border-t border-edge/20 px-3 py-2 space-y-1.5">
-          {/* Layout mode selector: 1 / 2 / 3 / 6 slots */}
           <div className="flex items-center rounded-md bg-inset/30 border border-edge/20 p-0.5">
             {([1, 2, 3, 6] as const).map(mode => (
               <button
@@ -1060,7 +949,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         </div>
       </div>
 
-      {/* ═══ Center Panel — Grid of session slots ═══ */}
       <div
         className="flex-1 min-w-0 flex flex-col overflow-hidden gap-0"
       >
@@ -1072,9 +960,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
           }}
         >
           {(() => {
-            // Pick which slot the NewSessionView should occupy: prefer
-            // the first empty slot so we don't cover an existing panel,
-            // fall back to the active slot when all slots are full.
             const newSessionSlot = !showNewSession ? -1
               : openSessions.length < layoutMode ? openSessions.length
               : activeSlotIndex;
@@ -1096,7 +981,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
               }
               const slot = openSessions[slotIdx] ?? null;
               if (!slot) {
-                // Empty slot placeholder
                 return (
                   <div
                     key={`empty-${slotIdx}`}
@@ -1126,12 +1010,10 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                   style={{ boxShadow: isActive ? 'var(--th-card-shadow), 0 0 0 1px rgba(14,165,233,0.08)' : 'var(--th-card-shadow)' }}
                   onClick={() => setActiveSlotIndex(slotIdx)}
                 >
-                  {/* Tab bar: [● workdir / title          created  updated  turns  📁  ×] */}
                   <div className={cn(
                     'shrink-0 flex items-center gap-2 px-2.5 h-8 border-b border-edge/30',
                     isActive ? 'bg-primary/[0.03]' : 'bg-panel/60',
                   )}>
-                    {/* Left: status · workdir / title */}
                     {(() => {
                       const state = sessionDisplayState(info);
                       return <Dot variant={state === 'running' ? 'ok' : state === 'waiting' ? 'info' : state === 'incomplete' ? 'warn' : 'idle'} pulse={state === 'running' || state === 'waiting'} />;
@@ -1143,7 +1025,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                         {info.title || info.lastQuestion?.slice(0, 60) || slot.sessionId.slice(0, 12)}
                       </span>
                     </div>
-                    {/* Right: meta + actions — always visible */}
                     <div className="shrink-0 flex items-center gap-2.5 pl-4 text-[9px] text-fg-5/50 tabular-nums">
                       <span title={t('hub.created')}>{fmtTime(info.createdAt)}</span>
                       {info.runUpdatedAt && <span title={t('hub.updated')}>{fmtRelative(info.runUpdatedAt)}</span>}
@@ -1198,7 +1079,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         </div>
       </div>
 
-      {/* ═══ Floating File Tree ═══ */}
       {fileTreeOpen && selectedSession && (
         <FloatingFileTree
           workdir={selectedSession.workdir}
@@ -1207,7 +1087,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         />
       )}
 
-      {/* Add workspace modal */}
       <AddWorkspaceModal
         open={showAddDialog}
         initialPath={runtimeWorkdir || undefined}
@@ -1216,7 +1095,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         t={t}
       />
 
-      {/* Confirm remove workspace modal */}
       <Modal open={!!confirmRemove} onClose={() => !removing && setConfirmRemove(null)}>
         <ModalHeader title={t('hub.removeWorkspace')} onClose={() => !removing && setConfirmRemove(null)} />
         <div className="text-[13px] text-fg-3 leading-relaxed">
@@ -1240,10 +1118,8 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         </div>
       </Modal>
 
-      {/* Session row actions popover — anchored under the kebab button */}
       {sessionMenu && (() => {
         const MENU_WIDTH = 160;
-        // Right-align to the kebab; clamp to viewport with 8px margins.
         const left = Math.max(8, Math.min(sessionMenu.anchor.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
         const top = Math.min(sessionMenu.anchor.bottom + 4, window.innerHeight - 60);
         return (
@@ -1272,7 +1148,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         );
       })()}
 
-      {/* Confirm delete session modal — choose between pikiloom-only and purge-native */}
       <Modal
         open={!!confirmDeleteSession}
         onClose={() => !deletingSession && setConfirmDeleteSession(null)}
@@ -1336,7 +1211,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         </div>
       </Modal>
 
-      {/* Workspace extensions modal */}
       <WorkspaceExtensionsModal
         open={!!extensionsWorkdir}
         onClose={() => setExtensionsWorkdir(null)}
@@ -1346,9 +1220,6 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   );
 });
 
-/* ══════════════════════════════════════════════════════
-   Add Workspace Modal — DirBrowser in a modal dialog
-   ══════════════════════════════════════════════════════ */
 function AddWorkspaceModal({
   open,
   initialPath,
@@ -1395,11 +1266,6 @@ function AddWorkspaceModal({
   );
 }
 
-/* ══════════════════════════════════════════════════════
-   New Session View — empty chat + InputComposer
-   Looks identical to a regular session: header, empty
-   message area, and the standard input bar at the bottom.
-   ══════════════════════════════════════════════════════ */
 function NewSessionView({
   workdir,
   workspaceName,
@@ -1436,8 +1302,6 @@ function NewSessionView({
 
   const handleSessionCreated = useCallback((next: { agent: string; sessionId: string; workdir: string }) => {
     const urls = pendingImageUrlsRef.current;
-    // Hand ownership of the blob URLs to the parent; SessionPanel will revoke them
-    // after the first turn completes. Clear our local refs so our unmount doesn't touch them.
     pendingImageUrlsRef.current = [];
     onSessionCreated(next, pendingRef.current || undefined, urls.length ? urls : undefined);
   }, [onSessionCreated]);
@@ -1446,7 +1310,6 @@ function NewSessionView({
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* ── Header ── */}
       <div className="shrink-0 flex items-center gap-2 px-4 h-10 border-b border-edge/50 bg-panel/40 backdrop-blur-md z-10">
         <span className="flex-1 min-w-0 text-[13px] font-medium text-fg truncate">{t('hub.newSession')}</span>
         <span className="flex items-center gap-1 text-[10px] text-fg-5/60 shrink-0">
@@ -1468,7 +1331,6 @@ function NewSessionView({
         )}
       </div>
 
-      {/* ── Message area ── */}
       <div className="flex-1 overflow-y-auto">
         {hasPending ? (
           <div className="max-w-[900px] mx-auto px-6 py-6 space-y-0">
@@ -1486,7 +1348,6 @@ function NewSessionView({
         )}
       </div>
 
-      {/* ── Input ── */}
       <InputComposer
         session={stubSession}
         workdir={workdir}
@@ -1500,17 +1361,6 @@ function NewSessionView({
   );
 }
 
-/* ══════════════════════════════════════════════════════
-   Workspace Group — collapsible, paginated (5 per page)
-   Callbacks now take wsPath as a parameter so parent can
-   pass stable function refs instead of inline closures.
-   ══════════════════════════════════════════════════════ */
-// Git status indicator for a workspace header — a single small branch icon
-// hugging the name. Color is the only always-on signal (amber = dirty tree,
-// sky = clean but diverged from upstream, muted = clean); everything else
-// (branch, upstream, ↑/↓, change breakdown) lives in the hover tooltip. The
-// header is a navigation row — it must not compete with the workspace name.
-// Renders nothing for non-git dirs.
 function GitBadge({ git }: { git: GitStatus | null }) {
   if (!git) return null;
   const tip = [
@@ -1574,7 +1424,6 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
   const [expanded, setExpanded] = useState(true);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
-  // Reset pagination when sessions change
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [sessions.length]);
 
   const visible = sessions.slice(0, visibleCount);
@@ -1590,7 +1439,6 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
 
   return (
     <div className="border-b border-edge/30">
-      {/* Workspace header */}
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-panel-h/50 transition-colors"
         onClick={() => setExpanded(v => !v)}
@@ -1648,7 +1496,6 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
         </div>
       </div>
 
-      {/* Sessions */}
       {expanded && (
         <div className="pb-1">
           {loading ? (
@@ -1696,9 +1543,6 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
   );
 });
 
-/* ══════════════════════════════════════════════════════
-   Session Card — 3 lines: agent+time, question, status dot
-   ══════════════════════════════════════════════════════ */
 const SessionCard = memo(function SessionCard({
   session,
   isSelected,
@@ -1713,13 +1557,10 @@ const SessionCard = memo(function SessionCard({
   session: SessionInfo;
   isSelected: boolean;
   isOpen?: boolean;
-  /** 0 = top-level. >0 = fork descendant; rendered with indent + connector. */
   forkDepth?: number;
   onClick: () => void;
   onWarm: () => void;
   onCancelWarm: () => void;
-  /** Called when the user clicks the kebab — receives its bounding rect so the
-   * parent can anchor a popover menu to it (no mouse coordinates needed). */
   onShowMenu: (anchor: DOMRect) => void;
   menuLabel: string;
 }) {
@@ -1754,7 +1595,6 @@ const SessionCard = memo(function SessionCard({
         ...(isOpen ? { borderLeft: `2px solid ${isSelected ? meta.color : `${meta.color}30`}` } : {}),
       }}
     >
-      {/* Row 1: agent + model + turns + time */}
       <div className="flex items-center gap-1.5 text-[10px] text-fg-5">
         {forkDepth > 0 && (
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-fg-5/60 shrink-0" aria-label="Fork">
@@ -1779,7 +1619,6 @@ const SessionCard = memo(function SessionCard({
           <span className="tabular-nums">{fmtRelative(session.runUpdatedAt || session.createdAt)}</span>
         </div>
       </div>
-      {/* Row 2: status dot + title */}
       <div className="mt-1 flex items-center gap-1.5">
         <Dot
           variant={displayState === 'running' ? 'ok' : displayState === 'waiting' ? 'info' : displayState === 'incomplete' ? 'warn' : 'idle'}
@@ -1793,9 +1632,6 @@ const SessionCard = memo(function SessionCard({
         </div>
       )}
     </button>
-      {/* Kebab — hidden by default, fades in on row hover/focus. Anchors the
-          actions popover via getBoundingClientRect, so it never spawns at the
-          mouse pointer. */}
       <button
         ref={kebabRef}
         type="button"
@@ -1817,9 +1653,6 @@ const SessionCard = memo(function SessionCard({
   );
 });
 
-/* ══════════════════════════════════════════════════════
-   Floating File Tree — toggled from session tab bar
-   ══════════════════════════════════════════════════════ */
 const FloatingFileTree = memo(function FloatingFileTree({
   workdir,
   onClose,
@@ -1851,7 +1684,6 @@ const FloatingFileTree = memo(function FloatingFileTree({
         right: 16, top: 80,
       }}
     >
-      {/* Title bar */}
       <div className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 border-b border-edge/30">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 text-fg-5">
           <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
@@ -1868,7 +1700,6 @@ const FloatingFileTree = memo(function FloatingFileTree({
         </button>
       </div>
 
-      {/* Open target selector */}
       <div className="shrink-0 px-2.5 py-1.5 border-b border-edge/20 flex items-center gap-2">
         <IconPicker
           value={openTarget}
@@ -1884,7 +1715,6 @@ const FloatingFileTree = memo(function FloatingFileTree({
         </Button>
       </div>
 
-      {/* File tree */}
       <div className="flex-1 overflow-y-auto px-1 py-1.5">
         <FileTree
           basePath={workdir}
@@ -1910,7 +1740,6 @@ function OpenTargetIcon({ target, size = 16 }: { target: OpenTarget; size?: numb
   return <BrandIcon brand={target} size={size} />;
 }
 
-/* ── Lazy-loading File Tree ── */
 interface TreeNode {
   entry: DirEntry;
   expanded: boolean;
@@ -2075,7 +1904,6 @@ function CopyPathButton({ filePath, t }: { filePath: string; t: (key: string) =>
   );
 }
 
-/* ── Helper: update a node deep in the tree by path ── */
 function updateNode(nodes: TreeNode[], targetPath: string, patch: Partial<TreeNode>): TreeNode[] {
   return nodes.map(n => {
     if (n.entry.path === targetPath) return { ...n, ...patch };

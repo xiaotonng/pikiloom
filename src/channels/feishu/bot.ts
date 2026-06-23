@@ -1,12 +1,3 @@
-/**
- * bot-feishu.ts — Feishu bot orchestration: commands, streaming, artifacts, lifecycle.
- *
- * Follows the same pattern as bot-telegram.ts:
- *   - Commands use shared data layer (bot-commands.ts) + Feishu renderer
- *   - Messages flow through the streaming pipeline
- *   - LivePreview provides real-time streaming updates via card edits
- */
-
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -107,11 +98,6 @@ function describeError(err: unknown): string {
   return parts.join(' | ');
 }
 
-/**
- * Decision echo rendered as a separate Feishu message after a human-loop
- * prompt resolves — so the answer becomes part of the conversation history
- * rather than living only inside the now-closed card.
- */
 function buildInteractionEchoMarkdown(summary: ResolvedHumanLoopAnswers): string | null {
   if (summary.status === 'cancelled') return '*⊘ Prompt cancelled.*';
   if (!summary.rows.length) return null;
@@ -165,17 +151,12 @@ function formatToolLog(activity: string | null | undefined): string {
   return summary.length <= 240 ? summary : `${summary.slice(0, 237).trimEnd()}...`;
 }
 
-// ---------------------------------------------------------------------------
-// FeishuBot
-// ---------------------------------------------------------------------------
-
 export class FeishuBot extends Bot {
   private appId: string;
   private appSecret: string;
   private domain: string;
   private channel!: FeishuChannel;
 
-  /** Maps chatId → (messageId → sessionKey) for reply-chain session tracking. */
   private sessionMessages = new SessionMessageRegistry<string, string>();
   private nextTaskId = 1;
   private shutdownInFlight = false;
@@ -187,15 +168,9 @@ export class FeishuBot extends Bot {
   constructor() {
     super();
     const config = getActiveUserConfig();
-    // Merge Feishu-specific allowed IDs into base
     if (process.env.FEISHU_ALLOWED_CHAT_IDS) {
       for (const id of parseAllowedChatIds(process.env.FEISHU_ALLOWED_CHAT_IDS)) this.allowedChatIds.add(id);
     }
-    // NOTE: persisted known chats are restored into channel.knownChats in run()
-    // (for the startup greeting / per-chat menu) — deliberately NOT into
-    // allowedChatIds. allowedChatIds is the explicit allowlist; folding known
-    // chats into it flips _isAllowed() from allow-all into allowlist-only and
-    // silently drops every new chat.
 
     this.appId = String(config.feishuAppId || process.env.FEISHU_APP_ID || '').trim();
     this.appSecret = String(config.feishuAppSecret || process.env.FEISHU_APP_SECRET || '').trim();
@@ -238,8 +213,6 @@ export class FeishuBot extends Bot {
     void this.setupMenu().catch(err => this.log(`menu refresh failed: ${err}`));
   }
 
-  // ---- signal handling ------------------------------------------------------
-
   private installSignalHandlers() {
     this.removeSignalHandlers();
     const onSigint = () => this.beginShutdown('SIGINT');
@@ -280,14 +253,8 @@ export class FeishuBot extends Bot {
   }
 
   private buildRestartEnv(): Record<string, string> {
-    // Hand off only the explicit allowlist. Known chats persist to setting.json
-    // (recordKnownChatId) and are restored via loadKnownChatIds, so they must NOT
-    // ride along in the allowlist env — that would re-pollute allowedChatIds on
-    // the next boot and lock out new chats.
     return buildKnownChatEnv(this.allowedChatIds, [], 'FEISHU_ALLOWED_CHAT_IDS');
   }
-
-  // ---- session tracking -----------------------------------------------------
 
   private createTaskId(session: SessionRuntime): string {
     return buildSessionTaskId(session, this.nextTaskId++);
@@ -325,8 +292,6 @@ export class FeishuBot extends Bot {
     if (selected) return selected;
     return this.ensureSession(ctx.chatId, text, files);
   }
-
-  // ---- commands -------------------------------------------------------------
 
   private async cmdStart(ctx: FeishuContext) {
     const d = getStartData(this, ctx.chatId);
@@ -480,7 +445,6 @@ export class FeishuBot extends Bot {
         );
         return;
       } catch {
-        // Not a valid agent name — show list
       }
     }
 
@@ -651,12 +615,6 @@ export class FeishuBot extends Bot {
     }
   }
 
-  /**
-   * IM presenter for programmatic submissions (e.g. /goal-driven turns) so
-   * they stream to Feishu the same way a typed message does. Without this,
-   * /goal just emits a confirmation reply and the rest of the turn is
-   * invisible to the IM user.
-   */
   protected override async createImTaskPresenter(opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
     if (typeof opts.chatId !== 'string') return null;
     const chatId = opts.chatId;
@@ -735,8 +693,6 @@ export class FeishuBot extends Bot {
     } catch {}
   }
 
-  // ---- streaming bridge -----------------------------------------------------
-
   private async handleMessage(msg: FeishuMessage, ctx: FeishuContext) {
     const text = msg.text.trim();
     if (!text && !msg.files.length) return;
@@ -747,7 +703,6 @@ export class FeishuBot extends Bot {
         await ctx.reply('Please answer the active prompt using the buttons above.');
         return;
       }
-      // Completed prompts close themselves via onInteractionAnswered.
       if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, result.prompt.promptId);
       return;
     }
@@ -755,12 +710,8 @@ export class FeishuBot extends Bot {
     const session = this.resolveIncomingSession(ctx, text, msg.files);
     const cs = this.chat(ctx.chatId);
     this.applySessionSelection(cs, session);
-    // Tie the user's own message to its session so a future Feishu reply to it
-    // (their own message, or a quote-chain rooted at it) resolves back to this
-    // session instead of falling through to the chat's current default.
     this.registerSessionMessage(ctx.chatId, ctx.messageId, session);
 
-    // File-only message: stage files
     if (!text && msg.files.length) {
       const hadPendingWork = this.sessionHasPendingWork(session);
       const stageTask = this.queueSessionTask(session, async () => {
@@ -819,9 +770,6 @@ export class FeishuBot extends Bot {
     const queuePosition = waiting ? this.getQueuePosition(session.key, taskId) : 0;
     const placeholderKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId), { queued: waiting });
 
-    // Use the canonical resolver so the labels in the IM card match what
-    // runStream actually invokes the agent with (and what the dashboard's
-    // `start` event reports).
     const startConfig = this.resolveSessionStreamConfig(session);
     const model = startConfig.model;
     const effort = startConfig.effort;
@@ -849,7 +797,6 @@ export class FeishuBot extends Bot {
           return;
         }
         this.emitStreamStart(taskId, session);
-        // Task is now running — update keyboard from Recall/Steer to Stop
         const runningKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId));
         if (placeholderId && waiting) {
           try {
@@ -878,7 +825,6 @@ export class FeishuBot extends Bot {
           livePreview.start();
         }
 
-        // MCP sendFile callback: sends files to IM in real-time during the stream
         const mcpSendFile = this.createMcpSendFileCallback(ctx);
 
         const result = await this.runStream(prompt, session, files, (nextText, nextThinking, nextActivity = '', meta, plan) => {
@@ -908,8 +854,6 @@ export class FeishuBot extends Bot {
           incomplete: !!result.incomplete,
           ...(result.ok ? {} : { error: result.error || result.message }),
         });
-        // If LivePreview already gave up on the placeholder (Feishu rejected too
-        // many consecutive edits) skip the doomed edit attempt and send fresh.
         const effectivePlaceholderId = livePreview?.isPlaceholderAbandoned() ? null : placeholderId;
         const finalReplyIds = await this.sendFinalReply({ chatId: ctx.chatId }, effectivePlaceholderId, session.agent, result);
         this.registerSessionMessages(ctx.chatId, finalReplyIds, session);
@@ -954,10 +898,6 @@ export class FeishuBot extends Bot {
     });
   }
 
-  /** Edit the placeholder if possible; otherwise send `text` as a fresh card
-   *  anchored to the placeholder so the user always sees the result. Returns
-   *  the message id that now carries `text` (the placeholder id if the edit
-   *  succeeded, or a newly-created id on fallback). */
   private async editOrSendFresh(
     chatId: string,
     placeholderId: string | null,
@@ -972,8 +912,6 @@ export class FeishuBot extends Bot {
       } catch (e: any) {
         this.debug(`[${tag}] placeholder edit failed, falling back to send chat=${chatId} placeholder=${placeholderId}: ${e?.message || e}`);
       }
-      // Try anchoring the fresh send to the placeholder so the result stays in
-      // the same visual thread.
       try {
         const sent = await this.channel.send(chatId, text, {
           replyTo: placeholderId,
@@ -984,7 +922,6 @@ export class FeishuBot extends Bot {
         this.debug(`[${tag}] reply send failed, dropping reply anchor chat=${chatId} placeholder=${placeholderId}: ${e?.message || e}`);
       }
     }
-    // Last resort: standalone fresh card.
     try {
       return await this.channel.send(chatId, text, { keyboard: opts.keyboard });
     } catch (e: any) {
@@ -1019,12 +956,9 @@ export class FeishuBot extends Bot {
 
     const MAX_CARD = FEISHU_BOT_CARD_MAX;
     if (rendered.fullText.length <= MAX_CARD) {
-      // Fits in one card — try to edit the placeholder, fall back to a fresh
-      // card if Feishu rejected the patch (message too old, recalled, ...).
       const finalId = await this.editOrSendFresh(anchor.chatId, placeholderId, rendered.fullText, { logTag: 'final-reply' });
       if (finalId) messageIds.push(finalId);
     } else {
-      // Split: first card has header + truncated body + footer, continuation as separate cards
       const maxFirst = MAX_CARD - rendered.headerText.length - rendered.footerText.length;
       let firstBody: string;
       let remaining: string;
@@ -1051,7 +985,6 @@ export class FeishuBot extends Bot {
       }
     }
 
-    // Dispatch any image MessageBlocks the agent produced this turn.
     const lastId = messageIds[messageIds.length - 1];
     const dispatched = await dispatchImageBlocks(this.channel, result.assistantBlocks, {
       chatId: anchor.chatId,
@@ -1065,7 +998,6 @@ export class FeishuBot extends Bot {
     return messageIds;
   }
 
-  /** Create an MCP sendFile callback bound to a Feishu chat context. */
   private createMcpSendFileCallback(ctx: FeishuContext): McpSendFileCallback {
     return async (filePath, opts) => {
       try {
@@ -1081,8 +1013,6 @@ export class FeishuBot extends Bot {
       }
     };
   }
-
-  // ---- command router -------------------------------------------------------
 
   async handleCommand(cmd: string, args: string, ctx: FeishuContext) {
     try {
@@ -1102,12 +1032,10 @@ export class FeishuBot extends Bot {
         case 'workspaces': await this.cmdWorkspaces(ctx); return;
         case 'restart':  await this.cmdRestart(ctx); return;
         default:
-          // Skill commands
           if (cmd.startsWith(FeishuBot.SKILL_CMD_PREFIX)) {
             await this.cmdSkill(cmd, args, ctx);
             return;
           }
-          // Unknown command — treat as message
           await this.handleMessage({ text: `/${cmd}${args ? ' ' + args : ''}`, files: [] }, ctx);
       }
     } catch (e: any) {
@@ -1139,8 +1067,6 @@ export class FeishuBot extends Bot {
       raw: ctx.raw,
     };
   }
-
-  // ---- callback handlers ----------------------------------------------------
 
   private async handleCallback(data: string, ctx: FeishuCallbackContext) {
     try {
@@ -1212,7 +1138,6 @@ export class FeishuBot extends Bot {
     const actionId = data.slice('tsk:steer:'.length).trim();
     const result = await this.steerTaskByActionId(actionId);
     if (!result.task) return true;
-    // The queued task will naturally run next after the running task is interrupted
     return true;
   }
 
@@ -1272,7 +1197,6 @@ export class FeishuBot extends Bot {
         if (runtime && sent) this.registerSessionMessage(chatId, sent, runtime);
       }
     } catch {
-      // non-critical
     }
   }
 
@@ -1284,8 +1208,6 @@ export class FeishuBot extends Bot {
     }
     this.log(`[message-recalled] cancelled queued task chat=${chatId} msg=${messageId} session=${task.sessionKey}`);
   }
-
-  // ---- lifecycle ------------------------------------------------------------
 
   async run() {
     const tmpDir = path.join(os.tmpdir(), 'pikiloom');
@@ -1300,8 +1222,6 @@ export class FeishuBot extends Bot {
         ? this.allowedChatIds as Set<string>
         : undefined,
     });
-    // Restore persisted known chats into the channel so the startup greeting and
-    // per-chat menu can address them — without polluting the allowlist.
     for (const id of loadKnownChatIds('feishu')) this.channel.knownChats.add(id);
     this.processRuntimeCleanup?.();
     this.processRuntimeCleanup = registerProcessRuntime({

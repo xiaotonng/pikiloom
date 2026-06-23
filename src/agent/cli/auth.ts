@@ -1,29 +1,8 @@
-/**
- * CLI auth + install runner.
- *
- * Two flows share a single streaming-child-session core:
- *
- *   - oauth-web: spawn `loginArgv`, stream stdout/stderr to the UI, poll
- *     `statusArgv` in the background, and settle when the CLI reports ready.
- *     Used by CLIs that print a device code / one-time-code non-interactively
- *     (gh, wrangler, supabase, …). CLIs whose sign-in needs a real TTY use
- *     `manualLoginCommands` instead and never reach this runner.
- *   - install: spawn the `npm install -g <pkg>` argv, stream output, re-detect
- *     once the child exits.
- *
- * Token CLIs (aws, mocli) skip this entirely — credentials come in via a plain
- * POST and are applied synchronously by `applyCliToken`.
- */
-
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { detectCli, invalidateCliStatus, currentPlatform, type CliStatus } from './detector.js';
 import { getRecommendedCli, type RecommendedCli } from './registry.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export type AuthSessionEvent =
   | { type: 'output'; chunk: string }
@@ -39,7 +18,6 @@ export interface AuthSession {
   done: boolean;
   ok: boolean;
   exitCode: number | null;
-  /** Ring buffer of recent output so late subscribers can catch up. */
   backlog: string[];
 }
 
@@ -48,10 +26,6 @@ const MAX_SESSION_AGE_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const BACKLOG_LINES = 200;
-
-// ---------------------------------------------------------------------------
-// Session lifecycle
-// ---------------------------------------------------------------------------
 
 function reapExpiredSessions(): void {
   const now = Date.now();
@@ -72,10 +46,6 @@ export function cancelAuthSession(sessionId: string): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Shared streaming-child session core
-// ---------------------------------------------------------------------------
-
 export interface StartAuthSessionResult {
   ok: true;
   sessionId: string;
@@ -86,17 +56,7 @@ interface StreamingSessionOpts {
   argv: string[];
   env: NodeJS.ProcessEnv;
   shell?: boolean;
-  /**
-   * When true, poll the CLI's status command in the background and settle as
-   * soon as it reports ready — used for long-running login children that don't
-   * exit on their own. When false (install), settle on child close only.
-   */
   pollUntilReady: boolean;
-  /**
-   * Decide the final ok flag once the child has exited and a fresh status has
-   * been read. For login: ready === true ⇒ ok. For install: child exit 0 AND
-   * binary now detected.
-   */
   computeOk: (exitCode: number | null, finalStatus: CliStatus | undefined) => boolean;
 }
 
@@ -104,7 +64,6 @@ function startStreamingSession(opts: StreamingSessionOpts): StartAuthSessionResu
   const { cli, argv, env, shell, pollUntilReady, computeOk } = opts;
   const sessionId = randomUUID();
   const events = new EventEmitter();
-  // Unlimited listeners — SSE clients may resubscribe multiple times.
   events.setMaxListeners(0);
 
   const session: AuthSession & { _child?: ChildProcess } = {
@@ -150,7 +109,7 @@ function startStreamingSession(opts: StreamingSessionOpts): StartAuthSessionResu
     if (poller) clearInterval(poller);
     invalidateCliStatus(cli.id);
     let finalStatus: CliStatus | undefined;
-    try { finalStatus = await detectCli(cli); } catch { /* best-effort */ }
+    try { finalStatus = await detectCli(cli); } catch {  }
     if (finalStatus) {
       events.emit('event', { type: 'status', status: finalStatus } satisfies AuthSessionEvent);
     }
@@ -177,7 +136,7 @@ function startStreamingSession(opts: StreamingSessionOpts): StartAuthSessionResu
           if (!child.killed) child.kill('SIGTERM');
           void settle(child.exitCode);
         }
-      } catch { /* ignore polling errors */ }
+      } catch {  }
     }, POLL_INTERVAL_MS);
   }
 
@@ -185,10 +144,6 @@ function startStreamingSession(opts: StreamingSessionOpts): StartAuthSessionResu
 
   return { ok: true, sessionId };
 }
-
-// ---------------------------------------------------------------------------
-// oauth-web login
-// ---------------------------------------------------------------------------
 
 export async function startCliAuthSession(
   cliId: string,
@@ -198,8 +153,6 @@ export async function startCliAuthSession(
   if (cli.auth.type !== 'oauth-web' || !cli.auth.loginArgv) {
     return { ok: false, error: `cli ${cliId} does not support oauth-web sign-in` };
   }
-  // CLIs configured for manual login should never spawn here — guard so a
-  // misbehaving client can't end-run the documented terminal flow.
   if (cli.auth.manualLoginCommands && cli.auth.manualLoginCommands.length > 0) {
     return { ok: false, error: `cli ${cliId} uses manual sign-in (run the commands in your own terminal)` };
   }
@@ -213,30 +166,14 @@ export async function startCliAuthSession(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Auto-install — npm-based, safe-to-run install commands
-//
-// Reuses the streaming session core. We deliberately allow ONLY
-// `npm install -g <pkg>` style commands — brew/apt/dnf/winget/scoop flows
-// often need sudo or interactive confirmation and stay manual.
-// ---------------------------------------------------------------------------
-
 export interface AutoInstallSpec {
-  /** Argv to spawn, e.g. ['npm', 'install', '-g', '@jackwener/opencli']. */
   argv: string[];
-  /** Short label shown on the auto-install button (e.g. "npm"). */
   label: string;
 }
 
 const NPM_GLOBAL_INSTALL_RE = /^npm\s+(?:install|i)\s+(?:-g|--global)\s+(\S.*)$/;
 const SHELL_METACHAR_RE = /[|;&`$()<>]/;
 
-/**
- * Inspect a CLI's install spec for the current platform and return a single
- * argv that's safe to spawn without user-side approvals. Returns null when no
- * such command exists (brew/apt/dnf/winget/scoop/curl-pipe-sh entries are all
- * rejected on purpose — those require sudo or interactive confirmation).
- */
 export function resolveAutoInstallSpec(
   cli: RecommendedCli,
   platform: 'darwin' | 'linux' | 'win',
@@ -267,17 +204,11 @@ export async function startCliInstallSession(
     cli,
     argv: spec.argv,
     env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', CI: '1' },
-    // npm on Windows is npm.cmd — needs shell resolution. spawn() args are
-    // still passed argv-style; we don't concat into a shell string.
     shell: process.platform === 'win32',
     pollUntilReady: false,
     computeOk: (exit, status) => exit === 0 && (status ? status.state !== 'not_installed' : true),
   });
 }
-
-// ---------------------------------------------------------------------------
-// Token auth — apply-credentials flow
-// ---------------------------------------------------------------------------
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -289,11 +220,6 @@ export interface ApplyTokenResult {
   status?: CliStatus;
 }
 
-/**
- * Apply a set of credentials for a `token`-auth CLI and verify. Each CLI gets a
- * tailored write path because there's no universal convention — we only do this
- * for CLIs we explicitly support.
- */
 export async function applyCliToken(cliId: string, values: Record<string, string>): Promise<ApplyTokenResult> {
   const cli = getRecommendedCli(cliId);
   if (!cli) return { ok: false, error: `unknown cli: ${cliId}` };
@@ -318,8 +244,6 @@ export async function applyCliToken(cliId: string, values: Record<string, string
         mergeIniSection(configPath, 'default', `[default]\nregion = ${region}\n`);
       }
     } else if (cli.id === 'mocli') {
-      // mocli stores its key via `mocli auth init --apik <KEY>` — let the CLI
-      // own its storage path so future schema changes upstream don't break us.
       const key = (values.MOWEN_API_KEY || '').trim();
       if (!key) return { ok: false, error: 'Mowen API Key is required' };
       const applied = await new Promise<{ ok: boolean; stderr: string }>((resolve) => {
@@ -347,13 +271,9 @@ export async function applyCliToken(cliId: string, values: Record<string, string
   }
 }
 
-/**
- * Merge a `[section]` block into an INI-style file, replacing any existing
- * block with the same name. Idempotent; preserves other sections and comments.
- */
 function mergeIniSection(filePath: string, section: string, block: string): void {
   let current = '';
-  try { current = fs.readFileSync(filePath, 'utf-8'); } catch { /* new file */ }
+  try { current = fs.readFileSync(filePath, 'utf-8'); } catch {  }
   const header = `[${section}]`;
   const lines = current.split(/\r?\n/);
   const out: string[] = [];
@@ -363,7 +283,6 @@ function mergeIniSection(filePath: string, section: string, block: string): void
     if (trimmed === header) { inTarget = true; continue; }
     if (inTarget) {
       if (/^\[.+\]$/.test(trimmed)) { inTarget = false; out.push(line); }
-      // else: drop old line
     } else {
       out.push(line);
     }
@@ -374,10 +293,6 @@ function mergeIniSection(filePath: string, section: string, block: string): void
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, body, { mode: 0o600 });
 }
-
-// ---------------------------------------------------------------------------
-// Logout — run the CLI's logout command and invalidate cache
-// ---------------------------------------------------------------------------
 
 export interface LogoutResult { ok: boolean; error?: string; status?: CliStatus }
 
@@ -403,4 +318,3 @@ export async function logoutCli(cliId: string): Promise<LogoutResult> {
     });
   });
 }
-

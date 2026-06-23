@@ -7,9 +7,6 @@ const STATUS_TONE: Record<string, UsageTone> = {
   warning: 'warn',
 };
 
-/** Tone for one window. Claude windows carry a driver-set status; codex live
- *  windows don't, so fall back to the same percent thresholds the claude
- *  driver applies (≥100 → limit reached, ≥80 → warning). */
 export function usageWindowTone(window: UsageWindowInfo): UsageTone {
   const fromStatus = window.status ? STATUS_TONE[window.status] : undefined;
   if (fromStatus) return fromStatus;
@@ -20,9 +17,6 @@ export function usageWindowTone(window: UsageWindowInfo): UsageTone {
   return 'ok';
 }
 
-/** Overall tone — the worst of the result-level status and every window.
- *  "No data" deliberately maps to 'ok': the usage surfaces stay quiet rather
- *  than alarm on a failed or unsupported usage probe. */
 export function usageTone(usage: UsageResult | null): UsageTone {
   if (!usage?.ok) return 'ok';
   let tone: UsageTone = (usage.status && STATUS_TONE[usage.status]) || 'ok';
@@ -34,15 +28,11 @@ export function usageTone(usage: UsageResult | null): UsageTone {
   return tone;
 }
 
-/** Windows with a measured percentage — the ones worth rendering as numbers.
- *  (The claude telemetry fallback emits a status-only window with a null
- *  percent; it still feeds usageTone but can't be drawn inline.) */
 export function displayableUsageWindows(usage: UsageResult | null): UsageWindowInfo[] {
   if (!usage?.ok) return [];
   return usage.windows.filter(window => window.usedPercent != null);
 }
 
-/** Most-loaded displayable window — drives the compact single-window chip. */
 export function worstUsageWindow(usage: UsageResult | null): UsageWindowInfo | null {
   let worst: UsageWindowInfo | null = null;
   for (const window of displayableUsageWindows(usage)) {
@@ -51,29 +41,14 @@ export function worstUsageWindow(usage: UsageResult | null): UsageWindowInfo | n
   return worst;
 }
 
-/** The live, fast-recovering window the always-on ring should represent. */
 const PRIMARY_WINDOW_LABEL = '5h';
 
 export interface UsageGauge {
-  /** Window the ring's arc fills to — the live 5h window when present. */
   primary: UsageWindowInfo;
-  /** Tone of the worst *secondary* (non-5h) window, but only once it has
-   *  crossed warn/err. Drives the ring's colored track ("how close is the
-   *  slow weekly / extra-usage ceiling"). null while every slow window is calm. */
   secondaryTone: UsageTone | null;
-  /** A secondary window has hit its hard limit (7d / Extra ≥100%) — a weekly
-   *  cutoff or the extra-usage budget wall. Drives the outer alert halo. */
   secondaryAlert: boolean;
 }
 
-/**
- * Splits an agent's windows into the always-on ring's two channels: the 5h
- * arc (predictable — the ring always means "can I keep working right now"),
- * plus an escalation signal sourced from the worst *slower* window so an
- * imminent weekly / extra-usage wall never hides behind a calm live number.
- * Falls back to the worst window as the arc when no 5h bucket is reported
- * (e.g. telemetry-only), degrading to the old single-window behavior.
- */
 export function usageGauge(usage: UsageResult | null): UsageGauge | null {
   const windows = displayableUsageWindows(usage);
   if (!windows.length) return null;
@@ -97,11 +72,6 @@ export function usagePercentText(window: UsageWindowInfo): string {
   return `${Math.round(window.usedPercent ?? 0)}%`;
 }
 
-/** Live remaining seconds for a window's reset. Anchored to the absolute
- *  `resetAt` timestamp when present, so a stale snapshot still counts down
- *  correctly (the capture-time `resetAfterSeconds` freezes the moment the
- *  driver sampled it). Negative result = the window has already reset and
- *  the snapshot is overdue for a refresh. */
 export function resetSecondsFor(window: UsageWindowInfo): number | null {
   if (window.resetAt) {
     const at = Date.parse(window.resetAt);
@@ -110,7 +80,6 @@ export function resetSecondsFor(window: UsageWindowInfo): number | null {
   return window.resetAfterSeconds;
 }
 
-/** Compact reset countdown: "45m" / "2h15m" / "3d4h". */
 export function formatResetShort(seconds: number | null): string | null {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return null;
   const mins = Math.round(seconds / 60);
@@ -125,8 +94,6 @@ export function formatResetShort(seconds: number | null): string | null {
   return remHours ? `${days}d${remHours}h` : `${days}d`;
 }
 
-/** Capture timestamp for display. A bare HH:MM reads as "today", so the
- *  month/day is included whenever the snapshot is older than that. */
 export function formatCapturedAt(iso: string): string | null {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return null;

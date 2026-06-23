@@ -1,25 +1,7 @@
-/**
- * tools/goal.ts — Persistent thread goal MCP tools.
- *
- *   goal_get    — Returns the current goal (objective, status, usage, budget).
- *   goal_update — Lets the model mark the goal complete after a completion audit.
- *                 The schema only accepts `status: "complete"`. Pause / resume /
- *                 clear / budget_limited transitions are user- or runtime-controlled
- *                 and not exposed to the model.
- *
- * Goal state lives at <sessionRoot>/goal.json; this server resolves the session
- * root from MCP_WORKSPACE_PATH (which points to <sessionRoot>/workspace).
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import type { McpToolModule, ToolContext, ToolResult } from './types.js';
 import { toolResult, toolLog } from './types.js';
-
-// ---------------------------------------------------------------------------
-// Tool definitions — descriptions match Codex's analogous `get_goal` / `update_goal`
-// behaviour but use the pikiloom tool name.
-// ---------------------------------------------------------------------------
 
 const tools: McpToolModule['tools'] = [
   {
@@ -53,10 +35,6 @@ const tools: McpToolModule['tools'] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Path resolution — workspace → session root → goal.json
-// ---------------------------------------------------------------------------
-
 function sessionRootFromCtx(ctx: ToolContext): string {
   const workspace = path.resolve(ctx.workspace || '');
   if (!workspace) return '';
@@ -68,11 +46,6 @@ function goalPathFromCtx(ctx: ToolContext): string {
   if (!root) return '';
   return path.join(root, 'goal.json');
 }
-
-// ---------------------------------------------------------------------------
-// Direct filesystem state access — the MCP server runs in a child process; we
-// read & write goal.json atomically here rather than RPC back to the parent.
-// ---------------------------------------------------------------------------
 
 type StoredGoal = {
   goalId: string;
@@ -118,10 +91,6 @@ function serialize(goal: StoredGoal): Record<string, unknown> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
-
 function handleGoalGet(ctx: ToolContext): ToolResult {
   const file = goalPathFromCtx(ctx);
   toolLog('goal_get', `file=${file || '(unresolved)'}`);
@@ -165,10 +134,6 @@ function handleGoalUpdate(args: Record<string, unknown>, ctx: ToolContext): Tool
     ),
   );
 }
-
-// ---------------------------------------------------------------------------
-// Module export
-// ---------------------------------------------------------------------------
 
 export const goalTools: McpToolModule = {
   tools,

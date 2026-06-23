@@ -1,7 +1,3 @@
-/**
- * WeChat channel transport.
- */
-
 import {
   Channel,
   DEFAULT_CHANNEL_CAPABILITIES,
@@ -150,9 +146,6 @@ export class WeixinChannel extends Channel {
             signal: this.listenAbort.signal,
           });
           if (response.get_updates_buf !== undefined) this.updateBuf = response.get_updates_buf || '';
-          // Errcode check BEFORE recordSuccess(): an HTTP 200 carrying a
-          // business error code (e.g. "session timeout") must not silently
-          // reset the exponential backoff.
           if ((response.ret ?? 0) !== 0 || (response.errcode ?? 0) !== 0) {
             throw new Error(`Weixin getupdates failed: ${response.errmsg || response.errcode || response.ret}`);
           }

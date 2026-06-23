@@ -10,9 +10,6 @@ import { SubAgentCard } from './LivePreview';
 import { FileChip } from './FileChip';
 import type { RichMessage, MessageBlock } from '../../types';
 
-/* ═══════════════════════════════════════════════════════════════
-   Assistant message — separated activity, thinking, output
-   ═══════════════════════════════════════════════════════════════ */
 export function AssistantMsg({ message, t, workdir }: { message: RichMessage; t: (k: string) => string; workdir?: string | null }) {
   const { activityBlocks, thinkingBlocks, planBlocks, subAgentBlocks, outputBlocks, noticeBlocks } = categorizeAssistantBlocks(message.blocks);
   const latestPlan = [...planBlocks].reverse().find(block => hasPlan(block.plan));
@@ -69,9 +66,6 @@ export function categorizeAssistantBlocks(blocks: MessageBlock[]): {
   };
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   System notice — agent-runtime feedback (Claude CLI <synthetic>)
-   ═══════════════════════════════════════════════════════════════ */
 export function SystemNoticeSection({ blocks, t }: { blocks: MessageBlock[]; t: (k: string) => string }) {
   const text = blocks.map(b => b.content).filter(Boolean).join('\n\n').trim();
   if (!text) return null;
@@ -86,9 +80,6 @@ export function SystemNoticeSection({ blocks, t }: { blocks: MessageBlock[]; t: 
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   Activity section — collapsible tool call summary (cyan accent)
-   ═══════════════════════════════════════════════════════════════ */
 export function ActivitySection({ blocks, t }: { blocks: MessageBlock[]; t: (k: string) => string }) {
   const [open, setOpen] = useState(false);
   const useBlocks = blocks.filter(b => b.type === 'tool_use');
@@ -133,9 +124,6 @@ export function ActivityLine({ block }: { block: MessageBlock }) {
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   Thinking section — collapsible, last 3 lines preview
-   ═══════════════════════════════════════════════════════════════ */
 export function ThinkingSection({ blocks, t }: { blocks: MessageBlock[]; t: (k: string) => string }) {
   const [open, setOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -163,7 +151,6 @@ export function ThinkingSection({ blocks, t }: { blocks: MessageBlock[]; t: (k: 
   );
 }
 
-/** Expanded thinking content — scrolls to bottom on mount. */
 export function ThinkingExpandedContent({ scrollRef, text }: { scrollRef: React.RefObject<HTMLDivElement | null>; text: string }) {
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -177,17 +164,6 @@ export function ThinkingExpandedContent({ scrollRef, text }: { scrollRef: React.
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   Output — markdown
-   ═══════════════════════════════════════════════════════════════ */
-
-/**
- * Single image card with a click-to-reveal "Prompt" disclosure. The full
- * caption (Codex `revised_prompt`, MCP image description, …) can be long —
- * showing a truncated preview crowds the chat layout and hides detail. The
- * disclosure keeps the layout calm by default and surfaces the complete
- * prompt only when the user explicitly asks for it.
- */
 function ImageFigure({
   block,
   onLightbox,
@@ -198,6 +174,7 @@ function ImageFigure({
   t: (k: string) => string;
 }) {
   const caption = block.imageCaption?.trim() || '';
+  const isPrompt = block.imageCaptionKind === 'prompt';
   const [showPrompt, setShowPrompt] = useState(false);
   return (
     <figure className="flex flex-col gap-1.5 max-w-[400px]">
@@ -207,7 +184,7 @@ function ImageFigure({
         className="max-w-[400px] max-h-[300px] rounded-md border border-fg-6/50 object-contain cursor-zoom-in hover:opacity-90 transition-opacity"
         onClick={() => onLightbox(block.content)}
       />
-      {caption && (
+      {caption && (isPrompt ? (
         <>
           <button
             type="button"
@@ -233,7 +210,11 @@ function ImageFigure({
             </div>
           )}
         </>
-      )}
+      ) : (
+        <figcaption className="text-[11px] leading-[1.55] text-fg-5 max-w-[400px] break-words whitespace-pre-wrap">
+          {caption}
+        </figcaption>
+      ))}
     </figure>
   );
 }

@@ -16,7 +16,6 @@ describe('dashboard file link parsing', () => {
   });
 
   it('does NOT linkify bare file names — they are ambiguous, not addresses', () => {
-    // Regression: linkifying every `SKILL.md`/`package.json` mention buried output in links.
     expect(isFileLocator('package.json')).toBe(false);
     expect(isFileLocator('AGENTS.md')).toBe(false);
     expect(isFileLocator('SKILL.md')).toBe(false);

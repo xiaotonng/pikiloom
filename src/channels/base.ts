@@ -1,11 +1,3 @@
-/**
- * Channel base — minimal abstract for all IM platforms.
- *
- * Only defines: lifecycle + outgoing primitives.
- * Hooks (onCommand, onMessage, onCallback, ...) are platform-specific
- * and belong in each subclass — different IMs expose different interaction models.
- */
-
 export interface BotInfo { id: number | string; username: string; displayName: string }
 
 export interface MenuCommand {
@@ -18,7 +10,6 @@ export interface ChannelCapabilities {
   typingIndicators: boolean;
   commandMenu: boolean;
   messageReactions: boolean;
-  /** Channel can send image bytes inline (vs only sending file references). */
   sendImage: boolean;
 }
 
@@ -44,28 +35,15 @@ export abstract class Channel {
   bot: BotInfo | null = null;
   readonly capabilities: ChannelCapabilities = DEFAULT_CHANNEL_CAPABILITIES;
 
-  // ---- lifecycle ------------------------------------------------------------
-
   abstract connect(): Promise<BotInfo>;
   abstract listen(): Promise<void>;
   abstract disconnect(): void;
-
-  // ---- outgoing primitives --------------------------------------------------
 
   abstract send(chatId: number | string, text: string, opts?: SendOpts): Promise<number | string | null>;
   abstract editMessage(chatId: number | string, msgId: number | string, text: string, opts?: SendOpts): Promise<void>;
   abstract deleteMessage(chatId: number | string, msgId: number | string): Promise<void>;
   abstract sendTyping(chatId: number | string, opts?: SendOpts): Promise<void>;
 
-  /**
-   * Send an image given in-memory bytes. Default implementation throws — only
-   * channels whose `capabilities.sendImage` is true must override. The bot
-   * uses `supportsChannelCapability(ch, 'sendImage')` to gate dispatch.
-   *
-   * `mime` is the explicit MIME type (e.g. `image/png`) so subclasses can pick
-   * the right native upload primitive (Telegram sendPhoto vs sendDocument;
-   * Feishu uploadImage `image_type=message`; WeChat image message vs file).
-   */
   async sendImage(
     _chatId: number | string,
     _bytes: Buffer,
@@ -77,10 +55,6 @@ export abstract class Channel {
   async setMenu(_commands: MenuCommand[]): Promise<void> {}
   async clearMenu(): Promise<void> {}
 }
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
 export function supportsChannelCapability(
   channel: { capabilities?: Partial<ChannelCapabilities> } | null | undefined,

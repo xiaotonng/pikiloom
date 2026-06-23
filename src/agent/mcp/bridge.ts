@@ -1,16 +1,3 @@
-/**
- * mcp-bridge.ts — MCP session bridge orchestrator.
- *
- * Runs inside the main pikiloom process. For each agent stream:
- *   1. Starts a tiny HTTP callback server on localhost (random port).
- *   2. Writes an MCP config JSON pointing to `pikiloom --mcp-serve`.
- *   3. The agent CLI loads that config via its MCP registration mechanism.
- *   4. When the agent calls `send_file`, the MCP server POSTs to our callback.
- *   5. We forward the request to the IM channel and respond with success/failure.
- *
- * Lifecycle: one bridge per stream, created before spawn, stopped after stream ends.
- */
-
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,10 +17,6 @@ import { MCP_TIMEOUTS, MCP_ARTIFACT_MAX_BYTES } from '../../core/constants.js';
 import type { AgentInteraction, AgentInteractionQuestion } from '../types.js';
 import { mergeExtensionsForSession, getGlobalExtensionsAsServers } from './extensions.js';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface McpSendFileOpts {
   caption?: string;
   kind?: 'photo' | 'document';
@@ -49,54 +32,29 @@ export type McpSendFileCallback = (
   opts: McpSendFileOpts,
 ) => Promise<McpSendFileResult>;
 
-/** Routes an `im_ask_user` MCP call into the host's human-loop pipeline. */
 export type AskUserCallback = (
   request: AgentInteraction,
 ) => Promise<Record<string, any> | null>;
 
 export interface McpBridgeHandle {
-  /** Path to the generated MCP config JSON — pass to agent CLI via --mcp-config. */
   configPath: string;
-  /** Extra environment variables required by the target agent to load the config. */
   extraEnv?: Record<string, string>;
-  /**
-   * Resolved MCP server map (keyed by server name) for drivers that consume
-   * a structured list rather than a config-file path (e.g. Hermes ACP).
-   */
   mcpServers?: Record<string, any>;
-  /** Whether the MCP server emitted any tool-related activity during the stream. */
   hadActivity: () => boolean;
-  /** Gracefully stop the callback server and clean up config file. */
   stop: () => Promise<void>;
 }
 
 export interface McpBridgeOpts {
-  /** Absolute path to session directory (parent of workspace). */
   sessionDir: string;
-  /** Absolute path to the session workspace. */
   workspacePath: string;
-  /** Agent workdir (cwd passed to agent). Files here are also allowed for send. */
   workdir?: string;
-  /** List of staged file paths (relative to workspace). */
   stagedFiles: string[];
-  /** Callback invoked when the agent calls the send_file MCP tool. Optional for dashboard sessions. */
   sendFile?: McpSendFileCallback;
-  /** Callback for `im_ask_user`. When omitted, the tool isn't registered. */
   onInteraction?: AskUserCallback;
-  /** Agent type — determines how MCP server is registered. */
   agent?: string;
-  /** Optional log sink for MCP tool activity. */
   onLog?: (message: string) => void;
 }
 
-// ---------------------------------------------------------------------------
-// Resolve the MCP server entry script path
-// ---------------------------------------------------------------------------
-
-/**
- * Find the compiled mcp-session-server.js next to this file's compiled output.
- * Falls back to running via the CLI entry point with --mcp-serve.
- */
 interface McpServerRuntimeInfo {
   execPath: string;
   execArgv: string[];
@@ -104,12 +62,6 @@ interface McpServerRuntimeInfo {
   moduleUrl: string;
 }
 
-/**
- * Server descriptor passed to agent-specific registration paths. Mirrors the
- * shape declared in `./extensions.ts` — stdio entries carry `command`/`args`,
- * HTTP entries set `type: 'http'` plus `url`/`headers`. `type` defaults to
- * `'stdio'` when omitted, so all existing stdio call-sites keep working.
- */
 interface RegisteredMcpServer {
   name: string;
   type?: 'stdio' | 'http';
@@ -154,18 +106,15 @@ export function resolveMcpServerCommand(runtime: McpServerRuntimeInfo = {
   const currentProcess = resolveCurrentCliCommand(runtime, ['--mcp-serve']);
   if (currentProcess) return currentProcess;
 
-  // Try to find the compiled JS file in the same directory as this module
   const thisDir = path.dirname(fileURLToPath(runtime.moduleUrl));
   const serverScript = path.join(thisDir, 'session-server.js');
   if (fs.existsSync(serverScript)) {
     return { command: 'node', args: [serverScript] };
   }
-  // Fallback: use pikiloom CLI with --mcp-serve flag
   const cliScript = path.resolve(thisDir, '../../cli/main.js');
   if (fs.existsSync(cliScript)) {
     return { command: 'node', args: [cliScript, '--mcp-serve'] };
   }
-  // Last resort: assume pikiloom is in PATH
   return { command: 'pikiloom', args: ['--mcp-serve'] };
 }
 
@@ -190,11 +139,6 @@ export function resolveGuiIntegrationConfig(
   config = loadUserConfig(),
   env: Record<string, string | undefined> = process.env,
 ): GuiIntegrationConfig {
-  // A configured remote CDP endpoint implies the user wants browser automation,
-  // so it flips the *default* on. An explicit PIKILOOM_BROWSER_ENABLED / config
-  // value still wins (so `=false` can disable even with a CDP URL set). This
-  // removes the footgun where setting only PIKILOOM_BROWSER_CDP_URL silently
-  // injected no browser server at all.
   const browserEnabled = boolFromConfigEnv(
     typeof config.browserEnabled === 'boolean' ? config.browserEnabled : (config as Record<string, unknown>).browserUseProfile,
     env.PIKILOOM_BROWSER_ENABLED ?? env.PIKILOOM_BROWSER_USE_PROFILE,
@@ -214,30 +158,11 @@ export function resolveGuiIntegrationConfig(
 }
 
 export interface BrowserSupervisorEndpoints {
-  /**
-   * CDP endpoint of the managed Chrome (e.g. `http://127.0.0.1:39222`),
-   * resolved by the in-process `browser-supervisor`. When provided, the
-   * Playwright MCP server runs in attach mode and shares the long-lived
-   * managed Chrome across all streams. When null, the Playwright MCP server
-   * launches its own browser via `--user-data-dir` (cold-start fallback).
-   */
   cdpEndpoint?: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// Peekaboo (native macOS GUI control) — npx package warming
-// ---------------------------------------------------------------------------
-
-/** npx package spec for the multi-bin Peekaboo package. */
 export const PEEKABOO_NPX_PACKAGE = '@steipete/peekaboo';
-/** argv for the long-running MCP server written into the agent's mcp-config. */
 export const PEEKABOO_MCP_ARGV = ['-y', '-p', PEEKABOO_NPX_PACKAGE, 'peekaboo-mcp'];
-/**
- * argv for the cache warm: the quick `peekaboo` bin (prints its version and
- * exits) under the SAME `-p` package spec the server uses, so it populates the
- * exact npx cache entry `peekaboo-mcp` later reuses. Deliberately NOT the
- * `peekaboo-mcp` bin — that's a server that never exits.
- */
 export const PEEKABOO_WARM_ARGV = ['-y', '-p', PEEKABOO_NPX_PACKAGE, 'peekaboo', '--version'];
 
 let peekabooWarmStarted = false;
@@ -264,12 +189,6 @@ function cleanEnvString(value: unknown): string | null {
   return trimmed;
 }
 
-/**
- * Peekaboo only needs a normal user shell environment so npx can resolve/cache
- * the package. Do not inherit the full pikiloom/agent environment here: it may
- * contain provider API keys, channel tokens, OAuth bearer values, or database
- * URLs that a GUI MCP server has no reason to see.
- */
 export function buildPeekabooChildEnv(
   env: Record<string, string | undefined> = process.env,
 ): Record<string, string> {
@@ -298,23 +217,6 @@ function buildPeekabooMcpServer(): RegisteredMcpServer {
   };
 }
 
-/**
- * Pre-warm the Peekaboo npx package so the agent's MCP server connects instantly.
- *
- * `peekaboo-mcp` ships a native Swift binary, so a cold `npx -y -p
- * @steipete/peekaboo …` pays a large one-time download. The agent CLI launches
- * that server itself and abandons it when the MCP handshake doesn't arrive
- * within its startup window — killing the npx child mid-download. The cache
- * never finishes, the next session is cold too, and Peekaboo stays stuck at
- * "Still connecting" indefinitely.
- *
- * Warming from a detached process that outlives any single session breaks the
- * loop: the download completes once, independent of the agent's timeout, and
- * every later session finds the package cached. Idempotent + process-singleton
- * (repeated stream-start calls are no-ops; npx itself short-circuits once the
- * package is present) and strictly fire-and-forget — it never blocks or fails
- * a session.
- */
 export function ensurePeekabooWarm(): void {
   if (process.platform !== 'darwin' || peekabooWarmStarted) return;
   peekabooWarmStarted = true;
@@ -324,7 +226,6 @@ export function ensurePeekabooWarm(): void {
       detached: true,
       env: buildPeekabooChildEnv(),
     });
-    // npx missing / spawn failure: clear the latch so a later call can retry.
     child.on('error', () => { peekabooWarmStarted = false; });
     child.unref();
   } catch {
@@ -351,8 +252,6 @@ export function buildSupplementalMcpServers(
     });
   }
   if (gui.peekabooEnabled && process.platform === 'darwin') {
-    // Peekaboo — native macOS GUI automation via Accessibility + ScreenCaptureKit.
-    // Run the dedicated MCP bin from the multi-bin @steipete/peekaboo package.
     servers.push(buildPeekabooMcpServer());
   }
   return servers;
@@ -382,19 +281,6 @@ function buildClaudeMcpConfig(servers: RegisteredMcpServer[]) {
   };
 }
 
-/**
- * Build the `codex mcp add` argv for a single registered server. Returns
- * `null` when the descriptor lacks the fields needed for its transport
- * (treated as a no-op rather than throwing — keeps a malformed entry from
- * breaking the whole session).
- *
- * HTTP servers can't pass a literal bearer to codex; the CLI only accepts
- * `--bearer-token-env-var <NAME>`. We synthesize a deterministic env-var
- * name per server, stash the token in the supplied `tokenEnv` map, and the
- * caller threads that map into the codex child process via extraEnv.
- *
- * Exported for unit tests; not re-exported from the package surface.
- */
 export function buildCodexMcpAddArgs(
   server: RegisteredMcpServer,
   tokenEnv: Record<string, string>,
@@ -462,8 +348,6 @@ export function redactMcpConfigForLog(configPath: string): string {
 
 export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
   return {
-    // Session attachments live under .pikiloom/... and should remain readable to
-    // Gemini's built-in file tools even when the project ignores that directory.
     fileFiltering: {
       respectGitIgnore: false,
       respectGeminiIgnore: false,
@@ -493,44 +377,6 @@ export function buildGeminiMcpConfig(servers: RegisteredMcpServer[]) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stale playwright-mcp reaper
-// ---------------------------------------------------------------------------
-
-/**
- * Find and SIGTERM playwright-mcp processes that attach to the same managed
- * Chrome CDP endpoint but are NOT descendants of the current pikiloom process.
- *
- * Background: playwright-mcp is spawned by the agent CLI (e.g. claude) as a
- * child via the mcp-config we write. When the agent CLI is killed ungracefully
- * — or worse, gets reparented to launchd/init and survives across pikiloom
- * restarts — its playwright-mcp child stays alive too. Multiple playwright-mcp
- * instances attached to the same `--cdp-endpoint` cause backend state
- * confusion (microsoft/playwright-mcp#1299, #893) and manifest as
- * `Connection closed` errors or 2+ minute hangs the next time a tool is
- * called. The community's recommended hygiene is one playwright-mcp per
- * agent instance; this sweeper enforces that by reaping orphans from prior
- * runs at the start of every new bridge.
- *
- * Safety: a candidate is only reaped if its `ppid` chain — walked entirely in
- * memory from a single `ps` snapshot — does NOT include the current pikiloom
- * process. In-flight playwright-mcp children of THIS pikiloom (sibling
- * streams) are always spared.
- */
-/**
- * Pure matcher for the reaper. Returns true when `command` looks like a
- * playwright-mcp process attached to the same CDP endpoint as ours.
- *
- * Accepts both invocation forms we have seen in the wild:
- *   - `node <path>/@playwright/mcp/cli.js …`   (direct, pikiloom's preferred)
- *   - `node <path>/node_modules/.bin/playwright-mcp …`   (npm bin symlink,
- *     used by `npx @playwright/mcp` and any agent CLI that resolves via PATH)
- *
- * The CDP endpoint must also appear literally in the argv — without that
- * guard a stray `npm exec @playwright/mcp` with its own browser would be
- * killed, and unrelated `node -e <src>` processes whose inline source happens
- * to mention `@playwright/mcp` would also be misidentified.
- */
 export function _matchPlaywrightMcpProcessCommand(
   command: string,
   normalizedCdpEndpoint: string,
@@ -546,13 +392,8 @@ export function _matchPlaywrightMcpProcessCommand(
   return true;
 }
 
-// Promisified spawn for codex MCP registration — keeps the per-server add/remove
-// off the event loop (was execFileSync, which blocked per spawn at stream start).
 const execFileAsync = promisify(execFile);
 
-// Reaping shells out to a full `ps` table scan + per-line regex and only guards
-// against playwright-mcp orphans left by a previous run, so it need not run on
-// every browser-enabled stream start. Throttle it per CDP endpoint.
 const REAP_THROTTLE_MS = 30_000;
 const lastReapAt = new Map<string, number>();
 
@@ -602,24 +443,15 @@ function reapStalePlaywrightMcpProcesses(
       process.kill(pid, 'SIGTERM');
       reaped.push(pid);
     } catch {
-      // Already dead — no-op.
     }
   }
   return { reaped, spared };
 }
 
-// ---------------------------------------------------------------------------
-// Stale peekaboo-mcp reaper
-// ---------------------------------------------------------------------------
-
 function commandTokenBase(token: string): string {
   return path.basename(token.replace(/^"+|"+$/g, '')).replace(/\.(?:cmd|exe)$/i, '').toLowerCase();
 }
 
-/**
- * Pure matcher for stale-process hygiene. It intentionally targets the
- * long-running MCP server only, not the quick cache warm (`peekaboo --version`).
- */
 export function _matchPeekabooMcpProcessCommand(command: string): boolean {
   if (!command || !command.includes('peekaboo-mcp')) return false;
   const tokens = command.split(/\s+/).filter(Boolean);
@@ -700,13 +532,11 @@ function reapStalePeekabooMcpProcesses(): { reaped: number[]; spared: number[] }
           process.kill(pid, 0);
           process.kill(pid, 'SIGKILL');
         } catch {
-          // Process already exited or cannot be signalled — no-op.
         }
       }, PEEKABOO_REAP_FORCE_AFTER_MS);
       forceTimer.unref?.();
       reaped.push(pid);
     } catch {
-      // Already dead — no-op.
     }
   }
   return { reaped, spared };
@@ -719,23 +549,6 @@ export interface BridgeBrowserEndpoint {
   mode: BridgeBrowserEndpointMode;
 }
 
-/**
- * Decide which CDP endpoint the per-session playwright/mcp should attach to.
- *
- * When `PIKILOOM_BROWSER_CDP_URL` is set we return it UNCONDITIONALLY (mode
- * `remote`) — without probing it for reachability. This is deliberate: the
- * documented contract is that pikiloom never launches, probes, or kills a local
- * Chrome in remote mode (e.g. inside a headless container that has no Chrome at
- * all). Gating on a reachability ping would let a momentarily-unreachable
- * sidecar fall through to the local-launch branch and silently spawn a browser
- * — exactly the bug reported in #16. Handing `--cdp-endpoint <url>` to
- * playwright/mcp instead surfaces an honest connection error on the first
- * `browser_*` call if the sidecar is down.
- *
- * Without the override, fall back to probing the local managed Chrome via its
- * DevToolsActivePort file (cross-process attach); `none` means leave Chrome
- * unlaunched and let playwright/mcp cold-start one with `--user-data-dir`.
- */
 export async function resolveBridgeBrowserEndpoint(
   profileDir = getManagedBrowserProfileDir(),
   remoteCdpUrl: string | null = getConfiguredRemoteCdpUrl(),
@@ -745,10 +558,6 @@ export async function resolveBridgeBrowserEndpoint(
   return { endpoint: local, mode: local ? 'local-attach' : 'none' };
 }
 
-// ---------------------------------------------------------------------------
-// Bridge implementation
-// ---------------------------------------------------------------------------
-
 const ARTIFACT_MAX_BYTES = MCP_ARTIFACT_MAX_BYTES;
 const SEND_FILE_TIMEOUT_MS = MCP_TIMEOUTS.sendFile;
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
@@ -757,14 +566,13 @@ function isPhotoFile(filePath: string): boolean {
   return PHOTO_EXTS.has(path.extname(filePath).toLowerCase());
 }
 
-/** Check if realFile is inside any of the allowed root directories. */
 function isInsideAllowedRoot(realFile: string, allowedRoots: string[]): boolean {
   for (const root of allowedRoots) {
     try {
       const realRoot = fs.realpathSync(root);
       const rel = path.relative(realRoot, realFile);
       if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return true;
-    } catch { /* root doesn't exist, skip */ }
+    } catch {  }
   }
   return false;
 }
@@ -814,7 +622,6 @@ export function resolveSendFilePath(
       fs.realpathSync(candidate);
       return { path: candidate };
     } catch {
-      // Try next candidate.
     }
   }
 
@@ -858,9 +665,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
   let hadActivity = false;
   const gui = resolveGuiIntegrationConfig();
   for (const hint of buildGuiSetupHints(gui)) opts.onLog?.(hint);
-  // Peekaboo ships a native binary behind npx; warm its cache out-of-band so the
-  // agent's MCP server connects instantly instead of hanging at "Still
-  // connecting" on a cold first-run download (see ensurePeekabooWarm).
   if (gui.peekabooEnabled) {
     ensurePeekabooWarm();
     const { reaped, spared } = reapStalePeekabooMcpProcesses();
@@ -868,16 +672,8 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
       opts.onLog?.(`reaped ${reaped.length} stale peekaboo-mcp process(es): pid=${reaped.join(',')}${spared.length ? ` (spared active: ${spared.join(',')})` : ''}`);
     }
   }
-  // Lazy browser lifecycle: probe an already-running managed Chrome via
-  // <profileDir>/DevToolsActivePort and attach if reachable; otherwise leave
-  // Chrome unlaunched and let playwright/mcp launch it with `--user-data-dir`
-  // on the first browser_* tool call. Previously the bridge eagerly called
-  // `ensureManagedBrowser`, which forced a Chrome window to open at every
-  // stream start even when the agent never touched the browser.
   let browserCdpEndpoint: string | null = null;
   if (gui.browserEnabled) {
-    // Write the playwright/mcp config file (referenced by --config in
-    // getManagedBrowserMcpArgs) before the agent CLI spawns playwright/mcp.
     ensurePlaywrightMcpConfigFile();
     const { endpoint, mode } = await resolveBridgeBrowserEndpoint(gui.browserProfileDir);
     browserCdpEndpoint = endpoint;
@@ -885,10 +681,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
       opts.onLog?.(mode === 'remote'
         ? `attaching to remote CDP endpoint ${endpoint} (PIKILOOM_BROWSER_CDP_URL); local Chrome launch disabled.`
         : `attaching to existing managed browser at ${endpoint}.`);
-      // Clear stale playwright-mcp children still bound to this endpoint (one
-      // playwright-mcp per browser, per microsoft/playwright-mcp#1299). Safe for
-      // the remote sidecar too — it only ever SIGTERMs local playwright-mcp
-      // processes, never the Chrome itself.
       const { reaped, spared } = reapStalePlaywrightMcpProcesses(endpoint);
       if (reaped.length) {
         opts.onLog?.(`reaped ${reaped.length} stale playwright-mcp process(es) attached to ${endpoint}: pid=${reaped.join(',')}${spared.length ? ` (spared in-tree: ${spared.join(',')})` : ''}`);
@@ -898,16 +690,10 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     }
   }
 
-  // Build allowed roots: workspace + workdir + /tmp
   const allowedRoots = [workspacePath];
   if (opts.workdir) allowedRoots.push(opts.workdir);
   allowedRoots.push('/tmp', os.tmpdir());
 
-  // ── HTTP callback server ──
-  // Started only when an IM-side callback is wired up, to serve:
-  //   - `im_send_file`  → /send-file
-  //   - `im_ask_user`   → /ask-user
-  //   - structured tool-activity logging from the in-process MCP server → /log
   let callbackServer: http.Server | null = null;
   let port = 0;
   const needsCallbackServer = !!sendFile || !!onInteraction;
@@ -922,7 +708,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
         return;
       }
 
-      // /ask-user blocks until the user replies; disable timeouts for it.
       if (endpoint === '/ask-user') {
         req.setTimeout(0);
         res.setTimeout(0);
@@ -931,7 +716,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
       let body = '';
       req.on('data', (chunk: Buffer) => { body += chunk; });
 
-      // Timeout for receiving the request body
       const bodyTimer = setTimeout(() => {
         req.destroy(new Error('request body timeout'));
       }, MCP_TIMEOUTS.requestBody);
@@ -1012,7 +796,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
             return;
           }
 
-          // endpoint === '/send-file'
           if (!sendFile) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: false, error: 'send-file is not available for this session' }));
@@ -1027,7 +810,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
             return;
           }
 
-          // Resolve and validate path
           const resolved = resolveSendFilePath(relPath, workspacePath, stagedFiles, opts.workdir);
           const absPath = resolved.path;
           let realFile: string;
@@ -1042,7 +824,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
             return;
           }
 
-          // Size check
           const stat = fs.statSync(realFile);
           if (!stat.isFile()) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1055,7 +836,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
             return;
           }
 
-          // Auto-detect kind
           const kind = data.kind === 'photo' ? 'photo'
             : data.kind === 'document' ? 'document'
             : isPhotoFile(realFile) ? 'photo'
@@ -1079,10 +859,7 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
       });
     });
 
-    // Per-request body timers above guard against partial uploads.
     callbackServer.headersTimeout = MCP_TIMEOUTS.serverHeaders;
-    // /ask-user can block indefinitely; drop the server-wide request timeout
-    // when that endpoint is wired up.
     if (onInteraction) callbackServer.requestTimeout = 0;
 
     await new Promise<void>((resolve, reject) => {
@@ -1092,18 +869,13 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     port = (callbackServer.address() as { port: number }).port;
   }
 
-  // ── Register MCP server with the agent ──
   const supplementalServers = buildSupplementalMcpServers(gui, { cdpEndpoint: browserCdpEndpoint });
   const servers: RegisteredMcpServer[] = [...supplementalServers];
 
-  // Register the pikiloom stdio MCP server when any in-process tool needs the
-  // callback channel. `MCP_TOOLS_AVAILABLE` tells the server which tool
-  // families to advertise.
   if (port && (sendFile || onInteraction)) {
     const { command, args } = resolveMcpServerCommand();
     const enabledTools: string[] = [];
     if (sendFile) enabledTools.push('workspace');
-    // Codex has native user-input via JSON-RPC; don't expose `im_ask_user`.
     if (onInteraction && opts.agent !== 'codex') enabledTools.push('ask-user');
     const envVars = {
       MCP_WORKSPACE_PATH: workspacePath,
@@ -1117,7 +889,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     servers.unshift({ name: 'pikiloom', command, args, env: envVars });
   }
 
-  // Nothing to register — skip bridge entirely
   if (!servers.length) {
     if (callbackServer) await new Promise<void>(resolve => callbackServer!.close(() => resolve()));
     return null;
@@ -1129,16 +900,9 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
   const codexRegisteredNames: string[] = [];
 
   if (opts.agent === 'codex') {
-    // Codex: register MCP servers via `codex mcp add/remove`
-    // Include global + workspace extensions alongside built-in servers
     const extServers = getGlobalExtensionsAsServers(opts.workdir);
     const allServers = [...extServers, ...servers];
-    // Bearer tokens for HTTP MCP servers are injected into codex's process env
-    // via extraEnv — codex's `--bearer-token-env-var` only accepts an env name,
-    // never a literal token, so the value MUST land in the child env.
     const codexBearerEnv: Record<string, string> = {};
-    // Sequential (codex serializes its own config writes) but async, so the
-    // per-server spawns don't block the event loop at stream start.
     for (const server of allServers) {
       const codexArgs = buildCodexMcpAddArgs(server, codexBearerEnv);
       if (!codexArgs) continue;
@@ -1155,8 +919,6 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
       extraEnv = { ...(extraEnv || {}), ...codexBearerEnv };
     }
   } else if (opts.agent === 'gemini') {
-    // Gemini CLI 0.32+ loads MCP servers from settings.json rather than --mcp-config.
-    // Include global + workspace extensions alongside built-in servers
     const extServers = getGlobalExtensionsAsServers(opts.workdir);
     const allServers = [...extServers, ...servers];
     configPath = path.join(sessionDir, 'gemini-system-settings.json');
@@ -1165,13 +927,8 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     extraEnv = { GEMINI_CLI_SYSTEM_SETTINGS_PATH: configPath };
   } else if (opts.agent === 'hermes') {
-    // Hermes consumes structured MCP server objects via ACP `session/new`,
-    // not a config file path. Resolve the merged server list and expose it
-    // on the bridge handle so the driver can translate to ACP's wire format.
     mcpServers = mergeExtensionsForSession(servers, opts.workdir);
   } else {
-    // Claude: write MCP config JSON for --mcp-config
-    // Uses centralized merge: global extensions → .mcp.json files → built-in servers
     configPath = path.join(sessionDir, 'mcp-config.json');
     mcpServers = mergeExtensionsForSession(servers, opts.workdir);
 

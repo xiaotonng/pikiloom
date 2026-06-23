@@ -1,7 +1,3 @@
-/**
- * Persistent user configuration (~/.pikiloom/setting.json) load/save/sync.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,86 +7,50 @@ import { expandTilde } from '../platform.js';
 
 export type ChannelName = 'telegram' | 'feishu' | 'weixin' | 'slack' | 'discord' | 'dingtalk' | 'wecom';
 
-/** MCP server configuration — compatible with .mcp.json standard format. */
 export interface McpServerConfig {
-  /** Transport type (default: stdio). */
   type?: 'stdio' | 'http';
-  /** Command to spawn the server (stdio). */
   command?: string;
-  /** Arguments for the command (stdio). */
   args?: string[];
-  /** Environment variables for the server process. */
   env?: Record<string, string>;
-  /** HTTP endpoint URL (http type). */
   url?: string;
-  /** HTTP headers (http type). */
   headers?: Record<string, string>;
-  /** Whether this server is enabled (default: true). */
   enabled?: boolean;
-  /** When true in workspace .mcp.json, overrides a global extension to disable it. */
   disabled?: boolean;
-  /** Catalog id this server was installed from (for state lookup). Undefined for custom servers. */
   catalogId?: string;
 }
 
-/** OAuth token record stored for a remote MCP server. */
 export interface McpOAuthTokenRecord {
   accessToken: string;
   tokenType: string;
   refreshToken?: string;
   expiresAt?: number;
   scope?: string;
-  /** Dynamic client registration result or pre-configured. */
   clientId: string;
   clientSecret?: string;
-  /** Discovered or pre-declared endpoints. */
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint?: string;
-  /** Resource URL this token is bound to (the MCP server URL). */
   resource: string;
-  /** Issuer (authorization server). */
   issuer?: string;
 }
 
 export interface WorkspaceEntry {
-  /** Absolute path to project directory */
   path: string;
-  /** User-defined display name */
   name: string;
-  /** Sort order (lower = higher priority) */
   order?: number;
-  /** Preferred default agent for this workspace */
   preferredAgent?: string;
-  /** When the workspace was registered */
   addedAt: string;
 }
 
 export interface UserConfig {
   version: 1;
   channel?: ChannelName;
-  /** Launch multiple channels simultaneously (comma-separated or array). */
   channels?: ChannelName[];
   defaultAgent?: Agent;
   agentAutoUpdate?: boolean;
   claudeModel?: string;
   claudeReasoningEffort?: string;
-  /**
-   * Enable Claude's multi-agent Workflow orchestration for this agent. Default
-   * OFF — when false/unset the claude driver hard-disables the Workflow tool
-   * (`--disallowed-tools Workflow`) so it can't be triggered accidentally.
-   * Orthogonal to reasoning effort; only claude advertises the capability.
-   */
   claudeWorkflowEnabled?: boolean;
-  /**
-   * How Claude turns are spawned, which decides what they bill against:
-   *  - 'subscription' (default): interactive TUI under a PTY → counts inside
-   *    the Pro/Max subscription quota (standard cost).
-   *  - 'api': headless `claude -p` (print mode) → bills the separate Agent SDK
-   *    credit pool (extra cost).
-   * Unset falls back to the `PIKILOOM_CLAUDE_PRINT` / legacy `PIKILOOM_CLAUDE_TUI`
-   * env vars, then to 'subscription'. See resolveClaudeAccessMode.
-   */
   claudeAccessMode?: 'subscription' | 'api';
   codexModel?: string;
   codexReasoningEffort?: string;
@@ -102,74 +62,36 @@ export interface UserConfig {
   workspaces?: WorkspaceEntry[];
   telegramBotToken?: string;
   telegramAllowedChatIds?: string;
-  /**
-   * Chat IDs the Telegram bot has interacted with, persisted across restarts.
-   * Populated automatically when a new chat sends a message; consumed at
-   * startup so `sendStartupNotice` can greet chats even after a crash-style
-   * respawn that bypasses the env-var hand-off.
-   */
   telegramKnownChatIds?: string[];
   feishuAppId?: string;
   feishuAppSecret?: string;
-  /** Same as `telegramKnownChatIds` but for Feishu. */
   feishuKnownChatIds?: string[];
   weixinBaseUrl?: string;
   weixinBotToken?: string;
   weixinAccountId?: string;
-  /** Slack — Socket Mode requires both bot token (xoxb-) and app token (xapp-). */
   slackBotToken?: string;
   slackAppToken?: string;
-  /** Discord — Bot token from Developer Portal (Bot page). */
   discordBotToken?: string;
-  /** DingTalk — Stream Mode auth: AppKey (clientId) + AppSecret (clientSecret). */
   dingtalkClientId?: string;
   dingtalkClientSecret?: string;
-  /** WeChat Work / 企业微信 智能机器人 — Smart Bot WebSocket auth. */
   wecomBotId?: string;
   wecomBotSecret?: string;
   wecomEndpoint?: string;
   browserEnabled?: boolean;
   browserHeadless?: boolean;
-  /** Peekaboo MCP for native macOS GUI control — toggled from the Extensions tab. */
   peekabooEnabled?: boolean;
-  /** pikichannel access token — provisioned on first run; remote (non-loopback)
-   *  clients must present it to connect. Rotate by clearing this field. */
   pikichannelToken?: string;
-  /** Require the pikichannel token even from loopback (defense-in-depth). */
   pikichannelStrictAuth?: boolean;
-  /** Stable NodeID dialed by remote clients over the rendezvous (NAT traversal).
-   *  Provisioned on first run. */
   pikichannelNodeId?: string;
-  /** Rendezvous broker URL this host registers to for NAT traversal, e.g.
-   *  wss://broker.example.com/pikichannel/rendezvous. Unset = no NAT registration. */
   pikichannelRendezvous?: string;
-  /** This host's public address (authority or ws(s)/http(s) URL) for DIRECT
-   *  remote access, e.g. 203.0.113.5:3940. When set, the connection code is a
-   *  direct one (no NAT hop). Unset = rely on rendezvous, or local only. */
   pikichannelPublicHost?: string;
-  /** Cloudflare Realtime TURN — the TURN app's Key ID (the `$TURN_KEY_ID` in the
-   *  credentials endpoint). When paired with pikichannelTurnApiToken, the host
-   *  mints SHORT-LIVED TURN credentials so WebRTC relays through Cloudflare when
-   *  direct hole-punching fails (symmetric NAT / CGNAT). Unset = STUN only.
-   *  Env override: PIKICHANNEL_TURN_KEY_ID. */
   pikichannelTurnKeyId?: string;
-  /** Cloudflare Realtime TURN — the API token (secret) used to mint credentials.
-   *  Stays server-side; only the minted TTL'd credentials reach the peer
-   *  connection, never this token. Env override: PIKICHANNEL_TURN_API_TOKEN. */
   pikichannelTurnApiToken?: string;
-  /** TTL (seconds) for minted TURN credentials. Default 86400 (24h); must exceed
-   *  a single session's expected duration. Env override: PIKICHANNEL_TURN_TTL. */
   pikichannelTurnTtl?: number;
-  /** Extension configuration — global MCP servers, OAuth tokens, and skills. */
   extensions?: {
     mcp?: Record<string, McpServerConfig>;
-    /** OAuth tokens keyed by MCP server id (same key as extensions.mcp). */
     mcpTokens?: Record<string, McpOAuthTokenRecord>;
   };
-  /**
-   * Model layer — Provider+Profile abstraction for BYOK across all agents.
-   * Imported as a structural type so this file stays free of cross-layer deps.
-   */
   models?: {
     providers?: Record<string, unknown>;
     profiles?: Record<string, unknown>;
@@ -212,12 +134,6 @@ const MANAGED_ENV_KEYS = [
   'WECOM_ENDPOINT',
 ] as const;
 
-// Snapshot env vars present at module load — these were set externally by the
-// process launcher (docker `-e`, shell `export`, systemd unit, ...) and reflect
-// the operator's intent. `applyUserConfig` with `clearMissing` must never
-// delete them, even if setting.json is silent on the same key. Without this,
-// `docker run -e TELEGRAM_BOT_TOKEN=...` would survive only until the first
-// config sync tick, at which point the token gets wiped from the environment.
 const EXTERNAL_ENV_PRESET = new Set<string>(
   MANAGED_ENV_KEYS.filter(key => {
     const value = process.env[key];
@@ -225,13 +141,6 @@ const EXTERNAL_ENV_PRESET = new Set<string>(
   }),
 );
 
-/**
- * Channel-credential env vars that should hydrate a missing setting.json value
- * back into the in-memory config. Display surfaces (dashboard channel cards,
- * setup wizard) and channel resolution all read `config.telegramBotToken`-style
- * fields, so if the operator only provided env vars (the docker default) the
- * UI would otherwise show "not configured" even though the bot works fine.
- */
 const ENV_TO_CONFIG_KEY: ReadonlyArray<readonly [keyof UserConfig, string]> = [
   ['telegramBotToken', 'TELEGRAM_BOT_TOKEN'],
   ['telegramAllowedChatIds', 'TELEGRAM_ALLOWED_CHAT_IDS'],
@@ -250,14 +159,6 @@ const ENV_TO_CONFIG_KEY: ReadonlyArray<readonly [keyof UserConfig, string]> = [
   ['wecomEndpoint', 'WECOM_ENDPOINT'],
 ];
 
-/**
- * Return a copy of `config` with channel credential fields hydrated from
- * matching env vars when the setting.json value is empty. The returned object
- * must NOT be used as input to `saveUserConfig` — that would persist env-only
- * values into setting.json, which would defeat the purpose of running with
- * `-e TELEGRAM_BOT_TOKEN=...` (the operator wants the env var to remain the
- * source of truth across container restarts).
- */
 export function applyChannelEnvFallback(config: Partial<UserConfig>): Partial<UserConfig> {
   let next: Partial<UserConfig> | null = null;
   for (const [key, envName] of ENV_TO_CONFIG_KEY) {
@@ -274,13 +175,6 @@ const USER_CONFIG_DIRNAME = STATE_DIR_NAME;
 const USER_CONFIG_FILENAME = 'setting.json';
 
 let activeUserConfig: Partial<UserConfig> = {};
-// Parsed-config cache keyed by setting.json identity (path + mtime + size).
-// loadUserConfig() is hit from ~60 call sites — several times per HTTP request and
-// per agent stream (the MCP bridge resolves GUI config + per-extension OAuth) — so
-// re-reading + JSON.parse + normalize on every call is pure waste. A cache hit costs
-// one statSync (~100x cheaper). saveUserConfig refreshes this entry so writes are
-// visible immediately regardless of mtime granularity. Callers treat the result as
-// read-only and spread to mutate (the same contract getActiveUserConfig already uses).
 let userConfigCache: { path: string; mtimeMs: number; size: number; config: Partial<UserConfig> } | null = null;
 const userConfigListeners = new Set<UserConfigChangeListener>();
 let userConfigSyncTimer: ReturnType<typeof setInterval> | null = null;
@@ -290,7 +184,6 @@ let userConfigSyncOverrides: Partial<UserConfig> = {};
 
 const expandHomeDir = expandTilde;
 
-/** Normalize workspace entries — resolve paths, deduplicate, sort by order. */
 function normalizeWorkspaces(raw: unknown): WorkspaceEntry[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
@@ -320,10 +213,6 @@ function normalizeWorkspaces(raw: unknown): WorkspaceEntry[] {
   return entries;
 }
 
-/**
- * Single canonical config path: ~/.pikiloom/setting.json
- * Both CLI and dashboard read/write this file exclusively.
- */
 export function getDevUserConfigPath(): string {
   return path.join(os.homedir(), USER_CONFIG_DIRNAME, 'dev', USER_CONFIG_FILENAME);
 }
@@ -504,10 +393,6 @@ export function applyUserConfig(config: Partial<UserConfig>, _channel?: string, 
     const next = managed[key];
     const prev = process.env[key] ?? '';
     if (!next) {
-      // Never clobber an env var the launcher set externally — that's the
-      // `docker run -e ...` / `export FOO=...` contract. We only clear keys we
-      // know were written by a previous `applyUserConfig` (i.e. *not* in the
-      // boot-time snapshot).
       if (clearMissing && key in process.env && !EXTERNAL_ENV_PRESET.has(key)) {
         delete process.env[key];
         changedKeys.push(key);
@@ -536,9 +421,6 @@ export function setUserWorkdir(workdir: string, options: { notify?: boolean } = 
   const resolvedWorkdir = resolveUserWorkdir({ workdir });
   const config = normalizeUserConfig({ ...loadUserConfig(), workdir: resolvedWorkdir });
   const configPath = saveUserConfig(config);
-  // Don't pin workdir into userConfigSyncOverrides: the periodic sync reads
-  // setting.json fresh each tick, so an external `npx pikiloom@latest` that
-  // updates the file should be honored, not clobbered by an in-memory lock.
   applyUserConfig(config, undefined, { overwrite: true, clearMissing: true, notify: options.notify ?? true });
   return { configPath, workdir: resolvedWorkdir, config };
 }
@@ -573,20 +455,11 @@ export function startUserConfigSync(options: SyncUserConfigOptions = {}): () => 
   };
 }
 
-// ---------------------------------------------------------------------------
-// Known chat persistence
-// ---------------------------------------------------------------------------
-
 const KNOWN_CHAT_CONFIG_KEY = {
   feishu: 'feishuKnownChatIds',
   telegram: 'telegramKnownChatIds',
 } as const;
 
-/**
- * Append `chatId` to the persisted known-chat list for `channelType` if it
- * isn't already there. The list survives crashes (env-based hand-off does
- * not) so `sendStartupNotice` can greet known chats after any restart path.
- */
 export function recordKnownChatId(channelType: 'feishu' | 'telegram', chatId: string | number): void {
   const id = String(chatId ?? '').trim();
   if (!id) return;
@@ -600,7 +473,6 @@ export function recordKnownChatId(channelType: 'feishu' | 'telegram', chatId: st
   } catch {}
 }
 
-/** Load the persisted known-chat list for a channel. */
 export function loadKnownChatIds(channelType: 'feishu' | 'telegram'): string[] {
   const key = KNOWN_CHAT_CONFIG_KEY[channelType];
   const config = loadUserConfig();
@@ -610,17 +482,11 @@ export function loadKnownChatIds(channelType: 'feishu' | 'telegram'): string[] {
     : [];
 }
 
-// ---------------------------------------------------------------------------
-// Workspace registry
-// ---------------------------------------------------------------------------
-
-/** Load registered workspaces from config. Returns empty array if none. */
 export function loadWorkspaces(): WorkspaceEntry[] {
   const config = loadUserConfig();
   return normalizeWorkspaces(config.workspaces);
 }
 
-/** Add a workspace. Returns the new entry. Deduplicates by resolved path. */
 export function addWorkspace(workspacePath: string, name?: string): WorkspaceEntry {
   const resolved = path.resolve(expandHomeDir(workspacePath));
   const config = loadUserConfig();
@@ -644,7 +510,6 @@ export function addWorkspace(workspacePath: string, name?: string): WorkspaceEnt
   return entry;
 }
 
-/** Remove a workspace by path. Returns true if removed. */
 export function removeWorkspace(workspacePath: string): boolean {
   const resolved = path.resolve(expandHomeDir(workspacePath));
   const config = loadUserConfig();
@@ -656,7 +521,6 @@ export function removeWorkspace(workspacePath: string): boolean {
   return true;
 }
 
-/** Rename a workspace. Returns the updated entry or null if not found. */
 export function renameWorkspace(workspacePath: string, newName: string): WorkspaceEntry | null {
   const resolved = path.resolve(expandHomeDir(workspacePath));
   const config = loadUserConfig();
@@ -668,7 +532,6 @@ export function renameWorkspace(workspacePath: string, newName: string): Workspa
   return entry;
 }
 
-/** Reorder workspaces by providing paths in desired order. */
 export function reorderWorkspaces(orderedPaths: string[]): WorkspaceEntry[] {
   const config = loadUserConfig();
   const workspaces = normalizeWorkspaces(config.workspaces);
@@ -686,7 +549,6 @@ export function reorderWorkspaces(orderedPaths: string[]): WorkspaceEntry[] {
     }
   }
 
-  // Append any workspaces not in the ordered list
   for (const entry of workspaces) {
     if (!seen.has(entry.path)) {
       entry.order = reordered.length;
@@ -698,7 +560,6 @@ export function reorderWorkspaces(orderedPaths: string[]): WorkspaceEntry[] {
   return reordered;
 }
 
-/** Update workspace preferences (preferredAgent, etc.) */
 export function updateWorkspace(workspacePath: string, patch: Partial<Pick<WorkspaceEntry, 'name' | 'preferredAgent' | 'order'>>): WorkspaceEntry | null {
   const resolved = path.resolve(expandHomeDir(workspacePath));
   const config = loadUserConfig();
@@ -712,7 +573,6 @@ export function updateWorkspace(workspacePath: string, patch: Partial<Pick<Works
   return entry;
 }
 
-/** Find a workspace entry by path. */
 export function findWorkspace(workspacePath: string): WorkspaceEntry | null {
   const resolved = path.resolve(expandHomeDir(workspacePath));
   return loadWorkspaces().find(w => w.path === resolved) || null;

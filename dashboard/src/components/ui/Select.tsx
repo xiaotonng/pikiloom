@@ -5,9 +5,7 @@ import { cn } from '../../utils';
 interface SelectOption {
   value: string;
   label: string;
-  /** Secondary line shown beneath the label inside the menu only (not in the trigger). */
   description?: string;
-  /** Right-aligned monospace tag shown next to the label inside the menu only. */
   meta?: string;
 }
 
@@ -53,9 +51,6 @@ export function Select({
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Escape closes only this open dropdown — swallow it (capture phase +
-      // stopPropagation) so a parent Modal's own document-level Escape handler
-      // doesn't also fire and tear down the whole modal.
       if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); }
     };
     document.addEventListener('mousedown', handlePointerDown);
@@ -95,9 +90,6 @@ export function Select({
   }, [open]);
 
   if (isReadOnly) {
-    // Visual treatment matches a disabled <Input> — panel-alt bg, lighter edge,
-    // muted text — so any non-interactive field reads the same way regardless
-    // of whether it's a Select or an Input.
     return (
       <div
         className={cn(
@@ -184,8 +176,6 @@ export function Select({
           'transition-[border-color,box-shadow,background] duration-200 outline-none',
           'hover:border-control-border-h hover:bg-control-h',
           'focus-visible:border-control-border-h focus-visible:shadow-[0_0_0_4px_var(--th-glow-a)]',
-          // Match Input's disabled treatment: muted bg/border/text, no shadow,
-          // no hover reaction.
           'disabled:cursor-not-allowed disabled:bg-panel-alt disabled:border-edge disabled:text-fg-5',
           'disabled:shadow-none disabled:hover:border-edge disabled:hover:bg-panel-alt',
           open && 'border-control-border-h bg-control-h shadow-[0_0_0_4px_var(--th-glow-a)]'
@@ -205,7 +195,6 @@ export function Select({
   );
 }
 
-/* ── IconPicker — compact icon-only dropdown ── */
 export function IconPicker({
   value,
   options,
@@ -229,9 +218,6 @@ export function IconPicker({
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Escape closes only this open dropdown — swallow it (capture phase +
-      // stopPropagation) so a parent Modal's own document-level Escape handler
-      // doesn't also fire and tear down the whole modal.
       if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); }
     };
     document.addEventListener('mousedown', handlePointerDown);

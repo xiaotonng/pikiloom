@@ -2,22 +2,6 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '../../utils';
 import { tv, type VariantProps } from './variants';
 
-/**
- * Button — three intent levels + three sizes.
- *
- * Variants (orthogonal):
- *   - tone: 'primary' (filled accent), 'secondary' (hairline outline),
- *           'ghost' (text-only)
- *   - size: 'sm' (h-7), 'md' (h-8 default), 'lg' (h-9)
- *   - shape: 'rect' (default rounded-md), 'icon' (square), 'pill' (rounded-full)
- *
- * Legacy aliases for backward compat:
- *   - variant?: 'primary' | 'secondary' | 'outline' | 'ghost'
- *     → 'outline' maps to tone 'secondary' (they were visually identical).
- *
- * Why split tone from shape: icon-only buttons no longer need a special
- * 'icon' variant; pass shape="icon" with any tone.
- */
 const button = tv({
   base: [
     'inline-flex items-center justify-center gap-2 whitespace-nowrap',
@@ -61,8 +45,6 @@ const button = tv({
   defaults: { tone: 'secondary', size: 'md', shape: 'rect' },
 });
 
-// Padding depends on size+shape combination; encode that off the variant table
-// to keep the matrix small and the rules legible.
 function paddingClass(size: ButtonSize, shape: ButtonShape): string {
   if (shape === 'icon') {
     return size === 'sm' ? 'w-7 p-0' : size === 'lg' ? 'w-9 p-0' : 'w-8 p-0';
@@ -76,30 +58,21 @@ export type ButtonTone = NonNullable<VariantProps<typeof button>['tone']>;
 export type ButtonSize = NonNullable<VariantProps<typeof button>['size']>;
 export type ButtonShape = NonNullable<VariantProps<typeof button>['shape']>;
 
-/**
- * Legacy size aliases: pre-refactor call sites passed
- *   `size: 'default' | 'sm' | 'icon'`
- * The `'icon'` value crossed two axes (size+shape) — we untangle it here
- * so consumers can keep working without touching every file.
- */
 type LegacySize = 'default' | 'sm' | 'icon';
 
 export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'size'> {
   tone?: ButtonTone;
   size?: ButtonSize | LegacySize;
   shape?: ButtonShape;
-  /** Optional leading element (e.g. spinner / icon). */
   leading?: ReactNode;
-  /** Optional trailing element (e.g. chevron / kbd). */
   trailing?: ReactNode;
-  /** @deprecated use `tone` — kept for legacy call sites. */
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
 }
 
 const VARIANT_TO_TONE: Record<NonNullable<ButtonProps['variant']>, ButtonTone> = {
   primary: 'primary',
   secondary: 'secondary',
-  outline: 'secondary', // legacy alias
+  outline: 'secondary',
   ghost: 'ghost',
   danger: 'danger',
 };

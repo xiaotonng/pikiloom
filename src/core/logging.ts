@@ -1,7 +1,3 @@
-/**
- * Structured logging with scoped writers and file retention.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 

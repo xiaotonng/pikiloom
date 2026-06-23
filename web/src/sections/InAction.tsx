@@ -15,7 +15,6 @@ export default function InAction() {
         </p>
       </div>
 
-      {/* 1) Parallel multi-pane demo — the hero (live screen recording) */}
       <div className="mt-14">
         <BrowserFrame
           video={asset('media/promo-parallel.mp4')}
@@ -29,7 +28,6 @@ export default function InAction() {
         </p>
       </div>
 
-      {/* 2) Switch the agent mid-session — context migrates across the swap */}
       <div className="mt-10">
         <BrowserFrame
           video={asset('media/promo-switch.mp4')}
@@ -44,7 +42,6 @@ export default function InAction() {
         </p>
       </div>
 
-      {/* From your phone (Telegram) + the six-pane grid */}
       <div className="mt-6 grid items-start gap-6 lg:grid-cols-2">
         <figure className="overflow-hidden rounded-2xl border border-white/10 bg-[#0a0c12] shadow-2xl">
           <div className="flex items-center gap-2 border-b border-white/5 bg-white/[0.02] px-4 py-2.5">
@@ -57,7 +54,6 @@ export default function InAction() {
         <BrowserFrame src={asset('media/promo-dashboard-six.png')} alt="Six independent agent streams in a six-pane grid" ratioW={1600} ratioH={1000} badge="Six in parallel" />
       </div>
 
-      {/* Standard/Extra mode · 7 IM channels · Agents & Models */}
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         <BrowserFrame src={asset('media/promo-dashboard-agent-mode.png')} alt="Standard / Extra access mode" ratioW={1440} ratioH={900} badge="Standard / Extra" />
         <BrowserFrame src={asset('media/promo-dashboard-im.png')} alt="Seven native IM channels" ratioW={1440} ratioH={900} badge="IM Access" />
@@ -67,7 +63,6 @@ export default function InAction() {
         Toggle Claude Standard / Extra billing · connect 7 IM channels · a Providers + Profiles vault with local models (Ollama · mlx-lm).
       </p>
 
-      {/* Extensions · System */}
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <BrowserFrame src={asset('media/promo-dashboard-extensions.png')} alt="Extensions — MCP servers and skills" ratioW={1440} ratioH={900} badge="Extensions" />
         <BrowserFrame src={asset('media/promo-dashboard-system.png')} alt="System and permissions" ratioW={1440} ratioH={900} badge="System" />

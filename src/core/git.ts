@@ -1,48 +1,20 @@
-/**
- * Git working-tree status as a cross-platform OS primitive.
- *
- * One bounded `git status --porcelain=v2 --branch` invocation, parsed into a
- * structured {@link GitStatus}. Porcelain v2 is machine-stable across git
- * versions and locales, so we count entry lines rather than scraping human
- * output. A single reader feeds both the IM `/status` command and the Dashboard
- * workspace view — no git logic is duplicated in the channels or the SPA.
- */
-
 import { spawnSync } from 'node:child_process';
 
 import { GIT_STATUS_TIMEOUT_MS } from './constants.js';
 
 export interface GitStatus {
-  /** Current branch, or `null` when HEAD is detached. */
   branch: string | null;
-  /** True when HEAD is detached (no branch checked out). */
   detached: boolean;
-  /** Short HEAD sha — primarily useful to label the detached case. */
   shortSha: string | null;
-  /** Upstream tracking ref (e.g. `origin/main`), or `null` when none is set. */
   upstream: string | null;
-  /** Commits ahead of the upstream. 0 when no upstream. */
   ahead: number;
-  /** Commits behind the upstream. 0 when no upstream. */
   behind: number;
-  /** Files with staged (index) changes. */
   staged: number;
-  /** Tracked files with unstaged (working-tree) changes, including conflicts. */
   unstaged: number;
-  /** Untracked files. */
   untracked: number;
-  /** Headline count: staged + unstaged + untracked. 0 means a clean tree. */
   changed: number;
 }
 
-/**
- * Read the git status of `dir`. Returns `null` for a non-repo, a missing git
- * binary, or a timeout — callers simply omit the git section. Never throws.
- *
- * Walks up from `dir` like git itself, so a workspace nested below the repo root
- * is still recognised. Uses `GIT_OPTIONAL_LOCKS=0` to avoid contending with
- * other git processes for the index lock.
- */
 export function readGitStatus(dir: string): GitStatus | null {
   if (!dir) return null;
   try {
@@ -59,7 +31,6 @@ export function readGitStatus(dir: string): GitStatus | null {
   }
 }
 
-/** Parse `git status --porcelain=v2 --branch` output. Exported for testing. */
 export function parseGitStatusV2(stdout: string): GitStatus {
   let branch: string | null = null;
   let detached = false;
@@ -93,12 +64,10 @@ export function parseGitStatusV2(stdout: string): GitStatus {
         behind = parseInt(m[2], 10);
       }
     } else if (line.startsWith('1 ') || line.startsWith('2 ')) {
-      // Ordinary / renamed entry: field 2 is the XY status (X=index, Y=worktree).
       const xy = line.split(' ')[1] || '..';
       if (xy[0] && xy[0] !== '.') staged++;
       if (xy[1] && xy[1] !== '.') unstaged++;
     } else if (line.startsWith('u ')) {
-      // Unmerged (conflict) — count as a working-tree change.
       unstaged++;
     } else if (line.startsWith('? ')) {
       untracked++;
@@ -119,17 +88,6 @@ export function parseGitStatusV2(stdout: string): GitStatus {
   };
 }
 
-/**
- * Render a {@link GitStatus} into a single friendly line (no channel-specific
- * markup), e.g.:
- *
- *   main  ↑2 ↓1  ·  5 changed (3 staged · 2 untracked)
- *   feature/x  ·  no upstream  ·  clean
- *   (detached a1b2c3d)  ·  1 changed
- *
- * Returns `null` when there is no git status to show, so callers can omit the
- * line entirely.
- */
 export function formatGitStatusLine(git: GitStatus | null | undefined): string | null {
   if (!git) return null;
 

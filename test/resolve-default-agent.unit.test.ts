@@ -24,7 +24,6 @@ describe('resolveDefaultAgent', () => {
   });
 
   it('clamps to the first installed agent when the preference is not installed', () => {
-    // The reported bug: machine without codex must not default to codex.
     expect(resolveDefaultAgent('codex', ONLY_CLAUDE)).toBe('claude');
   });
 

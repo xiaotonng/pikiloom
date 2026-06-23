@@ -31,21 +31,13 @@ import type { LogoItem } from '@/components/LogoLoop';
 
 const SZ = 18;
 
-// LobeHub's barrel widens each icon's type, hiding the compound `.Color` static
-// (the official full-color mark, present at runtime). Reach it through one typed
-// boundary instead of casting at every call site.
 type ColoredIcon = ComponentType<{ size?: number; className?: string }>;
 function brand(Icon: unknown, size = SZ): ReactNode {
-  // Prefer the full-color mark; fall back to the mono variant, then the icon
-  // itself (LobeHub's default export is always the component) — never undefined.
   const I = Icon as ColoredIcon & { Color?: ColoredIcon; Mono?: ColoredIcon };
   const Comp = I.Color ?? I.Mono ?? I;
   return <Comp size={size} />;
 }
 
-// ── Brand glyphs no icon registry carries (real official paths) ──────────────
-// DingTalk (mingcute) and WeCom (TDesign — Tencent's own design system); both
-// monochrome `currentColor` so they inherit the channel's brand tint.
 function DingTalkGlyph({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
@@ -92,7 +84,6 @@ export const modelLogos: LogoItem[] = [
   { node: <Chip node={brand(Ollama)} label="Ollama · local" />, title: 'Ollama' },
 ];
 
-// Tool mesh entries are capabilities, not branded products → neutral glyphs.
 export const toolLogos: LogoItem[] = [
   { node: <Chip node={<LuSparkles size={SZ} className="text-emerald-300" />} label="Skills" />, title: 'Skills' },
   { node: <Chip node={<LuServer size={SZ} className="text-sky-300" />} label="MCP Servers" />, title: 'MCP Servers' },
@@ -105,15 +96,11 @@ export const toolLogos: LogoItem[] = [
 
 export interface ImChannel {
   name: string;
-  /** brand glyph (currentColor where possible so it picks up `color`) */
   node: ReactNode;
   color: string;
-  /** true when this is a brand-tinted stand-in (no official SVG in any registry) */
   approximate?: boolean;
 }
 
-// Seven native IM channels — real brand marks. Feishu/Lark has no official SVG
-// in any registry searched, so it uses a brand-tinted stand-in for now.
 export const IM_CHANNELS: ImChannel[] = [
   { name: 'Telegram', color: '#26A5E4', node: <SiTelegram className="h-full w-full" /> },
   { name: 'Feishu / Lark', color: '#00D6B9', node: <LuSend className="h-full w-full" />, approximate: true },

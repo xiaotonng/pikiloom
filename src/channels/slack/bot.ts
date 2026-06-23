@@ -1,11 +1,3 @@
-/**
- * Slack bot orchestration.
- *
- * Mirrors WeixinBot's command surface (/help, /status, /agent, /models, …)
- * over Slack channels and DMs. Each Slack channel id is a chat key, threads
- * are reused so the bot's reply lands in the same conversation as the trigger.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

@@ -1,28 +1,3 @@
-/**
- * Responses↔Chat bridge.
- *
- * Codex 0.140+ speaks ONLY the OpenAI Responses API (`wire_api = "chat"` was
- * removed). Many OpenAI-compatible providers — DeepSeek, Kimi/Moonshot,
- * MiniMax, 豆包/Doubao, Qwen/DashScope, Zhipu, … — implement ONLY the Chat
- * Completions API. This in-process HTTP server bridges the two so codex can
- * drive any chat-only provider:
- *
- *   codex ──(Responses API)──▶ bridge ──(Chat Completions)──▶ upstream provider
- *
- * One server instance routes every upstream: the upstream base URL is encoded
- * (base64url) into the request path (`/u/<token>/responses`). The caller's
- * Authorization header is forwarded verbatim, so the bridge never reads or
- * stores credentials — codex injects `Authorization: Bearer <key>` from the
- * provider's `env_key`, and we relay it upstream.
- *
- * Translation is intentionally NON-incremental: we call the upstream with
- * `stream:false`, then synthesise a complete, spec-shaped Responses SSE stream.
- * Codex rebuilds a turn from `response.output_item.done` items plus the final
- * `response.completed`, so a fully-populated terminal payload is authoritative;
- * this sidesteps fragile per-token delta bookkeeping while still surfacing
- * assistant text AND tool/function calls (apply_patch, shell, MCP tools).
- */
-
 import http from 'node:http';
 import { writeScopedLog } from '../core/logging.js';
 
@@ -41,7 +16,6 @@ function genId(prefix: string): string {
 }
 function num(v: unknown): number { return typeof v === 'number' && Number.isFinite(v) ? v : 0; }
 
-/** base64url-encode an upstream base URL so it survives as a single path segment. */
 export function upstreamToken(baseURL: string): string {
   return Buffer.from(baseURL, 'utf8').toString('base64url');
 }
@@ -49,7 +23,6 @@ function decodeUpstream(token: string): string | null {
   try { return Buffer.from(token, 'base64url').toString('utf8') || null; } catch { return null; }
 }
 
-/** Start (or reuse) the singleton bridge server; resolves to its localhost port. */
 export async function ensureResponsesBridge(): Promise<number> {
   if (server && listenPort) return listenPort;
   if (starting) return starting;
@@ -68,14 +41,10 @@ export async function ensureResponsesBridge(): Promise<number> {
 }
 
 export function shutdownResponsesBridge(): void {
-  try { server?.close(); } catch { /* ignore */ }
+  try { server?.close(); } catch {  }
   server = null;
   listenPort = 0;
 }
-
-// ---------------------------------------------------------------------------
-// HTTP handling
-// ---------------------------------------------------------------------------
 
 function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   const url = new URL(req.url || '/', 'http://127.0.0.1');
@@ -85,8 +54,6 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   if (!upstreamBase) { res.writeHead(400).end('bad upstream token'); return; }
 
   if (m[2] === 'models') {
-    // Codex's model-catalog refresh is best-effort; an empty list keeps it quiet
-    // and never blocks the turn.
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ object: 'list', data: [], models: [] }));
     return;
@@ -137,11 +104,6 @@ async function handleResponses(
     return;
   }
 
-  // Forward the upstream Chat Completions SSE incrementally, translating each
-  // delta into Responses events, so codex (and the dashboard) render the answer
-  // progressively — token-by-token — instead of popping it in at once. Codex
-  // still rebuilds the turn from the terminal `response.output_item.done` +
-  // `response.completed`, which we always emit.
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   res.flushHeaders?.();
   let seq = 0;
@@ -251,7 +213,7 @@ async function handleResponses(
 }
 
 function sendResponsesError(res: http.ServerResponse, message: string): void {
-  if (res.headersSent) { try { res.end(); } catch { /* ignore */ } return; }
+  if (res.headersSent) { try { res.end(); } catch {  } return; }
   res.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
@@ -264,10 +226,6 @@ function sendResponsesError(res: http.ServerResponse, message: string): void {
   emit({ type: 'response.failed', response: { id, object: 'response', status: 'failed', error: { code: 'bridge_error', message }, output: [] } });
   res.end();
 }
-
-// ---------------------------------------------------------------------------
-// Request translation: Responses → Chat Completions
-// ---------------------------------------------------------------------------
 
 function asText(content: any): string {
   if (typeof content === 'string') return content;
@@ -312,7 +270,6 @@ function toChatRequest(body: any): any {
         content: typeof out === 'string' ? out : JSON.stringify(out ?? ''),
       });
     } else if (type === 'reasoning') {
-      // Chat models cannot ingest prior reasoning items — drop.
     }
   }
 
@@ -343,13 +300,11 @@ function toChatTool(t: any): any {
       },
     };
   }
-  // Codex built-in custom tools (e.g. local_shell) and web_search aren't
-  // expressible as chat functions — drop; codex falls back to its function tools.
   return null;
 }
 
 function toChatToolChoice(tc: any): any {
-  if (typeof tc === 'string') return tc; // auto | none | required
+  if (typeof tc === 'string') return tc;
   if (tc?.type === 'function' && tc.name) return { type: 'function', function: { name: tc.name } };
   if (tc?.type === 'function' && tc.function) return tc;
   return 'auto';

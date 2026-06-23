@@ -1,28 +1,9 @@
-/**
- * Provider credential validation — Feishu-style explicit check.
- *
- * Validation strategy: GET ${baseURL}/models with the resolved API key.
- * Status semantics mirror ChannelSetupState in core/config/validation.ts:
- *   missing | invalid | error | ready
- */
-
 import { request } from 'undici';
 import { resolveCredential } from '../core/secrets/index.js';
 import type { ProviderConfig, ProviderValidationStatus } from './types.js';
 
 const VALIDATION_TIMEOUT_MS = 10_000;
 
-/**
- * Per-model details surfaced from a provider's /models endpoint. We pluck the
- * fields that the OpenRouter / OpenAI / Anthropic catalogs commonly expose:
- *   - `name`            display name distinct from the canonical id
- *   - `created`         unix epoch (seconds) — useful as a "released" marker
- *   - `contextLength`   max context window
- *   - `pricePromptUsd`  / `priceCompletionUsd` — converted to USD / 1M tokens
- *
- * Every field is optional; consumers must tolerate sparse data because not
- * every provider returns the full set.
- */
 export interface ProviderModelInfo {
   id: string;
   name?: string;
@@ -34,9 +15,7 @@ export interface ProviderModelInfo {
 
 export interface ProviderValidationResult {
   status: ProviderValidationStatus;
-  /** Model ids returned by the endpoint, when available. */
   models: string[];
-  /** Detailed per-model info (id + optional name/created/pricing). */
   modelInfos: ProviderModelInfo[];
 }
 
@@ -45,9 +24,7 @@ interface ListModelsItem {
   name?: string;
   display_name?: string;
   created?: number | string;
-  /** OpenRouter convention. */
   context_length?: number;
-  /** Anthropic convention. */
   max_tokens?: number;
   pricing?: {
     prompt?: string | number;
@@ -66,13 +43,10 @@ function buildHeaders(provider: ProviderConfig, apiKey: string): Record<string, 
   const base: Record<string, string> = { 'Accept': 'application/json' };
   switch (provider.kind) {
     case 'anthropic':
-      // Anthropic models endpoint is /v1/models with x-api-key + anthropic-version
       base['x-api-key'] = apiKey;
       base['anthropic-version'] = '2023-06-01';
       break;
     case 'google':
-      // Google AI Studio uses ?key= query param, not Authorization header.
-      // Caller appends ?key= in URL builder below.
       break;
     case 'openai':
     case 'openai-compatible':
@@ -87,14 +61,12 @@ function buildHeaders(provider: ProviderConfig, apiKey: string): Record<string, 
 function modelsUrl(provider: ProviderConfig, apiKey: string): string {
   const base = provider.baseURL.replace(/\/+$/, '');
   if (provider.kind === 'google') {
-    // Google AI Studio: GET https://generativelanguage.googleapis.com/v1beta/models?key=API_KEY
     const sep = base.includes('?') ? '&' : '?';
     return `${base}/models${sep}key=${encodeURIComponent(apiKey)}`;
   }
   if (provider.kind === 'anthropic') {
     return `${base}/v1/models`;
   }
-  // OpenAI-compatible
   return `${base}/models`;
 }
 
@@ -107,11 +79,6 @@ function toNumber(value: unknown): number | undefined {
   return undefined;
 }
 
-/**
- * Convert a per-token USD price (the format OpenRouter & most OpenAI-compatible
- * APIs use) to USD per 1M tokens. We preserve up to 4 decimals so micro-prices
- * don't round to zero.
- */
 function perTokenToPerMillion(value: unknown): number | undefined {
   const n = toNumber(value);
   if (n === undefined) return undefined;
@@ -225,7 +192,7 @@ export async function validateProvider(provider: ProviderConfig): Promise<Provid
   }
 
   let parsed: unknown = null;
-  try { parsed = JSON.parse(bodyText); } catch { /* unparsed body — still treat 2xx as ready */ }
+  try { parsed = JSON.parse(bodyText); } catch {  }
   const modelInfos = extractModelInfos(parsed);
   const models = modelInfos.map(info => info.id);
 

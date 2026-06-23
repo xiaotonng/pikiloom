@@ -1,17 +1,3 @@
-/**
- * Discord channel transport — Gateway WebSocket (no public IP needed).
- *
- * Uses discord.js v14 with the bare minimum gateway intents:
- *   - Guilds, GuildMessages, MessageContent, DirectMessages
- *
- * IMPORTANT: For the bot to read message content in shared channels you must
- * enable the "Message Content Intent" toggle in the Discord developer portal
- * Bot page. Without it the gateway will silently emit empty `content`.
- *
- * Receives DMs and messages where the bot is mentioned. Self-authored
- * messages are filtered out before dispatch.
- */
-
 import {
   Client,
   Events,
@@ -34,9 +20,7 @@ import { writeScopedLog, type LogLevel } from '../../core/logging.js';
 export interface DiscordOpts {
   botToken: string;
   workdir?: string;
-  /** Optional channel-id allowlist; empty/undefined means "all". */
   allowedChatIds?: Set<string>;
-  /** When true (default), require @mention in shared channels — DMs always pass. */
   requireMentionInChannel?: boolean;
 }
 
@@ -98,10 +82,6 @@ export class DiscordChannel extends Channel {
 
   onMessage(handler: DiscordMessageHandler) { this.messageHandlers.add(handler); return this; }
   onError(handler: DiscordErrorHandler) { this.errorHandlers.add(handler); return this; }
-
-  // ========================================================================
-  // Lifecycle
-  // ========================================================================
 
   async connect(): Promise<BotInfo> {
     this.client = new Client({
@@ -178,10 +158,6 @@ export class DiscordChannel extends Channel {
     this.listenResolve = null;
   }
 
-  // ========================================================================
-  // Outgoing primitives
-  // ========================================================================
-
   async send(chatId: number | string, text: string, opts: SendOpts = {}): Promise<string | null> {
     const channelId = String(chatId);
     const channel = await this.fetchTextChannel(channelId);
@@ -228,10 +204,6 @@ export class DiscordChannel extends Channel {
       }
     } catch {}
   }
-
-  // ========================================================================
-  // Internal dispatch
-  // ========================================================================
 
   private async dispatchMessage(msg: Message): Promise<void> {
     if (msg.author?.bot) return;

@@ -1,7 +1,3 @@
-/**
- * Managed browser profile directory for Playwright integration.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -67,14 +63,6 @@ const MANAGED_BROWSER_SHUTDOWN_TIMEOUT_MS = 5_000;
 const MANAGED_BROWSER_SHUTDOWN_POLL_MS = 100;
 const require = createRequire(import.meta.url);
 
-/**
- * Read Chrome's `DevToolsActivePort` file from the managed profile dir.
- * Chrome writes this file when launched with `--remote-debugging-port=<n>`
- * (including `=0`, which lets the OS assign a free port). Format is two lines:
- *   <port>
- *   /devtools/browser/<id>
- * We use it to discover the actual port rather than hard-coding one.
- */
 function readDevToolsActivePort(profileDir: string): number | null {
   try {
     const raw = fs.readFileSync(path.join(profileDir, 'DevToolsActivePort'), 'utf8');
@@ -94,14 +82,6 @@ function normalizeBrowserCdpEndpoint(endpoint: string): string {
   return value.replace(/\/+$/, '');
 }
 
-/**
- * The external CDP endpoint configured via {@link PIKILOOM_BROWSER_CDP_URL_ENV},
- * normalized (trailing slashes stripped, blank → null). Single source of truth
- * for the remote-browser override: when this returns a value, every browser
- * codepath attaches to it and pikiloom never launches, probes, or kills a local
- * Chrome. Read from `env` (defaults to `process.env`) so callers can inject it
- * in tests.
- */
 export function getConfiguredRemoteCdpUrl(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
@@ -214,16 +194,6 @@ function getPlaywrightMcpConfigPath(outputDir: string): string {
   return path.join(outputDir, 'playwright-mcp-config.json');
 }
 
-/**
- * Write the playwright/mcp config JSON used by every spawn. Currently it just
- * strips Playwright's default `--disable-blink-features=AutomationControlled`
- * arg so Chrome doesn't show its "unsupported command-line flag" infobar.
- * Playwright adds that flag to hide `navigator.webdriver`; removing it makes
- * the managed browser look like a normal session, which is what we want for
- * pikiloom's logged-in automation profile.
- *
- * Idempotent: rewrites only when the content drifts.
- */
 export function ensurePlaywrightMcpConfigFile(
   outputDir: string = path.dirname(getManagedBrowserProfileDir()),
 ): string {
@@ -238,7 +208,6 @@ export function ensurePlaywrightMcpConfigFile(
   try {
     if (fs.readFileSync(configPath, 'utf8') === desired) return configPath;
   } catch {
-    // File missing or unreadable — fall through to write.
   }
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(configPath, desired, 'utf8');
@@ -301,9 +270,6 @@ export function getManagedBrowserLaunchArgs(profileDir = getManagedBrowserProfil
     : ['--start-maximized'];
   return [
     `--user-data-dir=${profileDir}`,
-    // `=0` makes Chrome pick a free port and write it to <profileDir>/DevToolsActivePort,
-    // which `readDevToolsActivePort` reads back. Hard-coding a port causes collisions
-    // when another Chrome / debugger is already on it.
     '--remote-debugging-port=0',
     '--no-first-run',
     '--no-default-browser-check',
@@ -488,19 +454,6 @@ async function waitForManagedBrowserCdpEndpoint(profileDir: string, timeoutMs = 
   return resolveManagedBrowserCdpEndpoint(profileDir);
 }
 
-/**
- * Hard-reset the managed browser: SIGKILL every root pid (skipping the SIGTERM
- * grace window) and wipe Chrome's session-restore files so the relaunch comes
- * up with a fresh `about:blank` instead of replaying the tabs that triggered
- * the failure. Used as the reactive recovery path when an agent stream sees an
- * MCP browser error (Connection closed / Frame has been detached) indicating
- * Chrome's CDP layer is wedged; a normal `closeManagedBrowserProcesses`
- * round-trip won't help because it would restore the same poisoned tabs.
- *
- * Trade-off: any unrelated user-opened tabs are dropped. Acceptable here
- * because this is invoked only after observing a real failure — the user has
- * already lost time, and recovery beats perpetuating the wedge.
- */
 export async function forceCloseManagedBrowser(profileDir = getManagedBrowserProfileDir()): Promise<number[]> {
   const tracked = readManagedBrowserSetupState(profileDir);
   const candidates = new Set<number>(findManagedBrowserRootPids(profileDir));
@@ -549,11 +502,6 @@ export async function prepareManagedBrowserForAutomation(
   profileDir = getManagedBrowserProfileDir(),
   options: ManagedBrowserAutomationOptions = {},
 ): Promise<ManagedBrowserAutomationPreparationResult> {
-  // CDP probe is the authoritative signal: if the managed Chrome answers on
-  // its debug port, attach to it regardless of what the setup-state file or
-  // the process table say. The ps-based running-state check is heuristic and
-  // can be wrong after a daemon restart, which would otherwise kill the
-  // user's live (and signed-in) browser.
   const reachableEndpoint = await resolveManagedBrowserCdpEndpoint(profileDir);
   if (reachableEndpoint) {
     return {

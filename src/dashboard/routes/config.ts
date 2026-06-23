@@ -1,7 +1,3 @@
-/**
- * Dashboard API routes: configuration, channels, extensions, permissions.
- */
-
 import { Hono } from 'hono';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -46,15 +42,8 @@ import { VERSION } from '../../core/version.js';
 import { runtime } from '../runtime.js';
 import { writeScopedLog } from '../../core/logging.js';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 export async function buildBrowserStatusResponse(config = loadUserConfig(), browserState = getManagedBrowserStatus()) {
   const gui = resolveGuiIntegrationConfig(config);
-  // In remote mode the local Chrome state is irrelevant — pikiloom attaches to
-  // the external CDP endpoint and never launches/manages a local browser. Report
-  // the endpoint so the dashboard shows the truth instead of "Chrome missing".
   const remoteCdpUrl = gui.browserEnabled ? getConfiguredRemoteCdpUrl() : null;
   return {
     browser: {
@@ -260,13 +249,8 @@ function openPathWithTarget(filePath: string, target: OpenTarget, isDirectory: b
   }
 }
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
 const app = new Hono();
 
-// Full state (config from file only)
 app.get('/api/state', async (c) => {
   const config = loadUserConfig();
   const setupState = await runtime.buildValidatedSetupState(config);
@@ -296,7 +280,6 @@ app.get('/api/state', async (c) => {
   });
 });
 
-// Host info
 app.get('/api/host', (c) => {
   const botRef = runtime.getBotRef();
   if (botRef) return c.json(botRef.getHostData());
@@ -310,16 +293,11 @@ app.get('/api/host', (c) => {
   });
 });
 
-// Permissions
 app.get('/api/permissions', (c) => {
   const data = { ...getPermissionsStatus(), hostApp: getHostTerminalApp() };
   return c.json(data);
 });
 
-// Save config (to ~/.pikiloom/setting.json). Channel reconciliation is
-// handled by ChannelSupervisor via the onUserConfigChange listener — adding,
-// removing, or swapping credentials of an IM channel takes effect in-process
-// without restarting pikiloom.
 app.post('/api/config', async (c) => {
   const body = await c.req.json();
   const merged = { ...loadUserConfig(), ...body };
@@ -328,7 +306,6 @@ app.post('/api/config', async (c) => {
   return c.json({ ok: true, configPath });
 });
 
-// Validate Telegram token
 app.post('/api/validate-telegram-token', async (c) => {
   const body = await c.req.json();
   const result = await validateTelegramConfig(body.token || '', body.allowedChatIds || '');
@@ -340,7 +317,6 @@ app.post('/api/validate-telegram-token', async (c) => {
   });
 });
 
-// Validate Feishu credentials
 app.post('/api/validate-feishu-config', async (c) => {
   const body = await c.req.json();
   const startedAt = Date.now();
@@ -364,7 +340,6 @@ app.post('/api/validate-feishu-config', async (c) => {
   });
 });
 
-// Validate Weixin credentials
 app.post('/api/validate-weixin-config', async (c) => {
   const body = await c.req.json();
   const result = await validateWeixinConfig(body.baseUrl || '', body.botToken || '', body.accountId || '');
@@ -376,7 +351,6 @@ app.post('/api/validate-weixin-config', async (c) => {
   });
 });
 
-// Validate Slack credentials
 app.post('/api/validate-slack-config', async (c) => {
   const body = await c.req.json();
   const result = await validateSlackConfig(body.botToken || '', body.appToken || '');
@@ -387,7 +361,6 @@ app.post('/api/validate-slack-config', async (c) => {
   });
 });
 
-// Validate Discord credentials
 app.post('/api/validate-discord-config', async (c) => {
   const body = await c.req.json();
   const result = await validateDiscordConfig(body.botToken || '');
@@ -398,7 +371,6 @@ app.post('/api/validate-discord-config', async (c) => {
   });
 });
 
-// Validate DingTalk credentials
 app.post('/api/validate-dingtalk-config', async (c) => {
   const body = await c.req.json();
   const result = await validateDingtalkConfig(body.clientId || '', body.clientSecret || '');
@@ -409,7 +381,6 @@ app.post('/api/validate-dingtalk-config', async (c) => {
   });
 });
 
-// Validate WeChat Work (企业微信) credentials
 app.post('/api/validate-wecom-config', async (c) => {
   const body = await c.req.json();
   const result = await validateWecomConfig(body.botId || '', body.botSecret || '');
@@ -420,7 +391,6 @@ app.post('/api/validate-wecom-config', async (c) => {
   });
 });
 
-// Start Weixin QR login
 app.post('/api/weixin-login/start', async (c) => {
   const body = await c.req.json();
   const result = await startWeixinQrLogin({
@@ -430,7 +400,6 @@ app.post('/api/weixin-login/start', async (c) => {
   return c.json(result, result.ok ? 200 : 500);
 });
 
-// Wait for Weixin QR login
 app.post('/api/weixin-login/wait', async (c) => {
   const body = await c.req.json();
   const result = await waitForWeixinQrLogin({
@@ -440,7 +409,6 @@ app.post('/api/weixin-login/wait', async (c) => {
   return c.json(result, result.ok ? 200 : 500);
 });
 
-// Open macOS preferences
 app.post('/api/open-preferences', async (c) => {
   const body = await c.req.json();
   const permission = String(body.permission || '');
@@ -460,15 +428,7 @@ app.post('/api/open-preferences', async (c) => {
   return c.json(result, result.ok ? 200 : 500);
 });
 
-// Restart process
 app.post('/api/restart', (c) => {
-  // A successful restart exits this process, so its result can never reach the
-  // client — the route fires it async and returns ok:true. But the restart is
-  // REFUSED while any turn is still running (requestProcessRestart guards on
-  // active tasks so it won't kill in-flight work). Surface that refusal
-  // synchronously: otherwise the dashboard sends ok:true into a "reconnecting"
-  // wait for a restart that never happens and shows a generic failure, with no
-  // hint that a running task is the reason.
   const activeTasks = getActiveTaskCount();
   if (activeTasks > 0) {
     return c.json({
@@ -483,7 +443,6 @@ app.post('/api/restart', (c) => {
   return c.json({ ok: true });
 });
 
-// Switch workdir
 app.post('/api/switch-workdir', async (c) => {
   const body = await c.req.json();
   const newPath = body.path;
@@ -499,14 +458,12 @@ app.post('/api/switch-workdir', async (c) => {
   return c.json({ ok: true, workdir: saved.workdir });
 });
 
-// Browser profile status
 app.get('/api/browser', async (c) => {
   const config = loadUserConfig();
   const data = await buildBrowserStatusResponse(config);
   return c.json(data);
 });
 
-// Launch managed browser profile for login/setup
 app.post('/api/browser/setup', async (c) => {
   runtime.log('[browser] setup requested');
   try {
@@ -518,9 +475,6 @@ app.post('/api/browser/setup', async (c) => {
         error: 'Browser automation is disabled. Enable it first if you want pikiloom to launch the managed browser profile.',
       }, 400);
     }
-    // Remote mode: pikiloom attaches to an external CDP endpoint and owns no
-    // local Chrome. There is nothing to launch — return the (enabled) status as
-    // a clean no-op instead of failing with "Chrome is not available".
     if (getConfiguredRemoteCdpUrl()) {
       runtime.log('[browser] setup skipped: PIKILOOM_BROWSER_CDP_URL configured (external CDP, no local browser to launch)');
       return c.json({ ok: true, ...(await buildBrowserStatusResponse(config)) });
@@ -544,7 +498,6 @@ app.post('/api/browser/setup', async (c) => {
   }
 });
 
-// List directory entries for tree browser
 app.get('/api/ls-dir', (c) => {
   const dir = c.req.query('path') || os.homedir();
   const includeFiles = c.req.query('files') === '1';
@@ -565,7 +518,6 @@ app.get('/api/ls-dir', (c) => {
   }
 });
 
-// Git changes for a directory (uncommitted + staged)
 app.get('/api/git-changes', (c) => {
   const dir = c.req.query('path');
   if (!dir) return c.json({ ok: false, error: 'path is required' }, 400);
@@ -573,7 +525,6 @@ app.get('/api/git-changes', (c) => {
     if (!fs.existsSync(path.join(dir, '.git'))) {
       return c.json({ ok: true, changes: [], isGit: false });
     }
-    // --no-optional-locks avoids contention with other git processes
     const result = spawnSync('git', ['diff', '--name-status', 'HEAD', '--no-renames'], {
       cwd: dir,
       timeout: 5_000,
@@ -598,8 +549,6 @@ app.get('/api/git-changes', (c) => {
   }
 });
 
-// Git status summary for a workspace: branch, ahead/behind, dirty count.
-// Backed by the same readGitStatus helper that feeds the IM /status command.
 app.get('/api/workspace-git', (c) => {
   const dir = c.req.query('path');
   if (!dir) return c.json({ ok: false, error: 'path is required' }, 400);
@@ -607,7 +556,6 @@ app.get('/api/workspace-git', (c) => {
   return c.json({ ok: true, isGit: git !== null, git });
 });
 
-// Open file/directory in a selected editor or file browser
 app.post('/api/open-in-editor', async (c) => {
   try {
     const body = await c.req.json();
@@ -631,7 +579,6 @@ app.post('/api/open-in-editor', async (c) => {
   }
 });
 
-// Open git diff for a file in the selected editor
 app.post('/api/open-diff', async (c) => {
   try {
     const body = await c.req.json();
@@ -642,7 +589,6 @@ app.post('/api/open-diff', async (c) => {
     const dir = path.dirname(filePath);
     const relFile = path.basename(filePath);
 
-    // Write the original (HEAD) version to a temp file
     const origResult = spawnSync('git', ['show', `HEAD:${path.relative(findGitRoot(dir), filePath)}`], {
       cwd: dir,
       timeout: 5_000,
@@ -651,7 +597,6 @@ app.post('/api/open-diff', async (c) => {
     });
 
     if (origResult.status !== 0) {
-      // New file — no HEAD version, just open the file
       openPathWithTarget(filePath, target, false);
       return c.json({ ok: true });
     }
@@ -660,7 +605,6 @@ app.post('/api/open-diff', async (c) => {
     const origPath = path.join(tmpDir, `${relFile}.orig`);
     fs.writeFileSync(origPath, origResult.stdout);
 
-    // Use editor CLI diff command (fire-and-forget)
     const cli = target === 'cursor' ? 'cursor' : target === 'windsurf' ? 'windsurf' : 'code';
     const child = spawn(cli, ['--diff', origPath, filePath], {
       cwd: dir,
@@ -669,7 +613,6 @@ app.post('/api/open-diff', async (c) => {
     });
     child.unref();
 
-    // Clean up temp after a delay
     setTimeout(() => fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {}), 30_000);
     return c.json({ ok: true });
   } catch (err) {

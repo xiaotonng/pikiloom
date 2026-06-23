@@ -1,12 +1,11 @@
 export type Locale = 'zh-CN' | 'en';
 
 const zhCN: Record<string, string> = {
-  // Tabs
   'tab.im': 'IM 接入',
   'tab.agent': '智能体配置',
   'tab.permissions': '系统权限',
   'tab.extensions': '扩展插件',
-  'tab.system': '系统信息',
+  'tab.system': '系统设置',
   'tab.config': '配置管理',
   'tab.sessions': '工作台',
   'tab.automation': '扩展插件',
@@ -16,7 +15,7 @@ const zhCN: Record<string, string> = {
   'tabDesc.permissions': '为截图等能力授予所需权限。',
   'tabDesc.extensions': '管理浏览器自动化能力。',
   'tabDesc.sessions': '查看各智能体的会话记录和运行状态。',
-  'tabDesc.system': '工作目录、主机概览与系统权限。',
+  'tabDesc.system': '工作目录、主机概览、连接与系统权限。',
   'app.systemInfo': '系统信息',
   'app.systemInfoHint': '通用主机信息模块，可在不同页面复用。',
   'app.activeTasks': '活跃任务',
@@ -26,17 +25,18 @@ const zhCN: Record<string, string> = {
   'app.missingPermissions': '待授权',
   'app.defaultModel': '默认模型',
 
-  // Sidebar
   'sidebar.switchDir': '切换目录',
   'sidebar.restart': '重启进程',
   'sidebar.notSet': '未设置',
 
-  // Status
   'status.loading': '加载中',
   'status.running': '运行中',
   'conn.title': '连接',
   'conn.subtitle': '选择这个控制台要操作哪台机器，或把本机分享给别人。',
-  'conn.targetTitle': '这个控制台连接到',
+  'conn.clientTitle': '客户端连接',
+  'conn.clientSubtitle': '选择这个控制台要操作的机器：本机、局域网内的另一台，或用连接码接入的远程机器。',
+  'conn.serverTitle': '服务端配置',
+  'conn.serverSubtitle': '让别人的控制台连到这台机器，并把连接码发给信任的人。',
   'conn.local': '本机',
   'conn.localHint': '操作你正在用的这台电脑',
   'conn.localBody': '当前控制的就是本机，无需任何配置。',
@@ -50,8 +50,6 @@ const zhCN: Record<string, string> = {
   'conn.connect': '连接',
   'conn.needHost': '请填写对方地址',
   'conn.badCode': '连接码无效',
-  'conn.shareTitle': '把这台机器分享给别人',
-  'conn.shareHint': '对方在他们的控制台里选「互联网」并粘贴下面的连接码，即可远程控制这台机器。',
   'conn.shareFoot': '连接码包含访问令牌，请只发给信任的人。',
   'conn.shareUnavailable': '只有在本机打开控制台时才能生成连接码。',
   'conn.enableRemote': '开启互联网穿透（让外网也能连这台机器）',
@@ -70,7 +68,6 @@ const zhCN: Record<string, string> = {
   'status.ready': '就绪',
   'status.needsConfig': '需要配置',
 
-  // Config
   'config.imAccess': 'IM 接入',
   'config.aiAgent': '智能体',
   'config.sysPerms': '系统权限',
@@ -128,7 +125,6 @@ const zhCN: Record<string, string> = {
   'config.saveFailed': '保存失败',
   'config.saved': '配置已保存',
 
-  // Permissions
   'perm.screenRecording': '屏幕录制',
   'perm.screenRecordingReason': '允许读取屏幕内容，用于截图和界面分析。',
   'perm.fullDiskAccess': '完全磁盘访问',
@@ -169,7 +165,6 @@ const zhCN: Record<string, string> = {
   'perm.pathScreenRecording': '系统设置 > 隐私与安全性 > 屏幕与系统音频录制',
   'perm.pathFullDiskAccess': '系统设置 > 隐私与安全性 > 完全磁盘访问',
 
-  // Sessions
   'sessions.host': '主机',
   'sessions.cpu': 'CPU',
   'sessions.memory': '内存',
@@ -195,7 +190,6 @@ const zhCN: Record<string, string> = {
   'sessions.next': '下一页',
   'sessions.retry': '重试',
 
-  // Session hub
   'hub.selectSession': '选择会话查看详情',
   'hub.selectSessionHint': '点击左侧会话卡片打开对话面板',
   'hub.noMessages': '暂无消息记录',
@@ -349,14 +343,12 @@ const zhCN: Record<string, string> = {
   'hub.minimizePanel': '最小化',
   'hub.restorePanel': '恢复面板',
 
-  // Plugins
   'plugins.title': '插件中心',
   'plugins.customSkills': '自定义技能',
   'plugins.mcp': '外部工具协议',
   'plugins.service': '对外服务',
   'plugins.comingSoon': '敬请期待',
 
-  // Extensions
   'ext.title': '浏览器自动化',
   'ext.hint': '为 Agent 提供浏览器自动化能力。浏览器自动化默认关闭；启用后只使用 pikiloom 的独立 profile 浏览器。macOS 主浏览器基础操作建议直接使用 open、osascript、screencapture。',
   'ext.browser': '管理型浏览器',
@@ -424,7 +416,6 @@ const zhCN: Record<string, string> = {
   'ext.disable': '停用',
   'ext.disabling': '停用中...',
 
-  // Modals
   'modal.configureTelegram': '配置 Telegram',
   'modal.configureFeishu': '配置飞书',
   'modal.configureWeixin': '配置微信',
@@ -573,7 +564,7 @@ const en: Record<string, string> = {
   'tab.agent': 'Agent Config',
   'tab.permissions': 'Permissions',
   'tab.extensions': 'Extensions',
-  'tab.system': 'System',
+  'tab.system': 'Settings',
   'tab.config': 'Configuration',
   'tab.sessions': 'Workspace',
   'tab.automation': 'Extensions',
@@ -583,7 +574,7 @@ const en: Record<string, string> = {
   'tabDesc.permissions': 'Grant the macOS permissions required for screenshots.',
   'tabDesc.extensions': 'Manage browser automation.',
   'tabDesc.sessions': 'Review session history and runtime activity for each agent.',
-  'tabDesc.system': 'Work directory, host overview, and system permissions.',
+  'tabDesc.system': 'Work directory, host overview, connection, and system permissions.',
   'app.systemInfo': 'System Info',
   'app.systemInfoHint': 'Reusable host metrics module shared across dashboard views.',
   'app.activeTasks': 'Active Tasks',
@@ -601,7 +592,10 @@ const en: Record<string, string> = {
   'status.running': 'Running',
   'conn.title': 'Connection',
   'conn.subtitle': 'Choose which machine this console controls, or share this machine with others.',
-  'conn.targetTitle': 'This console controls',
+  'conn.clientTitle': 'Client connection',
+  'conn.clientSubtitle': 'Choose the machine this console operates: this device, another on your LAN, or a remote one via a connection code.',
+  'conn.serverTitle': 'Server access',
+  'conn.serverSubtitle': 'Let other consoles reach this machine, then share the connection code with people you trust.',
   'conn.local': 'This computer',
   'conn.localHint': 'Control the computer you are on',
   'conn.localBody': 'You are controlling this computer — no setup needed.',
@@ -615,8 +609,6 @@ const en: Record<string, string> = {
   'conn.connect': 'Connect',
   'conn.needHost': 'Enter the address',
   'conn.badCode': 'Invalid connection code',
-  'conn.shareTitle': 'Let others reach this machine',
-  'conn.shareHint': 'They pick “Over the internet” in their console and paste the code below to control this machine.',
   'conn.shareFoot': 'The code contains the access token — only share it with people you trust.',
   'conn.shareUnavailable': 'Connection codes are only available when the console runs on this machine.',
   'conn.enableRemote': 'Enable internet access (reachable from outside your network)',
@@ -757,7 +749,6 @@ const en: Record<string, string> = {
   'sessions.next': 'Next',
   'sessions.retry': 'Retry',
 
-  // Session hub
   'hub.selectSession': 'Select a session',
   'hub.selectSessionHint': 'Click a session card on the left to open it',
   'hub.noMessages': 'No messages yet',
@@ -917,7 +908,6 @@ const en: Record<string, string> = {
   'plugins.service': 'Services',
   'plugins.comingSoon': 'Coming Soon',
 
-  // Extensions
   'ext.title': 'Browser Automation',
   'ext.hint': 'Provide browser automation for agent sessions. Browser automation is off by default and only uses pikiloom’s dedicated profile when enabled. On macOS, use open, osascript, and screencapture directly for basic main-browser actions.',
   'ext.browser': 'Managed Browser',

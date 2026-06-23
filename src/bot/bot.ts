@@ -1,9 +1,3 @@
-/**
- * Shared Bot base class: chat state, session lifecycle, task queue, streaming bridge.
- *
- * Channel-agnostic. Subclassed per IM channel (see channels/telegram/bot.ts, etc.).
- */
-
 import os from 'node:os';
 import path from 'node:path';
 import { execSync, spawn } from 'node:child_process';
@@ -72,10 +66,6 @@ export const DEFAULT_RUN_TIMEOUT_S = BOT_TIMEOUTS.defaultRunTimeoutS;
 const MACOS_USER_ACTIVITY_PULSE_INTERVAL_MS = BOT_TIMEOUTS.macosUserActivityPulseInterval;
 const MACOS_USER_ACTIVITY_PULSE_TIMEOUT_S = BOT_TIMEOUTS.macosUserActivityPulseTimeoutS;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 export function normalizeAgent(raw: string): Agent {
   const v = raw.trim().toLowerCase();
   if (!hasDriver(v)) throw new Error(`Invalid agent: ${v}. Use: ${allDriverIds().join(', ')}`);
@@ -86,10 +76,6 @@ export function thinkLabel(agent: Agent): string {
   try { return getDriver(agent).thinkLabel; } catch { return 'Thinking'; }
 }
 
-// ---------------------------------------------------------------------------
-// Prompt assembly helpers
-// ---------------------------------------------------------------------------
-
 function appendExtraPrompt(base: string | undefined, extra: string): string {
   const lhs = String(base || '').trim();
   const rhs = String(extra || '').trim();
@@ -98,10 +84,6 @@ function appendExtraPrompt(base: string | undefined, extra: string): string {
   return `${lhs}\n\n${rhs}`;
 }
 
-// NOTE: the `[Artifact Return]` header is a load-bearing marker — both
-// `stripInjectedPrompts` (bot/streaming.ts) and Gemini's
-// `GEMINI_SYSTEM_BLOCK_SENTINELS` key on it to strip this injected block from
-// displayed user messages. Keep the token in sync if you ever change it.
 function buildMcpDeliveryPrompt(): string {
   return [
     '[Artifact Return]',
@@ -110,13 +92,6 @@ function buildMcpDeliveryPrompt(): string {
 }
 
 function buildClaudeAskUserPrompt(): string {
-  // Claude is heavily trained on its built-in `AskUserQuestion` tool, so just
-  // registering `mcp__pikiloom__im_ask_user` alongside it isn't enough — the
-  // model still picks the native one, the CLI rejects it in -p mode with
-  // `is_error: true content: "Answer questions?"`, and the turn dies without
-  // ever firing the human-loop. This directive redirects calls *if* the model
-  // chooses to ask. It deliberately does not nudge the default ask-less
-  // behaviour — only the routing.
   return [
     '[Asking the user]',
     'The built-in `AskUserQuestion` tool is disabled here and will fail. If you would otherwise call it, call `mcp__pikiloom__im_ask_user` instead — same intent (a question plus optional choices), it blocks until the user replies via the IM/dashboard channel. Default behaviour is unchanged: infer obvious decisions yourself and only ask when you genuinely cannot proceed.',
@@ -142,21 +117,12 @@ function buildBrowserAutomationPrompt(browserEnabled: boolean): string {
 }
 
 function buildWorkflowOptInPrompt(): string {
-  // Standing opt-in injected only when the user explicitly enabled workflow
-  // orchestration for this agent. The Workflow tool is left enabled (not
-  // disallowed) in this mode; this directive tells the model it may reach for
-  // it proactively on genuinely large work, while preserving the default
-  // single-agent behaviour for everything else (no baseline regression).
   return [
     '[Multi-agent Workflow]',
     'Workflow orchestration is enabled for this session. For substantial multi-step work — broad research, large refactors or audits, fan-out reviews across many files — you may proactively author and run a Workflow to decompose and parallelise it.',
     'Keep it proportional: do NOT orchestrate trivial or single-file tasks. When a workflow would not add value, just answer directly as a single agent. Workflows can spawn many sub-agents and consume significant tokens, so reserve them for work whose scale genuinely warrants the fan-out.',
   ].join('\n');
 }
-
-// ---------------------------------------------------------------------------
-// ChatState
-// ---------------------------------------------------------------------------
 
 export interface ChatState {
   agent: Agent;
@@ -166,13 +132,7 @@ export interface ChatState {
   modelId?: string | null;
   activeSessionKey?: string | null;
   activeThreadId?: string | null;
-  /** Per-chat workdir override; null = use global bot.workdir. */
   workdir?: string | null;
-  /**
-   * When the user switches agent away from a live session, the source (agent,
-   * sessionId) is parked here until the next staging of a fresh session
-   * consumes it as `handoverFrom`. One-shot: cleared once staged.
-   */
   pendingHandoverFrom?: HandoverRef | null;
 }
 
@@ -187,34 +147,18 @@ export interface SessionRuntime {
   modelId?: string | null;
   thinkingEffort?: string | null;
   runningTaskIds: Set<string>;
-  /**
-   * Reference to the prior-agent session whose context should hand over to this
-   * one. Only consulted on the first turn (`isPendingSessionId(sessionId)`); after
-   * the first turn completes the new agent owns the canonical session file.
-   */
   handoverFrom?: HandoverRef | null;
 }
 
-/** Events emitted to dashboard listeners during a stream. */
-/** Serialisable subset of AgentInteraction for SSE/snapshot (excludes resolveWith). */
 export interface InteractionSnapshot {
   promptId: string;
   kind: 'user-input' | 'permission' | 'confirmation';
   title: string;
   hint?: string | null;
   questions: AgentInteraction['questions'];
-  /** 0-based index of the question currently awaiting an answer. Lets clients
-   *  resume mid-prompt after a refresh without re-fetching prompt state. */
   currentIndex?: number;
 }
 
-/**
- * A file the agent handed to the user via `im_send_file`, surfaced live in the
- * running turn's snapshot. The `url` is the dashboard attachment endpoint
- * (already path-encoded), so a remote browser can fetch it without knowing the
- * on-disk location. The durable record lives in the delivered-artifact manifest
- * (agent/artifacts.ts) and re-renders from the transcript read after reload.
- */
 export interface SnapshotArtifact {
   url: string;
   fileName: string;
@@ -234,30 +178,11 @@ export type StreamEvent =
   | { type: 'interaction'; taskId: string; interaction: InteractionSnapshot }
   | { type: 'interaction-resolved'; promptId: string };
 
-/** Snapshot of the latest streaming state for a session (used by polling endpoint). */
 export interface StreamSnapshot {
   phase: 'queued' | 'streaming' | 'done';
   taskId: string;
-  /**
-   * Task IDs that are queued behind the currently displayed task, in the
-   * order they were enqueued. Multiple tasks can pile up while a long-running
-   * task is in progress, and each must be surfaced individually so the user
-   * can recall/steer them separately.
-   */
   queuedTaskIds?: string[];
-  /**
-   * Per-queued-task prompt previews, keyed by taskId. Derived at delivery time
-   * from the live RunningTask records so each queued row can render its own
-   * content. Same order as queuedTaskIds.
-   */
   queuedTasks?: Array<{ taskId: string; prompt: string }>;
-  /**
-   * Prompt of the RUNNING turn (skill-collapsed), attached at delivery time from
-   * the live RunningTask record. Lets a watching terminal render the user's
-   * message for a turn it did NOT originate (an IM/API/other-tab follow-up has
-   * no local optimistic bubble) — without it, an externally driven follow-up
-   * shows a prompt-less answer.
-   */
   question?: string | null;
   incomplete?: boolean;
   text?: string;
@@ -265,22 +190,12 @@ export interface StreamSnapshot {
   activity?: string;
   plan?: StreamPreviewPlan | null;
   sessionId?: string | null;
-  /** Resolved model id used for the active turn (sticky across the snapshot's lifetime). */
   model?: string | null;
-  /** Resolved thinking effort for the active turn. */
   effort?: string | null;
-  /** Latest token / context-window usage emitted by the driver during the turn. */
   previewMeta?: StreamPreviewMeta | null;
   error?: string;
-  /** Files delivered to the user during this turn (via `im_send_file`), in
-   *  delivery order. Lets a watching dashboard render them live; the durable
-   *  copy comes from the delivered-artifact manifest on the next transcript read. */
   artifacts?: SnapshotArtifact[];
-  /** Active human-in-the-loop interaction prompts. */
   interactions?: InteractionSnapshot[];
-  /** Wall-clock ms when the active turn started streaming. Lets clients render
-   *  a ticking elapsed timer — the one liveness signal that works even when a
-   *  long tool call produces no text/activity updates for minutes. */
   startedAt?: number;
   updatedAt: number;
 }
@@ -301,24 +216,9 @@ export interface RunningTask {
   steer?: ((prompt: string, attachments?: string[]) => Promise<boolean>) | null;
   freezePreviewOnAbort?: boolean;
   placeholderMessageIds?: Array<number | string>;
-  /**
-   * Set when steerTask() wants this queued task to yield its current chain slot
-   * to a later-enqueued task. The queue wrapper bails out early and re-enqueues
-   * itself at the tail; the steered task gets to run when its slot fires.
-   * Reset to false on the second wrapper invocation so the task runs normally.
-   */
   deferForSteer?: boolean;
 }
 
-/**
- * Driver-agnostic goal snapshot consumed by IM renderers + dashboard. The
- * underlying store is one of: pikiloom's goal.json (gemini / hermes / fallback),
- * codex's native SQLite (codex), or claude's native session transcript JSONL
- * (claude). Status uses snake_case for all three — codex's camelCase
- * `budgetLimited` is converted to `budget_limited` at the boundary. Claude
- * native /goal only emits `active` (and auto-clears on completion so we never
- * observe a `complete` snapshot — `getSessionGoal` returns null instead).
- */
 export interface SessionGoalView {
   source: 'pikiloom' | 'codex' | 'claude';
   objective: string;
@@ -357,7 +257,6 @@ function normalizeFromClaudeNative(goal: ClaudeNativeGoal): SessionGoalView {
   return {
     source: 'claude',
     objective: goal.condition,
-    // Native /goal exposes no pause/budget — it's either active or absent.
     status: 'active',
     tokenBudget: null,
     tokensUsed: 0,
@@ -374,11 +273,6 @@ export interface BeginHumanLoopPromptOpts {
   hint?: string | null;
   questions: HumanLoopQuestion[];
   resolveWith: (answers: Record<string, string[]>) => Record<string, any> | null;
-  /**
-   * Internal picker mode — skip the onInteractionAnswered hook so channel
-   * command UIs (WeChat /agents, /models, …) don't echo internal action
-   * values into the chat as user-facing decisions.
-   */
   silent?: boolean;
 }
 
@@ -395,34 +289,11 @@ export interface SubmitSessionTaskOpts {
   attachments?: string[];
   modelId?: string | null;
   thinkingEffort?: string | null;
-  /**
-   * Per-turn opt-in to Claude's multi-agent Workflow orchestration. A deliberate
-   * per-send choice (dashboard composer), NOT a persisted default. When omitted
-   * the run falls back to the agent's in-memory flag (IM /mode). Defaults off.
-   */
   workflowEnabled?: boolean;
   sourceMessageId?: number | string;
   chatId?: ChatId;
-  /**
-   * When this task is the first turn of a session created by switching agent,
-   * the staged session record already has `handoverFrom` set. Passing it here
-   * mirrors that into the in-memory runtime so `runStream`'s first-turn check
-   * can pick it up without re-reading from disk.
-   */
   handoverFrom?: HandoverRef | null;
-  /**
-   * When set, this task is a runtime-injected goal continuation, not a user
-   * message. Stream events carry the flag so UIs can hide or label it, and the
-   * task does not chain another continuation if it ends up cancelled.
-   */
   goalContinuation?: { kind: 'continuation' | 'budget_wrapup'; goalId: string };
-  /**
-   * Fork descriptor — when set, the spawned stream creates a brand-new child
-   * session that branches off `parentSessionId`. The child gets its own ID
-   * (assigned by the agent CLI) and `recordFork` writes lineage metadata.
-   * `sessionId` should be a fresh pending ID — the runtime resolves it after
-   * the agent emits its native session ID.
-   */
   forkOf?: { parentSessionId: string; atTurn: number };
   onText?: (
     text: string,
@@ -440,15 +311,6 @@ export interface SubmittedSessionTask {
   queued: true;
 }
 
-/**
- * Per-task IM rendering hook. `submitSessionTask` (used by `/goal` setting,
- * goal continuations, and other programmatic task submissions) only emits
- * dashboard SSE by default; without a presenter the IM channel that triggered
- * the task sees nothing after the initial reply. Each IM channel overrides
- * `createImTaskPresenter` to spin up a placeholder + LivePreview + final
- * reply just like a regular typed message — so goal-mode streams in IM look
- * the same as normal Q&A.
- */
 export interface ImTaskPresenterOpts {
   chatId: ChatId;
   taskId: string;
@@ -459,7 +321,6 @@ export interface ImTaskPresenterOpts {
 }
 
 export interface ImTaskPresenter {
-  /** Stream callback — forwarded the same arguments runStream gives onText. */
   onText: (
     text: string,
     thinking: string,
@@ -467,17 +328,10 @@ export interface ImTaskPresenter {
     meta?: StreamPreviewMeta,
     plan?: StreamPreviewPlan | null,
   ) => void;
-  /** Called after runStream resolves successfully. */
   onSuccess: (result: StreamResult) => Promise<void>;
-  /** Called when runStream throws or the task is cancelled. */
   onFailure: (error: string) => Promise<void>;
-  /** Always called once, success or fail, to free resources (e.g. LivePreview). */
   dispose: () => void;
 }
-
-// ---------------------------------------------------------------------------
-// Bot
-// ---------------------------------------------------------------------------
 
 export class Bot {
   workdir: string;
@@ -485,10 +339,8 @@ export class Bot {
   runTimeout: number;
   allowedChatIds: Set<ChatId>;
 
-  // Per-agent config — keyed by agent id
   agentConfigs: Record<string, Record<string, any>> = {};
 
-  // Convenience accessors (backward-compat)
   get codexModel(): string { return this.agentConfigs.codex?.model || ''; }
   set codexModel(v: string) { this.agentConfigs.codex.model = v; }
   get codexReasoningEffort(): string { return this.agentConfigs.codex?.reasoningEffort || 'xhigh'; }
@@ -512,22 +364,11 @@ export class Bot {
   connected = false;
   stats = { totalTurns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCachedTokens: 0 };
 
-  /* ── Dashboard stream state (polling-friendly snapshots) ── */
   private streamSnapshots = new Map<string, StreamSnapshot>();
   private snapshotCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Maps promoted session keys (old → new) so poll endpoints can resolve pending IDs. */
   private promotedSessionKeys = new Map<string, string>();
-  /** Reverse map (new → old[]) so pushSnapshotToSSE can broadcast on promoted-from aliases. */
   private promotedFromAliases = new Map<string, string[]>();
 
-  /**
-   * Walk the promotion chain so callers passing a stale (pending or
-   * pre-rotation) key always resolve to the current canonical key for the same
-   * logical session. Multi-hop chains (pending → id_a → id_b after Claude
-   * `--resume` rotates twice) are followed end-to-end. Used by every
-   * sessionStates / streamSnapshots lookup so the rest of the codebase never
-   * has to special-case promotion.
-   */
   private resolveSessionKey(sessionKey: string): string {
     let key = sessionKey;
     const seen = new Set<string>();
@@ -540,45 +381,24 @@ export class Bot {
     return key;
   }
 
-  /**
-   * Drop all promotion bookkeeping that pointed at a now-retired canonical key.
-   * `promotedFromAliases.get(key)` is exactly the set of stale keys whose forward
-   * `promotedSessionKeys` entries resolve to `key`, so clearing them here keeps
-   * that map from growing for the whole process lifetime (otherwise one entry
-   * leaks per new session + per Claude `--resume` rotation, never reclaimed).
-   */
   private forgetPromotion(canonicalKey: string): void {
     const aliases = this.promotedFromAliases.get(canonicalKey);
     if (aliases) for (const alias of aliases) this.promotedSessionKeys.delete(alias);
     this.promotedFromAliases.delete(canonicalKey);
   }
 
-  /** Get the current streaming snapshot for a session (used by polling endpoint).
-   *  Follows the promotion chain so a pending or pre-rotation key still resolves. */
   getStreamSnapshot(sessionKey: string): StreamSnapshot | null {
     const snap = this.streamSnapshots.get(this.resolveSessionKey(sessionKey));
     return snap ? this.enrichSnapshot(snap) : null;
   }
 
-  /**
-   * Attach per-queued-task prompts and refresh interaction `currentIndex` from
-   * live prompt state — both are derived data the cached snapshot can't carry
-   * on its own (queued prompts come from RunningTask records; currentIndex
-   * advances asynchronously after select/skip/text without re-emitting the
-   * interaction event).
-   */
   private enrichSnapshot(snap: StreamSnapshot): StreamSnapshot {
     let next = snap;
-    // Attach the running turn's prompt so a watching terminal can render the
-    // user message for a follow-up it didn't originate (no local optimistic
-    // bubble). The RunningTask record is the source of truth while it's live.
     const runningPrompt = next.taskId ? this.activeTasks.get(next.taskId)?.prompt : '';
     if (runningPrompt) next = { ...next, question: collapseSkillPrompt(runningPrompt) ?? runningPrompt };
     if (next.queuedTaskIds?.length) {
       const queuedTasks = next.queuedTaskIds.map(taskId => {
         const raw = this.activeTasks.get(taskId)?.prompt || '';
-        // Show `/skillname` instead of the long expansion we synthesized for the
-        // agent — matches what the user actually typed in the queued row.
         return { taskId, prompt: collapseSkillPrompt(raw) ?? raw };
       });
       next = { ...next, queuedTasks };
@@ -594,12 +414,10 @@ export class Bot {
     return next;
   }
 
-  /* ── Dashboard SSE push (injected by dashboard layer to avoid circular import) ── */
   private _onStreamSnapshot: ((sessionKey: string, snapshot: StreamSnapshot | null) => void) | null = null;
   private streamPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private streamPushPending = new Map<string, boolean>();
 
-  /** Called by the dashboard layer to subscribe to stream snapshot changes. */
   onStreamSnapshot(cb: (sessionKey: string, snapshot: StreamSnapshot | null) => void): void {
     this._onStreamSnapshot = cb;
   }
@@ -611,8 +429,6 @@ export class Bot {
     const emitAll = () => {
       const enriched = snap ? this.enrichSnapshot(snap) : null;
       cb(sessionKey, enriched);
-      // Also broadcast on promoted-from aliases so clients still listening
-      // on the old (pending) key receive updates after session promotion.
       const aliases = this.promotedFromAliases.get(sessionKey);
       if (aliases) for (const alias of aliases) cb(alias, enriched ? { ...enriched } : null);
     };
@@ -622,7 +438,6 @@ export class Bot {
       this.streamPushPending.delete(sessionKey);
       emitAll();
     } else {
-      // Coalesce: if a timer is pending, just mark dirty
       this.streamPushPending.set(sessionKey, true);
       if (this.streamPushTimers.has(sessionKey)) return;
       this.streamPushTimers.set(sessionKey, setTimeout(() => {
@@ -635,9 +450,7 @@ export class Bot {
     }
   }
 
-  /** Emit a streaming event — updates the polling snapshot. */
   emitStream(sessionKey: string, event: StreamEvent) {
-    // Clear any pending cleanup timer
     const pending = this.snapshotCleanupTimers.get(sessionKey);
     if (pending) { clearTimeout(pending); this.snapshotCleanupTimers.delete(sessionKey); }
 
@@ -646,13 +459,11 @@ export class Bot {
       case 'queued': {
         const existing = this.streamSnapshots.get(sessionKey);
         if (existing && (existing.phase === 'streaming' || existing.phase === 'done')) {
-          // Don't overwrite active stream — append to the queued list (deduped).
           const list = existing.queuedTaskIds ? [...existing.queuedTaskIds] : [];
           if (existing.taskId !== event.taskId && !list.includes(event.taskId)) list.push(event.taskId);
           existing.queuedTaskIds = list.length ? list : undefined;
           existing.updatedAt = now;
         } else if (existing && existing.phase === 'queued') {
-          // Already in queued phase with no active task — append additional queued IDs.
           const list = existing.queuedTaskIds ? [...existing.queuedTaskIds] : [];
           if (existing.taskId !== event.taskId && !list.includes(event.taskId)) list.push(event.taskId);
           existing.queuedTaskIds = list.length ? list : undefined;
@@ -663,8 +474,6 @@ export class Bot {
         break;
       }
       case 'start': {
-        // Preserve any tasks still queued behind the new active one. Drop the
-        // task that's now starting from that list since it has graduated.
         const prev = this.streamSnapshots.get(sessionKey);
         const remainingQueued = prev?.queuedTaskIds?.filter(id => id !== event.taskId);
         this.streamSnapshots.set(sessionKey, {
@@ -716,9 +525,6 @@ export class Bot {
           queuedTaskIds: prev?.queuedTaskIds,
           updatedAt: now,
         });
-        // Auto-clean 'done' snapshot after 30s so stale state doesn't linger.
-        // Extended from 10s to give clients time to pick up the final state
-        // after session promotion or WS reconnects.
         this.snapshotCleanupTimers.set(sessionKey, setTimeout(() => {
           this.streamSnapshots.delete(sessionKey);
           this.snapshotCleanupTimers.delete(sessionKey);
@@ -730,13 +536,10 @@ export class Bot {
         const snap = this.streamSnapshots.get(sessionKey);
         if (!snap) break;
         if (snap.queuedTaskIds?.includes(event.taskId)) {
-          // Cancelled one of the queued-behind tasks — keep the running/done
-          // snapshot, just remove this entry from the list.
           const next = snap.queuedTaskIds.filter(id => id !== event.taskId);
           snap.queuedTaskIds = next.length ? next : undefined;
           snap.updatedAt = now;
         } else {
-          // Cancelled the currently displayed task — drop the whole snapshot.
           this.streamSnapshots.delete(sessionKey);
           this.forgetPromotion(sessionKey);
         }
@@ -763,24 +566,11 @@ export class Bot {
       }
     }
 
-    // Push to dashboard SSE — throttle text events, push everything else immediately
     try {
       this.pushSnapshotToSSE(sessionKey, event.type !== 'text');
-    } catch { /* dashboard not loaded yet — ignore */ }
+    } catch {  }
   }
 
-  /**
-   * Stream-lifecycle helpers. The dashboard mirrors a running turn by reading
-   * `streamSnapshots`, which is built exclusively from `emitStream` calls.
-   * IM channels run `runStream` directly (not via `submitSessionTask`), so
-   * without these calls the dashboard never sees IM-initiated turns. Routing
-   * every IM handler through these helpers (and refactoring submitSessionTask
-   * to use them) keeps the two surfaces consistent: each side can observe
-   * whatever the other side started.
-   *
-   * Each helper resolves the live `task.sessionKey` so the event lands on the
-   * current snapshot after a pending→native session id promotion.
-   */
   private liveSessionKey(taskId: string, fallback: string): string {
     return this.activeTasks.get(taskId)?.sessionKey || fallback;
   }
@@ -835,16 +625,6 @@ export class Bot {
     this.emitStream(this.liveSessionKey(taskId, fallbackKey), { type: 'cancelled', taskId });
   }
 
-  /**
-   * Wrap a per-turn `im_send_file` callback so every artifact delivery is
-   * recorded to the session's durable manifest (agent/artifacts.ts) and
-   * mirrored live into the running turn's snapshot — on top of whatever
-   * terminal-specific push the caller supplied (`inner`, e.g. an IM chat
-   * upload). The returned callback is always safe to register, so the tool is
-   * available for dashboard / headless turns that have no `inner` (the
-   * dashboard serves the recorded copy over HTTP). Recording is best-effort and
-   * never propagates an error back into the delivery result.
-   */
   private buildArtifactSendFile(
     agent: Agent,
     sessionKey: string | null,
@@ -852,13 +632,9 @@ export class Bot {
     inner?: McpSendFileCallback,
   ): McpSendFileCallback {
     return async (filePath, sendOpts) => {
-      // Terminal-specific push first (IM chat). Dashboard / headless has no inner.
       const result: McpSendFileResult = inner ? await inner(filePath, sendOpts) : { ok: true };
       if (!result.ok) return result;
       try {
-        // Resolve the freshest session id at delivery time — send_file fires
-        // late in a turn, after a pending→native promotion has normally already
-        // happened, so the manifest lands under the canonical id.
         let sid = '';
         if (sessionKey) {
           const rt = this.getSessionRuntimeByKey(sessionKey, { allowAnyWorkdir: true });
@@ -907,7 +683,6 @@ export class Bot {
     initializeProjectSkills(this.workdir);
     const config = getActiveUserConfig();
 
-    // Initialize per-agent configs
     this.agentConfigs = {
       codex: {
         model: resolveAgentModel(config, 'codex'),
@@ -919,12 +694,7 @@ export class Bot {
         model: resolveAgentModel(config, 'claude'),
         reasoningEffort: resolveAgentEffort(config, 'claude') || 'high',
         permissionMode: (process.env.CLAUDE_PERMISSION_MODE || 'bypassPermissions').trim(),
-        // Workflow orchestration is a per-session/per-turn choice (composer
-        // toggle / IM /mode), never a persisted default — always boot off.
         workflowEnabled: false,
-        // Access mode (TUI subscription vs `claude -p` Agent SDK credits) IS a
-        // persisted preference — hydrate it from config so the boot value
-        // matches the dashboard toggle / env default.
         accessMode: resolveClaudeAccessMode(config),
         extraArgs: shellSplit(process.env.CLAUDE_EXTRA_ARGS || ''),
       },
@@ -934,12 +704,6 @@ export class Bot {
         sandbox: envBool('GEMINI_SANDBOX', false),
         extraArgs: shellSplit(process.env.GEMINI_EXTRA_ARGS || ''),
       },
-      // Hermes was missing from this map for a long time. Without an entry,
-      // `modelForAgent('hermes')` returned '' and `setModelForAgent('hermes',
-      // ...)` silently no-op'd because `if (config)` short-circuited — so any
-      // /models switch in IM looked successful in the log but never reached
-      // the hermes driver. Adding the entry lets the same machinery the other
-      // three agents already rely on apply to hermes too.
       hermes: {
         model: resolveAgentModel(config, 'hermes'),
         reasoningEffort: resolveAgentEffort(config, 'hermes') || 'medium',
@@ -976,7 +740,6 @@ export class Bot {
     return s;
   }
 
-  /** Effective workdir for a chat — per-chat override or global fallback. */
   chatWorkdir(chatId: ChatId): string {
     return this.chats.get(chatId)?.workdir || this.workdir;
   }
@@ -1035,23 +798,15 @@ export class Bot {
   }): SessionRuntime {
     const workdir = path.resolve(session.workdir || this.workdir);
     const requestedKey = this.sessionKey(session.agent, session.sessionId);
-    // Follow the promotion chain. Without this, an insertion that races a
-    // pending→native promotion would `new` a phantom runtime under the stale
-    // pending key and the queued message would land in a session the dashboard
-    // can never reach again.
     const resolvedKey = this.resolveSessionKey(requestedKey);
     const existing = this.sessionStates.get(resolvedKey);
     if (existing) {
       existing.workdir = workdir;
-      // Do NOT overwrite agent/sessionId/key here — the existing record IS the
-      // canonical identity post-promotion. Letting upserts re-stamp the old
-      // pending id back over the native id would unwind the promotion.
       if (session.workspacePath !== undefined) existing.workspacePath = session.workspacePath ?? null;
       if (session.threadId !== undefined) existing.threadId = session.threadId ?? null;
       if (session.codexCumulative !== undefined) existing.codexCumulative = session.codexCumulative;
       if (session.modelId !== undefined) existing.modelId = session.modelId ?? null;
       if (session.thinkingEffort !== undefined) existing.thinkingEffort = session.thinkingEffort ?? null;
-      // handoverFrom is one-shot: only set if not already set (the first staging wins).
       if (session.handoverFrom !== undefined && !existing.handoverFrom) {
         existing.handoverFrom = session.handoverFrom;
       }
@@ -1130,9 +885,6 @@ export class Bot {
       this.applySessionSelection(cs, null);
       return;
     }
-    // Adopting an existing session is an explicit user pick — drop any
-    // queued handover from a prior agent toggle so we don't accidentally
-    // prepend the wrong context to the resumed session's next turn.
     cs.pendingHandoverFrom = null;
     this.applySessionSelection(cs, runtime);
   }
@@ -1211,11 +963,6 @@ export class Bot {
 
     this.moveSessionStreamSnapshot(previousKey, nextKey);
 
-    // Track promotion so poll endpoints + insertions can resolve pending →
-    // native. When the chain hops more than once (Claude `--resume` rotating
-    // session ids back-to-back), pull ancestor aliases forward AND re-point
-    // them at the latest key so a single lookup is O(1) and every WS listener
-    // that subscribed to any earlier key still receives updates.
     this.promotedSessionKeys.set(previousKey, nextKey);
     const aliases = new Set<string>(this.promotedFromAliases.get(nextKey) || []);
     aliases.add(previousKey);
@@ -1229,12 +976,9 @@ export class Bot {
     }
     this.promotedFromAliases.set(nextKey, [...aliases]);
 
-    // Update the promoted snapshot's sessionId to reflect the native ID
     const promotedSnap = this.streamSnapshots.get(nextKey);
     if (promotedSnap) promotedSnap.sessionId = resolvedSessionId;
 
-    // Notify dashboard clients still tracking the old (pending) key via SSE
-    // so they can detect the promotion and navigate to the correct session
     if (this._onStreamSnapshot && promotedSnap) {
       this._onStreamSnapshot(previousKey, this.enrichSnapshot(promotedSnap));
     }
@@ -1289,10 +1033,6 @@ export class Bot {
     const selected = this.getSelectedSession(cs);
     if (selected) return selected;
 
-    // Auto-resume an existing same-thread session of this agent (back-and-forth
-    // toggling). The handover queued on `cs.pendingHandoverFrom` is intentionally
-    // dropped here — the resumed session already has its own history; replaying
-    // an external handover on top would just be duplicate context.
     const resumed = this.findThreadSessionRuntime(chatId, cs.activeThreadId, cs.agent);
     if (resumed) {
       cs.pendingHandoverFrom = null;
@@ -1442,18 +1182,11 @@ export class Bot {
     return { task, interrupted: false, cancelled: false };
   }
 
-  /**
-   * Mark all queued tasks ahead of `targetTaskId` (in this session) so their
-   * chain wrappers re-enqueue and yield to the steered task. Repeated steers
-   * reset prior defer flags so only the latest target's predecessors defer.
-   */
   protected markQueueDeferralsForSteer(targetTaskId: string): void {
     const target = this.activeTasks.get(targetTaskId);
     if (!target) return;
     const snapshot = this.streamSnapshots.get(target.sessionKey);
     const queuedIds = snapshot?.queuedTaskIds || [];
-    // Reset any previous defer flags for this session's queued tasks first so
-    // a new steer call doesn't stack on top of an earlier (now-stale) decision.
     for (const id of queuedIds) {
       const t = this.activeTasks.get(id);
       if (t) t.deferForSteer = false;
@@ -1465,11 +1198,6 @@ export class Bot {
     }
   }
 
-  /**
-   * Steer hands off to the queued task's own placeholder card. Interrupt the
-   * active task so the queued task can run next and the current preview can be
-   * frozen in place instead of being rewritten as an error.
-   */
   protected async steerTaskByActionId(actionId: string): Promise<{ task: RunningTask | null; interrupted: boolean; steered: boolean }> {
     const taskId = this.taskKeysByActionId.get(String(actionId));
     if (!taskId) return { task: null, interrupted: false, steered: false };
@@ -1480,10 +1208,6 @@ export class Bot {
     return { task, interrupted, steered: false };
   }
 
-  /**
-   * Interrupt only the currently running task for a session, leaving queued tasks intact.
-   * Used by the "Steer" action to let a queued task run next.
-   */
   protected interruptRunningTask(sessionKey: string | null | undefined, opts: { freezePreview?: boolean } = {}): boolean {
     const session = this.getSessionRuntimeByKey(sessionKey, { allowAnyWorkdir: true });
     if (!session) return false;
@@ -1497,10 +1221,6 @@ export class Bot {
     return false;
   }
 
-  /**
-   * Return the number of tasks ahead of the given task in its session queue.
-   * Counts running + queued (non-cancelled) tasks that were started before this one.
-   */
   protected getQueuePosition(sessionKey: string, taskId: string): number {
     const session = this.getSessionRuntimeByKey(sessionKey, { allowAnyWorkdir: true });
     if (!session) return 0;
@@ -1519,20 +1239,11 @@ export class Bot {
   }
 
   protected queueSessionTask<T>(session: SessionRuntime, task: () => Promise<T>, taskId?: string): Promise<T> {
-    // Wrap the user task with a defer check. When steerTask() flags this task
-    // to yield its chain slot to a steered task, the wrapper re-enqueues the
-    // same fn at the tail and returns immediately so the next chain wrapper
-    // (the steered task's) fires next. Tasks without a taskId (e.g. file
-    // staging) skip the check.
     const runner = async (): Promise<T> => {
       if (taskId) {
         const t = this.activeTasks.get(taskId);
         if (t?.deferForSteer && !t.cancelled) {
           t.deferForSteer = false;
-          // Re-enqueue at the tail. Don't await — let the current slot finish
-          // immediately so the chain advances to the steered task. The new
-          // wrapper preserves the original fn so the deferred task still runs
-          // (just after the steered one).
           void this.queueSessionTask(session, task, taskId);
           return undefined as unknown as T;
         }
@@ -1626,13 +1337,6 @@ export class Bot {
     return prompt;
   }
 
-  /**
-   * Unified post-resolution hook for human-loop prompts. Each IM channel
-   * overrides `onInteractionAnswered` to (1) collapse the original prompt card
-   * to an answered/cancelled state and (2) echo the decision as a new chat
-   * message so scrolling back shows what the user picked. Dashboard sessions
-   * (chatId='dashboard') and channels that opt out remain silent.
-   */
   private fireInteractionAnswered(prompt: HumanLoopPromptState<ChatId>, status: ResolvedHumanLoopStatus) {
     if (prompt.silent) return;
     if ((prompt.chatId as unknown) === 'dashboard') return;
@@ -1642,16 +1346,10 @@ export class Bot {
       .catch(err => this.warn(`onInteractionAnswered failed: ${err?.message || err}`));
   }
 
-  /**
-   * Channel hook fired after a human-loop prompt resolves (answered or
-   * cancelled). Default: no-op. Override in channel subclasses to update the
-   * original card and post a decision-echo message.
-   */
   protected async onInteractionAnswered(
     _prompt: HumanLoopPromptState<ChatId>,
     _summary: ResolvedHumanLoopAnswers,
   ): Promise<void> {
-    // Default: no-op.
   }
 
   private emitInteractionResolved(taskId: string, promptId: string) {
@@ -1705,14 +1403,6 @@ export class Bot {
     else this.humanLoopPromptIdsByChat.delete(chatKey);
   }
 
-  /**
-   * Create an interaction handler that bridges agent requests to the human-loop
-   * state machine and pushes SSE events to the dashboard.
-   *
-   * IM channel subclasses override `renderInteractionPrompt()` to render
-   * buttons/cards in their native UI.  Dashboard clients receive the
-   * `interaction` SSE event and respond via REST.
-   */
   protected createInteractionHandler(
     chatId: ChatId,
     taskId: string,
@@ -1735,19 +1425,9 @@ export class Bot {
         questions: request.questions,
         currentIndex: active.prompt.currentIndex,
       };
-      // Resolve sessionKey live at emit time — the task entry tracks promotion
-      // (pending → native id), so a key captured at handler-creation time would
-      // go stale on the very first turn of a fresh session and the dashboard
-      // SSE event would land on an already-moved snapshot.
       const task = this.activeTasks.get(taskId);
       if (task) this.emitStream(task.sessionKey, { type: 'interaction', taskId, interaction: interactionSnapshot });
 
-      // Dashboard sessions reply through SSE + REST (no IM render). When an IM
-      // bot is also attached, its renderInteractionPrompt override would still
-      // fire here with chatId='dashboard' — sending the prompt to the IM API
-      // with an invalid receive_id, which surfaces as "Request failed with
-      // status code 400" from the axios-based SDK. Skip the render for
-      // dashboard chats; the SSE event is the canonical delivery.
       if ((chatId as unknown) !== 'dashboard') {
         try {
           await this.renderInteractionPrompt(active.prompt, chatId);
@@ -1761,33 +1441,16 @@ export class Bot {
     };
   }
 
-  /**
-   * Render an interaction prompt in the IM channel.
-   * Override in channel subclasses (Telegram, Feishu, etc.).
-   * Dashboard-only sessions (chatId='dashboard') are a no-op by default.
-   */
   protected async renderInteractionPrompt(_prompt: HumanLoopPromptState<ChatId>, _chatId: ChatId): Promise<void> {
-    // Default: no-op (dashboard-only sessions use SSE events instead)
   }
 
-  // ---- Public interaction API (used by dashboard routes) --------------------
-
-  /** Respond to a pending interaction prompt with a selected option. */
   interactionSelectOption(promptId: string, optionValue: string, opts?: { requestFreeform?: boolean }) {
     return this.humanLoopSelectOption(promptId, optionValue, opts);
   }
 
-  /** Submit freeform text to a pending interaction prompt. */
   interactionSubmitText(promptId: string, text: string) {
     const prompt = this.humanLoopPrompt(promptId);
     if (!prompt) return null;
-    // The dashboard modal submits a custom answer via an explicit Submit button,
-    // so accept the text whenever the current question PERMITS freeform — not
-    // only after an "Other" chip flipped `awaitingFreeform` (the IM-card flow,
-    // which `isHumanLoopAwaitingText` gates on). An options question only allows
-    // it when `allowFreeform` is set; an option-less question is freeform by
-    // definition. (The IM passive-text path keeps the stricter check so a normal
-    // chat message isn't silently captured as an answer.)
     const question = currentHumanLoopQuestion(prompt);
     if (!question) return null;
     const hasOptions = !!question.options?.length;
@@ -1798,17 +1461,14 @@ export class Bot {
     return { prompt, ...result };
   }
 
-  /** Skip the current question in a pending interaction prompt. */
   interactionSkip(promptId: string) {
     return this.humanLoopSkip(promptId);
   }
 
-  /** Cancel a pending interaction prompt. */
   interactionCancel(promptId: string, reason = 'Cancelled from dashboard.') {
     return this.humanLoopCancel(promptId, reason);
   }
 
-  /** Get a specific interaction prompt by ID. */
   interactionPrompt(promptId: string) {
     return this.humanLoopPrompt(promptId);
   }
@@ -1823,7 +1483,6 @@ export class Bot {
       sessionId: opts.sessionId,
       workdir: opts.workdir,
       workspacePath: null,
-      // Only override when explicitly provided — undefined skips the overwrite in upsertSessionRuntime
       ...(opts.modelId !== undefined ? { modelId: opts.modelId } : {}),
       ...(opts.thinkingEffort !== undefined ? { thinkingEffort: opts.thinkingEffort } : {}),
       ...(opts.handoverFrom !== undefined ? { handoverFrom: opts.handoverFrom } : {}),
@@ -1854,13 +1513,8 @@ export class Bot {
         return;
       }
 
-      // Thread the per-send Workflow choice so the live divider folds to `ultra`
-      // immediately (the dashboard composer picks ultra per-send without flipping
-      // the agent-global flag resolveSessionStreamConfig would otherwise read).
       this.emitStreamStart(taskId, session, { workflowEnabled: opts.workflowEnabled });
 
-      // Wire up IM rendering for non-dashboard chats so /goal-driven tasks stream
-      // to the same channel that submitted them, matching handleMessage's UX.
       const presenter = chatId !== 'dashboard'
         ? await this.createImTaskPresenter({
             chatId, taskId, session, agent: session.agent, prompt, attachments,
@@ -1928,29 +1582,10 @@ export class Bot {
     return { ok: true, taskId, sessionKey: session.key, queued: true };
   }
 
-  /**
-   * Channel hook — returns a presenter that streams the task's runStream
-   * output to the IM chat that submitted it. Default: null (dashboard-only
-   * chats and channels that haven't opted in stay silent in IM).
-   */
   protected async createImTaskPresenter(_opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
     return null;
   }
 
-  /**
-   * Goal continuation: after a turn ends, if a goal is still active for the
-   * session, account token + wall-clock usage, then enqueue one more task with
-   * the rendered continuation prompt. If the budget was just crossed, enqueue a
-   * single wrap-up turn with the budget-limit prompt instead. Goal-continuation
-   * tasks that get cancelled or errored auto-pause the goal so the loop does
-   * not silently resume on the user's next message.
-   *
-   * Codex and Claude sessions short-circuit: each runs its own native `/goal`
-   * lifecycle (codex's app-server state machine; claude's in-process Stop
-   * hook), so pikiloom stays out to avoid a double loop. See setSessionGoal
-   * et al — they bridge to codex's `thread/goal/*` RPC and to claude's
-   * `/goal <condition>` slash command instead of writing pikiloom's goal.json.
-   */
   private maybeEnqueueGoalContinuation(
     session: SessionRuntime,
     opts: SubmitSessionTaskOpts,
@@ -2019,17 +1654,6 @@ export class Bot {
     });
   }
 
-  /**
-   * Normalized goal view used by IM/dashboard renderers — same shape regardless
-   * of whether the source is pikiloom's goal.json (claude / gemini / …) or
-   * codex's native SQLite state machine.
-   */
-  // SessionGoalView is exported below the class.
-
-  /**
-   * Read the current goal for a session. For codex this hits codex's native
-   * `thread/goal/get`; for other drivers, reads goal.json.
-   */
   async getSessionGoal(workdir: string, agent: Agent, sessionId: string): Promise<SessionGoalView | null> {
     if (agent === 'codex') {
       if (!sessionId || isPendingSessionId(sessionId)) return null;
@@ -2045,12 +1669,6 @@ export class Bot {
     return goal ? normalizeFromPikiloom(goal) : null;
   }
 
-  /**
-   * Set (or replace) the goal for a session. For codex this routes through
-   * codex's native `thread/goal/set` and codex auto-starts a continuation turn
-   * internally. For other drivers, pikiloom writes goal.json and enqueues the
-   * first continuation turn so the agent starts working immediately.
-   */
   async setSessionGoal(
     workdir: string,
     agent: Agent,
@@ -2068,7 +1686,6 @@ export class Bot {
         tokenBudget: opts.tokenBudget ?? null,
       });
       if (!resp.ok) throw new Error(resp.error);
-      // codex returns a snapshot; if for some reason it's null, re-fetch.
       const goal = resp.goal ?? (await getCodexGoal(sessionId));
       if (!goal) throw new Error('codex did not return a goal snapshot');
       return normalizeFromCodex(goal);
@@ -2077,12 +1694,6 @@ export class Bot {
       if (!sessionId || isPendingSessionId(sessionId)) {
         throw new Error('claude session must exist before /goal — send a first message to create the transcript');
       }
-      // Native /goal owns its own continuation engine (Stop hook). pikiloom
-      // just submits the slash command as the next task; claude internally
-      // sets up the goal_status attachment, injects its meta directive, and
-      // keeps looping until the Haiku completion check returns met. Token
-      // budget is accepted in the API for shape parity with codex/portable
-      // but ignored — claude native /goal has no budget concept.
       const objective = opts.objective.trim();
       if (!objective) throw new Error('objective must be non-empty');
       this.submitSessionTask({
@@ -2094,8 +1705,6 @@ export class Bot {
         modelId: opts.modelId,
         thinkingEffort: opts.thinkingEffort,
       });
-      // Return an optimistic snapshot — the actual goal_status attachment is
-      // written by claude during the task; readers can poll getSessionGoal.
       return normalizeFromClaudeNative({
         condition: objective,
         status: 'active',
@@ -2132,8 +1741,6 @@ export class Bot {
       return goal ? normalizeFromCodex(goal) : null;
     }
     if (agent === 'claude') {
-      // Claude's native /goal exposes no pause/resume — only set and clear.
-      // Surface a clear error so the IM layer can render a friendly message.
       throw new Error('Claude native /goal does not support pause/resume — only `/goal clear`. Re-issue `/goal <objective>` to start fresh.');
     }
     const goal = pauseGoal(workdir, agent, sessionId);
@@ -2183,7 +1790,6 @@ export class Bot {
     }
     if (agent === 'claude') {
       if (!sessionId || isPendingSessionId(sessionId)) return;
-      // Read goal-status first to avoid spawning a no-op turn when nothing is set.
       const existing = getClaudeNativeGoal(workdir, sessionId);
       if (!existing) return;
       this.submitSessionTask({
@@ -2224,25 +1830,10 @@ export class Bot {
     return { task, interrupted, steered: interrupted || !!task };
   }
 
-  /**
-   * Stop only the currently running task for a session. Queued tasks are
-   * intentionally left intact and run normally once the chain advances — the
-   * stop button means "abort what's running right now", not "throw away the
-   * queue". To drop a specific queued entry, use the per-row × button which
-   * routes through `cancelTask`.
-   */
   stopAllSessionTasks(sessionKey: string | null | undefined): { interrupted: boolean; cancelledQueued: number } {
     return this.stopTasksForSession(sessionKey);
   }
 
-  /**
-   * Public "start a fresh session" entry point — wired to the "+ New" button
-   * and the `/new` command. Only clears the chat's session selection so the
-   * next user message lands in a fresh session; the previously selected
-   * session keeps running independently (matching dashboard behaviour, where
-   * each session is its own card and is never aborted by creating another).
-   * Use `cancelTask` / `/stop` to actually interrupt a running task.
-   */
   resetConversationForChat(chatId: ChatId): void {
     const cs = this.chat(chatId);
     this.resetChatConversation(cs);
@@ -2257,13 +1848,6 @@ export class Bot {
     return this.getSelectedSession(cs);
   }
 
-  /**
-   * Resume an existing session in a chat and restore the agent's persistent
-   * model / effort / BYOK Profile binding so the next stream — and the IM
-   * picker chips — match the session that was just adopted. This is the
-   * shared "click a row from the workspace list" path used by both the
-   * interactive selector and the text-command `/sessions <#>` flow.
-   */
   resumeSessionForChat(
     chatId: ChatId,
     session: Pick<SessionInfo, 'agent' | 'sessionId' | 'workdir' | 'workspacePath' | 'model' | 'title' | 'threadId' | 'thinkingEffort' | 'profileId'>,
@@ -2283,16 +1867,10 @@ export class Bot {
   switchAgentForChat(chatId: ChatId, agent: Agent): boolean {
     const cs = this.chat(chatId);
     if (cs.agent === agent) return false;
-    // Capture the live session of the *outgoing* agent so the next message to
-    // the new agent can replay it as a handover. We capture BEFORE flipping
-    // cs.agent so the ref is honest about which agent it points at.
     const prevAgent = cs.agent;
     const prevSessionId = cs.sessionId && !isPendingSessionId(cs.sessionId) ? cs.sessionId : null;
     cs.agent = agent;
 
-    // Pre-existing session of the new agent in this thread — back-and-forth
-    // toggling resumes it without handover. The user's intent is "continue what
-    // I had", not "translate cross-agent".
     const resumed = this.findThreadSessionRuntime(chatId, cs.activeThreadId, agent);
     if (resumed) {
       cs.pendingHandoverFrom = null;
@@ -2300,11 +1878,6 @@ export class Bot {
       this.log(`agent switched to ${agent} chat=${chatId} resumed=${resumed.sessionId}`);
       return true;
     }
-    // No existing session of the new agent → next message will stage a fresh
-    // one. Park the outgoing session as the handover source. If the outgoing
-    // agent had no live session (e.g. the user is rapidly toggling agents
-    // before sending anything), keep any already-pending handover so the
-    // original source isn't lost across intermediate switches.
     if (prevSessionId) {
       cs.pendingHandoverFrom = { agent: prevAgent, sessionId: prevSessionId };
     }
@@ -2315,26 +1888,8 @@ export class Bot {
     return true;
   }
 
-  /**
-   * Switch the active model for a chat. Supports both native (agent CLI's own
-   * auth) and BYOK Profile selections:
-   *   - `profileId === undefined` (default) — set native model only; pre-union
-   *     callers (text-command channels) keep working unchanged.
-   *   - `profileId === null` — explicit clear: drop any active Profile, fall
-   *     back to native model.
-   *   - `profileId === '<uuid>'` — bind that Profile; `modelId` should match
-   *     the Profile's modelId so display surfaces stay in sync.
-   *
-   * The native model field (`agentConfigs[agent].model`) always tracks the
-   * effective model id used by the agent CLI — when a Profile is bound, this
-   * lets `modelForAgent()` return the right display string without an extra
-   * lookup. When unbinding, we leave the field alone so the user's prior
-   * native pick is preserved.
-   */
   switchModelForChat(chatId: ChatId, modelId: string, profileId?: string | null) {
     const cs = this.chat(chatId);
-    // Update activeProfileByAgent first — resolveSessionStreamConfig downstream
-    // reads it via getActiveProfile() during spawn.
     if (profileId !== undefined) {
       setActiveProfile(cs.agent, profileId || null);
     }
@@ -2351,26 +1906,12 @@ export class Bot {
     this.log(`model switched to ${modelId} for ${cs.agent} chat=${chatId} session=${cs.activeSessionKey || '(none)'}${profileTag}`);
   }
 
-  /**
-   * The Profile id currently bound to this agent, if any. Used by the IM
-   * picker to flag "current selection" when the user has a Profile bound —
-   * since multiple Profiles may share the same modelId, a model-id match
-   * alone is ambiguous.
-   */
   activeProfileIdForAgent(agent: Agent): string | null {
     return getActiveProfileId(agent);
   }
 
   switchEffortForChat(chatId: ChatId, effort: string) {
     const cs = this.chat(chatId);
-    // "ultra" is a synthetic top rung in the effort picker, NOT a real --effort
-    // value (the claude CLI rejects anything outside low|medium|high|xhigh|max).
-    // It bundles "max reasoning depth + permit multi-agent Workflow
-    // orchestration" — the same pairing as Claude's own `ultracode` mode. Decode
-    // it here, the single apply choke point, so the rest of the pipeline only
-    // ever sees a concrete effort value plus the orthogonal workflow flag.
-    // Because the rungs are mutually exclusive, picking any concrete level also
-    // clears the workflow opt-in (capability-gated — only claude advertises it).
     const ultra = effort === 'ultra';
     const realEffort = ultra ? 'max' : effort;
 
@@ -2386,12 +1927,6 @@ export class Bot {
     this.log(`effort switched to ${effort} (effort=${realEffort}, workflow=${ultra}) for ${cs.agent} chat=${chatId}`);
   }
 
-  /**
-   * Effort value to *display* in the picker. Workflow is orthogonal under the
-   * hood, but the UI folds "max depth + workflow on" into the single synthetic
-   * `ultra` rung (see {@link switchEffortForChat}), so report it as current when
-   * the agent has orchestration enabled. Mirrors the decomposition above.
-   */
   effortSelectionForAgent(agent: Agent): string | null {
     const effort = this.effortForAgent(agent);
     if (!effort) return null;
@@ -2408,13 +1943,6 @@ export class Bot {
     }
   }
 
-  /**
-   * Toggle multi-agent Workflow orchestration for the chat's current agent.
-   * Unlike permission-mode it does NOT reset the conversation — the tool set is
-   * resolved per-invocation, so the change cleanly takes effect on the next
-   * turn without invalidating the session transcript. No-op for agents whose
-   * driver doesn't advertise the capability.
-   */
   switchWorkflowForChat(chatId: ChatId, enabled: boolean) {
     const cs = this.chat(chatId);
     if (!getDriverCapabilities(cs.agent).workflow) {
@@ -2427,12 +1955,6 @@ export class Bot {
   }
 
   modelForAgent(agent: Agent): string {
-    // For agents whose CLIs cannot switch model via flags (Hermes uses ACP
-    // session/set_model, which only fires when a BYOK Profile is bound), the
-    // active Profile is the only meaningful source of truth — falling back to
-    // `agentConfigs[agent].model` would surface a stale value the runtime
-    // never actually uses. For agents with native model selectors
-    // (Claude/Codex/Gemini), the user-config field is still authoritative.
     if (agent === 'hermes') {
       const bound = getAgentBoundModelId('hermes');
       if (bound) return bound;
@@ -2440,11 +1962,6 @@ export class Bot {
     return this.agentConfigs[agent]?.model || '';
   }
 
-  /**
-   * Resolve the effective model + thinking effort that a stream for `cs` will run with.
-   * Mirrors the fallback chain used inside runStream() so callers (e.g. submitSessionTask
-   * emitting a 'start' event) can label the active turn before runStream resolves it.
-   */
   resolveSessionStreamConfig(
     cs: Pick<SessionRuntime, 'agent' | 'sessionId' | 'workdir' | 'modelId' | 'thinkingEffort'>,
     opts?: { workflowEnabled?: boolean },
@@ -2463,12 +1980,6 @@ export class Bot {
       || agentConfig.reasoningEffort
       || 'high';
     const effort = cs.agent === 'gemini' ? null : (effortRaw || null);
-    // Fold to the synthetic 'ultra' rung for display when Workflow is on (mirrors
-    // effortSelectionForAgent / the dashboard's foldUltraEffort), so the live reply
-    // badge and IM running footer label the turn 'ultra' instead of a bare 'max'.
-    // Prefer the per-turn workflow choice when the caller threads one (dashboard
-    // composer sends ultra per-send without flipping the agent-global flag);
-    // fall back to the agent-global flag (IM /mode, agent card).
     const workflowOn = opts?.workflowEnabled ?? this.workflowEnabledForAgent(cs.agent);
     const displayEffort = effort && getDriverCapabilities(cs.agent).workflow && workflowOn
       ? 'ultra'
@@ -2496,9 +2007,6 @@ export class Bot {
 
   fetchModels(agent: Agent, workdir?: string) {
     const wd = workdir || this.workdir;
-    // Provider-aware: when the agent is bound to a BYOK Profile, the
-    // returned model list is the provider's enumerable models. This keeps
-    // IM /models consistent with the dashboard agent card.
     return resolveAgentModels(agent, { workdir: wd, currentModel: this.modelForAgent(agent) });
   }
 
@@ -2539,12 +2047,6 @@ export class Bot {
     this.log(`workflow for ${agent} changed to ${enabled}`);
   }
 
-  /**
-   * Switch Claude's access mode (subscription TUI vs `claude -p` Agent SDK
-   * credits). Persisted preference — takes effect on the NEXT spawned turn
-   * (in-flight streams keep their own opts); does not reset any conversation
-   * since both modes resume the same native session transcript.
-   */
   setClaudeAccessMode(mode: ClaudeAccessMode) {
     const config = this.agentConfigs.claude;
     if (config) config.accessMode = mode;
@@ -2553,13 +2055,8 @@ export class Bot {
 
   private persistAgentPreference(agent: Agent, kind: 'model' | 'effort' | 'workflow', value: string) {
     try {
-      // Hermes model writes go to the active BYOK Profile (the runtime's only
-      // model-switching surface). Falls through to the legacy `hermesModel`
-      // user-config field when no Profile is bound.
       if (kind === 'model' && agent === 'hermes' && setAgentBoundModelId('hermes', value)) return;
 
-      // Workflow orchestration opt-in is a boolean field, and only claude
-      // advertises the capability, so it bypasses the string patch below.
       if (kind === 'workflow') {
         if (agent === 'claude') updateUserConfig({ claudeWorkflowEnabled: value === '1' });
         return;
@@ -2676,36 +2173,15 @@ export class Bot {
 
   protected onManagedConfigChange(_config: Record<string, any>, _opts: { initial?: boolean } = {}) {}
 
-  /**
-   * Subclass entry point — connect to the channel and block on its
-   * listen loop. Each channel implementation overrides this; calling it
-   * on the base class is a programming error.
-   */
   public run(): Promise<void> {
     throw new Error('Bot.run() must be implemented by a channel subclass');
   }
 
-  /**
-   * Subclass hook: tear down the channel transport so `run()` can resolve.
-   * Subclasses override to disconnect their specific channel — the base
-   * implementation only cleans up the bot-level subscriptions that don't
-   * belong to any one channel.
-   *
-   * Used by ChannelSupervisor when a channel must be stopped or replaced
-   * in-process (channel removal, credential rotation) without restarting
-   * the entire pikiloom runtime.
-   */
   public requestStop(): void {
     this.userConfigUnsubscribe?.();
     this.userConfigUnsubscribe = null;
   }
 
-  /**
-   * Scan registered workspaces + the active workdir for sessions stuck in
-   * 'running' state after a crash/restart and downgrade them to 'incomplete'.
-   * Safe to call at any time — only touches records whose owning process is
-   * no longer alive (or that have gone stale past the age threshold).
-   */
   private reconcileStaleRunningSessions() {
     const seen = new Set<string>();
     const candidates: string[] = [this.workdir];
@@ -2731,10 +2207,6 @@ export class Bot {
       this.switchWorkdir(nextWorkdir, { persist: false });
     }
 
-    // The configured value is a *preference* (baseline 'codex' when unset);
-    // clamp it to an installed agent so a fresh machine whose preferred CLI
-    // isn't installed still routes new conversations to one that can actually
-    // run, instead of surfacing an uninstalled default.
     const nextDefaultAgent = resolveDefaultAgent(config.defaultAgent || 'codex', listAgents().agents);
     if (opts.initial) this.defaultAgent = nextDefaultAgent;
     else if (nextDefaultAgent !== this.defaultAgent) this.setDefaultAgent(nextDefaultAgent);
@@ -2751,10 +2223,6 @@ export class Bot {
         if (opts.initial) this.agentConfigs[agent].reasoningEffort = nextEffort;
         else this.setEffortForAgent(agent, nextEffort);
       }
-      // Access mode (claude only) IS reconciled — unlike workflow, it's a
-      // persisted preference, so an external setting.json edit or a dashboard
-      // save (which both flow through here via onUserConfigChange) must push
-      // the new value onto the running bot so the next turn spawns accordingly.
       if (agent === 'claude') {
         const nextAccessMode = resolveClaudeAccessMode(config);
         if (this.claudeAccessMode !== nextAccessMode) {
@@ -2762,9 +2230,6 @@ export class Bot {
           else this.setClaudeAccessMode(nextAccessMode);
         }
       }
-      // Workflow is intentionally NOT reconciled from config here: it's an
-      // in-memory per-session toggle (composer / IM /mode), so a config-sync
-      // tick must not clobber a deliberate in-session choice.
     }
 
     if (!opts.initial) this.onManagedConfigChange(config, opts);
@@ -2782,7 +2247,6 @@ export class Bot {
     extras?: { forkOf?: { parentSessionId: string; atTurn: number }; workflowEnabled?: boolean },
   ): Promise<StreamResult> {
     const agentConfig = this.agentConfigs[cs.agent] || {};
-    // Session-level config stored on disk — used as fallback between explicit override and global defaults
     const sessionWorkdirForConfig = 'workdir' in cs && typeof cs.workdir === 'string' && cs.workdir ? cs.workdir : this.workdir;
     const storedConfig = cs.sessionId && !isPendingSessionId(cs.sessionId)
       ? getSessionStoredConfig(sessionWorkdirForConfig, cs.agent, cs.sessionId)
@@ -2800,11 +2264,6 @@ export class Bot {
     this.debug(`[runStream] ${cs.agent} config: model=${resolvedModel} extraArgs=[${extraArgs.join(' ')}]`);
     const isFirstTurnOfSession = !cs.sessionId || isPendingSessionId(cs.sessionId);
 
-    // ── Cross-agent handover ──
-    // First turn of a session created by an agent switch: read the prior agent's
-    // session, compact it, and prepend the seed to this turn's prompt. After this
-    // single injection the new agent owns the canonical session file and `--resume`
-    // takes over. See agent/handover.ts.
     const handoverFrom = ('handoverFrom' in cs && cs.handoverFrom) ? cs.handoverFrom : null;
     if (isFirstTurnOfSession && handoverFrom) {
       try {
@@ -2832,28 +2291,14 @@ export class Bot {
         this.warn(`[runStream] handover threw: ${e?.message || e}; proceeding without prior context`);
       }
     }
-    // Per-turn workflow opt-in (dashboard composer passes it explicitly);
-    // falls back to the agent's in-memory flag (IM /mode) when unspecified.
-    // Default off — never read from a persisted config default.
     const workflowEnabled = cs.agent === 'claude' && (extras?.workflowEnabled ?? this.claudeWorkflowEnabled);
 
-    // ── Artifact delivery (terminal-agnostic) ──
-    // `im_send_file` is the single "hand a file to the user" verb. Whatever the
-    // caller wired as `mcpSendFile` (an IM channel push, or nothing for a
-    // dashboard / headless turn) is wrapped so every delivery ALSO records the
-    // file into the session's delivered-artifact manifest — the durable SSOT
-    // that survives reload + workspace cleanup and is servable over HTTP — and
-    // surfaces it live in the running turn's snapshot for any watching
-    // dashboard. Always provided, so the tool + delivery prompt light up even
-    // when there is no IM channel (the dashboard is the delivery surface then).
     const deliverySessionKey = ('key' in cs && typeof cs.key === 'string') ? cs.key : null;
     const wrappedSendFile = this.buildArtifactSendFile(cs.agent, deliverySessionKey, cs, mcpSendFile);
 
     const mcpSystemPrompt = appendExtraPrompt(
       appendExtraPrompt(
         appendExtraPrompt(
-          // Always-on: `wrappedSendFile` is provided for every turn (see above),
-          // so artifact delivery is available regardless of terminal.
           buildMcpDeliveryPrompt(),
           onInteraction && cs.agent === 'claude' ? buildClaudeAskUserPrompt() : '',
         ),
@@ -2861,13 +2306,6 @@ export class Bot {
       ),
       workflowEnabled ? buildWorkflowOptInPrompt() : '',
     );
-    // mcpSystemPrompt carries behaviour directives (use im_ask_user instead of
-    // built-in AskUserQuestion, browser automation status, artifact delivery)
-    // that must apply on every turn, not just the first — on resume the CLI
-    // does not automatically re-inject the previous --append-system-prompt
-    // contents, so Claude silently regresses to the built-in tools on turn 2+.
-    // The caller-supplied `systemPrompt` (per-task scaffolding) remains
-    // first-turn-only since later turns inherit it via the session transcript.
     const effectiveSystemPrompt = isFirstTurnOfSession
       ? appendExtraPrompt(systemPrompt, mcpSystemPrompt)
       : (mcpSystemPrompt || undefined);
@@ -2889,45 +2327,31 @@ export class Bot {
       thinkingEffort: resolvedThinkingEffort, onText,
       onSessionId: syncNativeSessionId,
       attachments: attachments.length ? attachments : undefined,
-      // codex-specific
       codexModel: cs.agent === 'codex' ? resolvedModel : this.codexModel,
       codexFullAccess: this.codexFullAccess,
       codexDeveloperInstructions: effectiveSystemPrompt || undefined,
       codexExtraArgs: this.codexExtraArgs.length ? this.codexExtraArgs : undefined,
       codexPrevCumulative: cs.codexCumulative,
-      // claude-specific
       claudeModel: cs.agent === 'claude' ? resolvedModel : this.claudeModel,
       claudePermissionMode: this.claudePermissionMode,
       claudeWorkflowEnabled: workflowEnabled,
-      // Resolved per-stream so a live access-mode switch applies to new turns
-      // while in-flight streams keep the mode they spawned with.
       claudeAccessMode: cs.agent === 'claude' ? this.claudeAccessMode : undefined,
       claudeAppendSystemPrompt: effectiveSystemPrompt || undefined,
       claudeExtraArgs: this.claudeExtraArgs.length ? this.claudeExtraArgs : undefined,
-      // gemini-specific
       geminiModel: cs.agent === 'gemini' ? resolvedModel : (this.agentConfigs.gemini?.model || ''),
       geminiApprovalMode: this.geminiApprovalMode,
       geminiSandbox: this.geminiSandbox,
       geminiSystemInstruction: effectiveSystemPrompt || undefined,
       geminiExtraArgs: this.geminiExtraArgs.length ? this.geminiExtraArgs : undefined,
-      // hermes-specific. Wire the chat's current model so /models switching in
-      // IM takes effect even without a BYOK Profile (the BYOK injector in
-      // stream.ts overrides this with the ACP-encoded `provider:model` when
-      // a Profile is bound).
       hermesModel: cs.agent === 'hermes' && resolvedModel ? resolvedModel : undefined,
-      // MCP bridge
       mcpSendFile: wrappedSendFile,
       abortSignal,
       onInteraction,
       onSteerReady,
       onCodexTurnReady,
-      // Fork lineage — when set, the driver branches off the parent session.
       forkOf: extras?.forkOf,
     };
     const result = await doStream(opts);
-    // 'ultra' is a display-only rung (max reasoning + Workflow). The command ran on
-    // concrete max+workflow; relabel the result effort so the reply footer (IM
-    // final card, etc.) matches the picker. Display-only — never re-fed into a run.
     if (cs.agent === 'claude' && workflowEnabled && result.thinkingEffort) {
       result.thinkingEffort = 'ultra';
     }
@@ -2952,11 +2376,6 @@ export class Bot {
       if (this.keepAliveProc || this.keepAlivePulseTimer) return;
       const bin = whichSync('caffeinate');
       if (bin) {
-        // `-dis` = prevent display sleep + idle sleep + system sleep. The `-d`
-        // (display) flag is intentional: the agent uses macOS `screencapture`
-        // for desktop screenshots, which returns a black frame once the
-        // display sleeps. Users who would rather let the screen turn off
-        // should drop brightness or close the lid against an external display.
         this.keepAliveProc = spawn('caffeinate', ['-dis'], { stdio: 'ignore', detached: true });
         this.keepAliveProc.unref();
         this.log(`keep-alive: caffeinate (PID ${this.keepAliveProc.pid})`);

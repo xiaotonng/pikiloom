@@ -42,7 +42,6 @@ const brandIcons: Record<string, string> = {
   cursor: cursorLogo,
   windsurf: windsurfLogo,
   finder: finderLogo,
-  // Coding agents + model providers
   hermes: hermesLogo,
   openrouter: openrouterLogo,
   anthropic: anthropicLogo,
@@ -81,9 +80,6 @@ export function BrandIcon({ brand, size = 18, className }: {
   }
   const fallback = letterFallbacks[brand];
   if (!fallback) return null;
-  // Letter mark: pill background with brand-tinted color. Letter is sized
-  // proportionally; multi-character marks (OR, DS) shrink slightly so they
-  // still read as a single mark rather than running text.
   const isMulti = fallback.letter.length > 1;
   return (
     <span

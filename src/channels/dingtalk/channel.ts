@@ -1,19 +1,3 @@
-/**
- * DingTalk channel transport — Stream Mode (no public IP needed).
- *
- * Uses dingtalk-stream@2.x SDK. Auth: clientId (AppKey) + clientSecret
- * (AppSecret) of a self-built robot/app subscribed to the bot message topic.
- *
- * Receive: DWClient subscribes to TOPIC_ROBOT and yields RobotTextMessage
- * payloads via registerCallbackListener.
- *
- * Send: each inbound message carries a `sessionWebhook` URL valid for ~2 hours,
- * which we POST to for replies. We cache the latest sessionWebhook per chat
- * so a long-running task that produces a result message can still reach the
- * user even after the original webhook would have expired (mid-conversation
- * activity refreshes it). DingTalk plain-text messages cannot be edited.
- */
-
 import { DWClient, TOPIC_ROBOT, type DWClientDownStream, EventAck, type RobotTextMessage } from 'dingtalk-stream';
 import {
   Channel,
@@ -31,7 +15,6 @@ export interface DingtalkOpts {
   clientId: string;
   clientSecret: string;
   workdir?: string;
-  /** Optional chat-id allowlist (DingTalk conversationId). */
   allowedChatIds?: Set<string>;
 }
 
@@ -46,9 +29,9 @@ export interface DingtalkFrom {
 }
 
 export interface DingtalkContext {
-  chatId: string;          // conversationId
-  messageId: string;        // msgId
-  conversationType: string; // 1 = single, 2 = group
+  chatId: string;
+  messageId: string;
+  conversationType: string;
   from: DingtalkFrom;
   reply: (text: string, opts?: SendOpts) => Promise<string | null>;
   editReply: (msgId: string, text: string, opts?: SendOpts) => Promise<void>;
@@ -71,17 +54,13 @@ function previewText(value: string, max = 200): string {
 }
 
 interface ChatMeta {
-  /** sessionWebhook last seen for this conversation. */
   sessionWebhook: string;
-  /** sessionWebhook expiry timestamp (ms). */
   sessionWebhookExpiredAt: number;
 }
 
 export class DingtalkChannel extends Channel {
   override readonly capabilities = {
     ...DEFAULT_CHANNEL_CAPABILITIES,
-    // DingTalk Stream Mode plain-text messages cannot be edited; AI Cards
-    // can be updated but are out of scope for this minimal channel.
   };
 
   readonly knownChats = new Set<string>();
@@ -98,7 +77,6 @@ export class DingtalkChannel extends Channel {
   private readonly messageHandlers = new Set<DingtalkMessageHandler>();
   private readonly errorHandlers = new Set<DingtalkErrorHandler>();
 
-  /** Dedup: stream may redeliver after timeouts. */
   private readonly seenMsgIds = new Set<string>();
   private readonly seenMsgIdQueue: string[] = [];
   private static readonly SEEN_CAP = 256;
@@ -112,10 +90,6 @@ export class DingtalkChannel extends Channel {
 
   onMessage(handler: DingtalkMessageHandler) { this.messageHandlers.add(handler); return this; }
   onError(handler: DingtalkErrorHandler) { this.errorHandlers.add(handler); return this; }
-
-  // ========================================================================
-  // Lifecycle
-  // ========================================================================
 
   async connect(): Promise<BotInfo> {
     this.dwClient = new DWClient({
@@ -190,10 +164,6 @@ export class DingtalkChannel extends Channel {
     this.listenResolve = null;
   }
 
-  // ========================================================================
-  // Outgoing primitives
-  // ========================================================================
-
   async send(chatId: number | string, text: string, _opts: SendOpts = {}): Promise<string | null> {
     const chat = String(chatId);
     const meta = this.chatMeta.get(chat);
@@ -226,7 +196,6 @@ export class DingtalkChannel extends Channel {
         }
       } catch (err) {
         if (err instanceof Error && err.message.startsWith('DingTalk reply errcode=')) throw err;
-        // Non-JSON body or no errcode is treated as success.
       }
       lastId = `dt:${Date.now().toString(36)}:${i}`;
     }
@@ -234,22 +203,13 @@ export class DingtalkChannel extends Channel {
   }
 
   async editMessage(_chatId: number | string, _msgId: number | string, _text: string, _opts?: SendOpts): Promise<void> {
-    // Plain-text messages on DingTalk are not editable. AI Cards have an
-    // update API but require pre-registering a card template — out of scope
-    // for this transport. Callers that fall back here just no-op.
   }
 
   async deleteMessage(_chatId: number | string, _msgId: number | string): Promise<void> {
-    // No public delete API for bot-sent messages.
   }
 
   async sendTyping(_chatId: number | string, _opts?: SendOpts): Promise<void> {
-    // No typing indicator API.
   }
-
-  // ========================================================================
-  // Internal dispatch
-  // ========================================================================
 
   private async dispatchRobotMessage(msg: DWClientDownStream): Promise<void> {
     try {

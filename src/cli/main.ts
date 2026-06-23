@@ -1,16 +1,8 @@
 #!/usr/bin/env node
-/**
- * cli.ts — CLI entry point for pikiloom.
- */
 
-// Mark this process as a Claude Code context so nested claude launches are blocked.
-// The spawn framework in code-agent.ts strips this before launching agent subprocesses.
 process.env.CLAUDECODE = '1';
 
 import { hydrateLegacyEnv, migrateLegacyStateDir } from '../core/legacy-compat.js';
-// Backward-compat for the pikiclaw → pikiloom rename. Runs before any config is
-// read or lock taken: mirror PIKICLAW_* → PIKILOOM_* and move ~/.pikiclaw →
-// ~/.pikiloom. Both are idempotent no-ops once an install has migrated.
 hydrateLegacyEnv();
 migrateLegacyStateDir();
 
@@ -49,8 +41,6 @@ import {
 } from '../core/config/user-config.js';
 import { VERSION } from '../core/version.js';
 
-/* ── Daemon (watchdog) mode ─────────────────────────────────────────── */
-
 const DAEMON_RESTART_DELAY_MS = DAEMON_TIMEOUTS.restartDelay;
 const DAEMON_MAX_RESTART_DELAY_MS = DAEMON_TIMEOUTS.maxRestartDelay;
 const DAEMON_RAPID_CRASH_WINDOW_MS = DAEMON_TIMEOUTS.rapidCrashWindow;
@@ -60,31 +50,16 @@ function daemonLog(msg: string) {
   process.stdout.write(`[daemon ${ts}] ${msg}\n`);
 }
 
-/** Args that are daemon-specific and should not be forwarded to the child. */
 const DAEMON_STRIP_ARGS = new Set(['--daemon', '--no-daemon']);
 
-/**
- * Runs the bot as a supervised child process. On non-zero exit the child is
- * restarted with exponential back-off. A clean exit (code 0) stops the daemon.
- * Restart requests use a dedicated exit code and are respawned immediately.
- */
 async function runDaemon(userArgs: string[]): Promise<never> {
-  // Forward user's CLI args (strip daemon-related flags).
   const forwardedArgs = userArgs.filter(a => !DAEMON_STRIP_ARGS.has(a));
   const restartCmd = process.env.PIKILOOM_RESTART_CMD;
   const restartStateFile = createRestartStateFilePath(process.pid);
 
-  // Publish the daemon PID so `pikiloom stop` can find it. Clean up on any
-  // exit path so a stale file never points at someone else's PID.
   writeDaemonPidFile(process.pid);
   process.once('exit', clearDaemonPidFile);
 
-  // Auto-start enrollment: only when the user explicitly typed `--daemon`
-  // (the watchdog itself is on by default, so we use the explicit flag as
-  // the signal of "I'm settling in for long-term use"). Fire-and-forget so
-  // the bot still comes up immediately; the dialog appears a few seconds
-  // later. No-op when already enrolled, declined, non-interactive, or
-  // already running under launchd — see src/cli/autostart.ts.
   if (userArgs.includes('--daemon')) {
     maybePromptAutostart(daemonLog);
   }
@@ -97,7 +72,6 @@ async function runDaemon(userArgs: string[]): Promise<never> {
     clearRestartStateFile(restartStateFile);
     const { bin, args } = buildRestartCommand(forwardedArgs, restartCmd);
     daemonLog(`exec: ${bin} ${args.join(' ')}`);
-    // npx/npx.cmd needs shell resolution; node.exe does not
     const needsShell = process.platform === 'win32' && !bin.endsWith('node.exe');
     return spawn(needsShell ? `"${bin}"` : bin, args, {
       stdio: 'inherit',
@@ -123,7 +97,6 @@ async function runDaemon(userArgs: string[]): Promise<never> {
 
     let shutdownSignal: 'SIGINT' | 'SIGTERM' | null = null;
 
-    // Forward termination and restart signals to the active child.
     const forwardShutdownSignal = (sig: 'SIGINT' | 'SIGTERM') => {
       shutdownSignal = sig;
       child.kill(sig);
@@ -156,16 +129,14 @@ async function runDaemon(userArgs: string[]): Promise<never> {
       continue;
     }
 
-    // Clean exit → stop daemon.
     if (code === 0 || code === null) {
       daemonLog(`child exited cleanly (code=${code}), daemon stopping`);
       process.exit(0);
     }
 
-    // Exponential back-off for rapid crashes.
     const uptime = Date.now() - startedAt;
     if (uptime > DAEMON_RAPID_CRASH_WINDOW_MS) {
-      restartDelay = DAEMON_RESTART_DELAY_MS; // reset if it ran for a while
+      restartDelay = DAEMON_RESTART_DELAY_MS;
     } else {
       restartDelay = Math.min(restartDelay * 2, DAEMON_MAX_RESTART_DELAY_MS);
     }
@@ -211,8 +182,6 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
-/* ── Shared helpers ────────────────────────────────────────────────── */
-
 function processLog(message: string) {
   const ts = new Date().toTimeString().slice(0, 8);
   process.stdout.write(`[pikiloom ${ts}] ${message}\n`);
@@ -221,9 +190,6 @@ function processLog(message: string) {
 const listStartupAgents = () => listAgents().agents;
 const listVerboseAgents = () => listAgents({ includeVersion: true }).agents;
 
-/* ── Phase: early exits (MCP serve, --version, --help) ────────────── */
-
-/** If launched as an MCP stdio server, run that and exit. */
 async function handleMcpServeMode(): Promise<boolean> {
   if (process.argv.includes('--mcp-serve')) {
     await import('../agent/mcp/session-server.js');
@@ -232,7 +198,6 @@ async function handleMcpServeMode(): Promise<boolean> {
   return false;
 }
 
-/** Print help text and exit. */
 function printHelp(): never {
   process.stdout.write(
 `pikiloom v${VERSION} — Run local coding agents through IM.
@@ -324,27 +289,9 @@ Docs: https://github.com/xiaotonng/pikiloom
   process.exit(0);
 }
 
-/* ── Phase: workdir persistence & daemon handoff ──────────────────── */
-
-/**
- * For a fresh CLI launch (not a daemon-managed child), persist the working
- * directory into setting.json so the bot defaults to where the user invoked
- * the command. An explicit `-w` always wins and is saved. Without `-w`, a
- * previously saved workdir (including one chosen later in the dashboard) is
- * kept as-is; we only fall back to the launch cwd on first run, when nothing
- * has been saved yet, so relaunching never silently reverts the workdir.
- */
 function persistWorkdir(args: Record<string, any>, userConfig: Partial<UserConfig>): Partial<UserConfig> {
   if (process.env.PIKILOOM_DAEMON_CHILD) return userConfig;
-  // launchd launches the process from `/`; without `-w`, that would clobber
-  // the user's saved workdir to "/". Skip persistence so the config stays
-  // whatever the user previously chose interactively.
   if (process.env[FROM_LAUNCHD_ENV]) return userConfig;
-  // An explicit `-w` is a deliberate choice and always wins. Without it, a
-  // workdir the user already saved (e.g. picked in the dashboard via
-  // `/api/switch-workdir`) must survive relaunch — otherwise every fresh
-  // `npx pikiloom` silently reverts the workdir to its launch cwd. Only fall
-  // back to cwd on first run, when nothing has been saved yet.
   const explicitWorkdir = typeof args.workdir === 'string' && args.workdir.trim()
     ? args.workdir.trim()
     : '';
@@ -355,22 +302,15 @@ function persistWorkdir(args: Record<string, any>, userConfig: Partial<UserConfi
   return loadUserConfig();
 }
 
-/**
- * If daemon mode is active and we are the top-level process, become the
- * watchdog. This function never returns in daemon mode.
- */
 async function enterDaemonIfNeeded(args: Record<string, any>): Promise<void> {
   if (args.daemon && !process.env.PIKILOOM_DAEMON_CHILD) {
     await runDaemon(process.argv.slice(2));
   }
   if (!args.daemon) {
-    // --no-daemon: clear inherited env so requestProcessRestart uses the
-    // direct-spawn path instead of handing off to a non-existent daemon.
     delete process.env.PIKILOOM_DAEMON_CHILD;
   }
 }
 
-/** Install SIGUSR2 restart handler and clean it up on exit. */
 function installRestartSignalHandler(): void {
   const onSigusr2 = () => {
     processLog('SIGUSR2 received, restarting...');
@@ -382,21 +322,12 @@ function installRestartSignalHandler(): void {
   });
 }
 
-/**
- * Top-level shutdown safety net. Channels install their own SIGINT/SIGTERM
- * handlers that do per-channel cleanup with a 3 s unref-ed force-exit timer,
- * but those handlers only exist while a channel is running and silently fail
- * if cleanup throws before the timer is set. This handler is the last-resort
- * guarantee: once the user hits Ctrl+C, the process exits within the grace
- * window no matter what state we're in.
- */
 function installTopLevelShutdownHandler(): void {
   const GRACE_MS = 5_000;
   let shuttingDown = false;
   const onSignal = (sig: 'SIGINT' | 'SIGTERM') => {
     const exitCode = sig === 'SIGINT' ? 130 : 143;
     if (shuttingDown) {
-      // Second Ctrl+C — bail immediately.
       processLog(`${sig} again, forcing immediate exit`);
       process.exit(exitCode);
     }
@@ -408,13 +339,6 @@ function installTopLevelShutdownHandler(): void {
   process.on('SIGTERM', () => onSignal('SIGTERM'));
 }
 
-/* ── Phase: stop subcommand ───────────────────────────────────────── */
-
-/**
- * Find and terminate the running daemon. Reads the PID file written by
- * `runDaemon`, sends SIGTERM, waits briefly, escalates to SIGKILL if the
- * process is still alive. Never returns — always exits.
- */
 async function handleStopCommand(): Promise<never> {
   const pid = readDaemonPidFile();
   if (!pid) {
@@ -440,7 +364,6 @@ async function handleStopCommand(): Promise<never> {
   }
   process.stdout.write(`pikiloom stop: SIGTERM → pid ${pid}\n`);
 
-  // Poll for up to 8 s; daemon's child needs ~3 s for its force-exit timer.
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
     if (!isProcessAlive(pid)) {
@@ -451,16 +374,12 @@ async function handleStopCommand(): Promise<never> {
     await new Promise(resolve => setTimeout(resolve, 250));
   }
 
-  // Escalate to SIGKILL.
   process.stderr.write(`pikiloom stop: daemon (pid ${pid}) still alive after 8s, sending SIGKILL\n`);
   try { process.kill(pid, 'SIGKILL'); } catch {}
   clearDaemonPidFile();
   process.exit(0);
 }
 
-/* ── Phase: doctor check ──────────────────────────────────────────── */
-
-/** Run setup diagnostics and exit (--doctor). */
 function runDoctorCheck(channel: ChannelName, tokenProvided: boolean): never {
   const setupState = collectSetupState({
     agents: listVerboseAgents(),
@@ -474,12 +393,6 @@ function runDoctorCheck(channel: ChannelName, tokenProvided: boolean): never {
   process.exit(ready ? 0 : 1);
 }
 
-/* ── Phase: setup (dashboard / wizard / guide) ────────────────────── */
-
-/**
- * Poll the dashboard until the user completes configuration.
- * Mutates `ctx` in place with freshly resolved channels.
- */
 async function awaitDashboardConfig(
   dashboard: DashboardServer,
   ctx: { userConfig: Partial<UserConfig>; configOverrides: Partial<UserConfig>; args: Record<string, any> },
@@ -503,9 +416,6 @@ async function awaitDashboardConfig(
       channel,
       tokenProvided: channels.length > 0 && hasConfiguredChannelToken({ ...ctx.userConfig, ...ctx.configOverrides }, channel, ctx.args.token),
     });
-    // Dashboard-as-terminal: an installed agent is the only prerequisite to
-    // start. IM channels are optional — the dashboard is itself a terminal, so
-    // don't block startup waiting for a channel token.
     const nextNeedsSetup = !hasReadyAgent(nextSetupState);
     if (!nextNeedsSetup) {
       const resumeTs = new Date().toTimeString().slice(0, 8);
@@ -515,10 +425,6 @@ async function awaitDashboardConfig(
   }
 }
 
-/**
- * Run the setup phase: dashboard wait-loop, terminal wizard, or guide printout.
- * Returns the dashboard instance (if started) and possibly-updated userConfig.
- */
 async function runSetupPhase(
   args: Record<string, any>,
   userConfig: Partial<UserConfig>,
@@ -540,17 +446,11 @@ async function runSetupPhase(
 
   const useDashboard = !args.noDashboard && !args.setup;
   let dashboard: DashboardServer | null = null;
-  // With the dashboard as a terminal, an installed agent is enough to start.
-  // Without the dashboard (headless server / --no-dashboard), an IM channel is
-  // still required as the only terminal.
   const needsSetup = useDashboard
     ? !hasReadyAgent(setupState)
     : (channels.length === 0 || !tokenProvided || !hasReadyAgent(setupState));
 
   if (useDashboard) {
-    // Suppress the browser pop on auto-start when there's no user-facing
-    // terminal: launchd-spawned bots, Docker/headless server runs, or when
-    // the user explicitly set PIKILOOM_OPEN_BROWSER=0.
     const openBrowser =
       !args.server
       && !process.env[FROM_LAUNCHD_ENV]
@@ -594,7 +494,6 @@ async function runSetupPhase(
   return { dashboard, userConfig, channels, channel };
 }
 
-/** Print the shareable connection code for `--server` (headless) mode. */
 function printServerConnectionCode(dashboard: DashboardServer): void {
   const c = loadUserConfig();
   const sc = buildServerCode({
@@ -616,14 +515,6 @@ function printServerConnectionCode(dashboard: DashboardServer): void {
   }
 }
 
-/* ── Phase: post-setup validation ─────────────────────────────────── */
-
-/**
- * Re-resolve channels after the setup phase and validate we have a runnable
- * terminal: an installed agent is mandatory; an IM channel is required only
- * when the dashboard isn't serving as the terminal. Exits on failure.
- * Returns the (possibly empty) channel set — empty is valid in dashboard mode.
- */
 function validatePostSetupChannels(
   configOverrides: Partial<UserConfig>,
   userConfig: Partial<UserConfig>,
@@ -643,15 +534,11 @@ function validatePostSetupChannels(
     tokenProvided: channels.length > 0,
   });
 
-  // An installed agent is the hard requirement — no terminal can run a session
-  // without one.
   if (!hasReadyAgent(refreshedSetupState)) {
     process.stderr.write(buildSetupGuide(refreshedSetupState, VERSION, { doctor: true }));
     process.exit(1);
   }
 
-  // Zero IM channels is fine when the dashboard is the terminal; only bail when
-  // there's no terminal at all (dashboard disabled AND no channel configured).
   if (channels.length === 0 && !useDashboard) {
     process.stdout.write(buildSetupGuide(refreshedSetupState, VERSION));
     process.exit(0);
@@ -660,12 +547,6 @@ function validatePostSetupChannels(
   return { channels, channel };
 }
 
-/* ── Phase: runtime config & env setup ────────────────────────────── */
-
-/**
- * Build the final runtime config, apply token/model/permission overrides to
- * the environment, start config file sync, and kick off agent auto-update.
- */
 function applyRuntimeConfig(
   args: Record<string, any>,
   userConfig: Partial<UserConfig>,
@@ -674,7 +555,6 @@ function applyRuntimeConfig(
 ): Partial<UserConfig> {
   const runtimeConfig: Partial<UserConfig> = { ...userConfig, ...configOverrides };
 
-  // Inject CLI token into channel-specific config fields.
   if (args.token) {
     if (channel === 'telegram') runtimeConfig.telegramBotToken = args.token;
     else if (channel === 'feishu') {
@@ -692,7 +572,6 @@ function applyRuntimeConfig(
     log: processLog,
   });
 
-  // Model override: route to the correct agent env var.
   if (args.model) {
     const ag = args.agent || runtimeConfig.defaultAgent || 'codex';
     if (ag === 'codex') process.env.CODEX_MODEL = args.model;
@@ -701,7 +580,6 @@ function applyRuntimeConfig(
   }
   if (args.timeout != null) process.env.PIKILOOM_TIMEOUT = String(args.timeout);
 
-  // Permission mode: safe vs full-access.
   if (args.safeMode) {
     process.env.CODEX_FULL_ACCESS = 'false';
     process.env.CLAUDE_PERMISSION_MODE = 'default';
@@ -714,12 +592,6 @@ function applyRuntimeConfig(
     process.env.GEMINI_SANDBOX = 'false';
   }
 
-  // Live-reload config file sync.
-  //
-  // Only pass overrides that came from CLI flags / explicit args, NOT the full
-  // runtimeConfig. Otherwise a snapshot of every user-managed field (model,
-  // effort, workdir, etc.) gets re-applied on every sync tick, silently
-  // reverting changes the user just made via the menu or dashboard.
   const syncOverrides: Partial<UserConfig> = {};
   if (args.agent) syncOverrides.defaultAgent = args.agent;
   if (args.token) {
@@ -741,17 +613,6 @@ function applyRuntimeConfig(
   return runtimeConfig;
 }
 
-/* ── Phase: channel launch ────────────────────────────────────────── */
-
-/**
- * Hand off channel lifecycle to ChannelSupervisor and block forever. The
- * supervisor reconciles bots against the user config — adding, removing,
- * or replacing channels in response to dashboard saves without restarting
- * the pikiloom process.
- *
- * Per-bot signal handlers (and the daemon supervisor when present) drive
- * process exit; this promise is just a foreground keep-alive.
- */
 async function launchChannels(
   channels: ChannelName[],
   dashboard: DashboardServer | null,
@@ -759,12 +620,8 @@ async function launchChannels(
   processLog(`launching channels: ${channels.join(', ')}`);
   const supervisor = new ChannelSupervisor({ dashboard, log: processLog });
   await supervisor.start();
-  // Block forever — the dashboard HTTP listener and per-channel signal
-  // handlers keep the process alive and drive shutdown.
   await new Promise<void>(() => {});
 }
-
-/* ── main() ───────────────────────────────────────────────────────── */
 
 export async function main() {
   if (await handleMcpServeMode()) return;
@@ -776,46 +633,34 @@ export async function main() {
   if (args.help) printHelp();
   if (args.stop) await handleStopCommand();
 
-  // Persist workdir for fresh (non-daemon-child) launches.
   userConfig = persistWorkdir(args, userConfig);
 
-  // Daemon mode: become watchdog (never returns in daemon mode).
   await enterDaemonIfNeeded(args);
 
-  // Child / no-daemon process: install restart signal handler + top-level
-  // shutdown safety net so Ctrl+C always brings the process down.
   installRestartSignalHandler();
   installTopLevelShutdownHandler();
 
-  // Apply config overrides from CLI args.
   const configOverrides: Partial<UserConfig> = {};
   if (args.agent) configOverrides.defaultAgent = args.agent;
   applyUserConfig({ ...userConfig, ...configOverrides }, undefined, { overwrite: true, clearMissing: true });
 
-  // Resolve initial channels.
   const effectiveConfig = () => ({ ...userConfig, ...configOverrides });
   let channels = resolveConfiguredChannels({ config: effectiveConfig(), tokenOverride: args.token });
   let channel: ChannelName = channels[0] || 'feishu';
   const tokenProvided = channels.length > 0 && hasConfiguredChannelToken(effectiveConfig(), channel, args.token);
 
-  // Doctor mode: check and exit.
   if (args.doctor) runDoctorCheck(channel, tokenProvided);
 
-  // Setup phase: dashboard, wizard, or guide.
   const useDashboard = !args.noDashboard && !args.setup;
   let dashboard: DashboardServer | null;
   ({ dashboard, userConfig, channels, channel } = await runSetupPhase(
     args, userConfig, configOverrides, channels, channel, tokenProvided,
   ));
 
-  // Validate the terminal is runnable after setup (channels may be empty when
-  // the dashboard is serving as the terminal).
   ({ channels, channel } = validatePostSetupChannels(configOverrides, userConfig, args, useDashboard));
 
-  // Apply runtime config, env overrides, and start config sync.
   applyRuntimeConfig(args, userConfig, configOverrides, channel);
 
-  // Launch bot channel(s).
   await launchChannels(channels, dashboard);
 }
 

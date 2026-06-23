@@ -1,19 +1,3 @@
-/**
- * tools/await-resume.ts — "waiting for background work" marker MCP tool.
- *
- *   await_background — Lets the model declare that this turn is ending while
- *                      detached/background work it launched keeps running, and
- *                      it intends to report back later. Purely a UI hint: it
- *                      changes nothing about execution, it only lets the
- *                      dashboard show a "waiting" state instead of "completed"
- *                      for the interval until the session next runs.
- *
- * State lives at <sessionRoot>/awaiting.json; this server resolves the session
- * root from MCP_WORKSPACE_PATH (which points to <sessionRoot>/workspace). The
- * parent reads & clears it (see agent/await-resume.ts) — clearing happens
- * automatically the next time the session runs.
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import type { McpToolModule, ToolContext, ToolResult } from './types.js';

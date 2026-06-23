@@ -1,7 +1,3 @@
-/**
- * Dashboard API routes: session CRUD, workspace, streaming state.
- */
-
 import { Hono } from 'hono';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -45,10 +41,6 @@ import { DASHBOARD_PAGINATION } from '../../core/constants.js';
 import { runtime } from '../runtime.js';
 import type { Bot } from '../../bot/bot.js';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 const DEFAULT_SESSION_PAGE_SIZE = DASHBOARD_PAGINATION.defaultPageSize;
 const MAX_SESSION_PAGE_SIZE = DASHBOARD_PAGINATION.maxPageSize;
 
@@ -85,9 +77,6 @@ function enrichWithRuntimeStatus(sessions: SessionInfo[], bot: Bot | null): Dash
   return sessions.map(session => {
     const status = bot ? getSessionStatusForBot(bot, session) : null;
     const isRunning = status ? status.isRunning : !!session.running;
-    // "Waiting on background work" only applies to a session that isn't
-    // currently running — surface the marker the agent parked (if any) so the
-    // dashboard can show a distinct "waiting" state instead of "completed".
     const awaiting = !isRunning && session.workdir && session.sessionId
       ? readAwaitResume(session.workdir, session.agent, session.sessionId)
       : null;
@@ -101,13 +90,6 @@ function enrichWithRuntimeStatus(sessions: SessionInfo[], bot: Bot | null): Dash
   });
 }
 
-// Session list cards render only the *head* of these text fields (previews via
-// firstMeaningfulLine / slice / sanitize) and use them for client-side substring
-// search. A session whose last turn dumped a huge tool output or long answer would
-// otherwise ship tens of KB per card that the list never displays — on a busy
-// workspace the swim-lane ballooned to ~600KB, dominated by these fields. Cap each
-// to a preview length: previews are unchanged and search still matches the head.
-// Full text remains available from the session-detail / messages endpoints.
 const LIST_PREVIEW_FIELD_CAP = 2048;
 
 function capPreviewField<T extends string | null | undefined>(value: T): T | string {
@@ -116,7 +98,6 @@ function capPreviewField<T extends string | null | undefined>(value: T): T | str
     : value;
 }
 
-/** Thin a session for list/swim-lane responses by capping its heavy preview text. */
 export function projectSessionForList(session: DashboardSessionInfo): DashboardSessionInfo {
   return {
     ...session,
@@ -238,17 +219,8 @@ async function parseSessionSendRequest(c: any): Promise<{
   };
 }
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
 const app = new Hono();
 
-// ==========================================================================
-// Legacy session routes (backward-compat for dashboard-ui)
-// ==========================================================================
-
-// Sessions per agent: GET /api/sessions/:agent
 app.get('/api/sessions/:agent', async (c) => {
   const agent = c.req.param('agent') as Agent;
   const config = loadUserConfig();
@@ -279,7 +251,6 @@ app.get('/api/sessions/:agent', async (c) => {
   });
 });
 
-// All sessions (swim lane): GET /api/sessions
 app.get('/api/sessions', async (c) => {
   const config = loadUserConfig();
   const workdir = runtime.getRequestWorkdir(config);
@@ -316,7 +287,6 @@ app.get('/api/sessions', async (c) => {
   return c.json(swimLane);
 });
 
-// Session detail (tail): GET /api/session-detail/:agent/:id
 app.get('/api/session-detail/:agent/:id', async (c) => {
   const agent = c.req.param('agent') as Agent;
   const sessionId = decodeURIComponent(c.req.param('id'));
@@ -339,13 +309,8 @@ app.get('/api/session-detail/:agent/:id', async (c) => {
   return c.json(tail);
 });
 
-// ==========================================================================
-// Workspace CRUD
-// ==========================================================================
-
 app.get('/api/workspaces', (c) => {
   const workspaces = loadWorkspaces();
-  // Always include the current runtimeWorkdir, deduplicating by path
   const config = loadUserConfig();
   const rwd = runtime.getRuntimeWorkdir(config);
   if (rwd && !workspaces.some(w => w.path === rwd)) {
@@ -395,10 +360,6 @@ app.patch('/api/workspaces', async (c) => {
   }
 });
 
-// ==========================================================================
-// Workspace overviews
-// ==========================================================================
-
 app.get('/api/workspace-overviews', async (c) => {
   try {
     const overviews = await getWorkspaceOverviews();
@@ -407,10 +368,6 @@ app.get('/api/workspace-overviews', async (c) => {
     return c.json({ ok: false, error: e.message }, 500);
   }
 });
-
-// ==========================================================================
-// Session hub operations
-// ==========================================================================
 
 app.post('/api/session-hub/sessions', async (c) => {
   try {
@@ -528,21 +485,11 @@ app.post('/api/session-hub/session/messages', async (c) => {
   }
 });
 
-// Prepare a session message read for the dashboard:
-//   1. Rewrite on-disk image/file blocks into compact attachment HTTP URLs so a
-//      remote browser can fetch the bytes (inline data: images pass through).
-//   2. Append the session's delivered artifacts (files the agent handed the
-//      user via `im_send_file`) as a trailing assistant message, so they render
-//      and stay retrievable after a reload regardless of which terminal
-//      delivered them. Only added when this window includes the conversation
-//      tail (`!hasNewer`) to avoid duplicating across paginated reads.
 function prepareSessionMessagesForDashboard(
   result: SessionMessagesResult,
   agent: Agent,
   sessionId: string,
 ): SessionMessagesResult {
-  // Only operate in rich mode — a `rich:false` read returns plain text and must
-  // not gain a synthetic richMessages array.
   if (result.richMessages === undefined) return result;
 
   const richMessages: RichMessage[] = result.richMessages.map(message => ({
@@ -566,7 +513,6 @@ function prepareSessionMessagesForDashboard(
   return { ...result, richMessages };
 }
 
-/** Plain-text fallback for the delivered-artifacts message (IM tail / exports). */
 function deliveredSummaryText(blocks: MessageBlock[]): string {
   const names = blocks
     .map(b => b.fileName || (b.type === 'image' ? 'image' : 'file'))
@@ -575,12 +521,6 @@ function deliveredSummaryText(blocks: MessageBlock[]): string {
   return names.length === 1 ? `Delivered: ${names[0]}` : `Delivered ${names.length} files: ${names.join(', ')}`;
 }
 
-// Attachment endpoint — serves on-disk images AND delivered files referenced by
-// RichMessage image/file blocks via opaque base64url path tokens. The allowlist
-// (see images.ts) confines reads to a known set of agent-managed dirs + the
-// session's workdir + the per-session delivered-artifacts dir. Streams the
-// bytes (no full-buffer) and supports Range so large artifacts (video,
-// archives) download/seek without pinning memory.
 app.get('/api/sessions/:agent/:id/attachment', async (c) => {
   const agent = c.req.param('agent') as Agent;
   const sessionId = decodeURIComponent(c.req.param('id'));
@@ -595,16 +535,6 @@ app.get('/api/sessions/:agent/:id/attachment', async (c) => {
     return c.json({ ok: false, error: 'invalid path' }, 400);
   }
 
-  // Widen the allowlist with the session's recorded workdir when known —
-  // images generated under the project tree resolve cleanly. Session indexes
-  // are per-workdir and this URL carries no workdir, so a lookup against the
-  // runtime workdir alone misses sessions living in any OTHER registered
-  // workspace (the Session Hub renders all of them through this endpoint) —
-  // their user-attached images 403'd as "broken image" in the dashboard.
-  // Registered workspace roots come from server-side config, never request
-  // input, so widening to all of them keeps the same trust boundary and also
-  // covers the pending→native id promotion window where no index has the
-  // session yet.
   const config = loadUserConfig();
   const fallbackWorkdir = runtime.getRequestWorkdir(config);
   const managed = findPikiloomSession(fallbackWorkdir, agent, sessionId);
@@ -625,15 +555,10 @@ app.get('/api/sessions/:agent/:id/attachment', async (c) => {
 
   const mime = mimeForArtifact(resolved);
   const downloadName = sanitizeDownloadName(c.req.query('n'), resolved);
-  // Inline images so <img> renders them; everything else downloads with its
-  // pristine name. RFC 5987 filename* carries non-ASCII names safely.
   const disposition = mime.startsWith('image/') ? 'inline' : 'attachment';
   const asciiName = downloadName.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, "'");
   const contentDisposition = `${disposition}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`;
 
-  // The path is stamp-unique for delivered artifacts and hash-immutable for
-  // agent-managed dirs (`ig_<sha>.png`, …); the session lifecycle keeps the
-  // file stable — long cache is safe.
   const baseHeaders: Record<string, string> = {
     'Content-Type': mime,
     'Content-Disposition': contentDisposition,
@@ -642,7 +567,6 @@ app.get('/api/sessions/:agent/:id/attachment', async (c) => {
     'Accept-Ranges': 'bytes',
   };
 
-  // Honor a single byte-range request (e.g. video seek / resumable download).
   const range = parseByteRange(c.req.header('range'), stat.size);
   if (range) {
     const nodeStream = fs.createReadStream(resolved, { start: range.start, end: range.end });
@@ -660,17 +584,12 @@ app.get('/api/sessions/:agent/:id/attachment', async (c) => {
   });
 });
 
-/** Sanitize the optional `&n=` download-name hint; fall back to the basename. */
 function sanitizeDownloadName(raw: string | undefined, resolved: string): string {
   const candidate = (raw || '').trim();
   const name = candidate || path.basename(resolved);
-  // Strip path separators / control chars; the on-disk path is already
-  // validated — `n` only affects the Content-Disposition filename.
   return name.replace(/[/\\\0\r\n]+/g, '_').replace(/^\.+/, '').slice(0, 200) || 'download';
 }
 
-/** Parse a single `bytes=start-end` range header against `size`; null if absent
- *  or unsatisfiable (caller then serves the full body). */
 function parseByteRange(header: string | undefined, size: number): { start: number; end: number } | null {
   if (!header || size <= 0) return null;
   const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
@@ -683,7 +602,6 @@ function parseByteRange(header: string | undefined, size: number): { start: numb
     start = parseInt(m[1], 10);
     end = hasEnd ? parseInt(m[2], 10) : size - 1;
   } else if (hasEnd) {
-    // Suffix range: last N bytes.
     const suffix = parseInt(m[2], 10);
     if (suffix <= 0) return null;
     start = Math.max(0, size - suffix);
@@ -750,10 +668,6 @@ app.post('/api/session-hub/import', async (c) => {
   }
 });
 
-// ==========================================================================
-// Skills
-// ==========================================================================
-
 app.get('/api/session-hub/skills', (c) => {
   const workdir = c.req.query('workdir') || '';
   if (!workdir) return c.json({ ok: false, error: 'workdir query param required' }, 400);
@@ -764,10 +678,6 @@ app.get('/api/session-hub/skills', (c) => {
     return c.json({ ok: false, skills: [], error: e.message }, 500);
   }
 });
-
-// ==========================================================================
-// Session interaction (send / recall / steer / stream)
-// ==========================================================================
 
 app.post('/api/session-hub/session/send', async (c) => {
   try {
@@ -799,7 +709,6 @@ app.post('/api/session-hub/session/send', async (c) => {
   }
 });
 
-// Polling endpoint: GET /api/session-hub/session/stream-state?agent=X&sessionId=Y
 app.get('/api/session-hub/session/stream-state', (c) => {
   const agent = c.req.query('agent') || '';
   const sessionId = c.req.query('sessionId') || '';
@@ -809,9 +718,6 @@ app.get('/api/session-hub/session/stream-state', (c) => {
   return c.json(getSessionStreamState(agent, sessionId));
 });
 
-// Fork: branch off a parent session at `atTurn`, queue the new prompt against
-// the freshly forked child. Returns the queued task + the pending child session
-// key so the dashboard can navigate the user into the child immediately.
 app.post('/api/session-hub/session/fork', async (c) => {
   try {
     const body = await c.req.json();
@@ -856,10 +762,6 @@ app.post('/api/session-hub/session/recall', async (c) => {
   }
 });
 
-// Stop only the currently running stream for a session — queued follow-ups
-// are kept so they run next. Takes (agent, sessionId) rather than taskId so it
-// works during the moment after a fresh send where the client hasn't yet
-// learned the streamTaskId.
 app.post('/api/session-hub/session/stop', async (c) => {
   try {
     const body = await c.req.json();
@@ -887,10 +789,6 @@ app.post('/api/session-hub/session/steer', async (c) => {
     return c.json({ ok: false, error: e.message }, 500);
   }
 });
-
-// ==========================================================================
-// Persistent thread goal (analogous to Codex CLI's `/goal`).
-// ==========================================================================
 
 app.get('/api/session-hub/session/goal', async (c) => {
   const workdir = c.req.query('workdir') || '';
@@ -981,18 +879,12 @@ app.post('/api/session-hub/session/goal/clear', async (c) => {
   }
 });
 
-// ==========================================================================
-// Interaction prompts (human-in-the-loop)
-// ==========================================================================
-
-/** GET /api/interaction/:promptId — Get interaction prompt state. */
 app.get('/api/interaction/:promptId', (c) => {
   const { promptId } = c.req.param();
   const result = getInteractionPrompt(promptId);
   return c.json(result, result.ok ? 200 : 503);
 });
 
-/** POST /api/interaction/:promptId/select — Select an option. */
 app.post('/api/interaction/:promptId/select', async (c) => {
   try {
     const { promptId } = c.req.param();
@@ -1008,7 +900,6 @@ app.post('/api/interaction/:promptId/select', async (c) => {
   }
 });
 
-/** POST /api/interaction/:promptId/text — Submit freeform text. */
 app.post('/api/interaction/:promptId/text', async (c) => {
   try {
     const { promptId } = c.req.param();
@@ -1024,7 +915,6 @@ app.post('/api/interaction/:promptId/text', async (c) => {
   }
 });
 
-/** POST /api/interaction/:promptId/skip — Skip current question. */
 app.post('/api/interaction/:promptId/skip', async (c) => {
   try {
     const { promptId } = c.req.param();
@@ -1035,7 +925,6 @@ app.post('/api/interaction/:promptId/skip', async (c) => {
   }
 });
 
-/** POST /api/interaction/:promptId/cancel — Cancel interaction prompt. */
 app.post('/api/interaction/:promptId/cancel', async (c) => {
   try {
     const { promptId } = c.req.param();

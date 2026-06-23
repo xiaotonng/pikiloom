@@ -25,13 +25,8 @@ describe('sendWillQueue', () => {
     expect(sendWillQueue({ ...base, pendingQueuedCount: 1 })).toBe(true);
   });
 
-  // The regression guard: a stopped/steered turn leaves a frozen phase:'done'
-  // preview on screen. It must NOT be treated as active, or the next send is
-  // misrouted into the queue and renders nowhere until the server catches up —
-  // the "插队→撤回→输入被吞" swallow.
   it('starts a fresh turn when only a FROZEN done preview lingers', () => {
     expect(sendWillQueue({ ...base, liveStreamPhase: 'done' })).toBe(false);
-    // even with a done snapshot phase, nothing is actually running or queued
     expect(sendWillQueue({ ...base, liveStreamPhase: 'done', streamPhase: 'done' })).toBe(false);
   });
 

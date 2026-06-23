@@ -1,7 +1,3 @@
-/**
- * Channel credential validation for Telegram, Feishu, and WeChat.
- */
-
 import * as lark from '@larksuiteoapi/node-sdk';
 import { validateTelegramToken, type TelegramBotIdentity } from '../../cli/setup-wizard.js';
 import type { ChannelSetupState } from '../../cli/onboarding.js';
@@ -323,7 +319,6 @@ export async function validateFeishuConfig(
       };
     }
 
-    // Try to fetch bot display name using the tenant access token
     let botDisplayName: string | null = null;
     try {
       const botResp: any = await withTimeout(
@@ -338,7 +333,6 @@ export async function validateFeishuConfig(
         botDisplayName = botResp.bot.app_name;
       }
     } catch {
-      // Non-critical — proceed without bot name
     }
 
     const app = { appId: trimmedAppId, displayName: botDisplayName };
@@ -639,10 +633,6 @@ export async function validateWecomConfig(
     };
   }
 
-  // The Smart Bot WS endpoint cannot be probed via a simple HTTP request;
-  // we accept the configured credentials and let the websocket subscribe ack
-  // surface real auth errors at runtime. A non-empty pair already covers the
-  // most common configuration mistake.
   return {
     state: readyChannelState('wecom', `WeChat Work bot ${trimmedId} configured.`),
     bot: { botId: trimmedId },

@@ -1,7 +1,3 @@
-/**
- * Unit tests for FeishuChannel — verifying the editCard / send-fresh fallback
- * behaviour that fixes silent-failure of stream / final-reply edits.
- */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FeishuChannel } from '../src/channels/feishu/channel.ts';
 
@@ -30,7 +26,6 @@ describe('FeishuChannel.editCard', () => {
   });
 
   it('succeeds silently, swallows not-modified responses, and no-ops on empty markdown', async () => {
-    // returns silently when patch succeeds (code === 0)
     {
       const { ch, patchMock } = createTestChannel();
       patchMock.mockResolvedValue({ code: 0, msg: 'success', data: {} });
@@ -40,7 +35,6 @@ describe('FeishuChannel.editCard', () => {
       expect(patchMock).toHaveBeenCalledTimes(1);
     }
 
-    // swallows "not modified" response (content unchanged is a no-op)
     {
       const { ch, patchMock } = createTestChannel();
       patchMock.mockResolvedValue({ code: 99991401, msg: 'content not modified' });
@@ -49,7 +43,6 @@ describe('FeishuChannel.editCard', () => {
       ).resolves.toBeUndefined();
     }
 
-    // swallows thrown "not modified" errors from older SDK paths
     {
       const { ch, patchMock } = createTestChannel();
       patchMock.mockRejectedValue(new Error('content not modified'));
@@ -58,7 +51,6 @@ describe('FeishuChannel.editCard', () => {
       ).resolves.toBeUndefined();
     }
 
-    // no-ops when markdown is empty
     {
       const { ch, patchMock } = createTestChannel();
       await expect(
@@ -69,10 +61,6 @@ describe('FeishuChannel.editCard', () => {
   });
 
   it('throws feishuEditFailed for non-zero application errors and real network errors', async () => {
-    // throws a feishuEditFailed error when Feishu returns code !== 0 with HTTP 200
-    // This is the silent-failure path before the fix: SDK does not throw on
-    // application errors, it just returns the body. editCard must detect
-    // the non-zero code and throw so callers can fall back to a fresh send.
     {
       const { ch, patchMock } = createTestChannel();
       patchMock.mockResolvedValue({ code: 230020, msg: 'edit is not allowed for this message' });
@@ -85,7 +73,6 @@ describe('FeishuChannel.editCard', () => {
       });
     }
 
-    // re-throws real network errors with feishuEditFailed tag
     {
       const { ch, patchMock } = createTestChannel();
       patchMock.mockRejectedValue(new Error('socket hang up'));

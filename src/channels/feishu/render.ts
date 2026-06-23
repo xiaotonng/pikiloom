@@ -1,10 +1,3 @@
-/**
- * Feishu-specific message card rendering.
- *
- * Converts structured data from bot/commands.ts into Feishu Markdown (for interactive cards).
- * Also provides a LivePreviewRenderer for streaming output.
- */
-
 import type { Agent, StreamResult } from '../../bot/bot.js';
 import type { HumanLoopPromptState, ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
 import type {
@@ -39,10 +32,6 @@ import {
 import type { FeishuCardActionItem, FeishuCardActionRow, FeishuCardView } from './channel.js';
 import path from 'node:path';
 import { listSubdirs } from '../../bot/bot.js';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function formatPreviewFooter(
   agent: Agent,
@@ -150,20 +139,10 @@ export function renderCommandSelectionCard(view: CommandSelectionView): FeishuCa
   };
 }
 
-/**
- * Strip code-fence markers (``` / ~~~) from text that is not meant to be
- * rendered as full markdown (thinking, activity).  Truncation by
- * extractThinkingTail can leave stray fences that open unwanted code blocks.
- */
 function stripCodeFences(text: string): string {
   return text.replace(/^(`{3,}|~{3,}).*$/gm, '');
 }
 
-/**
- * Ensure code fences in markdown text are balanced.  If an odd number of
- * fence markers is detected, append a closing fence so partial code blocks
- * do not swallow the rest of the card.
- */
 function ensureBalancedCodeFences(text: string): string {
   let inCode = false;
   for (const line of text.split('\n')) {
@@ -231,11 +210,6 @@ export function buildHumanLoopPromptMarkdown(prompt: HumanLoopPromptState): stri
   return lines.join('\n\n');
 }
 
-/**
- * Closed-state rendering for a resolved human-loop card. Collapsed to the
- * title + one row per question showing the chosen answer. No buttons, no
- * pending-state copy.
- */
 export function buildAnsweredHumanLoopPromptMarkdown(prompt: HumanLoopPromptState, summary: ResolvedHumanLoopAnswers): string {
   const symbol = summary.status === 'cancelled' ? '⊘' : '✓';
   const lines = [`**${symbol} ${prompt.title}**`];
@@ -245,10 +219,6 @@ export function buildAnsweredHumanLoopPromptMarkdown(prompt: HumanLoopPromptStat
   }
   return lines.join('\n');
 }
-
-// ---------------------------------------------------------------------------
-// LivePreview renderer — produces Markdown for Feishu card elements
-// ---------------------------------------------------------------------------
 
 export function buildInitialPreviewMarkdown(agent: Agent, model?: string | null, effort?: string | null, waiting = false, queuePosition = 0): string {
   const parts: string[] = [];
@@ -269,8 +239,6 @@ function buildPreviewMarkdown(input: StreamPreviewRenderInput, options?: { inclu
   const parts: string[] = [];
 
   if (data.planDisplay) {
-    // First line of planDisplay is already "Plan N/M" — promote it to the
-    // bold header instead of stacking a second "**Plan**" line above it.
     const text = stripCodeFences(data.planDisplay);
     const nl = text.indexOf('\n');
     parts.push(nl >= 0 ? `**${text.slice(0, nl)}**${text.slice(nl)}` : `**${text}**`);
@@ -284,7 +252,6 @@ function buildPreviewMarkdown(input: StreamPreviewRenderInput, options?: { inclu
   }
 
   if (data.thinkDisplay && !data.display) {
-    // Elapsed lives in the footer only (single timer). Header is the bare label.
     parts.push(`**${data.label}**\n${stripCodeFences(data.thinkDisplay)}`);
   } else if (data.display) {
     if (data.rawThinking) {
@@ -292,10 +259,6 @@ function buildPreviewMarkdown(input: StreamPreviewRenderInput, options?: { inclu
     }
     parts.push(ensureBalancedCodeFences(data.preview));
   } else if (data.thinkingProgressText) {
-    // Thinking phase with no streamed thinking/body text yet — show the bare
-    // "{thinkLabel}" so the card isn't blank. The elapsed tick lives in the
-    // footer only (one timer, not two); the footer re-renders on the channel
-    // heartbeat, so the card still visibly advances.
     parts.push(`**${data.label}**`);
   }
 
@@ -316,10 +279,6 @@ export const feishuPreviewRenderer: LivePreviewRenderer = {
   renderInitial: buildInitialPreviewMarkdown,
   renderStream: buildStreamPreviewMarkdown,
 };
-
-// ---------------------------------------------------------------------------
-// Final reply render
-// ---------------------------------------------------------------------------
 
 export interface FeishuFinalReplyRender {
   fullText: string;
@@ -363,10 +322,6 @@ export function buildFinalReplyRender(agent: Agent, result: StreamResult): Feish
     footerText,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Command renderers — produce Markdown for Feishu cards
-// ---------------------------------------------------------------------------
 
 export function renderStart(d: StartData): string {
   const lines = [
@@ -547,7 +502,6 @@ export function renderStatus(d: StatusData): string {
   if (d.running) {
     lines.push(`**Running:** ${fmtUptime(Date.now() - d.running.startedAt)} - ${summarizePromptForStatus(d.running.prompt)}`);
   }
-  // Provider usage
   const usageLines = buildProviderUsageLines(d.usage);
   if (usageLines.length > 1) {
     lines.push('');
@@ -562,10 +516,6 @@ export function renderStatus(d: StatusData): string {
   }
   return lines.join('\n');
 }
-
-// ---------------------------------------------------------------------------
-// Directory browser (interactive workdir switcher)
-// ---------------------------------------------------------------------------
 
 class PathRegistry {
   private pathToId = new Map<string, number>();
@@ -611,7 +561,6 @@ export function buildSwitchWorkdirCard(
   const currentPage = Math.min(Math.max(0, page), totalPages - 1);
   const slice = dirs.slice(currentPage * DIR_PAGE_SIZE, (currentPage + 1) * DIR_PAGE_SIZE);
 
-  // Text
   const lines = ['**Workdir**'];
   lines.push(`● \`${currentWorkdir}\``);
   if (browsePath !== currentWorkdir) lines.push(`○ \`${browsePath}\``);
@@ -619,7 +568,6 @@ export function buildSwitchWorkdirCard(
     lines.push('', `_Tip: ${opts.savedWorkspaceCount} saved workspace${opts.savedWorkspaceCount === 1 ? '' : 's'} — use /workspaces for one-tap switching._`);
   }
 
-  // Directory buttons (2 per row)
   const dirRows: FeishuCardActionRow[] = [];
   for (let i = 0; i < slice.length; i += 2) {
     const rowActions: FeishuCardActionItem[] = [];
@@ -631,7 +579,6 @@ export function buildSwitchWorkdirCard(
     dirRows.push({ actions: rowActions });
   }
 
-  // Nav row: parent + pagination
   const navActions: FeishuCardActionItem[] = [];
   const parent = path.dirname(browsePath);
   if (parent !== browsePath) {
@@ -643,7 +590,6 @@ export function buildSwitchWorkdirCard(
     if (currentPage < totalPages - 1) navActions.push(cardButton(`${currentPage + 2}/${totalPages} ▶`, `sw:n:${browseId}:${currentPage + 1}`));
   }
 
-  // Select button
   const selectActions: FeishuCardActionItem[] = [
     cardButton('✓ Use This', `sw:s:${feishuPathRegistry.register(browsePath)}`, true),
   ];

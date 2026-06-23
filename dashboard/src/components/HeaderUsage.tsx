@@ -6,17 +6,6 @@ import { BrandIcon } from './BrandIcon';
 import { UsageRing } from './UsageRing';
 import { UsageTooltipContent } from './UsageTooltip';
 
-/**
- * HeaderUsage — account-level quota gauges in the global header: one
- * [brand icon + ring] pair per agent whose driver reports rate-limit
- * windows.
- *
- * Deliberately NOT placed in the composer: a gauge next to the session
- * input reads as "this session's consumption", while the data is the
- * account-wide 5h/7d quota. The header is global chrome, and the brand
- * icon pins the number to the account it belongs to. Hovering opens the
- * per-window breakdown and refreshes it on the spot.
- */
 export function HeaderUsage({ t }: { t: (key: string) => string }) {
   const agentStatus = useStore(s => s.agentStatus);
   const refreshAgentStatus = useStore(s => s.refreshAgentStatus);

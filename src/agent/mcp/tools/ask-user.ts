@@ -1,9 +1,3 @@
-/**
- * tools/ask-user.ts — im_ask_user: block the current turn and route a question
- * to the user via IM or dashboard. Used in place of Claude's native
- * `AskUserQuestion`, which is unusable in `-p` mode.
- */
-
 import http from 'node:http';
 import type { McpToolModule, ToolContext, ToolResult } from './types.js';
 import { toolResult, toolLog } from './types.js';
@@ -107,7 +101,6 @@ function callbackAskUser(
       });
     });
     req.on('error', e => reject(e));
-    // User reply has no upper bound — never time out the socket.
     req.setTimeout(0);
     req.write(payload);
     req.end();

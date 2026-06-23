@@ -1,7 +1,3 @@
-/**
- * Background agent CLI version checking and update prompts.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,17 +15,11 @@ type AgentUpdateStrategy =
   | { kind: 'brew'; cask: string }
   | { kind: 'skip'; reason: string };
 
-// ---------------------------------------------------------------------------
-// Shared update state — queryable by the dashboard
-// ---------------------------------------------------------------------------
-
 export interface AgentUpdateState {
   latestVersion: string | null;
   currentVersion: string | null;
   updateAvailable: boolean;
-  /** 'idle' | 'checking' | 'updating' | 'up-to-date' | 'updated' | 'skipped' | 'failed' */
   status: string;
-  /** Human-readable detail for skip/failure reasons. */
   detail: string | null;
   checkedAt: number | null;
 }
@@ -45,61 +35,38 @@ function setUpdateState(agent: string, patch: Partial<AgentUpdateState>) {
   updateStates.set(agent, { ...current, ...patch });
 }
 
-/** Returns the cached update state for a specific agent (or null). */
 export function getAgentUpdateState(agent: string): AgentUpdateState | null {
   return updateStates.get(agent) || null;
 }
 
-/** Returns all cached update states. */
 export function getAllAgentUpdateStates(): Record<string, AgentUpdateState> {
   const result: Record<string, AgentUpdateState> = {};
   for (const [key, value] of updateStates) result[key] = value;
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Spawn coordination
-//
-// A CLI reinstall (`npm install -g` / `brew upgrade`) briefly tears down and
-// rewrites the bin symlink, so an agent spawn that races it execs into
-// "/bin/sh: <cli>: command not found" (exit 127). The updating process drops a
-// per-agent marker file for the duration of the destructive step; the spawn
-// path waits while it's held. The marker is cross-process (this worker AND the
-// `npx pikiloom@latest` self-bootstrap both update + spawn), and carries the
-// updater's pid so a marker orphaned by a crashed updater is detected via
-// liveness and cleaned up — a spawn never hangs on a stale marker, and a
-// genuinely-missing CLI (no marker) fails fast instead of waiting.
-// ---------------------------------------------------------------------------
-
-/** Path of the in-flight-reinstall marker for `agent` (one file per agent). */
 export function agentUpdateMarkerPath(agent: string): string {
   return path.join(os.homedir(), STATE_DIR_NAME, `agent-update-${agent}.installing`);
 }
 
-/**
- * True when a live updater is mid-reinstall of `agent`. Reads the marker's pid
- * and probes liveness with `kill(pid, 0)`; an orphaned marker (writer gone) is
- * removed and reported idle so spawns don't hang on a crashed updater.
- */
 function agentReinstallInFlight(agent: string): boolean {
   const marker = agentUpdateMarkerPath(agent);
   let raw: string;
   try {
     raw = fs.readFileSync(marker, 'utf8');
   } catch {
-    return false; // no marker — nothing updating
+    return false;
   }
   const pid = Number.parseInt(raw.trim(), 10);
   if (Number.isInteger(pid) && pid > 0) {
     try {
-      process.kill(pid, 0); // throws ESRCH if the updater is gone
+      process.kill(pid, 0);
       return true;
     } catch {
       try { fs.rmSync(marker, { force: true }); } catch {}
       return false;
     }
   }
-  // Unreadable pid — fall back to mtime so a corrupt marker still ages out.
   try {
     return Date.now() - fs.statSync(marker).mtimeMs <= AGENT_UPDATE_COMMAND_TIMEOUT_MS;
   } catch {
@@ -107,11 +74,6 @@ function agentReinstallInFlight(agent: string): boolean {
   }
 }
 
-/**
- * Marks `agent` as mid-reinstall (cross-process) for the duration of
- * `install()` so concurrent spawns can wait it out. Always clears the marker,
- * even when the install throws.
- */
 export async function withAgentUpdateGate<T>(agent: string, install: () => Promise<T>): Promise<T> {
   const id = String(agent || '').trim();
   if (!id) return install();
@@ -127,11 +89,6 @@ export async function withAgentUpdateGate<T>(agent: string, install: () => Promi
   }
 }
 
-/**
- * Resolves once no live reinstall of `agent` is in flight, or after
- * `timeoutMs`. No-op (returns immediately) when nothing is updating. Called
- * from the spawn path so we never exec a half-swapped CLI binary.
- */
 export async function awaitAgentUpdateIdle(agent: string, timeoutMs: number): Promise<void> {
   const id = String(agent || '').trim();
   if (!id) return;
@@ -198,10 +155,6 @@ function isNpmPackageOwnedBinary(binPath: string, pkg: string, npmRoot: string |
   return isPathInside(realPackageDir, binPath);
 }
 
-/**
- * Check if a binary was installed via Homebrew by resolving its real path.
- * Homebrew cask binaries typically symlink through Caskroom or Cellar.
- */
 function isBrewInstalledBinary(binPath: string): boolean {
   const realPath = realPathOrNull(binPath);
   const target = realPath || binPath;
@@ -220,14 +173,12 @@ export function resolveAgentUpdateStrategy(
   const binPath = String(agent.path || '').trim();
   if (!binPath) return { kind: 'skip', reason: 'no binary path' };
 
-  // Check for Homebrew install first (binary resolves to Caskroom/Cellar).
   if (isBrewInstalledBinary(binPath)) {
     const cask = getAgentBrewCask(id);
     if (cask) return { kind: 'brew', cask };
     return { kind: 'skip', reason: 'brew-installed but no known cask' };
   }
 
-  // Check for npm global install.
   const npmBinDir = npmPrefix ? path.join(path.resolve(npmPrefix), 'bin') : null;
   const npmManaged = !!(npmBinDir && isPathInside(npmBinDir, binPath));
   if (!npmManaged) return { kind: 'skip', reason: 'non-npm install path' };
@@ -252,14 +203,6 @@ async function runCommand(
     let finished = false;
     const child = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      // HOMEBREW_NO_AUTO_UPDATE=1 skips brew's implicit `brew update` before
-      // each command — we already resolve the latest version via the
-      // formulae.brew.sh API, so the refresh is redundant. NOTE: this does NOT
-      // prevent brew's vendor-install-ruby step, which contends with concurrent
-      // brew processes (Homebrew's launchd autoupdate, a manual brew run, etc.)
-      // on the `vendor-install-ruby` lockf and surfaces as "Failed to upgrade
-      // Homebrew Portable Ruby". Those transient collisions are handled by
-      // `isBrewBusyError` below, which downgrades the failure to a soft skip.
       env: { ...process.env, npm_config_yes: 'true', HOMEBREW_NO_AUTO_UPDATE: '1' },
     });
     const timeoutMs = Math.max(500, opts.timeoutMs ?? AGENT_UPDATE_COMMAND_TIMEOUT_MS);
@@ -304,9 +247,6 @@ async function getNpmGlobalRoot(): Promise<string | null> {
 }
 
 async function getLatestPackageVersion(pkg: string): Promise<string | null> {
-  // `--prefer-online` bypasses the local npm metadata cache so we always see
-  // the registry's current `latest` tag. Without it, `npm view` can serve a
-  // stale version for several minutes after a release.
   const result = await runCommand(
     'npm',
     ['view', pkg, 'version', '--json', '--prefer-online'],
@@ -352,29 +292,11 @@ async function updateViaNpm(pkg: string): Promise<UpdateResult> {
   return { ok: result.ok, detail: result.ok ? result.stdout.trim() || null : result.error };
 }
 
-/**
- * Detects the transient brew contention surfaced when another brew process is
- * already running its `vendor-install ruby` step (Homebrew's launchd
- * autoupdate, a manual `brew upgrade`, etc.). We treat these as soft skips
- * rather than failures so the dashboard doesn't shout an error at the user for
- * what is really "try again in a minute".
- */
 function isBrewBusyError(text: string | null | undefined): boolean {
   if (!text) return false;
   return /vendor-install ruby|already locked|Failed to upgrade Homebrew Portable Ruby|is already running/i.test(text);
 }
 
-// ---------------------------------------------------------------------------
-// Homebrew helpers
-// ---------------------------------------------------------------------------
-
-/** Get latest available version for a Homebrew cask.
- *
- * Queries Homebrew's public formulae API rather than `brew info`, because the
- * local cask metadata is only refreshed by `brew update` — without it, a
- * just-published cask version can stay invisible for hours/days. The HTTPS API
- * always returns the current cask manifest. Falls back to local `brew info`
- * if the network call fails. */
 async function getLatestBrewCaskVersion(cask: string): Promise<string | null> {
   const apiVersion = await fetchBrewCaskVersionFromApi(cask);
   if (apiVersion) return apiVersion;
@@ -447,7 +369,6 @@ export function startAgentAutoUpdate(opts: {
           continue;
         }
 
-        // Use brew version check for brew installs, npm for npm installs.
         const latestVersion = strategy.kind === 'brew'
           ? await getLatestBrewCaskVersion(strategy.cask)
           : await getLatestPackageVersion(pkg);
@@ -491,11 +412,6 @@ export function startAgentAutoUpdate(opts: {
   })();
 }
 
-// ---------------------------------------------------------------------------
-// On-demand version check (called from dashboard)
-// ---------------------------------------------------------------------------
-
-/** Check latest version for a single agent. Uses brew or npm depending on install method. */
 export async function checkAgentLatestVersion(
   agent: Pick<AgentInfo, 'agent' | 'path' | 'version'>,
 ): Promise<AgentUpdateState> {
@@ -506,7 +422,6 @@ export async function checkAgentLatestVersion(
   const currentVersion = extractAgentSemver(agent.version);
   setUpdateState(id, { currentVersion, status: 'checking' });
 
-  // Detect brew install and use brew version check.
   const binPath = String(agent.path || '').trim();
   const brewCask = binPath && isBrewInstalledBinary(binPath) ? getAgentBrewCask(id) : null;
   const latestVersion = brewCask
@@ -532,7 +447,6 @@ export async function checkAgentLatestVersion(
   return state;
 }
 
-/** Manually trigger an update for a specific agent (auto-detects brew vs npm). */
 export async function manualAgentUpdate(
   agent: Pick<AgentInfo, 'agent' | 'path' | 'version'>,
   log: (message: string) => void,

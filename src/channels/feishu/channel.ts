@@ -1,14 +1,3 @@
-/**
- * Feishu channel — Feishu/Lark Open Platform transport using official SDK.
- *
- * Uses @larksuiteoapi/node-sdk for:
- *   - WSClient + EventDispatcher: WebSocket event receiving with auto-reconnect
- *   - Client.im: message send/edit/delete, image/file upload, resource download
- *   - Automatic tenant_access_token management
- *
- * All messages are sent as regular interactive cards (no CardKit streaming).
- */
-
 import * as lark from '@larksuiteoapi/node-sdk';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -52,10 +41,6 @@ export interface FeishuCardView {
   rows?: FeishuCardActionRow[];
 }
 
-// ---------------------------------------------------------------------------
-// Feishu-specific types
-// ---------------------------------------------------------------------------
-
 export interface FeishuMessage {
   text: string;
   files: string[];
@@ -72,7 +57,6 @@ export interface FeishuContext {
   messageId: string;
   from: FeishuFrom;
   chatType: 'p2p' | 'group';
-  /** The parent message ID when this message is a reply, or null. */
   replyToMessageId: string | null;
   reply: (text: string, opts?: SendOpts) => Promise<string | null>;
   editReply: (msgId: string, text: string, opts?: SendOpts) => Promise<void>;
@@ -96,19 +80,12 @@ export interface FeishuCallbackContext {
 export type FeishuCallbackHandler = (data: string, ctx: FeishuCallbackContext) => Promise<any> | any;
 export type FeishuRecallHandler = (messageId: string, chatId: string, raw: any) => Promise<any> | any;
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
 export interface FeishuOpts {
   appId: string;
   appSecret: string;
-  /** API base domain. Default: https://open.feishu.cn (Lark: https://open.larksuite.com) */
   domain?: string;
-  /** Working directory for temp file downloads. */
   workdir?: string;
   allowedChatIds?: Set<string>;
-  /** API request timeout in seconds. */
   apiTimeout?: number;
 }
 
@@ -171,7 +148,6 @@ function requireMessageId(resp: any, action: string): string {
   throw new Error(`${action} failed: code=${code ?? '?'} msg=${msg}`);
 }
 
-/** Treat "card content didn't change" responses as a successful no-op edit. */
 function isFeishuNotModifiedMessage(msg: string): boolean {
   if (!msg) return false;
   const lower = msg.toLowerCase();
@@ -191,10 +167,6 @@ function buildPostContent(paragraphs: Array<Array<Record<string, unknown>>>, tit
     },
   });
 }
-
-// ---------------------------------------------------------------------------
-// Card builder helper
-// ---------------------------------------------------------------------------
 
 function inferActionLayout(actions: FeishuCardActionItem[]): FeishuCardActionRow['layout'] | undefined {
   if (actions.length >= 3) return 'trisection';
@@ -245,8 +217,6 @@ function buildCardFromView(view: FeishuCardView): Record<string, unknown> {
     actionElements.push(element);
   }
 
-  // Card JSON 2.0 supports tables in markdown but dropped `tag: action`.
-  // Use v2 for content-only cards; fall back to v1 when buttons are needed.
   if (actionElements.length) {
     const card: Record<string, unknown> = {
       config: { wide_screen_mode: true, update_multi: true },
@@ -275,10 +245,6 @@ function buildCardFromView(view: FeishuCardView): Record<string, unknown> {
   return card;
 }
 
-// ---------------------------------------------------------------------------
-// FeishuChannel
-// ---------------------------------------------------------------------------
-
 class FeishuChannel extends Channel {
   override readonly capabilities = {
     ...DEFAULT_CHANNEL_CAPABILITIES,
@@ -288,10 +254,6 @@ class FeishuChannel extends Channel {
     sendImage: true,
   };
 
-  /** Implementation of Channel.sendImage — uploads the buffer as an image
-   *  message. When a caption is supplied, falls back to a post with both an
-   *  img tag and a text line (Feishu's `msg_type:'image'` doesn't have a
-   *  native caption field). */
   override async sendImage(
     chatId: number | string,
     bytes: Buffer,
@@ -327,12 +289,10 @@ class FeishuChannel extends Channel {
   private running = false;
   private messageChains = new Map<string, Promise<void>>();
 
-  /** Recently processed message IDs — guards against Feishu server retries. */
   private _seenMessageIds = new Set<string>();
   private _seenMessageIdQueue: string[] = [];
   private static readonly SEEN_MESSAGE_CAP = 256;
 
-  /** Maps open_id → chat_id for resolving menu event context. */
   private _openIdToChat = new Map<string, string>();
 
   private _hCommand: FeishuCommandHandler | null = null;
@@ -343,7 +303,6 @@ class FeishuChannel extends Channel {
 
   readonly knownChats = new Set<string>();
 
-  /** Resolves when wsClient.start() settles (used by listen() to block). */
   private _listenResolve: (() => void) | null = null;
 
   constructor(opts: FeishuOpts) {
@@ -354,7 +313,6 @@ class FeishuChannel extends Channel {
     this.workdir = opts.workdir ?? process.cwd();
     this.allowedChatIds = opts.allowedChatIds ?? new Set();
 
-    // Resolve SDK domain enum or custom string
     const sdkDomain = this.domain.includes('larksuite.com')
       ? lark.Domain.Lark
       : this.domain === 'https://open.feishu.cn'
@@ -372,20 +330,13 @@ class FeishuChannel extends Channel {
     this._registerEvents();
   }
 
-  // ---- Hook registration ---------------------------------------------------
-
   onCommand(h: FeishuCommandHandler)   { this._hCommand = h; }
   onMessage(h: FeishuMessageHandler)   { this._hMessage = h; }
   onCallback(h: FeishuCallbackHandler) { this._hCardAction = h; }
   onMessageRecalled(h: FeishuRecallHandler) { this._hRecall = h; }
   onError(h: FeishuErrorHandler)       { this._hError = h; }
 
-  // ========================================================================
-  // Lifecycle
-  // ========================================================================
-
   async connect(): Promise<BotInfo> {
-    // Get bot info via raw request (SDK doesn't have a dedicated bot info method)
     try {
       const resp = await this.client.request({
         method: 'GET',
@@ -449,7 +400,6 @@ class FeishuChannel extends Channel {
 
     if (!this.running || !this.wsClient) return;
 
-    // Block until disconnect() is called
     await new Promise<void>(resolve => {
       this._listenResolve = resolve;
       if (!this.running) resolve();
@@ -465,10 +415,6 @@ class FeishuChannel extends Channel {
     this._listenResolve?.();
     this._listenResolve = null;
   }
-
-  // ========================================================================
-  // Event handling (via SDK EventDispatcher)
-  // ========================================================================
 
   private _registerEvents() {
     this.eventDispatcher.register({
@@ -515,7 +461,6 @@ class FeishuChannel extends Channel {
 
     if (!chatId || !messageId) return;
 
-    // Dedup: Feishu server may retry events when the ack is slow
     if (this._seenMessageIds.has(messageId)) {
       this._debug(`[recv] dedup: message=${messageId} already processed, skipping`);
       return;
@@ -530,7 +475,6 @@ class FeishuChannel extends Channel {
     this._trackChat(chatId);
 
     const sender = event.sender;
-    // Skip messages from the bot itself
     if (sender?.sender_type === 'app') return;
 
     const from: FeishuFrom = {
@@ -539,10 +483,8 @@ class FeishuChannel extends Channel {
       name: '',
     };
 
-    // Track open_id → chat_id for menu event resolution
     if (from.openId) this._openIdToChat.set(from.openId, chatId);
 
-    // Group: require @mention
     if (chatType === 'group') {
       if (shouldLog('debug')) this._debug(`[recv] group check mention: bot=${JSON.stringify(this.bot)}, mentions=${JSON.stringify(msg.mentions)}`);
       if (!this._isBotMentioned(msg)) {
@@ -554,7 +496,6 @@ class FeishuChannel extends Channel {
     const parentId = typeof msg.parent_id === 'string' && msg.parent_id ? msg.parent_id : null;
     const ctx = this._makeCtx(chatId, messageId, from, chatType, event, parentId);
 
-    // Parse message content
     let text = '';
     const files: string[] = [];
 
@@ -589,11 +530,9 @@ class FeishuChannel extends Channel {
 
     const trimmedText = text.trim();
 
-    // Queue dispatch per chat to preserve ordering
     const key = chatId;
     const prev = this.messageChains.get(key) || Promise.resolve();
     const current = prev.catch(() => {}).then(async () => {
-      // Command dispatch
       if (trimmedText.startsWith('/') && this._hCommand) {
         const spaceIdx = trimmedText.indexOf(' ');
         const cmd = (spaceIdx > 0 ? trimmedText.slice(1, spaceIdx) : trimmedText.slice(1)).toLowerCase();
@@ -602,7 +541,6 @@ class FeishuChannel extends Channel {
         return;
       }
 
-      // Message dispatch
       if (!this._hMessage) return;
       if (!trimmedText && !files.length) return;
       await this._hMessage({ text: trimmedText, files }, ctx);
@@ -644,7 +582,6 @@ class FeishuChannel extends Channel {
     const openId = event.operator?.operator_id?.open_id;
     if (!eventKey || !openId || !this._hCommand) return;
 
-    // Try: event payload → cache → API resolve
     const chatId = this._openIdToChat.get(openId)
       ?? await this._resolveP2pChatId(openId);
     if (!chatId) {
@@ -669,10 +606,6 @@ class FeishuChannel extends Channel {
     await this._hRecall(messageId, chatId, event);
   }
 
-  /**
-   * Resolve a p2p chat_id for a given open_id by sending a minimal message
-   * via open_id and extracting the chat_id from the API response.
-   */
   private async _resolveP2pChatId(openId: string): Promise<string | null> {
     try {
       const resp = await this.client.im.message.create({
@@ -685,7 +618,6 @@ class FeishuChannel extends Channel {
       });
       const chatId = (resp?.data as any)?.chat_id ?? null;
       const msgId = resp?.data?.message_id;
-      // Clean up the placeholder message
       if (msgId) {
         try { await this.client.im.message.delete({ path: { message_id: msgId } }); } catch {}
       }
@@ -700,10 +632,6 @@ class FeishuChannel extends Channel {
       return null;
     }
   }
-
-  // ========================================================================
-  // Outgoing primitives (Channel interface)
-  // ========================================================================
 
   override async setMenu(commands: MenuCommand[]) {
     this._debug(`[menu] ${commands.length} commands. Configure in Feishu Developer Console → Bot → Custom Menu:`);
@@ -734,7 +662,6 @@ class FeishuChannel extends Channel {
     const rows = keyboardToRows(opts.keyboard);
     const view: FeishuCardView = { markdown: text.trim() || '(empty)', rows };
 
-    // Reply to a specific message if replyTo is set
     if (opts.replyTo) {
       return await this.replyCard(String(opts.replyTo), view);
     }
@@ -760,9 +687,6 @@ class FeishuChannel extends Channel {
 
     const card = buildCardFromView(view);
     this._logOutgoing('edit', `chat=${chatId} msg_id=${msgId} chars=${view.markdown.length} rows=${view.rows?.length || 0}`);
-    // The Lark SDK's response interceptor returns the JSON body for any HTTP 2xx, so
-    // Feishu application errors (`code != 0`) never throw — they look like success here.
-    // Inspect the response code ourselves so callers can fall back to a fresh send.
     let resp: any;
     try {
       resp = await this.client.im.message.patch({
@@ -806,7 +730,6 @@ class FeishuChannel extends Channel {
   }
 
   async sendTyping(_chatId: number | string): Promise<void> {
-    // Feishu has no typing indicator API — no-op
   }
 
   async setMessageReaction(_chatId: number | string, msgId: number | string, reactions: string[]): Promise<void> {
@@ -823,11 +746,6 @@ class FeishuChannel extends Channel {
     }
   }
 
-  // ========================================================================
-  // Feishu-specific outgoing
-  // ========================================================================
-
-  /** Send a text message (not card). For simple notifications. */
   async sendText(chatId: string, text: string): Promise<string | null> {
     const resp = await this.client.im.message.create({
       params: { receive_id_type: 'chat_id' },
@@ -855,7 +773,6 @@ class FeishuChannel extends Channel {
     return requireMessageId(resp, 'send post');
   }
 
-  /** Upload an image and return the image_key. */
   async uploadImage(imageBuffer: Buffer): Promise<string> {
     this._logOutgoing('uploadImage', `bytes=${imageBuffer.byteLength}`);
     const resp = await this.client.im.image.create({
@@ -869,7 +786,6 @@ class FeishuChannel extends Channel {
     return imageKey;
   }
 
-  /** Upload a file and return the file_key. */
   async uploadFile(fileBuffer: Buffer, fileName: string): Promise<string> {
     const ext = path.extname(fileName).toLowerCase().slice(1);
     const fileType = (['pdf', 'doc', 'xls', 'ppt'].includes(ext) ? ext : 'stream') as any;
@@ -887,7 +803,6 @@ class FeishuChannel extends Channel {
     return fileKey;
   }
 
-  /** Upload and send a local file. */
   async sendFile(
     chatId: number | string,
     filePath: string,
@@ -932,10 +847,6 @@ class FeishuChannel extends Channel {
     return requireMessageId(resp, 'send file');
   }
 
-  // ========================================================================
-  // Download resources from received messages
-  // ========================================================================
-
   private async _downloadResource(messageId: string, fileKey: string, type: string, filename?: string): Promise<string> {
     const resp = await this.client.im.messageResource.get({
       path: { message_id: messageId, file_key: fileKey },
@@ -949,7 +860,6 @@ class FeishuChannel extends Channel {
 
     await (resp as any).writeFile(localPath);
 
-    // Check downloaded file size
     const stat = fs.statSync(localPath);
     if (stat.size > FILE_MAX_BYTES) {
       fs.rmSync(localPath, { force: true });
@@ -958,10 +868,6 @@ class FeishuChannel extends Channel {
 
     return localPath;
   }
-
-  // ========================================================================
-  // Internal helpers
-  // ========================================================================
 
   private _makeCtx(chatId: string, messageId: string, from: FeishuFrom, chatType: 'p2p' | 'group', raw: any, replyToMessageId?: string | null): FeishuContext {
     return {
@@ -981,11 +887,6 @@ class FeishuChannel extends Channel {
     return this.allowedChatIds.size === 0 || this.allowedChatIds.has(chatId);
   }
 
-  /**
-   * Add a chat to the in-memory `knownChats` set and persist it to setting.json
-   * so a future cold start (e.g. crash-respawn) can still address it. The
-   * persistence call is fire-and-forget — disk errors must not break receive.
-   */
   private _trackChat(chatId: string): void {
     if (this.knownChats.has(chatId)) return;
     this.knownChats.add(chatId);
@@ -1005,7 +906,6 @@ class FeishuChannel extends Channel {
     return text.replace(/@_user_\d+/g, '').trim();
   }
 
-  /** Extract plain text from a rich text (post) message content. */
   private _extractPostText(content: any): string {
     const post = content.zh_cn || content.en_us || content;
     const parts: string[] = [];

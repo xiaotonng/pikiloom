@@ -2,28 +2,12 @@ import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from
 import { createPortal } from 'react-dom';
 import { cn } from '../../utils';
 
-/**
- * Tooltip — instant hover tooltip (the native `title` attribute waits ~1s
- * before showing, which reads as "nothing happens" for status glyphs).
- *
- * The panel renders through a portal so scroll/overflow ancestors can't clip
- * it. Plain-string content renders multi-line via `\n` (whitespace-pre-line),
- * matching what callers previously fed the `title` attribute.
- */
-
-/** Matches the panel's max-w class below; used for viewport clamping. */
 const TOOLTIP_MAX_WIDTH = 340;
 
 export interface TooltipProps extends HTMLAttributes<HTMLSpanElement> {
-  /** Tooltip body. Strings keep their `\n` line breaks. */
   content: ReactNode;
-  /** Which side of the anchor the panel opens toward. */
   side?: 'top' | 'bottom';
-  /** Show delay — long enough to ignore accidental sweeps, far below the
-   *  native title's ~1s. */
   delayMs?: number;
-  /** Fires when the panel actually opens (after the show delay) — a hook for
-   *  refreshing whatever data the tooltip displays. */
   onShow?: () => void;
   children: ReactNode;
 }
@@ -31,9 +15,6 @@ export interface TooltipProps extends HTMLAttributes<HTMLSpanElement> {
 export function Tooltip({ content, side = 'bottom', delayMs = 120, onShow, children, className, ...rest }: TooltipProps) {
   const anchorRef = useRef<HTMLSpanElement>(null);
   const timerRef = useRef<number | null>(null);
-  // side=top anchors the panel's bottom edge (via fixed `bottom`) so the
-  // panel grows upward whatever its height — a translateY(-100%) would be
-  // clobbered by the `animate-in` animation's own transform.
   const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
 
   useEffect(() => () => {

@@ -1,7 +1,3 @@
-/**
- * Unit tests for DingtalkChannel — mocks dingtalk-stream's DWClient and global
- * fetch (used by the sessionWebhook reply path).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('dingtalk-stream', () => {
@@ -41,7 +37,6 @@ afterEach(() => {
 
 describe('DingtalkChannel', () => {
   it('connects, dispatches messages via sessionWebhook, dedups, throws without webhook, and enforces allowlists', async () => {
-    // connects and reports identity
     {
       const ch = new DingtalkChannel({ clientId: 'app-key', clientSecret: 'app-secret' });
       const bot = await ch.connect();
@@ -49,7 +44,6 @@ describe('DingtalkChannel', () => {
       expect(bot.displayName).toMatch(/DingTalk/);
     }
 
-    // dispatches a text message and surfaces the sessionWebhook to send()
     {
       const ch = new DingtalkChannel({ clientId: 'app-key', clientSecret: 'app-secret' });
       await ch.connect();
@@ -85,14 +79,12 @@ describe('DingtalkChannel', () => {
       });
     }
 
-    // throws on send when no sessionWebhook has been seen
     {
       const ch = new DingtalkChannel({ clientId: 'app-key', clientSecret: 'app-secret' });
       await ch.connect();
       await expect(ch.send('unseen-chat', 'oops')).rejects.toThrow(/sessionWebhook/);
     }
 
-    // dedups identical msgIds
     {
       const ch = new DingtalkChannel({ clientId: 'app-key', clientSecret: 'app-secret' });
       await ch.connect();
@@ -114,7 +106,6 @@ describe('DingtalkChannel', () => {
       expect(seen.length).toBe(1);
     }
 
-    // respects allowedChatIds
     {
       const ch = new DingtalkChannel({
         clientId: 'app-key',

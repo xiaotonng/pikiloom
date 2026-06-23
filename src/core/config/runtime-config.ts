@@ -1,7 +1,3 @@
-/**
- * Runtime resolution of agent model and effort preferences.
- */
-
 import type { Agent } from '../../agent/index.js';
 import { normalizeClaudeModelId } from '../../agent/index.js';
 import type { UserConfig } from './user-config.js';
@@ -24,7 +20,6 @@ function trimmed(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/** Parse a boolean-ish string (env var / loose config). Empty → null (unset). */
 function parseBoolish(value: string): boolean | null {
   const v = value.trim().toLowerCase();
   if (!v) return null;
@@ -94,18 +89,6 @@ export function resolveAgentEffort(config: Partial<UserConfig> | Record<string, 
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Workflow (multi-agent orchestration) toggle
-//
-// Orthogonal to effort: effort tunes how deeply a *single* agent reasons;
-// workflow grants the agent permission to author + run multi-agent Workflow
-// orchestrations (fan-out / pipeline / verify). Only agents whose driver
-// advertises `capabilities.workflow` honor it (claude today). Default OFF —
-// the claude driver hard-disables the Workflow tool unless this is true, so a
-// bare "workflow" keyword can never auto-spawn a fleet of sub-agents under the
-// bypassPermissions mode pikiloom runs by default.
-// ---------------------------------------------------------------------------
-
 export function agentWorkflowEnv(agent: Agent, env: Record<string, string | undefined> = process.env): string {
   switch (agent) {
     case 'claude': return trimmed(env.CLAUDE_WORKFLOW);
@@ -131,30 +114,10 @@ export function setAgentWorkflowEnv(agent: Agent, value: boolean, env: NodeJS.Pr
   }
 }
 
-// ---------------------------------------------------------------------------
-// Claude access mode — interactive TUI (subscription quota) vs `claude -p`
-// (Agent SDK credit pool). The single per-agent knob the dashboard surfaces as
-// "接入模式 / Access mode"; it decides which billing pool a turn lands on.
-// Persisted like model/effort (authoritative when set); the legacy
-// PIKILOOM_CLAUDE_PRINT / PIKILOOM_CLAUDE_TUI env vars remain the fallback
-// default so existing deployments keep their behaviour. The claude driver
-// reads the resolved value off StreamOpts; env is only consulted when no
-// explicit mode was threaded (e.g. the `pikiloom run` one-shot path).
-// ---------------------------------------------------------------------------
-
 export type ClaudeAccessMode = 'subscription' | 'api';
 
-// Default `api` = headless `claude -p`, the standard integration path. The
-// interactive TUI ('subscription', Pro/Max quota) is opt-in via the dashboard
-// 接入模式 toggle or PIKILOOM_CLAUDE_TUI=1.
 export const DEFAULT_CLAUDE_ACCESS_MODE: ClaudeAccessMode = 'api';
 
-/**
- * Access mode implied by env, or null when neither var has an opinion.
- * PIKILOOM_CLAUDE_PRINT takes precedence over the legacy PIKILOOM_CLAUDE_TUI so
- * a freshly-written print var resolves a stale tui var (setClaudeAccessModeEnv
- * relies on this). Mirrors isClaudePrintModeForced() in the claude driver.
- */
 export function claudeAccessModeEnv(env: Record<string, string | undefined> = process.env): ClaudeAccessMode | null {
   const print = parseBoolish(trimmed(env.PIKILOOM_CLAUDE_PRINT));
   if (print != null) return print ? 'api' : 'subscription';
@@ -169,8 +132,6 @@ export function resolveClaudeAccessMode(config: Partial<UserConfig> | Record<str
   return claudeAccessModeEnv() ?? DEFAULT_CLAUDE_ACCESS_MODE;
 }
 
-/** Mirror the choice into PIKILOOM_CLAUDE_PRINT so any env-only fallback path
- *  (and tooling that inspects the env) agrees with the persisted config. */
 export function setClaudeAccessModeEnv(value: ClaudeAccessMode, env: NodeJS.ProcessEnv = process.env): void {
   env.PIKILOOM_CLAUDE_PRINT = value === 'api' ? '1' : '0';
 }
@@ -192,19 +153,6 @@ export function setAgentEffortEnv(agent: Agent, value: string, env: NodeJS.Proce
     case 'hermes': env.HERMES_REASONING_EFFORT = value; break;
   }
 }
-
-// ---------------------------------------------------------------------------
-// "Ultra" effort rung — the single user-facing knob that folds workflow in
-//
-// Surfaced as the top rung of every effort picker (IM /models + dashboard),
-// "ultra" means "max reasoning depth + permit multi-agent Workflow
-// orchestration" — the same bundle as Claude's native `ultracode` mode. It is
-// NOT a real --effort value (the CLI hard-rejects anything outside
-// low|medium|high|xhigh|max), so every effort-write path decomposes it into a
-// concrete effort plus the orthogonal workflow flag via this single helper.
-// Because the rungs are mutually exclusive, picking any concrete level clears
-// the orchestration opt-in. See Bot.switchEffortForChat for the IM mirror.
-// ---------------------------------------------------------------------------
 
 export const ULTRA_EFFORT = 'ultra';
 

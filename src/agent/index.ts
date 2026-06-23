@@ -1,25 +1,8 @@
-/**
- * agent/index.ts — Barrel export for the agent layer.
- *
- * This module loads all agent drivers (side-effect) and re-exports the public
- * API from focused sub-modules:
- *
- *   types.ts    — Shared type definitions (StreamOpts, StreamResult, SessionInfo, …)
- *   utils.ts    — Pure utility functions (Q, agentLog, normalizeErrorMessage, …)
- *   session.ts  — Session workspace management, metadata, classification, export/import
- *   stream.ts   — CLI spawn framework, stream orchestration, agent detection, delegation
- *   driver.ts   — AgentDriver interface and registry
- *   skills.ts   — Project skill discovery
- *   drivers/    — Per-agent driver implementations (claude, codex, gemini)
- */
-
-// ── Load all drivers (side-effect: each calls registerDriver) ───────────────
 import './drivers/claude.js';
 import './drivers/codex.js';
 import './drivers/gemini.js';
 import './drivers/hermes.js';
 
-// ── Re-export: types ────────────────────────────────────────────────────────
 export type {
   Agent, AgentDetectOptions, AgentInfo, AgentListResult,
   AgentDriverCapabilities, SessionLineageRef, HandoverRef,
@@ -40,7 +23,6 @@ export type {
 } from './types.js';
 export { IMAGE_EXTS } from './types.js';
 
-// ── Re-export: attachment pipeline (images + delivered files) ───────────────
 export {
   attachAgentImage,
   attachInlineImage,
@@ -58,7 +40,6 @@ export {
   type TransportContext,
 } from './images.js';
 
-// ── Re-export: delivered-artifact manifest ──────────────────────────────────
 export {
   deliverArtifact,
   readDeliveredArtifacts,
@@ -68,7 +49,6 @@ export {
   type ArtifactKind,
 } from './artifacts.js';
 
-// ── Re-export: utilities ────────────────────────────────────────────────────
 export {
   Q, agentLog, agentWarn, agentError,
   dedupeStrings, numberOrNull,
@@ -89,9 +69,8 @@ export {
   sessionListDisplayTitle,
 } from './utils.js';
 
-// ── Re-export: session management ───────────────────────────────────────────
 export {
-  updateSessionMeta, promoteSessionId, recordFork,
+  updateSessionMeta, promoteSessionId, recordFork, resolveCanonicalSessionId, getSessionPromotions,
   listPikiloomSessions, findPikiloomSession, getSessionStoredConfig,
   ensureManagedSession, findManagedThreadSession, stageSessionFiles,
   mergeManagedAndNativeSessions, managedRecordToSessionInfo,
@@ -104,27 +83,23 @@ export {
   isProcessAlive, isRunningSessionStale, reconcileOrphanedRunningSessions,
 } from './session.js';
 
-// ── Re-export: stream & detection ───────────────────────────────────────────
 export {
   detectAgentBin, listAgents, resolveDefaultAgent,
   run, doStream,
   listModels, resolveAgentModels, getUsage, getAgentBoundModelId, setAgentBoundModelId,
 } from './stream.js';
 
-// ── Re-export: driver registry ──────────────────────────────────────────────
 export {
   type AgentDriver, type AgentNativeConfig, registerDriver, getDriver, getDriverCapabilities,
   allDrivers, allDriverIds, hasDriver, shutdownAllDrivers,
 } from './driver.js';
 
-// ── Re-export: skills ───────────────────────────────────────────────────────
 export {
   getProjectSkillPaths, initializeProjectSkills, listSkills, getGlobalSkillsRoot,
   collapseSkillPrompt,
   type ProjectSkillPaths, type SkillInfo, type SkillListResult, type SkillScope,
 } from './skills.js';
 
-// ── Re-export: goal (persistent thread objective) ────────────────────────────
 export {
   readGoal, writeGoal, clearGoal, setGoal, pauseGoal, resumeGoal, completeGoal,
   accountTurn, bumpContinuationCount, shouldContinueAfterTurn,
@@ -133,19 +108,16 @@ export {
   type ThreadGoal, type GoalStatus, type TurnUsage, type ContinuationDecision,
 } from './goal.js';
 
-// ── Re-export: native codex goal bridge ──────────────────────────────────────
 export {
   setCodexGoal, getCodexGoal, clearCodexGoal, pauseCodexGoal, resumeCodexGoal,
   type CodexThreadGoal, type CodexGoalStatus,
 } from './drivers/codex.js';
 
-// ── Re-export: native claude goal bridge ─────────────────────────────────────
 export {
   getClaudeNativeGoal, buildClaudeSetGoalPrompt, buildClaudeClearGoalPrompt,
   type ClaudeNativeGoal, type ClaudeNativeGoalStatus,
 } from './drivers/claude.js';
 
-// ── Re-export: MCP extensions ───────────────────────────────────────────────
 export {
   listAllMcpExtensions,
   addGlobalMcpExtension, removeGlobalMcpExtension, updateGlobalMcpExtension,
@@ -178,7 +150,6 @@ export {
   type SkillInstallOpts, type SkillInstallResult, type SkillRemoveResult, type SkillLedgerEntry,
 } from './skill-installer.js';
 
-// ── Re-export: CLI extensions ───────────────────────────────────────────────
 export {
   getRecommendedClis, getRecommendedCli,
   detectCli, getCachedCliStatus, invalidateCliStatus, currentPlatform,
@@ -193,7 +164,6 @@ export {
   type ApplyTokenResult, type LogoutResult, type StartAuthSessionResult,
 } from './cli/index.js';
 
-// ── Re-export: driver-specific functions ────────────────────────────────────
 export { doClaudeStream } from './drivers/claude.js';
 export { doCodexStream, buildCodexTurnInput, shutdownCodexServer, getCodexUsageLive } from './drivers/codex.js';
 export { doGeminiStream } from './drivers/gemini.js';

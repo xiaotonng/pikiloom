@@ -1,21 +1,9 @@
-/**
- * tools/workspace.ts — Workspace file tools.
- *
- *   im_list_files — returns workspace path, staged files, and directory listing
- *   im_send_file  — delivers a file to the user via the active terminal
- *                   (IM chat push and/or the dashboard attachment endpoint)
- */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import os from 'node:os';
 import type { McpToolModule, ToolContext, ToolResult } from './types.js';
 import { toolResult, toolLog } from './types.js';
-
-// ---------------------------------------------------------------------------
-// Tool definitions
-// ---------------------------------------------------------------------------
 
 const tools: McpToolModule['tools'] = [
   {
@@ -56,10 +44,6 @@ const tools: McpToolModule['tools'] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
-
 function summarizeSendFileArgs(filePath: string, caption: string, kind?: string): string {
   const text = [
     `path=${JSON.stringify(filePath || '')}`,
@@ -74,7 +58,6 @@ function handleListFiles(args: Record<string, unknown>, ctx: ToolContext): ToolR
   const dir = subdir ? path.resolve(ctx.workspace, subdir) : ctx.workspace;
   toolLog('im_list_files', `dir=${dir} subdir=${subdir || '(root)'}`);
 
-  // Security: ensure we stay within workspace
   const realWorkspace = safeRealpath(ctx.workspace);
   const realDir = safeRealpath(dir);
   if (!realWorkspace || !realDir || !realDir.startsWith(realWorkspace)) {
@@ -154,10 +137,6 @@ async function handleSendFile(args: Record<string, unknown>, ctx: ToolContext): 
   }
 }
 
-// ---------------------------------------------------------------------------
-// HTTP callback
-// ---------------------------------------------------------------------------
-
 function callbackSendFile(
   callbackUrl: string,
   filePath: string,
@@ -183,10 +162,6 @@ function callbackSendFile(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function safeRealpath(p: string): string | null {
   try { return fs.realpathSync(p); } catch { return null; }
 }
@@ -194,10 +169,6 @@ function safeRealpath(p: string): string | null {
 function toPosix(p: string): string {
   return p.split(path.sep).join(path.posix.sep);
 }
-
-// ---------------------------------------------------------------------------
-// Module export
-// ---------------------------------------------------------------------------
 
 export const workspaceTools: McpToolModule = {
   tools,

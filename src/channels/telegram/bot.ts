@@ -1,11 +1,3 @@
-/**
- * Telegram bot orchestration: commands, callbacks, streaming lifecycle.
- *
- * Rendering, workdir browsing, and live preview state live in dedicated helper modules.
- * New IM integrations should stay parallel to this file and compose shared runtime helpers
- * instead of growing a single multi-platform bot entrypoint.
- */
-
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -85,19 +77,11 @@ import { splitText, supportsChannelCapability } from '../base.js';
 import { getActiveUserConfig, loadKnownChatIds } from '../../core/config/user-config.js';
 import { VERSION } from '../../core/version.js';
 
-
-/** Telegram HTML renderer for LivePreview. */
 const telegramPreviewRenderer: LivePreviewRenderer = {
   renderInitial: buildInitialPreviewHtml,
   renderStream: buildStreamPreviewHtml,
 };
 
-/**
- * Echo message rendered after a human-loop prompt resolves — a small chat
- * message that records the decision in the conversation history (independent
- * of the now-closed card above). Returns null when there's nothing useful to
- * say (e.g. an empty cancellation).
- */
 function buildInteractionEchoHtml(summary: ResolvedHumanLoopAnswers): string | null {
   if (summary.status === 'cancelled') {
     return `<i>⊘ Prompt cancelled.</i>`;
@@ -121,10 +105,6 @@ const SHUTDOWN_EXIT_CODE: Record<ShutdownSignal, number> = {
   SIGTERM: 143,
 };
 
-// ---------------------------------------------------------------------------
-// TelegramBot
-// ---------------------------------------------------------------------------
-
 export class TelegramBot extends Bot {
   private token: string;
   private channel!: TelegramChannel;
@@ -139,14 +119,9 @@ export class TelegramBot extends Bot {
   constructor() {
     super();
     const config = getActiveUserConfig();
-    // merge Telegram-specific allowed IDs into base
     if (config.telegramAllowedChatIds) {
       for (const id of parseAllowedChatIds(config.telegramAllowedChatIds)) this.allowedChatIds.add(id);
     }
-    // NOTE: persisted known chats are restored into channel.knownChats in run()
-    // (for the startup greeting / per-chat menu) — deliberately NOT into
-    // allowedChatIds. allowedChatIds is the explicit allowlist; folding known
-    // chats into it flips _isAllowed() into allowlist-only mode.
     this.token = String(config.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '').trim();
     if (!this.token) throw new Error('Missing Telegram token. Configure via dashboard or set TELEGRAM_BOT_TOKEN');
   }
@@ -165,15 +140,11 @@ export class TelegramBot extends Bot {
 
     const mergedAllowed = parseAllowedChatIds(process.env.PIKILOOM_ALLOWED_IDS || '');
     for (const id of parseAllowedChatIds(String(config.telegramAllowedChatIds || ''))) mergedAllowed.add(id);
-    // Known chats are NOT merged here — doing so would re-pollute the allowlist on
-    // every config reload. They live in channel.knownChats (restored in run()).
     this.allowedChatIds = mergedAllowed;
   }
 
-  /** Skill command prefix used in Telegram bot commands. */
   private static readonly SKILL_CMD_PREFIX = SKILL_CMD_PREFIX;
 
-  /** Register bot menu commands. Called automatically after connect. */
   async setupMenu() {
     if (!supportsChannelCapability((this as any).channel, 'commandMenu')) return;
     const { commands, skillCount } = buildBotMenuState(this);
@@ -225,9 +196,6 @@ export class TelegramBot extends Bot {
   }
 
   private buildRestartEnv(): Record<string, string> {
-    // Hand off only the explicit allowlist. Known chats persist to setting.json
-    // and are restored via loadKnownChatIds, so they must NOT ride along in the
-    // allowlist env — that would re-pollute allowedChatIds on the next boot.
     return buildKnownChatEnv(this.allowedChatIds, [], 'TELEGRAM_ALLOWED_CHAT_IDS');
   }
 
@@ -303,8 +271,6 @@ export class TelegramBot extends Bot {
     return this.ensureSession(ctx.chatId, text, files);
   }
 
-  // ---- commands -------------------------------------------------------------
-
   private async cmdStart(ctx: TgContext) {
     const d = getStartData(this, ctx.chatId);
     await ctx.reply(this.renderStartHtml(d), { parseMode: 'HTML' });
@@ -340,7 +306,6 @@ export class TelegramBot extends Bot {
     const data = getExtensionSummaryData(this, ctx.chatId);
     const lines: string[] = ['<b>Extensions</b>', ''];
 
-    // MCP servers
     lines.push(`<b>MCP Servers</b> (${data.mcpCount})`);
     if (data.mcpExtensions.length === 0) {
       lines.push('  <i>No MCP extensions configured</i>');
@@ -355,7 +320,6 @@ export class TelegramBot extends Bot {
 
     lines.push('');
 
-    // Skills
     lines.push(`<b>Skills</b> (${data.skillCount})`);
     if (data.skills.length === 0) {
       lines.push('  <i>No skills installed</i>');
@@ -622,12 +586,6 @@ export class TelegramBot extends Bot {
     }
   }
 
-  /**
-   * IM presenter for programmatic submissions (e.g. /goal-driven turns) so
-   * they stream to Telegram the same way a typed message does — placeholder
-   * card, LivePreview edits, sendFinalReply at the end. Without this, /goal
-   * just emits a confirmation reply and the rest of the turn is invisible.
-   */
   protected override async createImTaskPresenter(opts: ImTaskPresenterOpts): Promise<ImTaskPresenter | null> {
     if (typeof opts.chatId !== 'number') return null;
     const chatId = opts.chatId;
@@ -713,10 +671,7 @@ export class TelegramBot extends Bot {
     if (typeof sent === 'number') this.registerHumanLoopMessage(prompt.promptId, sent);
   }
 
-  /** Cache the messageThreadId per task so renderInteractionPrompt can use it. */
   private interactionThreadIds = new Map<string, number | undefined>();
-
-  // ---- streaming bridge -----------------------------------------------------
 
   private async handleMessage(msg: TgMessage, ctx: TgContext) {
     const text = msg.text.trim();
@@ -728,7 +683,6 @@ export class TelegramBot extends Bot {
         await ctx.reply('Please answer the active prompt using the buttons above.');
         return;
       }
-      // Completed prompts close themselves via onInteractionAnswered.
       if (!result.completed) await this.refreshHumanLoopPrompt(ctx.chatId, result.prompt.promptId);
       return;
     }
@@ -826,7 +780,6 @@ export class TelegramBot extends Bot {
           return;
         }
         this.emitStreamStart(taskId, session);
-        // Task is now running — update keyboard from Recall/Steer to Stop
         const runningKeyboard = this.buildStopKeyboard(this.actionIdForTask(taskId));
         if (phId != null && waiting) {
           try { await this.channel.editMessage(ctx.chatId, phId, buildInitialPreviewHtml(session.agent, startConfig.model, startConfig.effort, false), { parseMode: 'HTML', keyboard: runningKeyboard }); } catch {}
@@ -851,7 +804,6 @@ export class TelegramBot extends Bot {
           livePreview.start();
         }
 
-        // MCP sendFile callback: sends files to IM in real-time during the stream
         const mcpSendFile = this.createMcpSendFileCallback(ctx, messageThreadId);
 
         this.interactionThreadIds.set(taskId, messageThreadId);
@@ -956,7 +908,6 @@ export class TelegramBot extends Bot {
     }
   }
 
-  /** Create an MCP sendFile callback bound to a Telegram chat context. */
   private createMcpSendFileCallback(ctx: TgContext, messageThreadId?: number): McpSendFileCallback {
     return async (filePath, opts) => {
       try {
@@ -1014,7 +965,6 @@ export class TelegramBot extends Bot {
     if (rendered.fullHtml.length <= 3900) {
       finalMsgId = await replacePreview(rendered.fullHtml);
     } else {
-      // Split: header on first message, footer on last message
       const maxFirst = 3900 - rendered.headerHtml.length;
       let firstBody: string;
       let remaining: string;
@@ -1029,7 +979,6 @@ export class TelegramBot extends Bot {
       }
 
       if (remaining.trim()) {
-        // Multi-message: header on first, footer on last
         const firstHtml = `${rendered.headerHtml}${firstBody}`;
         finalMsgId = await replacePreview(firstHtml);
         const chunks = splitText(remaining, 3800);
@@ -1038,20 +987,15 @@ export class TelegramBot extends Bot {
           const chunkText = isLast ? `${chunks[i]}${rendered.footerHtml}` : chunks[i];
           remember(await sendFinalText(chunkText, finalMsgId ?? phId ?? anchor.replyTo));
         }
-        // Safety: re-clear the Stop keyboard on the placeholder in case the first edit silently failed
         if (phId != null) {
           try { await this.channel.editMessage(anchor.chatId, phId, firstHtml || '(done)', { parseMode: 'HTML', keyboard: { inline_keyboard: [] } }); } catch {}
         }
       } else {
-        // Body fits on first message; only footer pushes it over — keep together
         const firstHtml = `${rendered.headerHtml}${firstBody}${rendered.footerHtml}`;
         finalMsgId = await replacePreview(firstHtml);
       }
     }
 
-    // Dispatch any image MessageBlocks the agent produced this turn (Codex
-    // built-in `image_gen`, MCP / Skill tool_result images, …). Each goes out
-    // as a separate Telegram photo with the optional caption attached.
     const dispatched = await dispatchImageBlocks(this.channel, result.assistantBlocks, {
       chatId: anchor.chatId,
       replyTo: finalMsgId ?? phId ?? anchor.replyTo,
@@ -1064,8 +1008,6 @@ export class TelegramBot extends Bot {
 
     return { primaryMessageId: finalMsgId, messageIds };
   }
-
-  // ---- callbacks ------------------------------------------------------------
 
   private async handleSwitchNavigateCallback(data: string, ctx: TgCallbackContext): Promise<boolean> {
     if (!data.startsWith('sw:n:')) return false;
@@ -1258,11 +1200,8 @@ export class TelegramBot extends Bot {
         if (runtime && typeof sent === 'number') this.registerSessionMessage(chatId, sent, runtime);
       }
     } catch {
-      // non-critical
     }
   }
-
-  // ---- command router -------------------------------------------------------
 
   async handleCommand(cmd: string, args: string, ctx: TgContext) {
     try {
@@ -1283,7 +1222,6 @@ export class TelegramBot extends Bot {
         case 'workspaces': await this.cmdWorkspaces(ctx); return;
         case 'restart':  await this.cmdRestart(ctx); return;
         default:
-          // Intercept skill commands (sk_<name>) and route to agent
           if (cmd.startsWith(TelegramBot.SKILL_CMD_PREFIX)) {
             await this.cmdSkill(cmd, args, ctx);
             return;
@@ -1296,7 +1234,6 @@ export class TelegramBot extends Bot {
     }
   }
 
-  /** Execute a project-defined skill by routing it to the current agent. */
   private async cmdSkill(cmd: string, args: string, ctx: TgContext) {
     const resolved = resolveSkillPrompt(this, ctx.chatId, cmd, args);
     if (!resolved) {
@@ -1306,8 +1243,6 @@ export class TelegramBot extends Bot {
     this.log(`skill: ${resolved.skillName} agent=${this.chat(ctx.chatId).agent}${args.trim() ? ` args="${args.trim()}"` : ''}`);
     await this.handleMessage({ text: resolved.prompt, files: [] }, ctx);
   }
-
-  // ---- lifecycle ------------------------------------------------------------
 
   async run() {
     const tmpDir = path.join(os.tmpdir(), 'pikiloom');
@@ -1334,9 +1269,6 @@ export class TelegramBot extends Bot {
 
       this.channel.skipPendingUpdatesOnNextListen();
 
-      // Seed knownChats so setupMenu applies per-chat commands and the startup
-      // greeting can reach them: the explicit allowlist + persisted known chats
-      // (restored here instead of via allowedChatIds, which stays explicit-only).
       for (const cid of this.allowedChatIds) if (typeof cid === 'number') this.channel.knownChats.add(cid);
       for (const id of loadKnownChatIds('telegram')) {
         for (const parsed of parseAllowedChatIds(id)) {

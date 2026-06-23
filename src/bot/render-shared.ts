@@ -1,10 +1,3 @@
-/**
- * Shared rendering utilities used by channel-specific renderers.
- *
- * Contains types, pure-data helpers, and functions that are identical across platforms.
- * Platform-specific formatting (HTML vs Markdown) stays in the respective render files.
- */
-
 import type { Agent, StreamPreviewMeta, StreamPreviewPlan, StreamResult } from './bot.js';
 import type { MessageBlock } from '../agent/index.js';
 import { materializeImage } from '../agent/index.js';
@@ -12,10 +5,6 @@ import { fmtUptime, formatThinkingForDisplay, thinkLabel } from './bot.js';
 import { formatActivityCommandSummary, parseActivitySummary, renderPlanForPreview, summarizeActivityForPreview } from './streaming.js';
 import { supportsChannelCapability, type Channel } from '../channels/base.js';
 import { agentLog, agentWarn } from '../agent/index.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export type FooterStatus = 'running' | 'done' | 'failed';
 
@@ -41,17 +30,10 @@ export interface StreamPreviewRenderInput {
   activity: string;
   meta?: StreamPreviewMeta | null;
   plan?: StreamPreviewPlan | null;
-  /** Resolved model id for the active turn — surfaced in the running footer. */
   model?: string | null;
-  /** Resolved thinking-effort for the active turn — surfaced in the running footer. */
   effort?: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// GFM table parsing
-// ---------------------------------------------------------------------------
-
-/** Parse GFM table lines into structured headers + rows. */
 export function parseGfmTable(tableLines: string[]): { headers: string[]; rows: string[][] } | null {
   if (tableLines.length < 3) return null;
   const parseRow = (line: string) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
@@ -75,10 +57,6 @@ export function parseGfmTable(tableLines: string[]): { headers: string[]; rows: 
   return rows.length ? { headers, rows } : null;
 }
 
-// ---------------------------------------------------------------------------
-// Footer helpers
-// ---------------------------------------------------------------------------
-
 export function fmtCompactUptime(ms: number): string {
   return fmtUptime(ms).replace(/\s+/g, '');
 }
@@ -94,27 +72,14 @@ export function footerStatusSymbol(status: FooterStatus): string {
 export interface FooterDecorations {
   model?: string | null;
   effort?: string | null;
-  /**
-   * BYOK provider name (e.g. "OpenRouter"). Optional fallback for callers
-   * that don't pipe `meta.providerName`; preview-meta-based renders should
-   * not need to set this explicitly.
-   */
   provider?: string | null;
 }
 
 export interface FooterParts {
-  /** Identity line — `agent` or `agent · model`. */
   identity: string;
-  /** Runtime line — `effort? · ctx%? · time`. Always contains at least the elapsed time. */
   runtime: string;
 }
 
-/**
- * Drop a leading `provider/` segment from long model ids so the footer stays
- * readable on narrow IM clients. `anthropic/claude-sonnet-4` → `claude-sonnet-4`,
- * `deepseek/deepseek-v4-flash` → `deepseek-v4-flash`. Already-short ids are
- * returned unchanged.
- */
 function compactModelLabel(model: string): string {
   const trimmed = model.trim();
   if (trimmed.length <= 24) return trimmed;
@@ -122,12 +87,6 @@ function compactModelLabel(model: string): string {
   return slashIdx > 0 ? trimmed.slice(slashIdx + 1) : trimmed;
 }
 
-/**
- * Split footer fields into a primary identity line (agent + model) and a
- * secondary runtime line (effort, context%, elapsed). Channel renderers
- * compose the two lines with their own visual styling so narrow IM clients
- * never have to soft-wrap a single dense line.
- */
 export function formatFooterParts(
   agent: Agent,
   elapsedMs: number,
@@ -143,10 +102,6 @@ export function formatFooterParts(
   const ctx = contextPercent ?? meta?.contextPercent ?? null;
   if (ctx != null) runtimeParts.push(`${ctx}%`);
   runtimeParts.push(fmtCompactUptime(Math.max(0, Math.round(elapsedMs))));
-  // BYOK attribution — tells the user the turn is being routed through a
-  // third-party provider rather than the agent CLI's native auth path.
-  // Tucked at the end of the runtime line so it doesn't crowd the (often
-  // long) identity line on narrow IM clients.
   const providerName = meta?.providerName ?? decorations?.provider ?? null;
   if (providerName) runtimeParts.push(`via ${providerName}`);
 
@@ -156,24 +111,11 @@ export function formatFooterParts(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Activity trimming
-// ---------------------------------------------------------------------------
-
-/**
- * Trim the activity narrative for a streaming preview. Keeps the **most
- * recent** lines that fit the budget — the user is watching the turn live,
- * what just happened matters far more than what happened 30 tool-calls ago.
- * A leading `...` marker signals "earlier activity dropped" when truncation
- * happens; the tail order is preserved.
- */
 export function trimActivityForPreview(text: string, maxChars = 900): string {
   if (text.length <= maxChars) return text;
 
   const lines = text.split('\n').filter(line => line.trim());
   if (lines.length <= 1) {
-    // Single very-long line — keep the trailing characters with a leading
-    // ellipsis so the freshest content is visible.
     return '...' + text.slice(text.length - Math.max(0, maxChars - 3));
   }
 
@@ -194,10 +136,6 @@ export function trimActivityForPreview(text: string, maxChars = 900): string {
   if (tail.length === lines.length) return tail.join('\n');
   return [ellipsis, ...tail].join('\n');
 }
-
-// ---------------------------------------------------------------------------
-// Provider usage (plain-text builder — caller wraps as needed)
-// ---------------------------------------------------------------------------
 
 function rawUsageLine(parts: Array<string | null | undefined>): string {
   return parts.filter(part => !!part && String(part).trim()).join(' ');
@@ -243,33 +181,18 @@ export function buildProviderUsageLines(usage: ProviderUsageSnapshot): ProviderU
   return lines;
 }
 
-// ---------------------------------------------------------------------------
-// Image block dispatch — channel-agnostic
-// ---------------------------------------------------------------------------
-
 export interface DispatchImageOpts {
   chatId: number | string;
   replyTo?: number | string;
   messageThreadId?: number;
-  /** Optional log sink — same shape channels already use. */
   log?: (message: string) => void;
 }
 
 export interface DispatchedImage {
-  /** Message id returned by the channel send, when one was returned. */
   messageId: number | string | null;
   caption?: string;
 }
 
-/**
- * Iterate an assistant turn's image MessageBlocks and dispatch each through
- * the channel's `sendImage` capability. No-op when the channel doesn't claim
- * `sendImage`. Errors per image are logged but don't block the rest of the
- * dispatch — the text reply path is responsible for the user-visible summary.
- *
- * Returns the list of `{messageId, caption}` entries so the caller can register
- * them with the session for "reply to continue" linkage.
- */
 export async function dispatchImageBlocks(
   channel: Channel,
   blocks: MessageBlock[] | undefined,
@@ -302,10 +225,6 @@ export async function dispatchImageBlocks(
   }
   return out;
 }
-
-// ---------------------------------------------------------------------------
-// Final reply data extraction — shared computation, platform-specific wrap
-// ---------------------------------------------------------------------------
 
 export interface FinalReplyData {
   footerStatus: FooterStatus;
@@ -369,47 +288,20 @@ export function extractFinalReplyData(agent: Agent, result: StreamResult): Final
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stream preview data extraction — shared computation, platform-specific wrap
-// ---------------------------------------------------------------------------
-
 export interface StreamPreviewData {
   display: string;
   rawThinking: string;
   thinkDisplay: string;
   planDisplay: string;
   activityDisplay: string;
-  /**
-   * Compact summary of any in-flight sub-agents (Claude `Task` tool spawns).
-   * Each line names the sub-agent's purpose + its most recent tool call so the
-   * IM card actually surfaces a signal during the (often-minutes) window while
-   * the parent is delegated. Empty string when no sub-agent is active.
-   */
   subAgentsDisplay: string;
   maxActivity: number;
   label: string;
   thinkSnippet: string;
   preview: string;
-  /**
-   * Live "still working" signal for the in-flight chip, preformatted as elapsed
-   * time (e.g. "18s", "3m20s"), or null in the first second. Thinking tokens are
-   * deliberately NOT used here: the Claude stream reports output-token usage only
-   * once per call (the terminal `message_delta`) and streams no thinking content,
-   * so a token count is a frozen per-call snapshot — it never advances during the
-   * (event-less) thinking phase. Elapsed time is the one signal that actually
-   * grows there; the channel heartbeat re-renders the card on a timer so it keeps
-   * ticking even when no stream events arrive. Driver-agnostic.
-   */
   thinkingProgressText: string | null;
 }
 
-/**
- * Build the sub-agent block for the streaming preview. Sub-agents are
- * deliberately isolated from parent activity (their tool list lives on each
- * StreamSubAgent record), so we render a separate compact section showing each
- * sub-agent's purpose + latest tool. Completed sub-agents are hidden — the
- * parent's activity already reflects the Task `done` line.
- */
 function renderSubAgentsForPreview(meta?: StreamPreviewMeta | null): string {
   const subs = meta?.subAgents;
   if (!subs?.length) return '';
@@ -439,9 +331,6 @@ export function extractStreamPreviewData(input: StreamPreviewRenderInput): Strea
   const thinkSnippet = rawThinking ? formatThinkingForDisplay(input.thinking, 600) : '';
   const preview = display.length > maxBody ? '(...truncated)\n' + display.slice(-maxBody) : display;
 
-  // Elapsed time is the only monotonic progress signal available during the
-  // thinking phase (see thinkingProgressText). Hidden in the first second so a
-  // freshly-opened card doesn't flash "0s".
   const elapsedMs = Math.max(0, input.elapsedMs);
   const thinkingProgressText = elapsedMs >= 1000 ? fmtCompactUptime(elapsedMs) : null;
 

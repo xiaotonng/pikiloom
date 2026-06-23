@@ -1,7 +1,3 @@
-/**
- * CLI spawn framework, stream orchestration, agent detection, and driver delegation.
- */
-
 import { execSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import fs from 'node:fs';
@@ -31,14 +27,10 @@ import {
 import {
   saveSessionRecord, setSessionRunState, applySessionRunResult,
   ensureSessionWorkspace, importFilesIntoWorkspace, syncManagedSessionIdentity,
-  summarizePromptTitle, recordFork,
+  summarizePromptTitle, recordFork, resolveCanonicalSessionId,
 } from './session.js';
 import { clearAwaitResume } from './await-resume.js';
 import { collapseSkillPrompt } from './skills.js';
-
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
 
 function trimSessionText(value: unknown, max = 24_000): string | null {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -47,14 +39,6 @@ function trimSessionText(value: unknown, max = 24_000): string | null {
   return `${text.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
-/**
- * Spot known browser-MCP failure signatures inside an agent stdout line so the
- * supervisor can force-restart Chrome before the next turn. Both patterns are
- * narrow on purpose: `Frame has been detached` is playwright-specific; the
- * `Connection closed` MCP error only triggers when the same line names the
- * `pikiloom-browser` server, so failures on other MCP servers do not nuke the
- * managed browser. The supervisor itself debounces, so this can fire freely.
- */
 export function _detectBrowserMcpFailure(rawLine: string): string | null {
   if (!rawLine) return null;
   if (rawLine.includes('Frame has been detached')) return 'playwright Frame detached';
@@ -63,10 +47,6 @@ export function _detectBrowserMcpFailure(rawLine: string): string | null {
   }
   return null;
 }
-
-// ---------------------------------------------------------------------------
-// Agent detection (private helpers and cache)
-// ---------------------------------------------------------------------------
 
 const AGENT_DETECT_TTL_MS = AGENT_DETECT_TIMEOUTS.detectTtl;
 const AGENT_VERSION_TTL_MS = AGENT_DETECT_TIMEOUTS.versionTtl;
@@ -141,7 +121,6 @@ function readAgentVersion(binPath: string, timeoutMs: number): string | null {
   }
 }
 
-// Agent detection (used by all drivers)
 export function detectAgentBin(cmd: string, agent: string, options: AgentDetectOptions = {}): AgentInfo {
   const cacheKey = `${agent}:${cmd}`;
   const now = Date.now();
@@ -190,23 +169,6 @@ export function listAgents(options: AgentDetectOptions = {}): AgentListResult {
   return { agents: allDrivers().map(d => detectAgentBin(d.cmd, d.id, options)) };
 }
 
-/**
- * Resolve the *effective* default agent for new conversations.
- *
- * The stored value is only a *preference* — a new conversation can run only an
- * agent whose CLI is actually installed. So when the preference's CLI isn't
- * installed, we clamp to the first installed agent (in driver-registration
- * order: claude → codex → gemini → hermes) instead of surfacing an uninstalled
- * default the user can't run. When the preference *is* installed it always
- * wins, so machines with the historical 'codex' default are unaffected. When
- * nothing is installed we keep the prior behaviour (honour a valid preference,
- * else 'codex') so the result is always defined.
- *
- * Resolution is derived, never persisted: if the user later installs their
- * preferred agent, the original preference is honoured again automatically.
- * `agents` is injected (defaults to live detection) so the resolution is a pure
- * function of (preference, install-state) and trivially testable.
- */
 export function resolveDefaultAgent(
   preferred: Agent | string | null | undefined,
   agents: AgentInfo[] = listAgents().agents,
@@ -218,10 +180,6 @@ export function resolveDefaultAgent(
   if (installed.length) return installed[0];
   return wantValid ? (want as Agent) : 'codex';
 }
-
-// ---------------------------------------------------------------------------
-// Shared CLI spawn framework (used by driver-claude.ts, driver-gemini.ts)
-// ---------------------------------------------------------------------------
 
 export async function run(
   cmd: string[],
@@ -235,10 +193,6 @@ export async function run(
   let lineCount = 0;
   let timedOut = false;
   let interrupted = false;
-  // BYOK: seed contextWindow from the provider-cached value so the live
-  // preview percent uses the real denominator (e.g. 1M for DeepSeek v4 Pro
-  // via OpenRouter) instead of whatever the CLI happens to report later.
-  // Parsers gate their cc/codex-advertised updates on `s.byokContextWindow`.
   const byokWindow = opts.byokContextWindow && opts.byokContextWindow > 0
     ? opts.byokContextWindow
     : null;
@@ -248,8 +202,6 @@ export async function run(
     model: opts.model, thinkingEffort: opts.thinkingEffort, errors: null as unknown[] | null,
     inputTokens: null as number | null, outputTokens: null as number | null, cachedInputTokens: null as number | null,
     cacheCreationInputTokens: null as number | null,
-    // Output tokens from this turn's finished LLM calls — folded in by parsers
-    // when a new call resets the per-call counter (claude message_start).
     turnOutputTokensBase: 0 as number,
     contextWindow: byokWindow as number | null,
     byokContextWindow: byokWindow as number | null,
@@ -261,14 +213,8 @@ export async function run(
     claudeToolsById: new Map<string, { name: string; summary: string }>(),
     seenClaudeToolIds: new Set<string>(),
     geminiToolsById: new Map<string, { name: string; summary: string }>(),
-    // Claude-only: sub-agent invocations from the Task tool. Other drivers leave it empty.
     subAgents: new Map<string, StreamSubAgent>(),
-    // Image blocks collected during the stream (assistant images, MCP tool
-    // results, …). Surfaced on the StreamResult so IM channels can dispatch
-    // them at end-of-turn without re-reading the session file.
     imageBlocks: [] as MessageBlock[],
-    // Wired to opts.onSessionId so parsers can broadcast id changes the instant
-    // the CLI surfaces them (see emitSessionIdUpdate in agent/utils.ts).
     _emitSessionId: opts.onSessionId ?? null,
   };
 
@@ -288,9 +234,6 @@ export async function run(
   });
   agentLog(`[spawn] pid=${proc.pid}`);
   proc.stdin?.on('error', (e: any) => {
-    // Some CLIs can exit after producing all output before we finish writing
-    // stdin. Treat EPIPE as a normal early-close race; the exit code/stdout
-    // still determine the stream result.
     if (e?.code !== 'EPIPE') agentWarn(`[stdin] write failed: ${e?.message || e}`);
   });
   const abortStream = () => {
@@ -397,39 +340,26 @@ export async function run(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stream orchestration
-// ---------------------------------------------------------------------------
-
 function prepareStreamOpts(opts: StreamOpts): { prepared: StreamOpts; session: SessionWorkspaceInfo; attachments: string[]; stagedFiles: string[] } {
-  // For display fields (title / lastQuestion / lastMessageText) prefer the
-  // `/skillname` shorthand the user typed over the long expansion we
-  // synthesized for the agent — the expanded form is what the CLI consumes,
-  // but it shouldn't leak into session list previews or sidebar tabs.
   const displayPrompt = collapseSkillPrompt(opts.prompt) ?? opts.prompt;
-  const session = ensureSessionWorkspace({ agent: opts.agent, workdir: opts.workdir, sessionId: opts.sessionId, title: displayPrompt });
+  const resolvedInboundSessionId = opts.sessionId
+    ? resolveCanonicalSessionId(opts.workdir, opts.agent, opts.sessionId)
+    : opts.sessionId;
+  const session = ensureSessionWorkspace({ agent: opts.agent, workdir: opts.workdir, sessionId: resolvedInboundSessionId, title: displayPrompt });
   const importedFiles = importFilesIntoWorkspace(session.workspacePath, opts.attachments || []);
   const attachmentRelPaths = dedupeStrings([...session.record.stagedFiles, ...importedFiles]);
-  // Capture staged files for MCP bridge before clearing
   const stagedFiles = [...session.record.stagedFiles];
   session.record.stagedFiles = [];
-  // Remember this turn's attachments so dashboard fallbacks (called while the
-  // agent CLI hasn't yet flushed the user event to its native session file)
-  // can still render the user's image bubble. Cleared/overwritten at the
-  // start of the NEXT turn — always reflects the turn currently in flight.
   session.record.lastUserAttachments = [...attachmentRelPaths];
   if (!session.record.title) session.record.title = summarizePromptTitle(displayPrompt) || null;
   session.record.lastQuestion = shortValue(displayPrompt, 500);
   session.record.lastMessageText = shortValue(displayPrompt, 500);
   setSessionRunState(session.record, 'running', null);
-  // A turn starting clears any "waiting on background work" marker the previous
-  // turn parked — the session is plainly running again, not waiting.
   if (session.sessionId) clearAwaitResume(opts.workdir, opts.agent, session.sessionId);
   saveSessionRecord(opts.workdir, session.record);
 
   const attachmentPaths = attachmentRelPaths.map(relPath => path.join(session.workspacePath, relPath));
 
-  // For pending sessions, pass null sessionId to the CLI so it creates a new session
   const effectiveSessionId = isPendingSessionId(session.sessionId) ? null : session.sessionId;
 
   return {
@@ -458,17 +388,10 @@ function finalizeStreamResult(result: StreamResult, workdir: string, prompt: str
   if (result.sessionId) syncManagedSessionIdentity(session, workdir, result.sessionId);
   session.record.model = result.model || session.record.model;
   if (result.thinkingEffort) session.record.thinkingEffort = result.thinkingEffort;
-  // Remember whether this turn ran with Workflow on so the synthetic `ultra`
-  // rung re-folds for display after the live stream ends and on resume — the
-  // stored `thinkingEffort` stays the concrete rung (e.g. `max`). `undefined`
-  // (driver invoked outside the bot) leaves the prior value untouched.
   if (workflowEnabled !== undefined) session.record.workflowEnabled = workflowEnabled;
-  // Capture the BYOK Profile that was in effect for this run so a future
-  // `session.switch` can re-bind it (null = native CLI auth).
   try {
     session.record.profileId = getActiveProfileId(session.record.agent);
   } catch {
-    /* model layer not initialised in tests — leave profileId untouched */
   }
   const displayPrompt = collapseSkillPrompt(prompt) ?? prompt;
   if (!session.record.title) session.record.title = summarizePromptTitle(displayPrompt);
@@ -482,7 +405,6 @@ function finalizeStreamResult(result: StreamResult, workdir: string, prompt: str
   return { ...result, sessionId: session.sessionId, workspacePath: session.workspacePath };
 }
 
-// SessionWorkspaceInfo type (matches the internal type used by session.ts)
 interface SessionWorkspaceInfo {
   sessionId: string;
   workspacePath: string;
@@ -509,7 +431,6 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     };
   }
 
-  // Start MCP bridge for IM tools (when sendFile is available) and/or supplemental servers (browser, etc.)
   let bridge: import('./mcp/bridge.js').McpBridgeHandle | null = null;
   try {
     const { startMcpBridge, redactMcpConfigForLog } = await import('./mcp/bridge.js');
@@ -537,9 +458,6 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     agentWarn(`[mcp] bridge start failed: ${e.message} — proceeding without MCP`);
   }
 
-  // Apply BYOK injection (Provider/Profile from the model layer): merges env
-  // vars into prepared.extraEnv, overrides the per-agent model field, and
-  // hands argvAppend to drivers that consume it (Hermes via opts.extraEnv → its own argv builder).
   try {
     const injection = await resolveAgentInjection(prepared.agent);
     if (injection) {
@@ -566,9 +484,6 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       }
       agentLog(`[byok] ${injection.detail}`);
     }
-    // resolveAgentEffort (runtime-config) reads only the top-level hermesReasoningEffort
-    // field and cannot see the effort stored inside models.profiles[].effort. Override
-    // thinkingEffort here so the Profile's effort wins over the config default.
     const activeProfile = getActiveProfile(prepared.agent);
     if (activeProfile?.effort) {
       prepared.thinkingEffort = activeProfile.effort;
@@ -577,13 +492,6 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     agentWarn(`[byok] failed to apply Profile injection: ${e?.message || e}`);
   }
 
-  // In-memory-first: stamp the turn's resolved reasoning rung + Workflow opt-in
-  // onto the centralized index NOW — before the agent CLI has flushed its own
-  // session file — so the session list/composer reflect the user's pick during
-  // the very first turn instead of only after finalizeStreamResult. The managed
-  // record is the single source of truth for this metadata and links to the
-  // native agent-session by id on promotion; finalize re-stamps it (plus the
-  // actual model) authoritatively at turn end.
   try {
     if (prepared.thinkingEffort) {
       session.record.thinkingEffort = prepared.thinkingEffort.trim().toLowerCase() || session.record.thinkingEffort;
@@ -601,18 +509,9 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     if (opts.forkOf && !driver.capabilities?.fork) {
       throw new Error(`Agent ${prepared.agent} does not support fork`);
     }
-    // A background agent-CLI auto-update (`npm install -g` / `brew upgrade`, by
-    // this process OR the `npx pikiloom@latest` self-bootstrap) briefly removes
-    // the bin while it relinks; exec'ing into that window fails with exit 127
-    // "command not found". Wait out any in-flight reinstall of THIS agent before
-    // dispatching to the driver — this is the one chokepoint every agent turn
-    // (claude -p, claude TUI, codex app-server, gemini) passes through. No-op
-    // when nothing is updating.
     await awaitAgentUpdateIdle(prepared.agent, AGENT_UPDATE_TIMEOUTS.spawnWait);
     const result = await driver.doStream(prepared);
     const finalized = finalizeStreamResult(result, opts.workdir, opts.prompt, session, opts.claudeWorkflowEnabled);
-    // Once the child has its real session ID, link the lineage. We do this
-    // after finalize so the child record is persisted with its native ID.
     if (opts.forkOf && finalized.sessionId) {
       try {
         recordFork(opts.workdir, {
@@ -666,10 +565,6 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Driver delegation
-// ---------------------------------------------------------------------------
-
 export function getSessions(opts: SessionListOpts): Promise<SessionListResult> {
   const workdir = path.resolve(opts.workdir);
   agentLog(`[sessions] request agent=${opts.agent} workdir=${workdir} limit=${opts.limit ?? 'all'}`);
@@ -691,39 +586,13 @@ export function listModels(agent: Agent, opts: ModelListOpts = {}): Promise<Mode
   return getDriver(agent).listModels(opts);
 }
 
-/**
- * Detect a Provider whose baseURL is on the local machine (Ollama / mlx-lm
- * connected via `/api/local-models/connect`). Used only to bucket the entry
- * into the `'local'` group in the unified picker — runtime behaviour is
- * unchanged whether or not the baseURL is loopback.
- */
 function isLocalProviderBaseURL(baseURL: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::|\/|$)/i.test(baseURL);
 }
 
-/**
- * Resolve the model list a UI surface should show for `agent`.
- *
- * Returns a *union* of:
- *   1. The agent CLI's native model catalogue (no Profile required), tagged
- *      `group: 'native'`.
- *   2. Every Profile whose provider kind appears in the driver's
- *      `acceptedProviderKinds`, tagged `group: 'cloud'` (remote BYOK) or
- *      `group: 'local'` (loopback baseURL — Ollama / mlx-lm).
- *
- * The previous behaviour — filter to the active Profile's provider — meant
- * users could not switch *across* providers from the IM picker without first
- * unbinding through the dashboard. The unified list removes that step so
- * `/models` is a one-screen pick.
- *
- * Callers that need the strictly-native list (e.g. the dashboard agent card's
- * "Native" branch) should call `driver.listModels()` directly — this function
- * is for the unified picker.
- */
 export async function resolveAgentModels(agent: Agent, opts: ModelListOpts = {}): Promise<ModelListResult> {
   const driver = getDriver(agent);
 
-  // 1. Native — agent CLI's built-in catalogue.
   let nativeResult: ModelListResult;
   try {
     nativeResult = await driver.listModels(opts);
@@ -736,10 +605,6 @@ export async function resolveAgentModels(agent: Agent, opts: ModelListOpts = {})
     group: 'native',
   }));
 
-  // 2. BYOK Profiles compatible with this driver — grouped into cloud vs local
-  //    by baseURL. We never call the provider's /models endpoint here: that
-  //    list can run into the hundreds for OpenRouter and would drown the
-  //    picker. Profiles ARE the curated middle layer.
   const acceptedKinds = new Set(getAcceptedProviderKinds(agent));
   const cloud: ModelInfo[] = [];
   const local: ModelInfo[] = [];
@@ -776,26 +641,11 @@ export function getUsage(opts: UsageOpts): UsageResult {
   return getDriver(opts.agent).getUsage(opts);
 }
 
-/**
- * If the user has a BYOK Profile bound to `agent`, return its raw modelId
- * (e.g. "deepseek/deepseek-v4-flash"). Returns null when no profile is bound.
- * Used by display paths that need to show the profile's model rather than the
- * pikiloom user-config model (which may be stale or unrelated to the active profile).
- */
 export function getAgentBoundModelId(agent: Agent): string | null {
   const profile = getActiveProfile(agent);
   return profile?.modelId ?? null;
 }
 
-/**
- * Persist a model id to the active BYOK Profile for `agent`. Returns true when
- * the Profile was updated (caller should skip writing the legacy
- * `<agent>Model` user-config field), false when no Profile is bound.
- *
- * Hermes uses this as the *primary* persistence path because `hermes acp` does
- * not support runtime model switching via CLI flags — the only way to change
- * the model is the Profile (which the driver passes to ACP `session/set_model`).
- */
 export function setAgentBoundModelId(agent: Agent, modelId: string): boolean {
   const profile = getActiveProfile(agent);
   if (!profile) return false;

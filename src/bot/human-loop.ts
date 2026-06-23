@@ -1,7 +1,3 @@
-/**
- * Human-in-the-loop prompt state machine and answer helpers.
- */
-
 export interface HumanLoopOption {
   label: string;
   description?: string | null;
@@ -44,12 +40,6 @@ export interface HumanLoopPromptState<ChatId = number | string> {
   resolve: (response: Record<string, any> | null) => void;
   reject: (error: Error) => void;
   messageIds: Array<number | string>;
-  /**
-   * Internal pickers (channel-local command UIs) borrow the human-loop state
-   * machine without being a real "agent asked a question" event. When true,
-   * the post-resolution decision-echo hook is suppressed so /agents et al.
-   * don't surface "✓ Answered · agent.switch" noise.
-   */
   silent?: boolean;
 }
 
@@ -172,27 +162,18 @@ export function buildHumanLoopResponse(prompt: HumanLoopPromptState): Record<str
   return prompt.resolveWith(answers);
 }
 
-/**
- * Lifecycle status of a resolved prompt — used by channels to pick the right
- * rendering (closed card vs cancelled card vs echo-only).
- */
 export type ResolvedHumanLoopStatus = 'answered' | 'cancelled';
 
 export interface ResolvedHumanLoopRow {
-  /** Header label for the question, or the question prompt if no header. */
   label: string;
-  /** Friendly display value (the option label when known, else the value). */
   display: string;
-  /** True when this question was explicitly skipped. */
   skipped: boolean;
-  /** True when the channel should treat the value as a secret. */
   secret: boolean;
 }
 
 export interface ResolvedHumanLoopAnswers {
   status: ResolvedHumanLoopStatus;
   rows: ResolvedHumanLoopRow[];
-  /** Compact one-line answer summary suitable for echo messages. */
   display: string;
 }
 
@@ -201,11 +182,6 @@ function displayValueForOption(question: HumanLoopQuestion, value: string): stri
   return match?.label || value;
 }
 
-/**
- * Build a channel-agnostic summary of a prompt's resolved answers. Used by the
- * base bot's `onInteractionAnswered` hook so each channel renders the same
- * closed-state view + echo message without diverging.
- */
 export function summarizeResolvedHumanLoopAnswers(
   prompt: HumanLoopPromptState,
   status: ResolvedHumanLoopStatus = 'answered',

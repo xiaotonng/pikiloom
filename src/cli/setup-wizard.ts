@@ -1,7 +1,3 @@
-/**
- * Interactive terminal setup wizard.
- */
-
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import type { Agent, AgentInfo } from '../agent/index.js';

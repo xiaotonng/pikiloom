@@ -1,37 +1,6 @@
-/**
- * MCP server catalog — single source of truth for what the Dashboard shows
- * under Extensions → MCP.
- *
- * ─── How this plugs into the rest of the stack ───────────────────────────────
- *
- *   Dashboard → GET /api/extensions/mcp/catalog
- *     → dashboard/routes/extensions.ts
- *       → agent/mcp/extensions.ts      (merge + state computation)
- *         → agent/mcp/registry.ts      (types + re-exports this array)
- *           ← src/catalog/mcp-servers.ts ← YOU ARE HERE
- *
- * The registry module owns types and helper functions (install / OAuth / health).
- * This file owns only the *data*. To add a new MCP server, append an entry here
- * and the whole pipeline picks it up. To hide an entry, remove/comment it out —
- * users who already installed it keep their setup; we only stop recommending.
- *
- * ─── recommendedScope ────────────────────────────────────────────────────────
- *
- *   'global'    — account-level SaaS (GitHub, Atlassian, …). Shown in the
- *                 Extensions tab; hidden from the Workspace modal.
- *   'workspace' — tools that depend on project context (Filesystem, SQLite,
- *                 Postgres). Shown in the Workspace modal; hidden globally.
- *   'both'      — useful in either place (rarely needed; avoid unless obvious).
- *
- * Generic protocol-demo servers (time / fetch / memory from @modelcontextprotocol)
- * were intentionally removed — they don't carry a product identity and added
- * clutter rather than value.
- */
-
 import type { RecommendedMcpServer } from '../agent/mcp/registry.js';
 
 export const MCP_SERVERS: RecommendedMcpServer[] = [
-  // ── Built-in (pikiloom-managed) ────────────────────────────────────────────
   {
     id: 'pikiloom-browser',
     name: 'Browser Automation',
@@ -60,7 +29,6 @@ export const MCP_SERVERS: RecommendedMcpServer[] = [
     isBuiltin: true,
   },
 
-  // ── Local filesystems / databases (workspace scope) ────────────────────────
   {
     id: 'filesystem',
     name: 'Filesystem',
@@ -104,7 +72,6 @@ export const MCP_SERVERS: RecommendedMcpServer[] = [
     iconSlug: 'postgres',
   },
 
-  // ── Global-scope SaaS with MCP-OAuth ───────────────────────────────────────
   {
     id: 'github',
     name: 'GitHub',
@@ -166,7 +133,6 @@ export const MCP_SERVERS: RecommendedMcpServer[] = [
     homepage: 'https://docs.sentry.io/product/sentry-mcp/',
   },
 
-  // ── Cloudflare trio (control plane / observability / docs) ─────────────────
   {
     id: 'cloudflare-bindings',
     name: 'Cloudflare',
@@ -204,7 +170,6 @@ export const MCP_SERVERS: RecommendedMcpServer[] = [
     homepage: 'https://developers.cloudflare.com/agents/model-context-protocol/',
   },
 
-  // ── More SaaS integrations ─────────────────────────────────────────────────
   {
     id: 'gamma',
     name: 'Gamma',
@@ -254,7 +219,6 @@ export const MCP_SERVERS: RecommendedMcpServer[] = [
     homepage: 'https://open.feishu.cn/document/mcp',
   },
 
-  // ── Remote + API key ───────────────────────────────────────────────────────
   {
     id: 'stripe',
     name: 'Stripe',

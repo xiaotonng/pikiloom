@@ -3,7 +3,6 @@ import { normalizeUserText, sameUserText } from '../dashboard/src/pages/sessions
 
 describe('sameUserText (image-dedup whitespace robustness)', () => {
   it('matches a multi-line prompt against its whitespace-collapsed transcript form', () => {
-    // pendingPrompt keeps raw newlines; the Claude loader stores `\s+ → ' '`.
     const raw = 'What is in this image?\nAlso, what does the README say?';
     const collapsed = 'What is in this image? Also, what does the README say?';
     expect(sameUserText(raw, collapsed)).toBe(true);

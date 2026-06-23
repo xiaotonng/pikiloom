@@ -12,7 +12,6 @@ function conversation(turns: number): TailMessage[] {
 
 describe('applyTurnWindow', () => {
   it('returns a windowed slice with pagination metadata and returns all turns when no window is requested', () => {
-    // returns a stable turn window with pagination metadata
     const windowed = applyTurnWindow(conversation(4), { turnOffset: 1, turnLimit: 2 });
     expect(windowed.ok).toBe(true);
     expect(windowed.totalTurns).toBe(4);
@@ -39,7 +38,6 @@ describe('applyTurnWindow', () => {
       endTurn: 3,
     });
 
-    // returns all turns when no window is requested
     const all = applyTurnWindow(conversation(3), {});
     expect(all.ok).toBe(true);
     expect(all.messages).toHaveLength(6);

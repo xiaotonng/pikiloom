@@ -1,8 +1,3 @@
-/**
- * Unit tests for LivePreview — ensures that repeated edit failures abandon the
- * placeholder so the bot can fall back to a fresh card instead of forever
- * editing into the void.
- */
 import { describe, expect, it, vi } from 'vitest';
 import { LivePreview, type LivePreviewRenderer, type PreviewChannel } from '../src/channels/telegram/live-preview.ts';
 
@@ -27,7 +22,6 @@ async function flush(preview: LivePreview) {
 
 describe('LivePreview placeholder lifecycle', () => {
   it('abandons on consecutive failures, resets counter on success, and no-ops without a placeholder', async () => {
-    // abandons placeholder after consecutive edit failures
     {
       const { channel, editMessage } = createChannel();
       editMessage.mockRejectedValue(Object.assign(new Error('edit card failed: code=230020'), { feishuEditFailed: true }));
@@ -56,7 +50,6 @@ describe('LivePreview placeholder lifecycle', () => {
       expect(preview.isPlaceholderAbandoned()).toBe(true);
       const callsAtAbandon = editMessage.mock.calls.length;
 
-      // Further updates should NOT keep editing — we gave up.
       preview.update('text-4', '', '');
       await flush(preview);
       preview.update('text-5', '', '');
@@ -64,7 +57,6 @@ describe('LivePreview placeholder lifecycle', () => {
       expect(editMessage.mock.calls.length).toBe(callsAtAbandon);
     }
 
-    // resets the failure counter on a successful edit (transient blips do not poison the run)
     {
       const { channel, editMessage } = createChannel();
       editMessage
@@ -94,7 +86,6 @@ describe('LivePreview placeholder lifecycle', () => {
       expect(preview.isPlaceholderAbandoned()).toBe(false);
     }
 
-    // does nothing when no placeholder was created
     {
       const { channel, editMessage } = createChannel();
       const preview = new LivePreview({

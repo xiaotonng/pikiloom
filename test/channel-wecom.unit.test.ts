@@ -1,7 +1,3 @@
-/**
- * Unit tests for WeComChannel — exercises the pure protocol methods
- * (handleFrame, handleMsgCallback, send) without opening a real WebSocket.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WeComChannel } from '../src/channels/wecom/channel.ts';
 
@@ -37,7 +33,6 @@ afterEach(() => {
 
 describe('WeComChannel frame parsing and send', () => {
   it('handles heartbeat ack, routes callbacks, dedups, enforces allowlists, and uses correct send commands', async () => {
-    // clears missedPong on heartbeat ack
     {
       const ch = new WeComChannel({ botId: 'bot-1', botSecret: 'sec-1' });
       (ch as any).missedPong = 2;
@@ -45,7 +40,6 @@ describe('WeComChannel frame parsing and send', () => {
       expect((ch as any).missedPong).toBe(0);
     }
 
-    // routes aibot_msg_callback to message handlers and stores reqId for reply
     {
       const ch = new WeComChannel({ botId: 'bot-1', botSecret: 'sec-1' });
       const seen: any[] = [];
@@ -65,12 +59,10 @@ describe('WeComChannel frame parsing and send', () => {
         },
       });
 
-      // Allow the async dispatchInbound to flush.
       await new Promise(r => setImmediate(r));
       expect(seen).toEqual([{ text: 'hi pikiloom', chatId: 'group-99', reqId: 'srv-1' }]);
     }
 
-    // dedups duplicate msgids
     {
       const ch = new WeComChannel({ botId: 'bot-1', botSecret: 'sec-1' });
       const seen: any[] = [];
@@ -93,7 +85,6 @@ describe('WeComChannel frame parsing and send', () => {
       expect(seen.length).toBe(1);
     }
 
-    // respects allowedUserIds
     {
       const ch = new WeComChannel({
         botId: 'bot-1',
@@ -118,12 +109,10 @@ describe('WeComChannel frame parsing and send', () => {
       expect(seen).toEqual([]);
     }
 
-    // uses aibot_respond_msg with the original req_id for the first reply
     {
       const ch = new WeComChannel({ botId: 'bot-1', botSecret: 'sec-1' });
       const { sent } = attachFakeWs(ch);
 
-      // Prime chatMeta as if a callback had arrived.
       (ch as any).chatMeta.set('group-1', { pendingReqId: 'orig-req' });
       await ch.send('group-1', 'reply 1');
 
@@ -135,24 +124,19 @@ describe('WeComChannel frame parsing and send', () => {
       expect(sent[0].body.stream).toMatchObject({ finish: true, content: 'reply 1' });
     }
 
-    // switches to aibot_send_msg for follow-up sends in the same chat
     {
       const ch = new WeComChannel({ botId: 'bot-1', botSecret: 'sec-1' });
       const { sent, fakeWs } = attachFakeWs(ch);
       (ch as any).chatMeta.set('group-1', { pendingReqId: 'orig-req' });
 
-      // First send consumes the pending req_id.
       await ch.send('group-1', 'reply 1');
       expect(sent[0].cmd).toBe('aibot_respond_msg');
 
-      // For the second call we resolve the ack synchronously by handling the
-      // response frame the moment the channel writes it.
       fakeWs.send.mockImplementationOnce((payload: string, cb: any) => {
         const frame = JSON.parse(payload);
         sent.push(frame);
         cb();
         const reqId = frame.headers.req_id;
-        // Server ack: response frame with same req_id and errcode 0.
         queueMicrotask(() => (ch as any).handleFrame({ headers: { req_id: reqId }, errcode: 0 }));
       });
 

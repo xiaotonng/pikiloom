@@ -2,17 +2,9 @@ import type { UsageResult } from '../types';
 import { formatCapturedAt, formatResetShort, resetSecondsFor, usageWindowTone } from '../usage';
 import { USAGE_TONE_COLOR } from './UsageRing';
 
-/**
- * UsageTooltipContent — the hover panel behind every usage indicator: one row
- * per rate-limit window (label · bar · percent · reset countdown) plus an
- * "as of" footer. Countdowns are anchored to the absolute reset timestamp,
- * so they stay correct even when the snapshot itself is stale.
- */
 export function UsageTooltipContent({ usage, t, title }: {
   usage: UsageResult | null;
   t: (key: string) => string;
-  /** Optional header line — used where the surrounding UI doesn't already
-   *  name the account the numbers belong to (e.g. the global header). */
   title?: string;
 }) {
   if (!usage?.ok || !usage.windows.length) {

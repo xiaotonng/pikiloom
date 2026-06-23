@@ -1,39 +1,14 @@
-/**
- * Skill installer — wrapper around `npx skills` CLI.
- *
- * Skills are installed via the community-standard `npx skills add` command.
- * Global skills go to ~/.pikiloom/skills/, project skills to <workdir>/.pikiloom/skills/.
- *
- * The upstream CLI doesn't recognize `pikiloom` as an agent, so we install with
- * `--agent claude-code` (the driver pikiloom runs by default) and rely on
- * ~/.claude/skills → ~/.pikiloom/skills being symlinked to the same directory.
- */
-
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { STATE_DIR_NAME } from '../core/constants.js';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface SkillInstallOpts {
-  /** Install globally (all projects) or project-scoped. */
   global?: boolean;
-  /** If the repo has multiple skills, install a specific one. */
   skill?: string;
-  /** Project working directory (required for project-scoped installs). */
   workdir?: string;
-  /**
-   * Default-branch HEAD commit SHA the skill is being pulled from. Recorded in
-   * the provenance ledger on success so the dashboard can later diff it against
-   * the remote and surface "update available". Resolved by the caller (the
-   * route layer owns GitHub access); omit when unknown.
-   */
   sourceSha?: string | null;
-  /** Skill directory names pulled from this source, recorded for display. */
   sourceNames?: string[];
 }
 
@@ -48,39 +23,16 @@ export interface SkillRemoveResult {
   error?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const GLOBAL_SKILLS_DIR = path.join(os.homedir(), STATE_DIR_NAME, 'skills');
 const INSTALL_TIMEOUT_MS = 60_000;
 const REMOVE_TIMEOUT_MS = 10_000;
 
-// ---------------------------------------------------------------------------
-// Install ledger — provenance for update detection
-//
-// `npx skills add` drops skill directories but records no source or version, so
-// there's nothing to diff a local install against a moving remote. We keep a
-// sidecar ledger next to the skills (one per scope: global beside
-// ~/.pikiloom/skills, project beside <workdir>/.pikiloom/skills) mapping each
-// installed collection (its GitHub source) to the default-branch commit SHA it
-// was pulled from. The dashboard reads the live remote HEAD, diffs it against
-// the ledger to surface "update available", then re-runs install to advance it.
-//
-// The file is a hidden sibling of the skill dirs; skill discovery and removal
-// only ever touch named sub-directories, so it's invisible to both.
-// ---------------------------------------------------------------------------
-
 const SKILL_LEDGER_FILE = '.pikiloom-skills-ledger.json';
 
 export interface SkillLedgerEntry {
-  /** Original source as given to `skills add` (owner/repo or a full URL). */
   source: string;
-  /** Default-branch HEAD SHA at install time; null when it couldn't be resolved. */
   sha: string | null;
-  /** Epoch ms of the install/update that wrote this entry. */
   installedAt: number;
-  /** Skill directory names pulled from this source, when known. */
   names?: string[];
 }
 
@@ -97,7 +49,6 @@ function ledgerPath(opts: LedgerScope): string | null {
   return null;
 }
 
-/** Normalize a source to a stable key: lowercase `owner/repo`, URL/.git stripped. */
 export function normalizeSkillSourceKey(source: string): string {
   return String(source || '')
     .trim()
@@ -115,7 +66,7 @@ function readLedger(opts: LedgerScope): SkillLedger {
     if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
       return { version: 1, entries: parsed.entries as Record<string, SkillLedgerEntry> };
     }
-  } catch { /* missing or corrupt — treat as empty */ }
+  } catch {  }
   return { version: 1, entries: {} };
 }
 
@@ -125,17 +76,15 @@ function writeLedger(ledger: SkillLedger, opts: LedgerScope): void {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(ledger, null, 2));
-  } catch { /* best effort — provenance is non-critical */ }
+  } catch {  }
 }
 
-/** Look up the recorded provenance for a source in the given scope. */
 export function getSkillLedgerEntry(source: string, opts: LedgerScope): SkillLedgerEntry | null {
   const key = normalizeSkillSourceKey(source);
   if (!key) return null;
   return readLedger(opts).entries[key] || null;
 }
 
-/** Record (or refresh) the provenance for a source after a successful install/update. */
 export function recordSkillInstall(
   source: string,
   opts: LedgerScope & { sha?: string | null; names?: string[] },
@@ -153,7 +102,6 @@ export function recordSkillInstall(
   writeLedger(ledger, opts);
 }
 
-/** Drop a source's provenance — call when its skills are removed. */
 export function forgetSkillInstall(source: string, opts: LedgerScope): void {
   const key = normalizeSkillSourceKey(source);
   if (!key) return;
@@ -164,16 +112,6 @@ export function forgetSkillInstall(source: string, opts: LedgerScope): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Make sure the global skills directory exists, and that the agent-specific
- * dirs that the upstream skills CLI writes to (`~/.claude/skills`,
- * `~/.agents/skills`) resolve back to it. This is what lets us install with
- * `--agent claude-code` and still read the results from `~/.pikiloom/skills`.
- */
 function ensureGlobalSkillsDir(): void {
   fs.mkdirSync(GLOBAL_SKILLS_DIR, { recursive: true });
   for (const linkDir of [
@@ -186,13 +124,12 @@ function ensureGlobalSkillsDir(): void {
         const real = fs.realpathSync(linkDir);
         if (real === fs.realpathSync(GLOBAL_SKILLS_DIR)) continue;
       }
-      // Existing dir/link doesn't match — leave it alone rather than destroy user data.
       continue;
     } catch {
       try {
         fs.mkdirSync(path.dirname(linkDir), { recursive: true });
         fs.symlinkSync(GLOBAL_SKILLS_DIR, linkDir, 'dir');
-      } catch { /* best effort */ }
+      } catch {  }
     }
   }
 }
@@ -211,20 +148,10 @@ function runNpx(args: string[], cwd: string, timeoutMs: number): Promise<{ ok: b
         stderr: stderr?.toString() || '',
       });
     });
-    // Prevent child from keeping parent alive
     child.unref?.();
   });
 }
 
-// ---------------------------------------------------------------------------
-// Install
-// ---------------------------------------------------------------------------
-
-/**
- * Install a skill from a source (GitHub owner/repo, URL, or local path).
- *
- * Uses `npx skills add <source>` with appropriate flags.
- */
 export async function installSkill(source: string, opts: SkillInstallOpts = {}): Promise<SkillInstallResult> {
   const { global: isGlobal, skill, workdir } = opts;
 
@@ -251,8 +178,6 @@ export async function installSkill(source: string, opts: SkillInstallOpts = {}):
     return { ok: false, error: errorMsg, output: result.stdout + result.stderr };
   }
 
-  // Record provenance so the dashboard can later detect remote updates. Scoped
-  // to where the skill landed; best-effort, never fails the install.
   recordSkillInstall(source, {
     global: isGlobal,
     workdir,
@@ -263,14 +188,6 @@ export async function installSkill(source: string, opts: SkillInstallOpts = {}):
   return { ok: true, output: result.stdout };
 }
 
-// ---------------------------------------------------------------------------
-// Remove
-// ---------------------------------------------------------------------------
-
-/**
- * Remove an installed skill by name.
- * Deletes the skill directory from the appropriate location.
- */
 export function removeSkill(skillName: string, opts: { global?: boolean; workdir?: string } = {}): SkillRemoveResult {
   const { global: isGlobal, workdir } = opts;
 
@@ -278,7 +195,6 @@ export function removeSkill(skillName: string, opts: { global?: boolean; workdir
     return { ok: false, error: 'workdir is required for project-scoped skill removal' };
   }
 
-  // Security: prevent path traversal — skill name must be a plain directory name
   const sanitized = path.basename(skillName);
   if (!sanitized || sanitized === '.' || sanitized === '..' || sanitized !== skillName) {
     return { ok: false, error: 'invalid skill name' };
@@ -289,7 +205,6 @@ export function removeSkill(skillName: string, opts: { global?: boolean; workdir
     : path.join(workdir!, STATE_DIR_NAME, 'skills');
   const skillDir = path.join(parentDir, sanitized);
 
-  // Double-check the resolved path is inside the expected parent
   const realParent = path.resolve(parentDir);
   const realSkill = path.resolve(skillDir);
   if (!realSkill.startsWith(realParent + path.sep)) {
@@ -307,17 +222,9 @@ export function removeSkill(skillName: string, opts: { global?: boolean; workdir
   }
 }
 
-// ---------------------------------------------------------------------------
-// List installed (enhanced)
-// ---------------------------------------------------------------------------
-
 export function getGlobalSkillsDir(): string {
   return GLOBAL_SKILLS_DIR;
 }
-
-// ---------------------------------------------------------------------------
-// Check for updates
-// ---------------------------------------------------------------------------
 
 export async function checkSkillUpdates(opts: { global?: boolean; workdir?: string } = {}): Promise<SkillInstallResult> {
   const cwd = opts.global ? os.homedir() : (opts.workdir || process.cwd());

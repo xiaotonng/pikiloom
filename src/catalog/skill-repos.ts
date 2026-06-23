@@ -1,36 +1,6 @@
-/**
- * Skill repository catalog — single source of truth for what the Dashboard
- * shows under Extensions → Skills.
- *
- * ─── How this plugs into the rest of the stack ───────────────────────────────
- *
- *   Dashboard → GET /api/extensions/skills/catalog
- *     → dashboard/routes/extensions.ts
- *       → agent/mcp/registry.ts              (types + re-exports this array)
- *       → agent/skills.ts                    (locally-installed discovery)
- *       → agent/skill-installer.ts           (`npx skills add …` runner)
- *         ← src/catalog/skill-repos.ts       ← YOU ARE HERE
- *
- * ─── Curation policy ─────────────────────────────────────────────────────────
- *
- * Every entry below is a real, public GitHub repo. Authority signal is GitHub
- * stars — the dashboard fetches `stars` / `pushedAt` at load time and sorts the
- * cards by star count, so "more popular = appears higher". Don't add fictional
- * placeholder entries; if a repo isn't real and starred, users hit a 404 the
- * moment they click Install.
- *
- * ─── How to add a skill pack ─────────────────────────────────────────────────
- *
- *   Append a `RecommendedSkillRepo` entry with `source` set to an `owner/repo`
- *   GitHub slug (or full URL). The install flow runs `npx skills add <source>`
- *   and drops the skill into `~/.pikiloom/skills/` for global installs, or
- *   `<workdir>/.pikiloom/skills/` for project installs.
- */
-
 import type { RecommendedSkillRepo } from '../agent/mcp/registry.js';
 
 export const SKILL_REPOS: RecommendedSkillRepo[] = [
-  // ── Official / first-party ────────────────────────────────────────────────
   {
     id: 'pikiloom-skills',
     name: 'Pikiloom Skills',
@@ -40,7 +10,6 @@ export const SKILL_REPOS: RecommendedSkillRepo[] = [
     category: 'productivity',
     recommendedScope: 'both',
     homepage: 'https://github.com/xiaotonng/pikiloom-skills',
-    // First-party pack: keep it at the top even before it accrues stars.
     pinned: true,
   },
   {
@@ -64,7 +33,6 @@ export const SKILL_REPOS: RecommendedSkillRepo[] = [
     homepage: 'https://github.com/vercel-labs/agent-skills',
   },
 
-  // ── High-signal community collections (awesome-lists / megapacks) ─────────
   {
     id: 'obra-superpowers',
     name: 'Obra Superpowers',
@@ -116,7 +84,6 @@ export const SKILL_REPOS: RecommendedSkillRepo[] = [
     homepage: 'https://github.com/alirezarezvani/claude-skills',
   },
 
-  // ── Domain-specific high-quality skills ───────────────────────────────────
   {
     id: 'planning-with-files',
     name: 'Planning with Files',

@@ -33,12 +33,6 @@ export interface UsageResult {
   error: string | null;
 }
 
-/**
- * Read-only snapshot of an agent's *external* configuration (e.g. Hermes'
- * ~/.hermes/config.yaml). Pikiloom never writes to the source — this is
- * surfaced only so the dashboard can display what an unbound agent will
- * actually run with.
- */
 export interface AgentNativeConfig {
   model: string;
   provider: string;
@@ -48,12 +42,6 @@ export interface AgentNativeConfig {
   source: string;
 }
 
-/**
- * How an agent's CLI is installed. Mirrors the server's AgentInstallSpec.
- * `method: 'manual'` agents (e.g. Hermes, a Python CLI installed via its own
- * script) can't be npm-installed by pikiloom — the dashboard shows the
- * copyable `command` + `docsUrl` instead of a one-click Install button.
- */
 export interface AgentInstallInfo {
   method: 'npm' | 'manual';
   command: string;
@@ -62,36 +50,19 @@ export interface AgentInstallInfo {
 }
 
 export interface AgentRuntimeStatus extends AgentInfo {
-  /** Install descriptor (npm vs manual). Drives the install affordance. */
   install?: AgentInstallInfo | null;
   selectedModel: string | null;
   selectedEffort: string | null;
-  /** Native-auth model/effort, independent of any active BYOK Profile.
-   *  AgentTab uses these when the user toggles a card back to "Native"
-   *  provider, so a previously-active BYOK model id doesn't leak in as the
-   *  initial value of the native-mode model field. */
   nativeSelectedModel?: string | null;
   nativeSelectedEffort?: string | null;
-  /** Whether multi-agent Workflow orchestration is enabled for this agent. */
   workflowEnabled?: boolean;
-  /** Claude access mode: 'subscription' (TUI → Pro/Max quota) or 'api'
-   *  (`claude -p` → Agent SDK credits). Only present for the claude agent. */
   claudeAccessMode?: 'subscription' | 'api';
   isDefault: boolean;
   models: ModelInfo[];
   usage: UsageResult | null;
-  /** Driver-supplied snapshot of the agent's external config, when applicable. */
   nativeConfig?: AgentNativeConfig | null;
-  /** Static driver capability flags, e.g. fork support. */
   capabilities?: { fork?: boolean; modelSwitch?: boolean; workflow?: boolean };
-  /** BYOK provider name (e.g. "OpenRouter") when this agent has a Profile
-   *  bound; null otherwise. Drives the dashboard "via <provider>" tag on
-   *  turns where the bound model id matches the saved turn's model. */
   byokProviderName?: string | null;
-  /** Cached model list of the BYOK-bound provider (from `/models`). Surfaced
-   *  separately from the native `models` field so AgentTab can still list the
-   *  CLI's native catalogue when the user previews the "native" provider.
-   *  InputComposer's cascade prefers this when `byokProviderName` is set. */
   byokModels?: { id: string; alias: string | null }[] | null;
   latestVersion?: string | null;
   updateAvailable?: boolean;
@@ -243,10 +214,6 @@ export interface HostInfo {
   battery?: { percent: string; state: string };
 }
 
-// ---------------------------------------------------------------------------
-// Local model backends (Ollama / mlx-lm)
-// ---------------------------------------------------------------------------
-
 export type LocalBackendId = 'ollama' | 'mlx';
 export type LocalBackendOs = 'darwin' | 'linux' | 'win';
 
@@ -270,15 +237,11 @@ export interface LocalBackendStatus {
   baseURL: string;
   openAIBaseURL: string;
   models: Array<{ id: string; sizeBytes?: number }>;
-  /** Provider id (in the BYOK layer) already pointing at this backend, if any. */
   existingProviderId: string | null;
   homepage: string;
   install: LocalBackendInstallSpec;
-  /** How to start the server after install. */
   runHint: LocalBackendInstallCommand;
-  /** Template for "pull/load a model". `${model}` is substituted client-side. */
   pullCommandTemplate: string;
-  /** False when the current OS isn't in the backend's supported set (e.g. mlx on Linux). */
   supportedOnThisOs: boolean;
 }
 
@@ -302,24 +265,16 @@ export interface LocalModelsProbeResponse {
   backends?: LocalBackendStatus[];
   catalog?: LocalModelCatalogEntry[];
   currentOs?: LocalBackendOs;
-  /** Provider ids that were created during this probe (auto-attach result).
-   *  When non-empty the dashboard should refetch the upper Model Providers
-   *  / agent state so the new local provider appears immediately. */
   addedProviderIds?: string[];
   error?: string;
 }
 
-/**
- * Single selectable option in a human-in-the-loop interaction question.
- * Mirrors AgentInteractionOption from the server.
- */
 export interface InteractionOption {
   label: string;
   description?: string | null;
   value: string;
 }
 
-/** A single question presented in a human-in-the-loop interaction prompt. */
 export interface InteractionQuestion {
   id: string;
   header: string;
@@ -330,19 +285,12 @@ export interface InteractionQuestion {
   allowEmpty?: boolean;
 }
 
-/**
- * Serialisable snapshot of an active human-in-the-loop prompt. Mirrors the
- * server's InteractionSnapshot — surfaces in session stream snapshots so the
- * dashboard can render the matching popup.
- */
 export interface InteractionSnapshot {
   promptId: string;
   kind: 'user-input' | 'permission' | 'confirmation';
   title: string;
   hint?: string | null;
   questions: InteractionQuestion[];
-  /** 0-based index of the question currently awaiting an answer. Used by the
-   *  client to render the active question on initial load / reconnect. */
   currentIndex?: number;
 }
 
@@ -354,15 +302,11 @@ export interface SessionInfo {
   isCurrent?: boolean;
   model?: string;
   thinkingEffort?: string | null;
-  /** Whether the last turn ran with Workflow on — folds `thinkingEffort` to the
-   *  synthetic `ultra` rung for display (see foldUltraEffort). */
   workflowEnabled?: boolean | null;
   workdir?: string;
   runState: 'running' | 'completed' | 'incomplete';
   runDetail?: string | null;
   runUpdatedAt?: string | null;
-  /** Set when the session parked on detached background work it intends to
-   *  resume — drives the "waiting" display state. Null/absent otherwise. */
   awaiting?: { reason: string; since: string } | null;
   agent?: string;
   lastQuestion?: string | null;
@@ -383,13 +327,10 @@ export interface SessionInfo {
   numTurns?: number | null;
 }
 
-/** Reference to a related session (migration twin or fork child/parent). */
 export interface SessionLineageRef {
   agent: Agent;
   sessionId: string;
-  /** 'fork' = branch off at a turn, 'migrate' = cross-agent twin (default). */
   kind?: 'migrate' | 'fork';
-  /** 0-based turn index where the fork occurred (set on `migratedFrom` only). */
   forkedAtTurn?: number;
 }
 
@@ -426,6 +367,7 @@ export interface SessionHubResult {
   statusCounts: Record<string, number>;
   total: number;
   errors: string[];
+  promotions?: Record<string, string>;
 }
 
 export interface SessionsPageResult {
@@ -457,26 +399,17 @@ export interface MessageBlock {
   phase?: 'commentary' | 'final_answer';
   plan?: StreamPlan | null;
   subAgent?: StreamSubAgent | null;
-  /** Image block: authoritative on-disk path (server-side, opaque to client). */
   imagePath?: string;
-  /** Image block: MIME type. */
   imageMime?: string;
-  /** Image block: optional caption (e.g. Codex `revised_prompt`). */
   imageCaption?: string;
-  /** File block: server-side on-disk path (opaque to client). */
+  imageCaptionKind?: 'prompt' | 'caption';
   filePath?: string;
-  /** File block: MIME type. */
   fileMime?: string;
-  /** File block: display name (the artifact's original basename). */
   fileName?: string;
-  /** File block: size in bytes (for the download chip). */
   fileSize?: number;
-  /** File block: optional caption supplied at delivery time. */
   fileCaption?: string;
 }
 
-/** A file delivered to the user mid-turn, carried live on the stream snapshot.
- *  `content`/`url` already point at the dashboard attachment endpoint. */
 export interface SnapshotArtifact {
   url: string;
   fileName: string;
@@ -490,8 +423,6 @@ export interface RichMessage {
   role: 'user' | 'assistant';
   text: string;
   blocks: MessageBlock[];
-  /** Per-turn token usage snapshot for assistant messages. Null when the
-   *  driver does not surface per-message usage (Codex, Gemini). */
   usage?: StreamPreviewMeta | null;
 }
 
@@ -509,30 +440,15 @@ export interface StreamPreviewMeta {
   inputTokens: number | null;
   outputTokens: number | null;
   cachedInputTokens: number | null;
-  /** Single-call context window occupancy. Use this for "% of context used"
-   *  displays — the cumulative inputTokens/cachedInputTokens fields above
-   *  double-count the same cached prefix on every tool roundtrip. */
   contextUsedTokens?: number | null;
   contextPercent: number | null;
-  /** Output tokens generated across ALL LLM calls of the turn. Unlike
-   *  `outputTokens` (per-call, resets on every tool roundtrip), this only
-   *  climbs — drives the lightweight "↑n" chip in the turn header. */
   turnOutputTokens?: number | null;
   subAgents?: StreamSubAgent[];
-  /** BYOK provider name (e.g. "OpenRouter") when the agent is bound to a
-   *  Profile; absent for native-auth turns. Drives the "via <provider>" tag. */
   providerName?: string | null;
-  /** Number of image-generation calls currently in flight for this turn.
-   *  Renderers show a "Generating image…" indicator while > 0. */
   generatingImages?: number;
-  /** Structured tool invocations of the current turn (most recent last,
-   *  bounded). When present, the live activity card renders these as
-   *  click-to-expand rows with input/result detail; otherwise it falls back
-   *  to the flat activity summary lines. */
   toolCalls?: StreamToolCall[];
 }
 
-/** A live tool invocation with bounded expandable detail. */
 export interface StreamToolCall {
   id: string;
   name: string;
@@ -576,7 +492,6 @@ export type BrowserProfileStatus = 'disabled' | 'ready' | 'needs_setup' | 'chrom
 export interface BrowserStatus {
   status: BrowserProfileStatus;
   enabled: boolean;
-  /** External CDP endpoint (PIKILOOM_BROWSER_CDP_URL) when attaching to a remote Chrome; null for local managed mode. */
   remoteCdpUrl?: string | null;
   headlessMode: 'headless' | 'headed';
   chromeInstalled: boolean;
@@ -604,10 +519,6 @@ export interface SkillInfo {
   scope?: 'global' | 'project';
   mcpRequires?: string[];
 }
-
-// ---------------------------------------------------------------------------
-// MCP Extensions
-// ---------------------------------------------------------------------------
 
 export interface McpServerConfig {
   type?: 'stdio' | 'http';
@@ -711,13 +622,9 @@ export interface SkillCatalogItem {
   iconUrl?: string;
   totalCount?: number;
   partial?: boolean;
-  /** First-party packs float above the star-sorted list. */
   pinned?: boolean;
-  /** True when the installed collection is behind the remote default branch. */
   updateAvailable?: boolean;
-  /** Commit SHA recorded at install time. */
   installedSha?: string | null;
-  /** Remote default-branch HEAD SHA at catalog-load time. */
   latestSha?: string | null;
 }
 
@@ -762,10 +669,6 @@ export interface LsDirResult {
   error?: string;
 }
 
-// ---------------------------------------------------------------------------
-// CLI Extensions
-// ---------------------------------------------------------------------------
-
 export type CliCategory = 'dev' | 'cloud' | 'data' | 'commerce' | 'social' | 'content';
 export type CliState = 'not_installed' | 'installed_not_auth' | 'ready' | 'unknown';
 export type CliAuthType = 'oauth-web' | 'token' | 'none';
@@ -785,7 +688,6 @@ export interface CliInstallSpec {
 export interface CliAuthSpec {
   type: CliAuthType;
   statusArgv?: string[];
-  /** statusArgv stdout must match this pattern for the CLI to be considered authed. */
   statusReadyPattern?: string;
   loginArgv?: string[];
   logoutArgv?: string[];
@@ -794,7 +696,6 @@ export interface CliAuthSpec {
   envKey?: string;
   loginHint?: string;
   loginHintZh?: string;
-  /** When set, the dashboard surfaces these as copyable commands instead of spawning loginArgv. */
   manualLoginCommands?: { label?: string; cmd: string }[];
 }
 
@@ -814,7 +715,6 @@ export interface CliCatalogItem {
   version?: string;
   authDetail?: string;
   platform: 'darwin' | 'linux' | 'win';
-  /** Present when the CLI has an npm-only install command that's safe to auto-run. */
   autoInstall?: { label: string };
 }
 

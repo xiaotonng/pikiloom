@@ -5,15 +5,8 @@ import { cn } from '../../utils';
 interface ModelOption {
   value: string;
   label: string;
-  /** Secondary line shown beneath the label inside the menu. */
   description?: string;
-  /** Right-aligned monospace tag shown next to the label. */
   meta?: string;
-  /**
-   * Optional bucket label. Consecutive options sharing the same group render
-   * under one header row inside the menu. Use a stable string per group ("
-   * Native", "My Models", etc.). Omit to render flat (current behaviour).
-   */
   group?: string;
 }
 
@@ -34,13 +27,6 @@ function matchesQuery(option: ModelOption, tokens: string[]): boolean {
   return tokens.every(t => haystack.includes(t));
 }
 
-/**
- * Specialised model picker: pins the currently-selected option at the top so
- * it stays visible even when scrolling through hundreds of OpenRouter models,
- * and adds a sticky search box that filters the remaining list by substring.
- *
- * Drop-in replacement for `<Select>` in the model row of AgentTab.
- */
 export function ModelSelect({
   value,
   options,
@@ -78,9 +64,6 @@ export function ModelSelect({
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Escape closes only this open dropdown — swallow it (capture phase +
-      // stopPropagation) so a parent Modal's own document-level Escape handler
-      // doesn't also fire and tear down the whole modal.
       if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); }
     };
     document.addEventListener('mousedown', handlePointerDown);
@@ -97,7 +80,6 @@ export function ModelSelect({
 
   useEffect(() => {
     if (open) {
-      // Defer focus until after the portal mounts.
       const handle = window.setTimeout(() => searchRef.current?.focus(), 0);
       return () => window.clearTimeout(handle);
     }
@@ -193,9 +175,6 @@ export function ModelSelect({
     </button>
   );
 
-  /** Render filtered options with group headers between buckets. Group changes
-   *  emit a sticky-style label row; no group on options falls back to flat
-   *  rendering exactly as before. */
   const renderGrouped = (opts: ModelOption[]) => {
     const out: ReturnType<typeof renderOption>[] = [];
     let lastGroup: string | undefined = undefined;

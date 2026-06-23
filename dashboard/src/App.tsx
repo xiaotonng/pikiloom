@@ -78,8 +78,6 @@ function RouteFallback() {
 }
 
 export function App() {
-  // Granular selectors -- each subscription triggers re-render only when its slice changes.
-  // Actions (toast, reload) are stable refs and never cause re-renders.
   const state = useStore(s => s.state);
   const toasts = useStore(s => s.toasts);
   const locale = useStore(s => s.locale);
@@ -101,23 +99,14 @@ export function App() {
     if (tab === 'sessions') setSessionsTabReady(true);
   }, [tab]);
 
-  // Client mode: when this SPA isn't pointed at a host AND no local server backs
-  // it (a standalone-hosted client, or ?client=1), open the Connection panel so
-  // the user can paste a connection code. Normal local dashboards skip this.
   useEffect(() => {
-    if (getEndpoint()) return; // already pointed at a host
+    if (getEndpoint()) return;
     let isClient = false;
-    try { isClient = new URL(window.location.href).searchParams.get('client') === '1'; } catch { /* ignore */ }
+    try { isClient = new URL(window.location.href).searchParams.get('client') === '1'; } catch {  }
     if (isClient) { setModal({ type: 'connection' }); return; }
     fetch('/pikichannel/status').then(r => { if (!r.ok) setModal({ type: 'connection' }); }).catch(() => setModal({ type: 'connection' }));
   }, []);
 
-  // Agent usage (rate-limit windows) ages out in minutes, but `agentStatus`
-  // otherwise only refreshes on user interaction — a dashboard left open
-  // would show quota snapshots from hours ago. Poll quietly while visible
-  // (the backend's 30s stale-while-revalidate cache absorbs the cost) and
-  // refresh immediately when the tab becomes visible again, which is exactly
-  // the "came back to the machine" moment where a stale snapshot misleads.
   useEffect(() => {
     const id = window.setInterval(() => {
       if (!document.hidden) void refreshAgentStatus();
@@ -132,20 +121,16 @@ export function App() {
     };
   }, [refreshAgentStatus]);
 
-  // Restart: phase-based overlay
   const [restartPhase, setRestartPhase] = useState<RestartPhase>(null);
 
   const onRestartClick = useCallback(() => {
     if (restartPhase === 'restarting' || restartPhase === 'reconnecting') return;
     if (restartPhase === 'confirm') {
-      // Confirmed — fire restart
       setRestartPhase('restarting');
       (async () => {
         try {
           const result = await api.restart();
           if (!result.ok) {
-            // A running turn blocks the restart — show how many, not a generic
-            // failure, so the user knows to wait or stop it.
             const msg = result.activeTasks
               ? t('modal.restartBlockedTasks').replace('{n}', String(result.activeTasks))
               : (result.error || t('modal.restartFailed'));
@@ -260,7 +245,6 @@ export function App() {
       )}
       <Toasts items={toasts} />
 
-      {/* Full-page restart overlay */}
       {(restartPhase === 'restarting' || restartPhase === 'reconnecting') && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[var(--th-bg)]/80 backdrop-blur-sm animate-in">
           <div className="flex flex-col items-center gap-4">

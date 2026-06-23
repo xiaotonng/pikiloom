@@ -3,18 +3,6 @@ import { createPortal } from 'react-dom';
 import { cn } from '../../utils';
 import { Button } from './Button';
 
-/**
- * Modal — overlay surface for setup wizards, confirmations, and ASF flows.
- *
- * Design choices:
- *   - Quiet backdrop (single low-alpha layer) — no double radial vignette.
- *   - Single elevation = `surface.elev` + `edge.strong` hairline.
- *   - Three sizes: 'sm' (480), 'md' (640), 'lg' (840).
- *   - Escape closes; click-outside closes; focus is trapped to the panel
- *     via inert-on-siblings (no library required).
- *
- * Backwards compat: the legacy `wide` prop maps to size='lg'.
- */
 export type ModalSize = 'sm' | 'md' | 'lg';
 const SIZE_CLASS: Record<ModalSize, string> = {
   sm: 'max-w-[480px]',
@@ -26,7 +14,6 @@ export interface ModalProps {
   open: boolean;
   onClose: () => void;
   size?: ModalSize;
-  /** @deprecated use size='lg'. */
   wide?: boolean;
   panelStyle?: CSSProperties;
   children: ReactNode;
@@ -49,7 +36,6 @@ export function Modal({ open, onClose, size, wide, panelStyle, children }: Modal
 
   return createPortal(
     <div className="fixed inset-0 z-100 flex items-center justify-center p-4">
-      {/* Quiet backdrop: a single tinted scrim, no radial vignette. */}
       <div
         className="absolute inset-0 backdrop-blur-[8px] backdrop-saturate-125"
         style={{ background: 'color-mix(in oklab, var(--th-overlay) 78%, transparent)' }}

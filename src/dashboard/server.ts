@@ -1,7 +1,3 @@
-/**
- * Hono-based dashboard HTTP server: static files and API routes.
- */
-
 import http from 'node:http';
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
@@ -23,10 +19,6 @@ import { VERSION } from '../core/version.js';
 import type { Bot } from '../bot/bot.js';
 import { mountPikichannel, type PikichannelHandle } from '../pikichannel/server.js';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface DashboardOptions {
   port?: number;
   open?: boolean;
@@ -40,20 +32,7 @@ export interface DashboardServer {
   attachBot(bot: Bot): void;
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const DASHBOARD_PORT_RETRY_LIMIT = 10;
-
-// The dashboard's live push transport is pikichannel (`/pikichannel/ws`) — the
-// same universal channel mobile/web clients use. There is no separate dashboard
-// WebSocket layer anymore; the pikichannel adapter subscribes to the runtime
-// 'dashboard-event' bus directly, so the SPA and remote clients share one stack.
-
-// ---------------------------------------------------------------------------
-// Server
-// ---------------------------------------------------------------------------
 
 export async function startDashboard(opts: DashboardOptions = {}): Promise<DashboardServer> {
   const preferredPort = opts.port || 3939;
@@ -61,15 +40,8 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
 
   const app = new Hono();
 
-  // -- Compression --
-  // gzip/deflate every compressible response (JSON API payloads, JS/CSS bundles,
-  // the HTML shell). Session message/list endpoints ship hundreds of KB of JSON;
-  // Vite chunks are another few hundred KB raw. The middleware skips already-
-  // compressed binary types (png/ico) by content-type, so the immutable image
-  // assets pay no CPU cost. Registered first so it wraps both routes and static.
   app.use('*', compress());
 
-  // -- API routes --
   app.route('/', configRoutes);
   app.route('/', agentRoutes);
   app.route('/', sessionRoutes);
@@ -78,10 +50,6 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
   app.route('/', modelsRoutes);
   app.route('/', localModelsRoutes);
 
-  // -- pikichannel: pluggable agent-session transport (WebSocket + WebRTC) --
-  // Mounted BEFORE the static catch-all so its routes (demo page, browser SDK,
-  // status) win. Returns a handle whose upgrade router is attached per HTTP
-  // server below. Failure here must not block the dashboard, so it is guarded.
   let pikichannel: PikichannelHandle | null = null;
   try {
     pikichannel = await mountPikichannel(app);
@@ -89,13 +57,8 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
     runtime.warn(`[pikichannel] mount failed: ${(err as Error)?.message || err}`);
   }
 
-  // -- Static files: serve dashboard build output --
-  // Resolve path relative to this file's location (src/ or dist/)
   const dashboardRoot = path.resolve(import.meta.dirname, '..', '..', 'dashboard', 'dist');
 
-  // Serve /assets/* for Vite-hashed JS/CSS bundles. Filenames are
-  // content-hashed, so they can be cached indefinitely — a new build emits
-  // new filenames rather than mutating these.
   app.use('/assets/*', serveStatic({
     root: dashboardRoot,
     onFound: (_path, c) => {
@@ -103,31 +66,22 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
     },
   }));
 
-  // Serve other static files at root level (favicon, manifest, etc.).
-  // This mount also serves index.html for "/" (directory index), so the HTML
-  // shell is tagged no-cache here too — same reason as the SPA fallback below.
   app.use('/*', serveStatic({
     root: dashboardRoot,
     onFound: (p, c) => {
       if (p.endsWith('.html')) c.header('Cache-Control', 'no-cache');
     },
     onNotFound: () => {
-      // Fall through to the SPA catch-all below
     },
   }));
 
-  // SPA fallback: serve index.html for all non-API routes
   app.get('*', async (c) => {
-    // Don't catch API routes that fell through (shouldn't happen, but guard anyway)
     if (c.req.path.startsWith('/api/')) {
       return c.json({ error: 'Not Found' }, 404);
     }
     const indexPath = path.join(dashboardRoot, 'index.html');
     try {
       const html = fs.readFileSync(indexPath, 'utf-8');
-      // The HTML shell references content-hashed asset filenames, so it must
-      // never be cached: otherwise an open tab keeps loading stale JS after the
-      // server self-updates (npx pikiloom@latest) until a manual hard refresh.
       c.header('Cache-Control', 'no-cache');
       return c.html(html);
     } catch {
@@ -135,7 +89,6 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
     }
   });
 
-  // -- Process runtime registration --
   let nodeServer: http.Server | null = null;
 
   const RESTART_CLOSE_TIMEOUT_MS = 3000;
@@ -144,15 +97,12 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
     label: 'dashboard',
     prepareForRestart: () => new Promise<void>(resolve => {
       if (!nodeServer) { resolve(); return; }
-      // Tear down pikichannel peers first — otherwise server.close() hangs
-      // waiting for the persistent WebSocket/datachannel connections to end.
       pikichannel?.stop();
       const timer = setTimeout(resolve, RESTART_CLOSE_TIMEOUT_MS);
       nodeServer.close(() => { clearTimeout(timer); resolve(); });
     }),
   });
 
-  // -- Start server with port retry --
   return new Promise<DashboardServer>((resolve, reject) => {
     let nextPort = preferredPort;
     let settled = false;
@@ -165,14 +115,9 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
 
     function tryListen(port: number) {
       try {
-        // Create HTTP server manually so we can attach WebSocket upgrade handler
-        // before Hono's request listener consumes the connection.
         const requestListener = getRequestListener(app.fetch);
         const server = http.createServer(requestListener);
 
-        // Single WebSocket-upgrade dispatcher (attached before listening so no
-        // upgrade is missed): pikichannel owns `/pikichannel/*` — its WS data
-        // channel and WebRTC signaling. Anything else is rejected.
         server.on('upgrade', (req, socket, head) => {
           if (pikichannel?.handleUpgrade(req, socket, head)) return;
           socket.destroy();
@@ -188,7 +133,6 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
           const ts = new Date().toTimeString().slice(0, 8);
           process.stdout.write(`[pikiloom ${ts}] dashboard: ${dashUrl}\n`);
 
-          // Preload agent status cache so the first dashboard page load is instant
           preloadAgentStatus();
 
           if (opts.open !== false) {
@@ -215,7 +159,6 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
           });
         });
 
-        // Handle EADDRINUSE by retrying on next port
         server.on('error', (err: NodeJS.ErrnoException) => {
           if (settled) return;
           if (err.code === 'EADDRINUSE') {

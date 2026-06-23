@@ -6,11 +6,6 @@ import {
   DEFAULT_CLAUDE_ACCESS_MODE,
 } from '../src/core/config/runtime-config.js';
 
-// resolveClaudeAccessMode is the single source of truth for whether a Claude
-// turn spawns the interactive TUI (subscription quota) or `claude -p` (Agent
-// SDK credit pool). Precedence: persisted config field → env default → built-in
-// default. The env half must stay compatible with isClaudePrintModeForced() in
-// the claude driver, which it mirrors.
 describe('resolveClaudeAccessMode', () => {
   const ENV_KEYS = ['PIKILOOM_CLAUDE_PRINT', 'PIKILOOM_CLAUDE_TUI'] as const;
   let saved: Record<string, string | undefined>;
@@ -42,7 +37,7 @@ describe('resolveClaudeAccessMode', () => {
     process.env.PIKILOOM_CLAUDE_PRINT = '1';
     expect(resolveClaudeAccessMode({})).toBe('api');
     delete process.env.PIKILOOM_CLAUDE_PRINT;
-    process.env.PIKILOOM_CLAUDE_TUI = '0'; // legacy "TUI off" ⇒ print/api
+    process.env.PIKILOOM_CLAUDE_TUI = '0';
     expect(resolveClaudeAccessMode({})).toBe('api');
   });
 

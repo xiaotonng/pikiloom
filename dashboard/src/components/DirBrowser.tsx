@@ -3,22 +3,12 @@ import { api } from '../api';
 import { Badge, Spinner } from './ui';
 import type { DirEntry } from '../types';
 
-/* ═══════════════════════════════════════════════════════
-   DirBrowser — Shared directory picker used by both
-   WorkdirModal and the session workspace sidebar.
-   ═══════════════════════════════════════════════════════ */
-
 export interface DirBrowserProps {
-  /** Initial path to browse from */
   initialPath?: string;
-  /** Height constraint for the directory listing */
   maxHeight?: number;
   minHeight?: number;
-  /** Called when a path is confirmed (double-click on git dir, or via onConfirm parent) */
   onSelect?: (path: string, isGit: boolean) => void;
-  /** Compact mode for sidebar embedding (smaller text, no gradient fades) */
   compact?: boolean;
-  /** i18n function */
   t: (key: string) => string;
 }
 
@@ -76,7 +66,6 @@ export function DirBrowser({
 
   return (
     <div>
-      {/* Breadcrumbs */}
       <div className={`flex items-center gap-1 ${compact ? 'text-[10px]' : 'text-[11px]'} font-mono text-fg-4 mb-2 flex-wrap`}>
         <span className="cursor-pointer hover:text-fg-2 transition-colors" onClick={() => browse('/')}>~</span>
         {breadcrumbs.map((b, i) => (
@@ -88,7 +77,6 @@ export function DirBrowser({
         {isGit && <Badge variant="accent" className="ml-1 !text-[9px] !py-0 !px-1.5">git</Badge>}
       </div>
 
-      {/* Directory listing */}
       <div className="relative">
         {!compact && (
           <>
@@ -143,7 +131,6 @@ export function DirBrowser({
         </div>
       </div>
 
-      {/* Manual input */}
       <div className="mt-2">
         <input
           className={`w-full rounded-lg border border-edge bg-inset px-2.5 py-1.5 ${textSm} font-mono text-fg outline-none placeholder:text-fg-5 focus:border-edge-h transition-colors`}

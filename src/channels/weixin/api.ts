@@ -1,7 +1,3 @@
-/**
- * WeChat official account API integration.
- */
-
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { VALIDATION_TIMEOUTS, WEIXIN_LIMITS } from '../../core/constants.js';
@@ -137,12 +133,6 @@ function withTimeoutSignal(timeoutMs: number): { signal: AbortSignal; dispose: (
   };
 }
 
-/**
- * Combine a timeout signal with an optional external "stop" signal so that
- * either source can abort the in-flight request. Used by long-poll callers
- * to cut over immediately when the channel is being torn down (config change,
- * channel removal) without waiting out the long-poll timeout.
- */
 function combineAbortSignals(
   timeoutMs: number,
   external?: AbortSignal,

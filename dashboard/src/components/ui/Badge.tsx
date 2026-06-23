@@ -1,18 +1,8 @@
 import { forwardRef, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react';
 import { cn } from '../../utils';
 
-/**
- * Badge — small static label. Use for state labels (e.g. "Connected"),
- * category tags, or as a sibling to a row title.
- *
- * For *live* agent / session state with an animated indicator, prefer
- * `<StatusPill>` (see ./StatusPill.tsx). Badge is the static cousin.
- */
-
 export type BadgeTone = 'ok' | 'warn' | 'err' | 'info' | 'running' | 'accent' | 'muted';
 
-/* All badge variants resolve to the same three CSS variables (text / bg / border).
- * Driving them from CSS keeps theme switching free and rules out style drift. */
 const TONE_VARS: Record<BadgeTone, CSSProperties> = {
   ok: {
     borderColor: 'var(--th-badge-ok-border)',
@@ -58,11 +48,9 @@ const SIZE_CLASSES: Record<BadgeSize, string> = {
 };
 
 export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
-  /** Semantic tone. Defaults to muted. Replaces the legacy `variant` prop. */
   tone?: BadgeTone;
   size?: BadgeSize;
   children: ReactNode;
-  /** @deprecated use `tone`. */
   variant?: BadgeTone;
 }
 
@@ -87,9 +75,6 @@ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(function Badge(
   );
 });
 
-/* ─────────────────────────────────────────────────────────────
- * Dot — sibling indicator. Tiny color dot with optional pulse.
- * ─────────────────────────────────────────────────────────── */
 export type DotTone = 'ok' | 'warn' | 'err' | 'info' | 'running' | 'idle';
 const DOT_CLASSES: Record<DotTone, string> = {
   ok:      'bg-[var(--th-ok)] shadow-[0_0_10px_var(--th-ok-glow)]',
@@ -107,7 +92,6 @@ export function Dot({
   className,
 }: {
   tone?: DotTone;
-  /** @deprecated use `tone`. */
   variant?: DotTone;
   pulse?: boolean;
   className?: string;
@@ -125,9 +109,6 @@ export function Dot({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * CountBadge — compact monospace counter / id chip.
- * ─────────────────────────────────────────────────────────── */
 export function CountBadge({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <span

@@ -1,21 +1,3 @@
-/**
- * Agent configuration tab.
- *
- * Two independent concerns sit on each agent card:
- *
- *   1. Install state (CLI binary present on PATH) — purely a status check.
- *      When not installed, the only available action is "Install"; we do NOT
- *      surface configuration controls because they would be moot.
- *
- *   2. Provider / Model / Effort — editable inline once installed. Provider is
- *      the primary single-pick (Native CLI auth or any connected BYOK
- *      provider); Model and Effort follow the chosen provider.
- *
- * The top "新会话默认值" section only picks which agent is the default for new
- * sessions. Each agent's own model/effort/provider lives on its own card and
- * is editable any time.
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api';
 import { createT, type Locale } from '../../i18n';
@@ -34,8 +16,6 @@ import ProfilesSection from '../profiles/ProfilesSection';
 const NATIVE_PROVIDER_VALUE = '__native__';
 const AGENT_ORDER: Agent[] = ['claude', 'codex', 'gemini', 'hermes'];
 
-// Mirrors the backend type in src/model/validation.ts. Pricing fields are USD
-// per 1M tokens; `created` is unix epoch (seconds).
 interface ProviderModelInfo {
   id: string;
   name?: string;
@@ -63,23 +43,12 @@ function formatContextLength(n: number | undefined): string | null {
 
 function formatCreatedDate(epochSeconds: number | undefined): string | null {
   if (!epochSeconds || !Number.isFinite(epochSeconds)) return null;
-  // OpenRouter / OpenAI use seconds; Anthropic sometimes returns ms. Detect by
-  // magnitude: anything older than year 3000 in seconds is almost certainly
-  // already in milliseconds.
   const ms = epochSeconds > 32_000_000_000 ? epochSeconds : epochSeconds * 1000;
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
 }
 
-/**
- * Two-line option for a provider model. Line 1 is the raw model id (e.g.
- * `openai/gpt-5.4-mini`) so users can always see exactly what they are
- * binding — friendly names like "OpenAI: GPT-5.4 Mini" hide the
- * provider/slash structure that matters when picking between near-duplicates.
- * Line 2 is the friendly name (when it adds info) followed by pricing →
- * context → release date, monospace and muted.
- */
 function buildModelOption(info: ProviderModelInfo): { label: string; description?: string } {
   const label = info.id;
   const parts: string[] = [];
@@ -96,20 +65,10 @@ function buildModelOption(info: ProviderModelInfo): { label: string; description
   return { label, description: parts.length ? parts.join(' · ') : undefined };
 }
 
-/**
- * When true the agent's native CLI config is *external* to pikiloom — we
- * read it but cannot write to it (e.g. Hermes' ~/.hermes/config.yaml is
- * managed via `hermes config`). The unified config modal keeps native fields
- * read-only for these.
- */
 function isNativeConfigExternal(agent: Agent): boolean {
   return agent === 'hermes';
 }
 
-/**
- * Map a native provider slug returned by the driver (e.g. 'openrouter') to a
- * BrandIcon id. Falls back to 'custom' when unknown.
- */
 function brandIdForNativeSlug(slug: string | undefined | null): string {
   const s = (slug || '').toLowerCase().trim();
   if (s === 'openrouter') return 'openrouter';
@@ -123,10 +82,6 @@ function brandIdForNativeSlug(slug: string | undefined | null): string {
   if (s === 'minimax') return 'minimax';
   return 'custom';
 }
-
-// ---------------------------------------------------------------------------
-// Bound profile info — what an agent's currently-active Profile resolves to.
-// ---------------------------------------------------------------------------
 
 interface BoundProfileInfo {
   profileId: string;
@@ -210,7 +165,6 @@ type CopyPack = {
   modelsHint: string;
   localTitle: string;
   localHint: string;
-  // Inline editor labels
   rowProvider: string;
   rowModel: string;
   rowEffort: string;
@@ -243,9 +197,7 @@ type CopyPack = {
   saving: string;
   saved: string;
   configError: string;
-  // Read-only banner for external native (Hermes)
   externalNativeNote: (path: string) => string;
-  // Compact agent row + modal
   configure: string;
   configModalTitle: (label: string) => string;
   rowSummaryNative: string;
@@ -410,10 +362,6 @@ function getCopy(locale: Locale): CopyPack {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function buildAgentOptions(agents: AgentRuntimeStatus[], copy: CopyPack) {
   const installedAgents = agents.filter(agent => agent.installed);
   const source = installedAgents.length ? installedAgents : agents;
@@ -429,9 +377,6 @@ function modelLabel(model: ModelInfo | null | undefined): string {
 }
 
 function defaultNativeModel(agent: AgentRuntimeStatus): string {
-  // Prefer the agent's *native* model surface — `selectedModel` is now
-  // BYOK-overridden when a Profile is bound, so falling through to it would
-  // seed the native editor with a BYOK model id that the CLI can't run.
   if (agent.nativeSelectedModel) return agent.nativeSelectedModel;
   if (agent.nativeConfig?.model) return agent.nativeConfig.model;
   if (agent.models.length) return agent.models[0].id;
@@ -442,33 +387,11 @@ function applySnapshot(setter: (value: SnapshotState) => void, next: AgentStatus
   setter({ defaultAgent: next.defaultAgent, agents: next.agents });
 }
 
-// ---------------------------------------------------------------------------
-// Inline editor — Provider / Model / Effort
-// ---------------------------------------------------------------------------
-
-/**
- * Unified selection: either a native model id (kind='native') or a Profile id
- * from "My Models" (kind='profile'). The Provider column is gone — Profile IS
- * the upstream contract, the Provider field underneath is now an internal
- * detail of the chosen Profile, not a separate axis the user picks.
- */
 interface ConfigDraft {
   kind: 'native' | 'profile';
-  /** When kind='native': the model id to send to the CLI.
-   *  When kind='profile': mirrors the Profile's modelId for display/dirty checks. */
   modelId: string;
-  /** Active Profile id when kind='profile'; null when kind='native'. */
   profileId: string | null;
-  /**
-   * Agent-level effort override (stored in runtime config regardless of kind).
-   * Carries the synthetic `ultra` rung too — selecting it folds in multi-agent
-   * Workflow orchestration; the backend decomposes it into (max, workflow=on).
-   */
   effort: string;
-  /**
-   * Claude access mode (subscription TUI vs `claude -p` API credits). Only
-   * meaningful for claude on native auth; undefined for other agents / BYOK.
-   */
   accessMode?: 'subscription' | 'api';
 }
 
@@ -482,7 +405,6 @@ function makeInitialDraft(
       kind: 'profile',
       modelId: boundInfo.modelId,
       profileId: boundInfo.profileId,
-      // Fold orchestration into the synthetic `ultra` rung for display.
       effort: foldUltraEffort(agentId, boundInfo.effort, agentStatus?.workflowEnabled),
       accessMode: agentId === 'claude' ? (agentStatus?.claudeAccessMode || 'api') : undefined,
     };
@@ -505,9 +427,6 @@ function draftEqual(a: ConfigDraft, b: ConfigDraft): boolean {
     && (a.accessMode || '') === (b.accessMode || '');
 }
 
-/** Encode/decode the unified selection on the wire used by ModelSelect.
- *  Format mirrors the IM picker codec: `n:<modelId>` for native rows,
- *  `p:<profileId>` for Profile rows. */
 function encodeSelection(draft: ConfigDraft): string {
   return draft.kind === 'profile' && draft.profileId
     ? `p:${draft.profileId}`
@@ -554,8 +473,6 @@ function AgentInlineConfig({
   useEffect(() => { setDraft(baseline); setError(null); }, [baseline]);
 
   const isNative = draft.kind === 'native';
-  // External-native means we can't write the model from here (Hermes) — we
-  // surface it as a read-only display when the native selection is active.
   const nativeReadOnly = isNative && externalNative;
 
   const effortOptions = useMemo(() => {
@@ -566,16 +483,6 @@ function AgentInlineConfig({
     ];
   }, [agentId, copy.effortDefault]);
 
-  // Build the unified picker options: native rows from the agent CLI's own
-  // model list, then every Profile registered in "My Models". Provider is
-  // intentionally NOT a separate axis — selecting a Profile *is* selecting
-  // the upstream binding wholesale.
-  //
-  // External-native agents (Hermes — config lives in ~/.hermes/config.yaml)
-  // skip the native group entirely: pikiloom can't enumerate Hermes' native
-  // catalogue, and the backend's `agentStatus.models` for these agents falls
-  // back to the currently-bound Profile id, which would surface as a fake
-  // "Native" row of the Profile's own modelId.
   const modelOptions = useMemo(() => {
     type RichOpt = { value: string; label: string; description?: string; meta?: string; group?: string };
     const out: RichOpt[] = [];
@@ -592,18 +499,11 @@ function AgentInlineConfig({
         });
       }
     }
-    // Only Profiles whose provider kind the agent can actually route through
-    // (cf. injector.ts) are eligible. Gemini for example can only BYOK via
-    // `google` kind — listing an OpenRouter Profile here would let the user
-    // pick a binding that fails at spawn time.
     const acceptedKinds = new Set(AGENT_ACCEPTED_PROVIDER_KINDS[agentId] || []);
     for (const p of layer.profiles) {
       const provider = layer.providers.find(x => x.id === p.providerId);
       if (!provider || !acceptedKinds.has(provider.kind)) continue;
       const providerName = provider.name;
-      // Description: provider name + raw modelId when it differs from the
-      // user-set display name. Keeps the row informative without doubling up
-      // on the visible name when the user left it as the model id default.
       const showModelId = p.name.trim().toLowerCase() !== p.modelId.trim().toLowerCase();
       const description = showModelId ? `${providerName} · ${p.modelId}` : providerName;
       out.push({
@@ -627,8 +527,6 @@ function AgentInlineConfig({
         kind: 'native',
         modelId: parsed.modelId,
         profileId: null,
-        // When flipping out of a Profile back to native, restore the native
-        // effort we know about rather than carrying the Profile's effort over.
         effort: d.kind === 'profile'
           ? (agentStatus.nativeSelectedEffort || agentStatus.nativeConfig?.effort || '')
           : d.effort,
@@ -640,8 +538,6 @@ function AgentInlineConfig({
         kind: 'profile',
         profileId: parsed.profileId,
         modelId: profile?.modelId || d.modelId,
-        // Carry the Profile's own effort (if it has one) over so the field
-        // reflects what the chosen entry was last configured with.
         effort: profile?.effort || d.effort,
       }));
     }
@@ -654,25 +550,16 @@ function AgentInlineConfig({
     setError(null);
     setSubmitting(true);
     try {
-      // `targetEffort` may be the synthetic `ultra` rung — the backend
-      // decomposes it into (max, workflow=on) and a concrete rung clears
-      // orchestration, so effort is the single knob (no separate workflow PATCH).
       const targetEffort = draft.effort || null;
 
       if (draft.kind === 'native') {
-        // Clear any active Profile binding. We do NOT delete the Profile here —
-        // it lives in "My Models" as a shared user resource, independent of
-        // which agent currently uses it.
         if (layer.bindings[agentId]) await layer.setActiveProfile(agentId, null);
         if (!externalNative) {
           const patch: Record<string, unknown> = { agent: agentId };
           const targetModel = draft.modelId.trim();
-          // Compare against the *displayed* current effort (ultra-folded) so an
-          // unchanged Ultra selection doesn't look dirty against the raw "max".
           const currentEffort = foldUltraEffort(agentId, agentStatus.nativeSelectedEffort, agentStatus.workflowEnabled) || null;
           if (targetModel && targetModel !== (agentStatus.nativeSelectedModel || '')) patch.model = targetModel;
           if (targetEffort !== currentEffort) patch.effort = targetEffort;
-          // Claude access mode (subscription TUI vs `claude -p` API credits).
           if (agentId === 'claude' && draft.accessMode && draft.accessMode !== agentStatus.claudeAccessMode) {
             patch.accessMode = draft.accessMode;
           }
@@ -684,8 +571,6 @@ function AgentInlineConfig({
       } else {
         if (!draft.profileId) throw new Error('No profile selected');
         await layer.setActiveProfile(agentId, draft.profileId);
-        // Effort is an agent-level override; we keep it in runtime config
-        // rather than mutating the shared Profile entry from here.
         const currentEffort = foldUltraEffort(agentId, agentStatus.selectedEffort, agentStatus.workflowEnabled) || null;
         if (targetEffort !== currentEffort) {
           const res = await api.updateRuntimeAgent({ agent: agentId, effort: targetEffort });
@@ -707,7 +592,6 @@ function AgentInlineConfig({
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        {/* Model — unified picker: native rows + Profile rows from "我的模型". */}
         <div>
           <Label className="!mb-1 text-[11px]">{copy.rowModel}</Label>
           {nativeReadOnly ? (
@@ -732,7 +616,6 @@ function AgentInlineConfig({
           )}
         </div>
 
-        {/* Effort */}
         <div>
           <Label className="!mb-1 text-[11px]">{copy.rowEffort}</Label>
           {nativeReadOnly ? (
@@ -749,10 +632,6 @@ function AgentInlineConfig({
         </div>
       </div>
 
-      {/* Access mode (claude only, native auth) — interactive TUI (subscription
-          quota) vs `claude -p` (Agent SDK credits). Hidden under BYOK: both
-          modes route through the provider API key, so the subscription/extra
-          billing split doesn't apply there. */}
       {agentId === 'claude' && draft.kind === 'native' && (
         <div>
           <Label className="!mb-1 text-[11px]">{copy.rowAccessMode}</Label>
@@ -772,31 +651,22 @@ function AgentInlineConfig({
         </div>
       )}
 
-      {/* Multi-agent Workflow orchestration is no longer a separate toggle — it
-          folded into the effort picker as the top "Ultra" rung (max depth +
-          orchestration). Surface the explanation when Ultra is the active pick
-          so the capability stays discoverable. */}
       {agentStatus.capabilities?.workflow && draft.effort === 'ultra' && (
         <div className="text-[11px] leading-relaxed text-fg-5">{copy.workflowHint}</div>
       )}
 
-      {/* External-native (Hermes) hint when native is selected. */}
       {nativeReadOnly && (
         <div className="text-[11px] leading-relaxed text-fg-5">
           {copy.externalNativeNote(native?.configPath || '')}
         </div>
       )}
 
-      {/* Error */}
       {error && (
         <div className="rounded-md border border-rose-700/40 bg-rose-900/20 px-3 py-2 text-xs text-rose-200">
           {error}
         </div>
       )}
 
-      {/* Save / Cancel — always visible so the modal has the standard pair of
-          terminal actions, matching the defaults modal pattern. Save stays
-          disabled until the draft diverges from baseline. */}
       <div className="flex items-center justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting}>
           {t('modal.cancel')}
@@ -810,16 +680,6 @@ function AgentInlineConfig({
   );
 }
 
-// ---------------------------------------------------------------------------
-// AgentRow — single agent card
-// ---------------------------------------------------------------------------
-
-/**
- * Compact summary line shown in the collapsed AgentRow. Returns the values
- * that the row needs to render its `provider · model · effort` chip strip.
- * `providerLabel` is intentionally short — full provider name lives in the
- * config modal where the user actually picks one.
- */
 function buildRowSummary(
   agent: AgentRuntimeStatus,
   boundInfo: BoundProfileInfo | null,
@@ -830,8 +690,6 @@ function buildRowSummary(
       providerBrand: boundInfo.providerBrand,
       providerLabel: boundInfo.providerName,
       modelText: boundInfo.modelId || copy.rowSummaryNoModel,
-      // workflowEnabled is only ever set for the workflow-capable driver
-      // (claude), so folding to "ultra" here needs no agent-id check.
       effortText: agent.workflowEnabled ? 'ultra' : (boundInfo.effort || copy.rowSummaryNoEffort),
     };
   }
@@ -877,23 +735,9 @@ function AgentRow({
   const meta = getAgentMeta(agent.agent);
   const tagline = meta.advantageKey ? t(meta.advantageKey) : '';
   const summary = agent.installed ? buildRowSummary(agent, boundInfo, copy) : null;
-  // Mid-update: the CLI is being reinstalled via `npm install -g`, so its
-  // binary briefly vanishes from PATH and detection reports installed:false.
-  // Don't flash a misleading "Install" button — show an updating state until
-  // the reinstall lands and detection recovers (auto-update sets this status
-  // before the npm call and clears it after).
   const updating = agent.updateStatus === 'updating';
-  // Manual-install agents (Hermes) can't be npm-installed by pikiloom. Rather
-  // than a separate command block, the Install button just opens the agent's
-  // own install docs in a new tab (it "jumps away" instead of running npm).
   const manualInstall = !agent.installed && agent.install?.method === 'manual' && !!agent.install?.docsUrl;
 
-  // Usage — quiet by default. The inline segments show the first two windows
-  // (drivers order them short-to-long: 5h, 7d) plus the worst window when it
-  // isn't already among them; the badge appears only at warn/err so the badge
-  // row stays calm while quota is healthy. The telemetry fallback emits
-  // status-only windows (null percent) — those drive `usageAlert` but render
-  // no numbers.
   const usageWindows = agent.installed ? displayableUsageWindows(agent.usage) : [];
   const worstWindow = worstUsageWindow(agent.usage);
   const inlineUsage = usageWindows.slice(0, 2);
@@ -910,7 +754,6 @@ function AgentRow({
           <BrandIcon brand={agent.agent} size={20} />
         </div>
 
-        {/* Identity + summary (two tight lines) */}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-[14px] font-semibold tracking-tight text-fg">{meta.label}</span>
@@ -939,7 +782,6 @@ function AgentRow({
               <span className="text-[11px] text-amber-400">→ {agent.latestVersion}</span>
             )}
           </div>
-          {/* Line 2: config summary for installed agents, tagline for missing ones. */}
           {summary ? (
             <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-fg-4">
               <span className="inline-flex items-center gap-1">
@@ -949,8 +791,6 @@ function AgentRow({
               <span className="text-fg-6" aria-hidden="true">·</span>
               <span className="font-mono text-fg-3">{summary.modelText}</span>
               <span className="text-fg-6" aria-hidden="true">·</span>
-              {/* Orchestration state is conveyed by the effort summary itself —
-                  it reads "ultra" when Workflow is on (see getSummary). */}
               <span>{summary.effortText}</span>
               {inlineUsage.length > 0 && (
                 <>
@@ -979,15 +819,12 @@ function AgentRow({
           ) : null}
         </div>
 
-        {/* Right-side actions: install / update / check-update / configure */}
         <div className="flex shrink-0 items-center gap-1.5">
           {loading && (
             <div className="inline-flex h-7 items-center gap-2 px-2 text-[11px] text-fg-5">
               <Spinner className="h-3 w-3" />
             </div>
           )}
-          {/* Mid-reinstall: suppress install/configure (the binary is in flux) and
-              show an updating indicator instead — see the `updating` note above. */}
           {!loading && updating && (
             <div className="inline-flex h-7 items-center gap-2 px-2 text-[11px] text-fg-5">
               <Spinner className="h-3 w-3" /> {copy.updating}
@@ -995,8 +832,6 @@ function AgentRow({
           )}
           {!loading && !updating && !agent.installed && (
             manualInstall ? (
-              // Manual-install agents (Hermes): pikiloom can't npm-install them,
-              // so the Install button just opens the agent's own docs in a new tab.
               <Button
                 variant="primary"
                 size="sm"
@@ -1036,7 +871,6 @@ function AgentRow({
         </div>
       </div>
 
-      {/* Update status detail (errors / skipped reasons). */}
       {!loading && agent.installed && agent.updateAvailable && agent.updateStatus === 'skipped' && agent.updateDetail && (
         <div className="mt-1.5 text-[11px] leading-relaxed" style={{ color: 'var(--th-badge-warn-text)' }}>
           {copy.updateSkipped}: {agent.updateDetail}
@@ -1050,10 +884,6 @@ function AgentRow({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Defaults summary (single SummaryField — kept tight)
-// ---------------------------------------------------------------------------
 
 function SummaryField({ label, value, hint, loading = false }: {
   label: string; value: string; hint?: string; loading?: boolean;
@@ -1070,10 +900,6 @@ function SummaryField({ label, value, hint, loading = false }: {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Top-level — defaults summary + agent list + Models section + modal
-// ---------------------------------------------------------------------------
-
 export function AgentTab() {
   const locale = useStore(s => s.locale);
   const toast = useStore(s => s.toast);
@@ -1083,9 +909,6 @@ export function AgentTab() {
   const t = useMemo(() => createT(locale), [locale]);
   const copy = useMemo(() => getCopy(locale), [locale]);
   const modelLayer = useModelLayer();
-  // Probed once at the AgentTab level so both ModelsSection (to surface
-  // installed local models on the configured provider card) and
-  // LocalModelsSection (tile grid + install modal) share one source of truth.
   const localBackendLayer = useLocalBackends();
 
   const [snapshot, setSnapshot] = useState<SnapshotState | null>(
@@ -1193,11 +1016,6 @@ export function AgentTab() {
       setDefaultsModalOpen(false);
       return;
     }
-    // Always persist, even when the draft equals the currently *shown* default.
-    // The displayed value can be a runtime-derived fallback (e.g. clamped to the
-    // only installed agent) that was never written to setting.json — disabling
-    // Save on equality would strand single-agent machines with no way to commit
-    // the choice. The write is idempotent, so re-affirming is harmless.
     const result = await updateRuntime({ defaultAgent: defaultsDraft });
     if (!result) return;
     toast(copy.defaultsSaved);
@@ -1274,12 +1092,6 @@ export function AgentTab() {
 
   return (
     <div className="animate-in space-y-4">
-      {/* Compact section: agent list with inline "default" strip on top.
-          The default-agent chip is a single button — label + brand + name +
-          chevron are baked into one pill, so the affordance is the chip
-          itself rather than a separate ghost "修改默认" button that nobody
-          notices. Same "click the thing to edit it" pattern as the rest
-          of the page. */}
       <section className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-5">{copy.agentsTitle}</div>
@@ -1378,9 +1190,6 @@ export function AgentTab() {
         <LocalModelsSection snapshot={localBackendLayer} onConnected={handleConfigSaved} />
       </section>
 
-      {/* Per-agent configure modal — provider/model/effort. Wraps the same
-          form the inline card used to render. AgentInlineConfig keeps its own
-          dirty/save state; we just close the modal after onSaved fires. */}
       <Modal open={!!editingAgentStatus} onClose={() => setEditingAgent(null)} wide>
         {editingAgentStatus && editingMeta && (
           <>
@@ -1407,7 +1216,6 @@ export function AgentTab() {
         )}
       </Modal>
 
-      {/* Defaults modal — agent only */}
       <Modal open={defaultsModalOpen} onClose={() => setDefaultsModalOpen(false)}>
         <ModalHeader
           title={copy.defaultsEditTitle}

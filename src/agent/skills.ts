@@ -1,7 +1,3 @@
-/**
- * Project skill discovery from .pikiloom/skills and .claude/commands.
- */
-
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,9 +10,7 @@ export interface SkillInfo {
   label: string | null;
   description: string | null;
   source: 'skills';
-  /** Whether this skill is global (all workspaces) or project-scoped. */
   scope: SkillScope;
-  /** MCP server packages required by this skill. */
   mcpRequires?: string[];
 }
 
@@ -33,7 +27,6 @@ export interface ProjectSkillPaths {
 
 interface ProjectSkillRoots {
   canonicalRoot: string;
-  /** Pre-rename `<workdir>/.pikiclaw/skills` — read-only discovery fallback. */
   legacyRoots: string[];
   claudeRoot: string;
   agentsRoot: string;
@@ -62,7 +55,6 @@ function parseSkillMeta(content: string): { label: string | null; description: s
     if (lm) label = lm[1].trim();
     const dm = fm[1].match(/^description:\s*(.+)/m);
     if (dm) description = dm[1].trim();
-    // Parse mcp_requires as YAML list
     const mr = fm[1].match(/^mcp_requires:\s*\n((?:\s+-\s+.+\n?)+)/m);
     if (mr) {
       mcpRequires = mr[1]
@@ -120,11 +112,6 @@ function ensureDirSymlink(linkPath: string, targetDir: string) {
       const currentReal = realPathOrNull(path.resolve(path.dirname(linkPath), currentTarget));
       const desiredReal = realPathOrNull(targetDir);
       if (currentTarget === desiredTarget || (currentReal && desiredReal && currentReal === desiredReal)) return;
-      // Symlink points elsewhere — including dangling legacy targets like the
-      // pre-rename `../.pikiclaw/skills`. `rmSync(recursive,force)` silently
-      // no-ops on a dangling symlink (it follows the link, sees the target is
-      // gone, treats it as already deleted) and leaves the link in place, which
-      // then trips EEXIST below. `unlinkSync` removes the link itself reliably.
       fs.unlinkSync(linkPath);
     } else {
       fs.rmSync(linkPath, { recursive: true, force: true });
@@ -134,9 +121,6 @@ function ensureDirSymlink(linkPath: string, targetDir: string) {
   try {
     fs.symlinkSync(desiredTarget, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
   } catch (err) {
-    // Tolerate a concurrent creator (the prod self-bootstrap and `npm run dev`
-    // can both initialize the same workdir) — if the link now resolves to the
-    // intended target, the race is benign; otherwise surface the real error.
     if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST' || fs.readlinkSync(linkPath) !== desiredTarget) throw err;
   }
 }
@@ -188,32 +172,12 @@ export function getProjectSkillPaths(workdir: string, skillName: string): Projec
   };
 }
 
-// Matches the canonical prompt produced by `resolveSkillPrompt` (bot/commands)
-// and `resolveSkillFromPrompt` (dashboard/session-control). Both build the same
-// shape: `[Project directory: <wd>]\n\nRead the skill definition at \`<path>\`
-// and execute the instructions defined there.[ Additional context: <args>]`.
-//
-// Whitespace between the segments is tolerant (`\s+`) so the regex still
-// matches after the claude driver collapses interior `\s+` to single spaces
-// when surfacing user text in `getClaudeSessionMessages`.
 const SKILL_PROMPT_RE = /^\[Project directory: [^\]\n]+?\]\s+Read the skill definition at `([^`\n]+)` and execute the instructions defined there\.(?:\s+Additional context:\s+([\s\S]+?))?\s*$/;
 
-/**
- * Inverse of `resolveSkillPrompt`. When a stored user message matches the
- * canonical skill-execution expansion, return the original `/skillname [args]`
- * shorthand for display. Returns null when the text isn't a recognized skill
- * prompt — callers should fall back to the raw text.
- *
- * The expanded form is what the agent CLI actually consumed and what gets
- * persisted to its session log; this collapse exists purely so the dashboard
- * (and other display surfaces) can render the slash command the user typed.
- */
 export function collapseSkillPrompt(text: string | null | undefined): string | null {
   if (!text) return null;
   const m = SKILL_PROMPT_RE.exec(text);
   if (!m) return null;
-  // Skill files are always at `<root>/<skillName>/SKILL.md`. Split on both
-  // `/` and `\` so Windows-generated paths (path.join) resolve correctly.
   const segments = m[1].split(/[/\\]/).filter(Boolean);
   if (segments.length < 2 || segments[segments.length - 1] !== 'SKILL.md') return null;
   const name = segments[segments.length - 2];
@@ -224,9 +188,6 @@ export function collapseSkillPrompt(text: string | null | undefined): string | n
 
 const GLOBAL_SKILLS_ROOT = path.join(os.homedir(), STATE_DIR_NAME, 'skills');
 
-// Per-file cache of parsed SKILL.md metadata, keyed by file mtime. listSkills runs
-// on every skills-menu render (IM + dashboard); without this it re-read and
-// re-regex-parsed every SKILL.md each time. A changed skill re-parses just itself.
 const skillMetaCache = new Map<string, { mtimeMs: number; meta: ReturnType<typeof parseSkillMeta> }>();
 
 function discoverSkillsFromDir(
@@ -265,27 +226,19 @@ function discoverSkillsFromDir(
   return skills;
 }
 
-/**
- * List all skills — project-scoped (workdir) first, then global (~/.pikiloom/skills/).
- * Project skills with the same name shadow global ones.
- */
 export function listSkills(workdir: string): SkillListResult {
   const seen = new Set<string>();
   const { canonicalRoot, legacyRoots } = resolveProjectSkillRoots(workdir);
 
-  // Project skills take precedence. Also scan the pre-rename `.pikiclaw/skills`
-  // dir so repos that committed project skills before the rename keep working.
   const projectSkills = [
     ...discoverSkillsFromDir(canonicalRoot, 'project', seen),
     ...legacyRoots.flatMap(root => discoverSkillsFromDir(root, 'project', seen)),
   ];
-  // Global skills fill in the rest
   const globalSkills = discoverSkillsFromDir(GLOBAL_SKILLS_ROOT, 'global', seen);
 
   return { skills: [...projectSkills, ...globalSkills], workdir };
 }
 
-/** Return the global skills root directory path. */
 export function getGlobalSkillsRoot(): string {
   return GLOBAL_SKILLS_ROOT;
 }

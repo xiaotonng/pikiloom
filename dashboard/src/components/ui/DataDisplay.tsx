@@ -1,35 +1,10 @@
-/**
- * Data display primitives — small typed wrappers for the data shapes that
- * recur across pages. Each one is < 30 LOC; the goal is for pages to stop
- * inlining ad-hoc `<div className="rounded-lg border…">` blocks and instead
- * compose these.
- *
- * Components in this file:
- *   - Field        — `label` + `value` (optional mono). Use inline anywhere.
- *   - Metric       — bordered tile with uppercase label + big value + hint.
- *   - DescriptionList — `key: value` pair grid (replaces shared.DetailGrid).
- *   - EmptyState   — bordered placeholder for empty surfaces.
- *   - PageHeader   — the page hero (eyebrow + title + description + right slot).
- *   - Tile         — square brand-icon avatar tile.
- *   - LoadingDots  — the bouncing-dots indicator (sibling to Spinner).
- *
- * Why one file instead of one-per-component: each is so small that splitting
- * them into 7 files adds more import noise than it removes. The file is still
- * tree-shakeable thanks to ES modules + Vite.
- */
-
 import type { CSSProperties, HTMLAttributes, ReactNode } from 'react';
 import { cn } from '../../utils';
 
-/* ─────────────────────────────────────────────────────────────
- * Field — uppercase label + value. Inline atom used anywhere a
- * "labelled value" appears (cards, metrics, settings rows).
- * ─────────────────────────────────────────────────────────── */
 export interface FieldProps {
   label?: ReactNode;
   children: ReactNode;
   mono?: boolean;
-  /** Stack the label/value vertically (default). 'inline' renders side-by-side. */
   orientation?: 'vertical' | 'inline';
   className?: string;
 }
@@ -69,10 +44,6 @@ export function Field({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * Metric — bordered tile with uppercase label + big value + optional hint.
- * Drop-in upgrade for `shared.Metric` (which now delegates here).
- * ─────────────────────────────────────────────────────────── */
 export function Metric({
   label,
   value,
@@ -93,17 +64,12 @@ export function Metric({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * DescriptionList — grid of (label, value) tiles.
- * Use when a section shows many key→value pairs at once.
- * ─────────────────────────────────────────────────────────── */
 export function DescriptionList({
   items,
   columns = 2,
   className,
 }: {
   items: Array<{ label: ReactNode; value: ReactNode; mono?: boolean }>;
-  /** Number of columns above the sm breakpoint. Defaults to 2. */
   columns?: 1 | 2 | 3 | 4;
   className?: string;
 }) {
@@ -126,9 +92,6 @@ export function DescriptionList({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * EmptyState — bordered placeholder for an empty list / section.
- * ─────────────────────────────────────────────────────────── */
 export function EmptyState({
   icon,
   title,
@@ -157,13 +120,7 @@ export function EmptyState({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * PageHeader — the page hero. Replaces `shared.TabHero`. Lives in
- * `components/ui` so any page (including dashboards yet to be built)
- * can mount it without going through the shared.tsx page module.
- * ─────────────────────────────────────────────────────────── */
 export interface PageHeaderProps {
-  /** Optional uppercase tracked label above the title. */
   eyebrow?: ReactNode;
   title: ReactNode;
   description?: ReactNode;
@@ -193,18 +150,9 @@ export function PageHeader({ eyebrow, title, description, right, className }: Pa
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * Tile — square avatar / brand-icon tile.
- *
- * One canonical shape so brand identity (the only place color is
- * allowed) renders consistently in row leads, modals, and pickers.
- * ─────────────────────────────────────────────────────────── */
 export interface TileProps extends HTMLAttributes<HTMLDivElement> {
-  /** Visual size in px. Default 36. */
   size?: number;
-  /** True (default) draws the hairline border + dim bg around the content. */
   framed?: boolean;
-  /** Inline style overrides — used for brand-color fills on letter avatars. */
   style?: CSSProperties;
   children: ReactNode;
 }
@@ -232,10 +180,6 @@ export function Tile({
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
- * LoadingDots — three bouncing dots. Sibling to Spinner; use for
- * ambient "thinking" indicators that don't suggest progress.
- * ─────────────────────────────────────────────────────────── */
 export function LoadingDots({ className }: { className?: string }) {
   return (
     <span className={cn('thinking-dots inline-flex items-center gap-[3px]', className)}>

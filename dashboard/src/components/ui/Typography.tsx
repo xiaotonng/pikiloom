@@ -1,19 +1,6 @@
 import { forwardRef, type HTMLAttributes, type ReactNode, createElement } from 'react';
 import { cn } from '../../utils';
 
-/**
- * Typography helpers — a named scale that components and pages use instead
- * of reaching for ad-hoc `text-[14px]` / `font-semibold` combinations.
- *
- * Six tiers, all in single line-heights matched to `tokens.typography`:
- *   <Heading level={1..4}>          — page hero / section / card / row
- *   <Text variant='body'|'small'|'caption'|'label'>
- *   <Mono>                          — technical (IDs, tokens, versions)
- *
- * The pages keep their fluidity (size+line-height baked in) and the rest of
- * the dashboard stops drifting toward arbitrary type values.
- */
-
 const HEADING_VARIANTS = {
   1: { tag: 'h1' as const, cls: 'text-[26px] leading-[34px] font-semibold tracking-tight text-fg' },
   2: { tag: 'h2' as const, cls: 'text-[18px] leading-[26px] font-semibold tracking-tight text-fg' },
@@ -38,7 +25,6 @@ const TEXT_VARIANTS = {
   body:    'text-[14px] leading-[22px] text-fg-2',
   small:   'text-[13px] leading-[20px] text-fg-3',
   caption: 'text-[12px] leading-[18px] text-fg-4',
-  /** Uppercase letter-spaced label — for section captions / metric labels. */
   label:   'text-[11px] leading-[16px] uppercase tracking-[0.16em] font-semibold text-fg-5',
 };
 
@@ -54,7 +40,6 @@ export function Text({ variant = 'body', as = 'span', className, children, ...re
   return createElement(as, { className: cn(TEXT_VARIANTS[variant], className), ...rest }, children);
 }
 
-/** Monospace technical text — IDs, tokens, versions. */
 export function Mono({
   children,
   className,

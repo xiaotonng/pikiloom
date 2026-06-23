@@ -1,10 +1,3 @@
-/**
- * driver-gemini.ts — Gemini CLI agent driver.
- *
- * Requires `gemini` CLI installed (https://github.com/google-gemini/gemini-cli).
- * Stream protocol: spawns `gemini` with JSON output and parses stdout line-by-line.
- */
-
 import { registerDriver, type AgentDriver } from '../driver.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,10 +21,6 @@ import {
 } from '../index.js';
 import { getHome } from '../../core/platform.js';
 
-// ---------------------------------------------------------------------------
-// Command & parser
-// ---------------------------------------------------------------------------
-
 function hasGeminiFlag(args: string[] | undefined, names: string[]): boolean {
   if (!args?.length) return false;
   return args.some(arg => {
@@ -41,14 +30,8 @@ function hasGeminiFlag(args: string[] | undefined, names: string[]): boolean {
   });
 }
 
-// Gemini CLI's -p mode is text-only — there's no flag for binary inputs. The
-// CLI does, however, parse `@<path>` references in the prompt and inlines the
-// file's content (text or image) into the model's context. We splice those
-// references at the front of the prompt so attachments survive the trip.
 export function buildGeminiPromptText(prompt: string, attachments: string[]): string {
   if (!attachments.length) return prompt;
-  // Quote paths that contain spaces — gemini's tokenizer reads `@"..."` as a
-  // single reference. Plain paths can be left bare for cleaner display.
   const refs = attachments.map(p => /\s/.test(p) ? `@"${p}"` : `@${p}`).join(' ');
   return prompt ? `${refs}\n\n${prompt}` : refs;
 }
@@ -66,7 +49,6 @@ function geminiCmd(o: StreamOpts): string[] {
     args.push('--sandbox', String(sandbox));
   }
   if (o.geminiExtraArgs?.length) args.push(...o.geminiExtraArgs);
-  // gemini's -p requires the prompt as its value (not via stdin)
   const userPrompt = buildGeminiPromptText(o.prompt, o.attachments || []);
   const promptText = o.geminiSystemInstruction
     ? appendSystemPrompt(o.geminiSystemInstruction, userPrompt)
@@ -194,21 +176,14 @@ function geminiToolResultSummary(tool: { name: string; summary: string } | undef
 function geminiParse(ev: any, s: any) {
   const t = ev.type || '';
 
-  // init event: {"type":"init","session_id":"...","model":"..."}
   if (t === 'init') {
     emitSessionIdUpdate(s, ev.session_id);
     s.model = ev.model ?? s.model;
     s.contextWindow = geminiContextWindowFromModel(s.model) ?? s.contextWindow;
-    // Gemini's stream-json drops `thought` parts and every `agent_*`/`tool_update`
-    // event, so between init and the first tool_use/message there's nothing to
-    // surface — easily 10–30s on Gemini 3 Pro with HIGH thinking, longer when
-    // 429 backoffs kick in. Plant a sentinel so the IM/dashboard activity area
-    // shows progress instead of staying blank.
     pushRecentActivity(s.recentActivity, 'Thinking...');
     s.activity = s.recentActivity.join('\n');
   }
 
-  // message delta: {"type":"message","role":"assistant","content":"...","delta":true}
   if (t === 'message' && ev.role === 'assistant') {
     if (ev.delta) s.text += ev.content || '';
     else if (!s.text.trim()) s.text = ev.content || '';
@@ -240,7 +215,6 @@ function geminiParse(ev: any, s: any) {
     }
   }
 
-  // result event: {"type":"result","status":"success","stats":{...}}
   if (t === 'result') {
     emitSessionIdUpdate(s, ev.session_id);
     if (ev.status === 'error' || ev.status === 'failure') {
@@ -256,19 +230,12 @@ function geminiParse(ev: any, s: any) {
       s.inputTokens = u.input_tokens ?? u.input ?? s.inputTokens;
       s.outputTokens = u.output_tokens ?? u.output ?? s.outputTokens;
       s.cachedInputTokens = u.cached ?? s.cachedInputTokens;
-      // Gemini's `input_tokens` is the full prompt size (cached portion is
-      // already a subset of it). Use it directly as the context-window
-      // occupancy — adding `cached` would double-count.
       if (s.inputTokens != null) s.contextUsedTokens = s.inputTokens;
     }
     s.contextWindow = geminiContextWindowFromModel(s.model) ?? s.contextWindow;
   }
 }
 
-// Gemini-cli does an exponential backoff on 429s and other transient errors
-// without emitting any stream-json event — only stderr gets a line like
-// `Attempt 1 failed with status 429. Retrying with backoff...`. Surface those
-// lines as activity so users don't see a frozen UI during MODEL_CAPACITY_EXHAUSTED.
 const GEMINI_RETRY_RE = /^Attempt\s+(\d+)\s+failed\s+with\s+status\s+(\d+)/i;
 function geminiParseStderrLine(line: string, s: any) {
   const m = GEMINI_RETRY_RE.exec(line);
@@ -281,24 +248,6 @@ function geminiParseStderrLine(line: string, s: any) {
   pushRecentActivity(s.recentActivity, `Retrying after ${reason} (attempt ${attempt})`);
   s.activity = s.recentActivity.join('\n');
 }
-
-// ---------------------------------------------------------------------------
-// Thinking effort overlay
-//
-// Gemini CLI exposes thinking via two knobs depending on model family:
-//   - Gemini 3.x: thinkingLevel: "LOW" | "HIGH"
-//   - Gemini 2.5: thinkingBudget: number (0=off, 8192=default, -1=dynamic)
-// There is no CLI flag — the only place the CLI reads them is settings.json
-// under `agents.<chat-base*>.modelConfig.generateContentConfig.thinkingConfig`.
-//
-// We don't want to mutate the user's ~/.gemini/settings.json, so for streams
-// where an effort is set we materialise a fake $HOME via GEMINI_CLI_HOME and
-// place a synthetic `.gemini/` inside it: symlinks for everything in the
-// real ~/.gemini/ (oauth, projects, history, tmp, …) plus our merged
-// settings.json. Note that gemini-cli reads GEMINI_CLI_HOME as the *parent*
-// of `.gemini/`, not as `.gemini/` itself — getting that wrong makes gemini
-// fail with "Please set an Auth method" because it can't find any creds.
-// ---------------------------------------------------------------------------
 
 function geminiEffortOverlay(effort: string | null | undefined): Record<string, any> | null {
   const value = String(effort || '').trim().toLowerCase();
@@ -351,15 +300,6 @@ interface GeminiHomeOverlay {
 
 interface GeminiOverlayOpts {
   effort: string | null | undefined;
-  /**
-   * Pikiloom stages IM/dashboard attachments under `.pikiloom/sessions/<id>/workspace/`,
-   * which is gitignored in this and most consumer repos. gemini-cli's default
-   * `context.fileFiltering.respectGitIgnore: true` silently drops gitignored
-   * `@<path>` references AND blocks the `read_file` tool, so the model never
-   * receives the inlineData and ends up fabricating excuses for the missing
-   * image. When attachments are present we force the filter off for the
-   * spawned process only.
-   */
   hasAttachments: boolean;
 }
 
@@ -385,16 +325,14 @@ function prepareGeminiHomeOverlay(opts: GeminiOverlayOpts): GeminiHomeOverlay | 
     return null;
   }
 
-  // Symlink every entry in ~/.gemini except settings.json so OAuth, projects,
-  // history, tmp/, etc. all stay shared with the user's real config.
   try {
     for (const entry of fs.readdirSync(userGeminiDir, { withFileTypes: true })) {
       if (entry.name === 'settings.json') continue;
       try {
         fs.symlinkSync(path.join(userGeminiDir, entry.name), path.join(overlayGeminiDir, entry.name));
-      } catch { /* ignore individual symlink failures */ }
+      } catch {  }
     }
-  } catch { /* readdir failure → fall through with whatever we managed */ }
+  } catch {  }
 
   let userSettings: any = {};
   const userSettingsPath = path.join(userGeminiDir, 'settings.json');
@@ -402,7 +340,7 @@ function prepareGeminiHomeOverlay(opts: GeminiOverlayOpts): GeminiHomeOverlay | 
     if (fs.existsSync(userSettingsPath)) {
       userSettings = JSON.parse(fs.readFileSync(userSettingsPath, 'utf-8'));
     }
-  } catch { /* malformed user settings — start fresh */ }
+  } catch {  }
 
   const merged: Record<string, any> = { ...userSettings };
   if (effortOverrides) {
@@ -436,12 +374,7 @@ function prepareGeminiHomeOverlay(opts: GeminiOverlayOpts): GeminiHomeOverlay | 
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stream
-// ---------------------------------------------------------------------------
-
 export async function doGeminiStream(opts: StreamOpts): Promise<StreamResult> {
-  // Prompt is passed as -p argument; send empty stdin so run() doesn't duplicate it
   const overlay = prepareGeminiHomeOverlay({
     effort: opts.thinkingEffort,
     hasAttachments: (opts.attachments?.length ?? 0) > 0,
@@ -457,11 +390,6 @@ export async function doGeminiStream(opts: StreamOpts): Promise<StreamResult> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sessions / Tail
-// ---------------------------------------------------------------------------
-
-/** Resolve Gemini project name for a workdir from ~/.gemini/projects.json */
 function geminiProjectName(workdir: string): string | null {
   const home = getHome();
   if (!home) return null;
@@ -471,12 +399,11 @@ function geminiProjectName(workdir: string): string | null {
     const projects = data?.projects;
     if (!projects || typeof projects !== 'object') return null;
     const resolved = path.resolve(workdir);
-    // Exact match first, then check entries
     if (projects[resolved]) return projects[resolved];
     for (const [dir, name] of Object.entries(projects)) {
       if (path.resolve(dir) === resolved) return name as string;
     }
-  } catch { /* skip */ }
+  } catch {  }
   return null;
 }
 
@@ -503,15 +430,6 @@ function extractGeminiText(content: any): string {
   return parts.join('\n').trim();
 }
 
-// Gemini's -p mode is text-only, so pikiloom concatenates its system-prompt
-// blocks ([Browser Automation], [Artifact Return], …) onto the user's prompt
-// before invoking the CLI. That means the JSONL "user" message we read back
-// later contains those orchestrator-injected blocks AND the gemini-CLI-emitted
-// `--- Content from referenced files ---` markers it appends when expanding
-// `@<path>` references. Both are noise for the dashboard / IM render path —
-// the helpers below strip them so the displayed user bubble matches what the
-// human actually typed, and surface staged image attachments as image blocks
-// instead of raw `@<path>` text.
 const GEMINI_SYSTEM_BLOCK_SENTINELS = [
   '[Artifact Return]',
   '[Asking the user]',
@@ -544,12 +462,6 @@ function cleanGeminiUserText(rawText: string): string {
   return text.trim();
 }
 
-/**
- * Build a (text, image blocks) pair for a rendered user bubble. `@<path>`
- * references that resolve to readable image files are lifted into image
- * blocks; refs that don't resolve are left in the text so the user can still
- * see what they wrote.
- */
 function buildGeminiUserMessageContent(
   rawText: string,
   workdir: string,
@@ -571,15 +483,10 @@ function buildGeminiUserMessageContent(
   return { text: textOnly.replace(/\n{3,}/g, '\n\n').trim(), blocks };
 }
 
-/** Drop the attachment `@<path>` refs entirely so they don't surface as raw
- *  paths in plain-text contexts (tail snippets, sidebar previews). Newlines
- *  in the surrounding prose are preserved. */
 function dropGeminiFileRefs(text: string): string {
   return text.replace(GEMINI_FILE_REF_RE, '$1');
 }
 
-/** Single-line variant for session list titles where the bubble shape is a
- *  one-liner — collapses every whitespace run to a single space. */
 function flattenGeminiUserText(rawText: string): string {
   return dropGeminiFileRefs(cleanGeminiUserText(rawText)).replace(/\s+/g, ' ').trim();
 }
@@ -603,7 +510,7 @@ function findGeminiSessionFile(workdir: string, sessionId: string): string | nul
     try {
       const data = loadGeminiSessionData(filePath);
       if (data?.sessionId === sessionId) return filePath;
-    } catch { /* skip */ }
+    } catch {  }
   }
   return null;
 }
@@ -613,7 +520,6 @@ function loadGeminiSessionData(filePath: string): any {
     const content = fs.readFileSync(filePath, 'utf8');
     if (filePath.endsWith('.json')) return JSON.parse(content);
 
-    // JSONL format: first line is metadata, subsequent lines are messages or $set updates
     const lines = content.split('\n');
     let data: any = {};
     const messages: any[] = [];
@@ -628,7 +534,7 @@ function loadGeminiSessionData(filePath: string): any {
         } else if (obj.type === 'user' || obj.type === 'gemini' || obj.type === 'model' || obj.type === 'assistant') {
           messages.push(obj);
         }
-      } catch { /* skip */ }
+      } catch {  }
     }
     data.messages = messages;
     return data;
@@ -637,7 +543,6 @@ function loadGeminiSessionData(filePath: string): any {
   }
 }
 
-/** Content-derived native-session fields — everything except time-relative state. */
 interface GeminiNativeContent {
   sessionId: string;
   title: string | null;
@@ -650,25 +555,15 @@ interface GeminiNativeContent {
   numTurns: number | null;
 }
 
-// Per-file cache of the derived fields. getNativeGeminiSessionsFromFiles read +
-// JSON-parsed every chat file's full contents on every list request AND per
-// workspace×agent in the overview fan-out. Keyed by (mtime,size) so unchanged
-// chats are never re-read; `running` depends on Date.now() so it's recomputed
-// per call. Stores only the small derived fields, never the full messages array.
 const nativeGeminiContentCache = new Map<string, { mtimeMs: number; size: number; content: GeminiNativeContent | null }>();
 
 function readNativeGeminiContent(filePath: string): GeminiNativeContent | null {
   const data = loadGeminiSessionData(filePath);
   if (!data?.sessionId) return null;
 
-  // Gemini CLI writes stub session files for internal bookkeeping — e.g.
-  // `sessionId: "a2a-server"` for its built-in a2a server, plus abandoned
-  // UUID-named sessions that never received a turn. Both share the same shape:
-  // metadata only, no `messages` array. Nothing to render, so skip them.
   const messages = Array.isArray(data.messages) ? data.messages : [];
   if (messages.length === 0) return null;
 
-  // Extract title from first user message + last Q&A from tail.
   let title: string | null = null;
   let lastQuestion: string | null = null;
   let lastAnswer: string | null = null;
@@ -703,7 +598,6 @@ function readNativeGeminiContent(filePath: string): GeminiNativeContent | null {
   };
 }
 
-/** Read native Gemini CLI sessions from ~/.gemini/tmp/{projectName}/chats/ */
 function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
   const chatsDir = geminiChatsDir(workdir);
   if (!chatsDir || !fs.existsSync(chatsDir)) return [];
@@ -727,7 +621,6 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
     const content = cached.content;
     if (!content) continue;
 
-    // If we already saw this sessionId, only replace it if this file is newer.
     const existing = sessionsById.get(content.sessionId);
     if (existing && content.updatedAt && existing.runUpdatedAt && Date.parse(content.updatedAt) <= Date.parse(existing.runUpdatedAt)) {
       continue;
@@ -766,9 +659,6 @@ function getNativeGeminiSessions(workdir: string): SessionInfo[] {
 
 function getGeminiSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
-  // Merge pikiloom-tracked sessions with native Gemini sessions
-  // Canonical record→SessionInfo mapper (single source of truth) — see claude.ts.
-  // Hand-rolling dropped thinkingEffort/workflowEnabled/profileId from the merge.
   const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'gemini').map(managedRecordToSessionInfo);
   const nativeSessions = getNativeGeminiSessions(resolvedWorkdir);
   const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
@@ -805,10 +695,6 @@ function getGeminiSessionTail(opts: SessionTailOpts): SessionTailResult {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Session messages (full content)
-// ---------------------------------------------------------------------------
-
 function getGeminiSessionMessages(opts: SessionMessagesOpts): SessionMessagesResult {
   const filePath = findGeminiSessionFile(opts.workdir, opts.sessionId);
   if (!filePath) return { ok: false, messages: [], totalTurns: 0, error: 'Session file not found' };
@@ -843,11 +729,6 @@ function getGeminiSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
   }
 }
 
-// ---------------------------------------------------------------------------
-// Models — static list for now, can be extended with `gemini models list`
-// ---------------------------------------------------------------------------
-
-// Model IDs from gemini-cli-core (no CLI command to list them dynamically)
 const GEMINI_MODELS = [
   { id: 'auto-gemini-3', alias: 'auto-3' },
   { id: 'auto-gemini-2.5', alias: 'auto' },
@@ -858,10 +739,6 @@ const GEMINI_MODELS = [
   { id: 'gemini-2.5-flash', alias: 'flash' },
   { id: 'gemini-2.5-flash-lite', alias: 'flash-lite' },
 ];
-
-// ---------------------------------------------------------------------------
-// Usage
-// ---------------------------------------------------------------------------
 
 const GEMINI_USAGE_TIMEOUT_MS = GEMINI_USAGE_TIMEOUTS.request;
 const GEMINI_USAGE_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota';
@@ -1017,10 +894,6 @@ async function getGeminiUsageLive(): Promise<UsageResult> {
     return cachedGeminiUsage(detail);
   }
 }
-
-// ---------------------------------------------------------------------------
-// Driver
-// ---------------------------------------------------------------------------
 
 class GeminiDriver implements AgentDriver {
   readonly id = 'gemini';

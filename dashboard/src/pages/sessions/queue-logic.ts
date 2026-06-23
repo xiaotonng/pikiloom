@@ -13,3 +13,16 @@ export function sendWillQueue(input: SendClassificationInput): boolean {
     || input.streamPhase === 'queued';
   return streamActive || queuedExists;
 }
+
+export interface OptimisticSendQueuedInput {
+  pendingTaskId: string | null | undefined;
+  streamTaskId: string | null | undefined;
+  queuedTaskIds: readonly string[] | null | undefined;
+}
+
+export function optimisticSendWasQueued(input: OptimisticSendQueuedInput): boolean {
+  const { pendingTaskId, streamTaskId, queuedTaskIds } = input;
+  if (!pendingTaskId) return false;
+  if (pendingTaskId === streamTaskId) return false;
+  return !!queuedTaskIds && queuedTaskIds.includes(pendingTaskId);
+}

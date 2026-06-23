@@ -12,7 +12,7 @@ import { TurnView, UserBubble, TurnDivider } from './TurnView';
 import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
-import { sendWillQueue } from './queue-logic';
+import { sendWillQueue, optimisticSendWasQueued } from './queue-logic';
 import {
   normalizeTurnHistory,
   mergeOlderHistory,
@@ -95,6 +95,8 @@ export const SessionPanel = memo(function SessionPanel({
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const pendingTaskIdRef = useRef<string | null>(null);
   pendingTaskIdRef.current = pendingTaskId;
+  const pendingPromptRef = useRef<string | null>(pendingPrompt);
+  pendingPromptRef.current = pendingPrompt;
   type PendingQueuedSend = { localId: string; taskId: string | null; prompt: string; imageUrls: string[] };
   const [pendingQueuedSends, setPendingQueuedSends] = useState<PendingQueuedSend[]>([]);
   const pendingQueuedSendsRef = useRef<PendingQueuedSend[]>([]);
@@ -343,6 +345,23 @@ export const SessionPanel = memo(function SessionPanel({
     setQueuedTaskIds(state.queuedTaskIds && state.queuedTaskIds.length ? state.queuedTaskIds : EMPTY_TASK_IDS);
     setQueuedTasks(state.queuedTasks && state.queuedTasks.length ? state.queuedTasks : EMPTY_QUEUED_TASKS);
     setInteractions(Array.isArray(state.interactions) && state.interactions.length ? state.interactions : EMPTY_INTERACTIONS);
+    if (optimisticSendWasQueued({
+      pendingTaskId: pendingTaskIdRef.current,
+      streamTaskId: state.taskId || null,
+      queuedTaskIds: state.queuedTaskIds,
+    })) {
+      const pendingId = pendingTaskIdRef.current!;
+      const demotedPrompt = pendingPromptRef.current || '';
+      const demotedImages = pendingImageUrlsRef.current;
+      setPendingQueuedSends(prev => prev.some(s => s.taskId === pendingId)
+        ? prev
+        : [...prev, { localId: `demote-${pendingId}`, taskId: pendingId, prompt: demotedPrompt, imageUrls: demotedImages }]);
+      setPendingPrompt(null);
+      setPendingImageUrls([]);
+      pendingImageUrlsRef.current = [];
+      setPendingTaskId(null);
+      pendingTaskIdRef.current = null;
+    }
     if (state.phase === 'streaming') {
       const handingOffPrevTask = clearLiveStreamOnLoadRef.current
         && !!liveStreamRef.current

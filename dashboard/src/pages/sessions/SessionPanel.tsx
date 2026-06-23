@@ -12,6 +12,7 @@ import { TurnView, UserBubble, TurnDivider } from './TurnView';
 import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
+import { sendWillQueue } from './queue-logic';
 import {
   normalizeTurnHistory,
   mergeOlderHistory,
@@ -146,6 +147,13 @@ export const SessionPanel = memo(function SessionPanel({
   const streamingRef = useRef(streaming);
   liveStreamRef.current = liveStream;
   streamingRef.current = streaming;
+  // Live mirrors of the snapshot-derived queue state. handleSendStart runs from
+  // a ref-only callback (stable identity), so it reads these instead of closing
+  // over the state values — it must classify a send against the CURRENT queue.
+  const queuedTaskIdsRef = useRef<string[]>(queuedTaskIds);
+  queuedTaskIdsRef.current = queuedTaskIds;
+  const streamPhaseRef = useRef<string | null>(streamPhase);
+  streamPhaseRef.current = streamPhase;
   const scrollRef = useRef<HTMLDivElement>(null);
   const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const stickToBottomRef = useRef(true);
@@ -218,7 +226,16 @@ export const SessionPanel = memo(function SessionPanel({
   }, []);
 
   const handleSendStart = useCallback((prompt: string, imageUrls?: string[]) => {
-    const willBeQueued = !!liveStreamRef.current || streamingRef.current;
+    // Whether this send queues behind existing work must reflect a GENUINELY
+    // active turn — not a frozen preview. See sendWillQueue for the full
+    // reasoning (it guards the "插队→撤回→输入被吞" swallow).
+    const willBeQueued = sendWillQueue({
+      streaming: streamingRef.current,
+      liveStreamPhase: liveStreamRef.current?.phase ?? null,
+      streamPhase: streamPhaseRef.current,
+      queuedTaskCount: queuedTaskIdsRef.current.length,
+      pendingQueuedCount: pendingQueuedSendsRef.current.length,
+    });
     const urls = imageUrls || [];
     if (willBeQueued) {
       // Don't disturb the running task's optimistic bubble — append to the
@@ -229,8 +246,13 @@ export const SessionPanel = memo(function SessionPanel({
       setPendingQueuedSends(prev => [...prev, { localId, taskId: null, prompt: prompt || '', imageUrls: urls }]);
       return;
     }
-    // No active stream — this send is the (about-to-be) running task. Replace
-    // the running pending slot wholesale and revoke any stale image URLs.
+    // No active stream — this send is the (about-to-be) running task. A lingering
+    // frozen 'done' preview (a stopped/steered turn kept on screen) must be
+    // cleared here, or it renders *below* this turn's optimistic bubble and
+    // masquerades as its answer; clearing also lets the bubble show its own
+    // thinking spinner until the new turn's stream arrives.
+    if (liveStreamRef.current?.phase === 'done') setLiveStream(null);
+    // Replace the running pending slot wholesale and revoke any stale image URLs.
     for (const u of pendingImageUrlsRef.current) URL.revokeObjectURL(u);
     lastSendQueuedLocalIdRef.current = null;
     setPendingPrompt(prompt || null);
@@ -412,23 +434,29 @@ export const SessionPanel = memo(function SessionPanel({
       } else {
         setLiveStream(null);
       }
-      if (prev === 'done') {
-        clearPending();
-        clearPendingQueuedSends();
-      } else if (prev === null && localStreamPendingRef.current) {
-        // Premature null: a brand-new session's first poll can return null before
-        // its stream snapshot exists. Keep the optimistic bubble — and crucially
-        // keep localStreamPendingRef TRUE (see below) so the safety cleanup can't
-        // wipe it in this gap (the session may briefly read non-running while the
-        // stub is refreshed). The guard is released once the real stream begins
-        // and later ends.
+      // Premature null while a local send is in flight: the just-sent turn hasn't
+      // started streaming yet, so keep the optimistic bubble (text AND attached
+      // image) and the guard; only refresh history. This covers BOTH a brand-new
+      // session's first poll (prev === null) AND a follow-up sent after the
+      // previous turn finished (prev === 'done'). The latter is the "继续对话带图片
+      // 被吞" bug: an image's multipart upload widens the send→stream gap, so the
+      // seed REST fetch (requestStreamPolling → streamPollNonce) returns null
+      // before the new turn registers; clearing here revoked the blob URL and the
+      // image vanished until the server persisted it. Text was masked because
+      // liveStream.question re-shows text instantly — an image has no such
+      // recovery. The guard releases only when a real stream lifecycle ends.
+      if (localStreamPendingRef.current && prev !== 'streaming') {
         void loadLatestTurns({ keepOlder: true, force: true });
+      } else {
+        if (prev === 'done') {
+          clearPending();
+          clearPendingQueuedSends();
+        }
+        // Release the pending-stream guard only when an actual stream lifecycle
+        // ended — never on the premature-null gap above, where we are still
+        // waiting for the just-sent turn to start streaming.
+        if (prev !== null) localStreamPendingRef.current = false;
       }
-      // Release the pending-stream guard only when an actual stream lifecycle
-      // ended — NEVER on the premature-null gap above (prev === null), where we are
-      // still waiting for the just-sent turn to start streaming. Clearing it there
-      // is what let the safety cleanup wipe the optimistic bubble right after enter.
-      if (prev !== null) localStreamPendingRef.current = false;
       setStreamTaskId(null);
       setStreamPhase(null);
       setQueuedTaskIds([]);

@@ -742,7 +742,15 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
             {/* Rows 2..N: one row per queued task — each carries its own steer/recall */}
             {effectiveQueuedIds.map((taskId, idx) => {
               const isLatest = idx === effectiveQueuedIds.length - 1;
-              const positionLabel = effectiveQueuedIds.length > 1 ? `${t('hub.queued')} #${idx + 1}` : t('hub.queued');
+              // Steering interrupts the running task so this one jumps ahead.
+              // The abort it triggers is async (the agent CLI takes time to
+              // die), so the snapshot keeps this task `queued` for the whole
+              // gap. Surface a distinct "插队中…" state — otherwise the row reads
+              // an unchanged "排队中" and the action looks like it did nothing.
+              const isSteering = steeringIds.has(taskId);
+              const positionLabel = isSteering
+                ? t('hub.steering')
+                : effectiveQueuedIds.length > 1 ? `${t('hub.queued')} #${idx + 1}` : t('hub.queued');
               // Per-task prompt + images come from pendingQueuedSends (client-
               // only blob URLs) with the server snapshot as the text fallback.
               // Server queue state doesn't carry image data, so an older
@@ -758,7 +766,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                   key={taskId}
                   className="flex items-center gap-2.5 rounded-lg border border-warn/25 bg-warn/[0.04] px-3.5 py-1.5 transition-colors"
                 >
-                  <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse shrink-0" />
+                  {isSteering
+                    ? <Spinner className="h-3 w-3 text-warn shrink-0" />
+                    : <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse shrink-0" />}
                   <div className="flex-1 min-w-0 flex items-center gap-2">
                     <span className="text-[12px] font-medium text-warn shrink-0">{positionLabel}</span>
                     {taskImages.length > 0 && (
@@ -783,30 +793,32 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                       <span className="text-[11px] text-fg-5/60 truncate">{taskPrompt}</span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => handleSteerQueued(taskId)}
-                      disabled={steeringIds.has(taskId)}
-                      title={t('hub.steerHint')}
-                      className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-fg-4 hover:text-blue-400 hover:bg-blue-400/10 transition-colors disabled:opacity-30 disabled:pointer-events-none"
-                    >
-                      {steeringIds.has(taskId)
-                        ? <Spinner className="h-2.5 w-2.5" />
-                        : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 6 15 12 9 18" /></svg>}
-                      {t('hub.steer')}
-                    </button>
-                    <button
-                      onClick={() => handleRecallQueued(taskId)}
-                      disabled={recallingIds.has(taskId)}
-                      title={t('hub.recallHint')}
-                      className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-fg-4 hover:text-err hover:bg-err/10 transition-colors disabled:opacity-30 disabled:pointer-events-none"
-                    >
-                      {recallingIds.has(taskId)
-                        ? <Spinner className="h-2.5 w-2.5" />
-                        : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6 6 18" /><path d="M6 6l12 12" /></svg>}
-                      {t('hub.recall')}
-                    </button>
-                  </div>
+                  {/* Once steered, the action is committed (the running task is
+                      already interrupted) — hide the controls and let the row
+                      surface the "插队中…" spinner until it graduates to running. */}
+                  {!isSteering && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => handleSteerQueued(taskId)}
+                        title={t('hub.steerHint')}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-fg-4 hover:text-blue-400 hover:bg-blue-400/10 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 6 15 12 9 18" /></svg>
+                        {t('hub.steer')}
+                      </button>
+                      <button
+                        onClick={() => handleRecallQueued(taskId)}
+                        disabled={recallingIds.has(taskId)}
+                        title={t('hub.recallHint')}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-fg-4 hover:text-err hover:bg-err/10 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                      >
+                        {recallingIds.has(taskId)
+                          ? <Spinner className="h-2.5 w-2.5" />
+                          : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6 6 18" /><path d="M6 6l12 12" /></svg>}
+                        {t('hub.recall')}
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}

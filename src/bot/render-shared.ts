@@ -73,6 +73,7 @@ export interface FooterDecorations {
   model?: string | null;
   effort?: string | null;
   provider?: string | null;
+  profileName?: string | null;
 }
 
 export interface FooterParts {
@@ -95,7 +96,8 @@ export function formatFooterParts(
   decorations?: FooterDecorations,
 ): FooterParts {
   const identityParts: string[] = [agent];
-  if (decorations?.model) identityParts.push(compactModelLabel(decorations.model));
+  const modelLabel = decorations?.profileName ?? meta?.profileName ?? decorations?.model ?? null;
+  if (modelLabel) identityParts.push(compactModelLabel(modelLabel));
 
   const runtimeParts: string[] = [];
   if (decorations?.effort) runtimeParts.push(decorations.effort);

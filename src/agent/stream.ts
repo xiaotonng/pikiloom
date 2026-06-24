@@ -206,6 +206,7 @@ export async function run(
     contextWindow: byokWindow as number | null,
     byokContextWindow: byokWindow as number | null,
     byokProviderName: byokProvider as string | null,
+    byokProfileName: (opts.byokProfileName || null) as string | null,
     contextUsedTokens: null as number | null,
     codexCumulative: null as CodexCumulativeUsage | null,
     stopReason: null as string | null, activity: '',
@@ -485,8 +486,12 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       agentLog(`[byok] ${injection.detail}`);
     }
     const activeProfile = getActiveProfile(prepared.agent);
-    if (activeProfile?.effort) {
-      prepared.thinkingEffort = activeProfile.effort;
+    if (activeProfile) {
+      if (activeProfile.effort) prepared.thinkingEffort = activeProfile.effort;
+      const profileLabel = activeProfile.name?.trim();
+      if (profileLabel && profileLabel !== activeProfile.modelId) {
+        prepared.byokProfileName = profileLabel;
+      }
     }
   } catch (e: any) {
     agentWarn(`[byok] failed to apply Profile injection: ${e?.message || e}`);
@@ -512,6 +517,8 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     await awaitAgentUpdateIdle(prepared.agent, AGENT_UPDATE_TIMEOUTS.spawnWait);
     const result = await driver.doStream(prepared);
     const finalized = finalizeStreamResult(result, opts.workdir, opts.prompt, session, opts.claudeWorkflowEnabled);
+    finalized.byokProviderName = prepared.byokProviderName ?? null;
+    finalized.byokProfileName = prepared.byokProfileName ?? null;
     if (opts.forkOf && finalized.sessionId) {
       try {
         recordFork(opts.workdir, {
@@ -547,6 +554,8 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       incomplete: true,
       activity: null,
       plan: null,
+      byokProviderName: prepared.byokProviderName ?? null,
+      byokProfileName: prepared.byokProfileName ?? null,
     };
     const failureDisplayPrompt = collapseSkillPrompt(opts.prompt) ?? opts.prompt;
     session.record.lastQuestion = shortValue(failureDisplayPrompt, 500);

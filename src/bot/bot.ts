@@ -19,7 +19,7 @@ import {
   type HandoverRef,
 } from '../agent/index.js';
 import { compactForHandover, describeHandoverRef } from '../agent/handover.js';
-import { getActiveProfileId, setActiveProfile, getProfile } from '../model/index.js';
+import { getActiveProfileId, getActiveProfile, setActiveProfile, getProfile } from '../model/index.js';
 import {
   querySessions, querySessionTail, updateSession,
   type SessionQueryResult,
@@ -1958,6 +1958,8 @@ export class Bot {
   }
 
   modelForAgent(agent: Agent): string {
+    const profile = getActiveProfile(agent);
+    if (profile?.modelId) return profile.modelId;
     if (agent === 'hermes') {
       const bound = getAgentBoundModelId('hermes');
       if (bound) return bound;

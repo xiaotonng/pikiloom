@@ -788,6 +788,7 @@ interface CodexStreamState {
   contextUsedTokens: number | null;
   byokContextWindow: number | null;
   byokProviderName: string | null;
+  byokProfileName: string | null;
   codexCumulative: CodexCumulativeUsage | null;
   turnId: string | null;
   turnStatus: string | null;
@@ -812,6 +813,7 @@ function createCodexStreamState(opts: StreamOpts): CodexStreamState {
     ? opts.byokContextWindow
     : null;
   const byokProvider = opts.byokProviderName || null;
+  const byokProfile = opts.byokProfileName || null;
   return {
     sessionId: opts.sessionId,
     text: '', thinking: '', activity: '', msgs: [], thinkParts: [],
@@ -821,6 +823,7 @@ function createCodexStreamState(opts: StreamOpts): CodexStreamState {
     contextWindow: byokWindow, contextUsedTokens: null,
     byokContextWindow: byokWindow,
     byokProviderName: byokProvider,
+    byokProfileName: byokProfile,
     codexCumulative: null,
     turnId: null, turnStatus: null, turnError: null,
     messagePhases: new Map(),

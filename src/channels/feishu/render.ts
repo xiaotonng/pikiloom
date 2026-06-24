@@ -12,7 +12,7 @@ import { fmtUptime, fmtTokens, fmtBytes, formatGitStatusLine } from '../../bot/b
 import type { StartData, SessionsPageData, AgentsListData, ModelsListData, SkillsListData, StatusData, HostData, WorkspacesData } from '../../bot/commands.js';
 import { summarizePromptForStatus } from '../../bot/commands.js';
 import type { LivePreviewRenderer } from '../telegram/live-preview.js';
-import type { StreamPreviewRenderInput } from '../../bot/render-shared.js';
+import type { StreamPreviewRenderInput, FooterDecorations } from '../../bot/render-shared.js';
 import {
   footerStatusSymbol,
   formatFooterParts,
@@ -37,7 +37,7 @@ function formatPreviewFooter(
   agent: Agent,
   elapsedMs: number,
   meta?: import('../../bot/bot.js').StreamPreviewMeta | null,
-  decorations?: { model?: string | null; effort?: string | null },
+  decorations?: FooterDecorations,
 ): string {
   const parts = formatFooterParts(agent, elapsedMs, meta, null, decorations);
   return `${footerStatusSymbol('running')} ${parts.identity}\n*${parts.runtime}*`;
@@ -48,7 +48,7 @@ function formatFinalFooter(
   agent: Agent,
   elapsedMs: number,
   contextPercent?: number | null,
-  decorations?: { model?: string | null; effort?: string | null },
+  decorations?: FooterDecorations,
 ): string {
   const parts = formatFooterParts(agent, elapsedMs, null, contextPercent ?? null, decorations);
   return `${footerStatusSymbol(status)} ${parts.identity}\n*${parts.runtime}*`;
@@ -292,6 +292,8 @@ export function buildFinalReplyRender(agent: Agent, result: StreamResult): Feish
   const footerText = `\n\n${formatFinalFooter(data.footerStatus, agent, data.elapsedMs, result.contextPercent ?? null, {
     model: result.model,
     effort: result.thinkingEffort,
+    provider: result.byokProviderName,
+    profileName: result.byokProfileName,
   })}`;
 
   let activityText = '';

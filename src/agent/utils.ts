@@ -227,6 +227,7 @@ export function buildStreamPreviewMeta(s: {
   contextWindow: number | null; contextUsedTokens?: number | null;
   turnOutputTokensBase?: number | null;
   byokProviderName?: string | null;
+  byokProfileName?: string | null;
   subAgents?: ReadonlyMap<string, StreamSubAgent> | null;
   generatingImages?: number;
   claudeToolsById?: ReadonlyMap<string, { name: string; summary: string; input?: string | null; result?: string | null; status?: 'running' | 'done' | 'failed' }> | null;
@@ -241,6 +242,7 @@ export function buildStreamPreviewMeta(s: {
   const turnOutput = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
   if (turnOutput > 0) meta.turnOutputTokens = turnOutput;
   if (s.byokProviderName) meta.providerName = s.byokProviderName;
+  if (s.byokProfileName) meta.profileName = s.byokProfileName;
   if (s.subAgents && s.subAgents.size > 0) meta.subAgents = Array.from(s.subAgents.values());
   if (s.generatingImages && s.generatingImages > 0) meta.generatingImages = s.generatingImages;
   if (s.claudeToolCallOrder?.length && s.claudeToolsById) {

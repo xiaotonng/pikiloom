@@ -16,7 +16,7 @@ import {
   isHumanLoopQuestionAnswered,
   summarizeHumanLoopAnswer,
 } from '../../bot/human-loop.js';
-import type { FooterStatus, ProviderUsageSnapshot, StreamPreviewRenderInput } from '../../bot/render-shared.js';
+import type { FooterStatus, ProviderUsageSnapshot, StreamPreviewRenderInput, FooterDecorations } from '../../bot/render-shared.js';
 import {
   footerStatusSymbol,
   formatFooterParts,
@@ -351,7 +351,7 @@ export function formatPreviewFooterHtml(
   agent: Agent,
   elapsedMs: number,
   meta?: StreamPreviewMeta | null,
-  decorations?: { model?: string | null; effort?: string | null },
+  decorations?: FooterDecorations,
 ): string {
   const parts = formatFooterParts(agent, elapsedMs, meta, null, decorations);
   const primary = escapeHtml(`${footerStatusSymbol('running')} ${parts.identity}`);
@@ -363,7 +363,7 @@ function formatFinalFooterHtml(
   agent: Agent,
   elapsedMs: number,
   contextPercent?: number | null,
-  decorations?: { model?: string | null; effort?: string | null },
+  decorations?: FooterDecorations,
 ): string {
   const parts = formatFooterParts(agent, elapsedMs, null, contextPercent ?? null, decorations);
   const primary = escapeHtml(`${footerStatusSymbol(status)} ${parts.identity}`);
@@ -446,6 +446,8 @@ export function buildFinalReplyRender(agent: Agent, result: StreamResult): Final
   const footerHtml = `\n\n${formatFinalFooterHtml(data.footerStatus, agent, data.elapsedMs, result.contextPercent ?? null, {
     model: result.model,
     effort: result.thinkingEffort,
+    provider: result.byokProviderName,
+    profileName: result.byokProfileName,
   })}`;
 
   let activityHtml = '';

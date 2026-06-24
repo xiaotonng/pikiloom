@@ -62,6 +62,7 @@ export interface StreamPreviewMeta {
   subAgents?: StreamSubAgent[];
   toolCalls?: StreamToolCall[];
   providerName?: string | null;
+  profileName?: string | null;
   generatingImages?: number;
 }
 
@@ -126,6 +127,7 @@ export interface StreamOpts {
   byokArgvAppend?: string[];
   byokContextWindow?: number;
   byokProviderName?: string;
+  byokProfileName?: string;
   abortSignal?: AbortSignal;
   onInteraction?: (request: AgentInteraction) => Promise<Record<string, any> | null>;
   onSteerReady?: (steer: (prompt: string, attachments?: string[]) => Promise<boolean>) => void;
@@ -165,6 +167,8 @@ export interface StreamResult {
   incomplete: boolean;
   activity: string | null;
   assistantBlocks?: MessageBlock[];
+  byokProviderName?: string | null;
+  byokProfileName?: string | null;
 }
 
 export interface ManagedSessionRecord {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sendWillQueue, optimisticSendWasQueued } from '../dashboard/src/pages/sessions/queue-logic';
+import { sendWillQueue, optimisticSendWasQueued, visibleQueuedIds, doneAppliesToLivePreview } from '../dashboard/src/pages/sessions/queue-logic';
 
 const base = {
   streaming: false,
@@ -54,5 +54,57 @@ describe('optimisticSendWasQueued', () => {
     expect(optimisticSendWasQueued({ pendingTaskId: 'b', streamTaskId: 'a', queuedTaskIds: ['c'] })).toBe(false);
     expect(optimisticSendWasQueued({ pendingTaskId: 'b', streamTaskId: 'a', queuedTaskIds: null })).toBe(false);
     expect(optimisticSendWasQueued({ pendingTaskId: 'b', streamTaskId: 'a', queuedTaskIds: undefined })).toBe(false);
+  });
+});
+
+describe('visibleQueuedIds', () => {
+  const base = {
+    queuedTaskIds: null as readonly string[] | null,
+    streamPhase: null as string | null,
+    streamTaskId: null as string | null,
+    localTaskId: null as string | null,
+  };
+
+  it('shows nothing on an idle session', () => {
+    expect(visibleQueuedIds({ ...base })).toEqual([]);
+  });
+
+  it('lists a task queued behind the running turn', () => {
+    expect(visibleQueuedIds({ ...base, streamPhase: 'streaming', streamTaskId: 'a', queuedTaskIds: ['b'] })).toEqual(['b']);
+  });
+
+  it('never lists the running task as queued, even if a stale snapshot still carries it', () => {
+    expect(visibleQueuedIds({ ...base, streamPhase: 'streaming', streamTaskId: 'a', queuedTaskIds: ['a'] })).toEqual([]);
+    expect(visibleQueuedIds({ ...base, streamPhase: 'streaming', streamTaskId: 'a', queuedTaskIds: ['a', 'b'] })).toEqual(['b']);
+    expect(visibleQueuedIds({ ...base, streamPhase: 'streaming', streamTaskId: 'a', localTaskId: 'a' })).toEqual([]);
+  });
+
+  it('surfaces a self-queued task before any turn is running', () => {
+    expect(visibleQueuedIds({ ...base, streamPhase: 'queued', streamTaskId: 'a' })).toEqual(['a']);
+  });
+
+  it('shows an optimistic local send while idle or queued, never while streaming', () => {
+    expect(visibleQueuedIds({ ...base, localTaskId: 'x' })).toEqual(['x']);
+    expect(visibleQueuedIds({ ...base, streamPhase: 'queued', streamTaskId: 'a', localTaskId: 'x' })).toEqual(['a', 'x']);
+    expect(visibleQueuedIds({ ...base, streamPhase: 'streaming', streamTaskId: 'a', localTaskId: 'x' })).toEqual([]);
+  });
+
+  it('de-duplicates ids drawn from multiple sources', () => {
+    expect(visibleQueuedIds({ ...base, queuedTaskIds: ['a', 'b'], localTaskId: 'a' })).toEqual(['a', 'b']);
+  });
+});
+
+describe('doneAppliesToLivePreview', () => {
+  it('applies a done for the task currently shown in the preview', () => {
+    expect(doneAppliesToLivePreview('a', 'a')).toBe(true);
+  });
+
+  it('applies when there is no live preview yet', () => {
+    expect(doneAppliesToLivePreview(null, 'a')).toBe(true);
+    expect(doneAppliesToLivePreview(undefined, 'a')).toBe(true);
+  });
+
+  it('ignores a stale done for an older task while a newer task streams', () => {
+    expect(doneAppliesToLivePreview('b', 'a')).toBe(false);
   });
 });

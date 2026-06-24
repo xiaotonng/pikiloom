@@ -12,7 +12,14 @@ import { TurnView, UserBubble, TurnDivider } from './TurnView';
 import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
-import { sendWillQueue, optimisticSendWasQueued } from './queue-logic';
+import { sendWillQueue, optimisticSendWasQueued, doneAppliesToLivePreview } from './queue-logic';
+import {
+  snapshotGate,
+  nextAppliedUpdatedAt,
+  filterTombstonedIds,
+  pruneTombstones,
+  type SnapshotSource,
+} from './stream-reconcile';
 import {
   normalizeTurnHistory,
   mergeOlderHistory,
@@ -31,6 +38,7 @@ const EMPTY_QUEUED_TASKS: Array<{ taskId: string; prompt: string }> = [];
 const EMPTY_INTERACTIONS: InteractionSnapshot[] = [];
 
 const MAX_HISTORY_SNAPSHOTS = 20;
+const RECALL_TOMBSTONE_TTL_MS = 60_000;
 const historySnapshots = new Map<string, TurnHistoryWindow>();
 function snapshotKey(agent: string, sessionId: string) { return `${agent}:${sessionId}`; }
 
@@ -128,6 +136,9 @@ export const SessionPanel = memo(function SessionPanel({
   const clearLiveStreamOnLoadRef = useRef<{ taskId: string | null } | true | false>(false);
   const initialPendingConsumedRef = useRef(false);
   const promotingRef = useRef(false);
+  const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAppliedUpdatedAtRef = useRef(0);
+  const recalledTombstonesRef = useRef<Map<string, number>>(new Map());
   const composerSelectionRef = useRef<{ model: string | null; effort: string | null }>({ model: null, effort: null });
   const handleComposerSelectionChange = useCallback((sel: { model: string | null; effort: string | null }) => {
     composerSelectionRef.current = sel;
@@ -307,7 +318,17 @@ export const SessionPanel = memo(function SessionPanel({
 
   const prevPhaseRef = useRef<'queued' | 'streaming' | 'done' | null>(null);
 
-  const applyStreamSnapshot = useCallback((state: any | null) => {
+  const applyStreamSnapshot = useCallback((state: any | null, source: SnapshotSource = 'ws') => {
+    const decision = snapshotGate({
+      updatedAt: state?.updatedAt,
+      isNull: !state,
+      source,
+      lastAppliedUpdatedAt: lastAppliedUpdatedAtRef.current,
+      localStreamPending: localStreamPendingRef.current,
+      holdsActiveState: streamingRef.current || queuedTaskIdsRef.current.length > 0,
+    });
+    if (decision !== 'apply') return;
+    if (state) lastAppliedUpdatedAtRef.current = nextAppliedUpdatedAt(lastAppliedUpdatedAtRef.current, state.updatedAt);
     if (state?.sessionId && state.sessionId !== session.sessionId) {
       promotingRef.current = true;
       sessionKeyRef.current = `${session.agent}:${state.sessionId}`;
@@ -342,8 +363,16 @@ export const SessionPanel = memo(function SessionPanel({
     }
     setStreamPhase(state.phase);
     setStreamTaskId(state.taskId || null);
-    setQueuedTaskIds(state.queuedTaskIds && state.queuedTaskIds.length ? state.queuedTaskIds : EMPTY_TASK_IDS);
-    setQueuedTasks(state.queuedTasks && state.queuedTasks.length ? state.queuedTasks : EMPTY_QUEUED_TASKS);
+    const authoritativeIds: string[] = [];
+    if (state.taskId) authoritativeIds.push(state.taskId);
+    if (Array.isArray(state.queuedTaskIds)) authoritativeIds.push(...state.queuedTaskIds);
+    recalledTombstonesRef.current = pruneTombstones(recalledTombstonesRef.current, authoritativeIds, Date.now(), RECALL_TOMBSTONE_TTL_MS);
+    const tomb = recalledTombstonesRef.current;
+    const visibleQueuedTaskIds = filterTombstonedIds(state.queuedTaskIds, tomb);
+    const visibleQueuedTasks = (Array.isArray(state.queuedTasks) ? state.queuedTasks : [])
+      .filter((qt: { taskId: string }) => !tomb.has(qt.taskId));
+    setQueuedTaskIds(visibleQueuedTaskIds.length ? visibleQueuedTaskIds : EMPTY_TASK_IDS);
+    setQueuedTasks(visibleQueuedTasks.length ? visibleQueuedTasks : EMPTY_QUEUED_TASKS);
     setInteractions(Array.isArray(state.interactions) && state.interactions.length ? state.interactions : EMPTY_INTERACTIONS);
     if (optimisticSendWasQueued({
       pendingTaskId: pendingTaskIdRef.current,
@@ -363,30 +392,23 @@ export const SessionPanel = memo(function SessionPanel({
       pendingTaskIdRef.current = null;
     }
     if (state.phase === 'streaming') {
-      const handingOffPrevTask = clearLiveStreamOnLoadRef.current
-        && !!liveStreamRef.current
-        && liveStreamRef.current.taskId !== null
-        && liveStreamRef.current.taskId !== (state.taskId || null)
-        && !(state.text || '').trim();
-      if (!handingOffPrevTask) {
-        setLiveStream({
-          taskId: state.taskId || null,
-          phase: 'streaming',
-          text: state.text || '',
-          thinking: state.thinking || '',
-          activity: state.activity,
-          plan: state.plan ?? null,
-          model: state.model ?? null,
-          effort: state.effort ?? null,
-          previewMeta: state.previewMeta ?? null,
-          subAgents: state.previewMeta?.subAgents ?? null,
-          generatingImages: state.previewMeta?.generatingImages ?? 0,
-          artifacts: state.artifacts ?? null,
-          startedAt: typeof state.startedAt === 'number' ? state.startedAt : null,
-          error: null,
-          question: state.question ?? null,
-        });
-      }
+      setLiveStream({
+        taskId: state.taskId || null,
+        phase: 'streaming',
+        text: state.text || '',
+        thinking: state.thinking || '',
+        activity: state.activity,
+        plan: state.plan ?? null,
+        model: state.model ?? null,
+        effort: state.effort ?? null,
+        previewMeta: state.previewMeta ?? null,
+        subAgents: state.previewMeta?.subAgents ?? null,
+        generatingImages: state.previewMeta?.generatingImages ?? 0,
+        artifacts: state.artifacts ?? null,
+        startedAt: typeof state.startedAt === 'number' ? state.startedAt : null,
+        error: null,
+        question: state.question ?? null,
+      });
       setStreaming(true);
       if (state.taskId && state.taskId !== pendingTaskIdRef.current) {
         const queue = pendingQueuedSendsRef.current;
@@ -406,34 +428,47 @@ export const SessionPanel = memo(function SessionPanel({
       setLiveStream(null);
       setStreaming(false);
     } else if (state.phase === 'done') {
-      setStreaming(false);
-      setLiveStream(prev => prev
-        ? { ...prev, phase: 'done', error: state.error ?? null }
-        : state.error
-          ? {
-              taskId: state.taskId || null,
-              phase: 'done',
-              text: '',
-              thinking: '',
-              activity: '',
-              plan: null,
-              model: state.model ?? null,
-              effort: state.effort ?? null,
-              previewMeta: state.previewMeta ?? null,
-              subAgents: state.previewMeta?.subAgents ?? null,
-              generatingImages: state.previewMeta?.generatingImages ?? 0,
-              artifacts: state.artifacts ?? null,
-              error: state.error,
-            }
-          : prev);
-      const hasMoreQueued = !!state.queuedTaskIds?.length;
-      const live = liveStreamRef.current;
-      const hasPartialBody = !!live && liveStreamHasBody(live);
-      const freezePartial = !!state.incomplete && hasPartialBody && !hasMoreQueued;
-      if (prevPhaseRef.current !== 'done') {
-        if (!hasMoreQueued) clearPendingOnLoadRef.current = true;
-        clearLiveStreamOnLoadRef.current = freezePartial ? false : { taskId: state.taskId || null };
-        void loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
+      const doneForCurrent = doneAppliesToLivePreview(liveStreamRef.current?.taskId ?? null, state.taskId || null);
+      const hasMoreQueued = visibleQueuedTaskIds.length > 0;
+      if (doneForCurrent) {
+        setStreaming(false);
+        setLiveStream(prev => prev
+          ? { ...prev, phase: 'done', error: state.error ?? null }
+          : state.error
+            ? {
+                taskId: state.taskId || null,
+                phase: 'done',
+                text: '',
+                thinking: '',
+                activity: '',
+                plan: null,
+                model: state.model ?? null,
+                effort: state.effort ?? null,
+                previewMeta: state.previewMeta ?? null,
+                subAgents: state.previewMeta?.subAgents ?? null,
+                generatingImages: state.previewMeta?.generatingImages ?? 0,
+                artifacts: state.artifacts ?? null,
+                error: state.error,
+              }
+            : prev);
+        const live = liveStreamRef.current;
+        const hasPartialBody = !!live && liveStreamHasBody(live);
+        const freezePartial = !!state.incomplete && hasPartialBody && !hasMoreQueued;
+        if (prevPhaseRef.current !== 'done') {
+          if (!hasMoreQueued) clearPendingOnLoadRef.current = true;
+          clearLiveStreamOnLoadRef.current = freezePartial ? false : { taskId: state.taskId || null };
+          void loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
+          const recAgent = session.agent || '';
+          const recSid = session.sessionId;
+          const recKey = sessionKeyRef.current;
+          if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
+          reconcileTimerRef.current = setTimeout(() => {
+            reconcileTimerRef.current = null;
+            void api.getSessionStreamState(recAgent, recSid)
+              .then(res => { if (sessionKeyRef.current === recKey) applyStreamSnapshotRef.current(res.state, 'seed'); })
+              .catch(() => {});
+          }, 900);
+        }
       }
       if (!hasMoreQueued) localStreamPendingRef.current = false;
     }
@@ -464,8 +499,13 @@ export const SessionPanel = memo(function SessionPanel({
     setStreamPollNonce(current => current + 1);
   }, []);
 
+  useEffect(() => () => {
+    if (reconcileTimerRef.current) { clearTimeout(reconcileTimerRef.current); reconcileTimerRef.current = null; }
+  }, []);
+
   const handleRecallTask = useCallback(async (taskId: string) => {
     try {
+      recalledTombstonesRef.current.set(taskId, Date.now());
       await api.recallSessionMessage(taskId);
       if (pendingTaskIdRef.current === taskId) clearPending();
       setPendingQueuedSends(prev => {
@@ -526,6 +566,8 @@ export const SessionPanel = memo(function SessionPanel({
     setQueuedTaskIds([]);
     setQueuedTasks([]);
     setInteractions([]);
+    lastAppliedUpdatedAtRef.current = 0;
+    recalledTombstonesRef.current = new Map();
     if (!isNewSession) {
       clearPending();
       clearPendingQueuedSends();
@@ -564,7 +606,7 @@ export const SessionPanel = memo(function SessionPanel({
   useEffect(() => {
     let mounted = true;
     void api.getSessionStreamState(session.agent || '', session.sessionId).then(res => {
-      if (mounted) applyStreamSnapshotRef.current(res.state);
+      if (mounted) applyStreamSnapshotRef.current(res.state, 'seed');
     }).catch(() => {});
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -572,7 +614,7 @@ export const SessionPanel = memo(function SessionPanel({
 
   useDashboardReconnect(useCallback(() => {
     void api.getSessionStreamState(session.agent || '', session.sessionId).then(res => {
-      applyStreamSnapshot(res.state);
+      applyStreamSnapshot(res.state, 'seed');
     }).catch(() => {});
     void loadLatestTurns({ keepOlder: true, force: true });
   }, [applyStreamSnapshot, session.agent, session.sessionId, loadLatestTurns]));

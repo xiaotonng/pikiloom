@@ -1,0 +1,601 @@
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - img "pikiloom" [ref=e47]
+        - generic [ref=e8]: v0.4.29
+      - navigation [ref=e9]:
+        - generic [ref=e10]:
+          - link "工作台" [ref=e11] [cursor=pointer]:
+            - /url: /
+          - link "IM 接入" [ref=e12] [cursor=pointer]:
+            - /url: /im
+          - link "智能体配置" [ref=e13] [cursor=pointer]:
+            - /url: /agents
+          - link "扩展插件" [ref=e14] [cursor=pointer]:
+            - /url: /extensions
+          - link "系统设置" [ref=e15] [cursor=pointer]:
+            - /url: /system
+      - generic [ref=e16]:
+        - generic [ref=e17]:
+          - generic [ref=e18]:
+            - img [ref=e19]
+            - img "42%" [ref=e652]
+          - generic [ref=e23]:
+            - img [ref=e24]
+            - img "11%" [ref=e618]
+        - button "重启进程" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - generic [ref=e32]: 重启进程
+        - button "Light mode" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+        - button "EN" [ref=e40] [cursor=pointer]
+  - main [ref=e41]:
+    - generic [ref=e49]:
+      - generic [ref=e50]:
+        - generic [ref=e51]:
+          - generic [ref=e52]:
+            - img [ref=e53]
+            - textbox "搜索…" [ref=e56]
+          - generic [ref=e57]:
+            - button "全部" [ref=e58] [cursor=pointer]
+            - button "运行中" [ref=e59] [cursor=pointer]
+            - button "待审查" [ref=e60] [cursor=pointer]
+        - generic [ref=e61]:
+          - generic [ref=e62]:
+            - generic [ref=e63] [cursor=pointer]:
+              - img [ref=e64]
+              - generic [ref=e66]:
+                - generic [ref=e67]: pikiloom
+                - img [ref=e69]
+              - generic [ref=e75]:
+                - button "新建会话" [ref=e76]:
+                  - img [ref=e77]
+                - button "扩展插件" [ref=e78]:
+                  - img [ref=e79]
+                - button [ref=e81]:
+                  - img [ref=e82]
+            - generic [ref=e85]:
+              - generic [ref=e86]:
+                - button "Claude 1 <1m 我感觉现在 dashboard 整体的刷新流程很有问题，比如经常出现停止后的消息被吞，排队中的消息已经撤回仍然反复出现，以及刚发送的消息要先等待一段时间才被确认返回，同时新建会话的时候顶部会先 pending 然后才会到具体的 ses... Stopped mid-stream. **Immediately** resending (this is the swallow race — the stop's terminal snapshot must not eat this send):" [ref=e739] [cursor=pointer]:
+                  - generic [ref=e88]:
+                    - img [ref=e89]
+                    - generic [ref=e90]: Claude
+                    - generic [ref=e91]:
+                      - generic [ref=e92]:
+                        - img [ref=e93]
+                        - text: "1"
+                      - generic [ref=e95]: <1m
+                  - generic [ref=e98]: 我感觉现在 dashboard 整体的刷新流程很有问题，比如经常出现停止后的消息被吞，排队中的消息已经撤回仍然反复出现，以及刚发送的消息要先等待一段时间才被确认返回，同时新建会话的时候顶部会先 pending 然后才会到具体的 ses...
+                  - generic [ref=e100]: "Stopped mid-stream. **Immediately** resending (this is the swallow race — the stop's terminal snapshot must not eat this send):"
+                - button "更多操作" [ref=e101] [cursor=pointer]:
+                  - img [ref=e102]
+              - generic [ref=e106]:
+                - 'button "Claude opus-4-8 5 <1m STREAM-TEST-A: Without using any tools or reading any files, write about 400 words explaining how prime numbers work.... Mountains" [ref=e726] [cursor=pointer]':
+                  - generic [ref=e108]:
+                    - img [ref=e109]
+                    - generic [ref=e110]: Claude
+                    - generic [ref=e111]: opus-4-8
+                    - generic [ref=e112]:
+                      - generic [ref=e113]:
+                        - img [ref=e114]
+                        - text: "5"
+                      - generic [ref=e116]: <1m
+                  - generic [ref=e119]: "STREAM-TEST-A: Without using any tools or reading any files, write about 400 words explaining how prime numbers work...."
+                  - generic [ref=e121]: Mountains
+                - button "更多操作" [ref=e122] [cursor=pointer]:
+                  - img [ref=e123]
+              - generic [ref=e127]:
+                - button "Claude opus-4-8 7 26m 插队这个问题还是有啊，你之前是怎么修改的问题很多 Two new bugs reported, both pointing at the WS/transport path:" [ref=e728] [cursor=pointer]:
+                  - generic [ref=e129]:
+                    - img [ref=e130]
+                    - generic [ref=e131]: Claude
+                    - generic [ref=e132]: opus-4-8
+                    - generic [ref=e133]:
+                      - generic [ref=e134]:
+                        - img [ref=e135]
+                        - text: "7"
+                      - generic [ref=e137]: 26m
+                  - generic [ref=e140]: 插队这个问题还是有啊，你之前是怎么修改的问题很多
+                  - generic [ref=e142]: "Two new bugs reported, both pointing at the WS/transport path:"
+                - button "更多操作" [ref=e143] [cursor=pointer]:
+                  - img [ref=e144]
+              - generic [ref=e148]:
+                - 'button "Claude opus-4-8 25 28m Automated queue test. Call the im_ask_user tool ONCE: title ''ANCHOR'', question ''hold the queue — reply when ready'', o... PRIMES_DONE" [ref=e769] [cursor=pointer]':
+                  - generic [ref=e150]:
+                    - img [ref=e151]
+                    - generic [ref=e152]: Claude
+                    - generic [ref=e153]: opus-4-8
+                    - generic [ref=e154]:
+                      - generic [ref=e155]:
+                        - img [ref=e156]
+                        - text: "25"
+                      - generic [ref=e158]: 28m
+                  - generic [ref=e161]: "Automated queue test. Call the im_ask_user tool ONCE: title 'ANCHOR', question 'hold the queue — reply when ready', o..."
+                  - generic [ref=e163]: PRIMES_DONE
+                - button "更多操作" [ref=e164] [cursor=pointer]:
+                  - img [ref=e165]
+              - generic [ref=e169]:
+                - button "Claude opus-4-8 3 46m 你帮我打开浏览器，然后把飞书后台我的机器人（盛大机器人那个）改一下机器人菜单配置，改成图里这样 You're at the computer now — that's much easier. Let me bring up a fresh QR code; you can scan it directly off the sc..." [ref=e729] [cursor=pointer]:
+                  - generic [ref=e171]:
+                    - img [ref=e172]
+                    - generic [ref=e173]: Claude
+                    - generic [ref=e174]: opus-4-8
+                    - generic [ref=e175]:
+                      - generic [ref=e176]:
+                        - img [ref=e177]
+                        - text: "3"
+                      - generic [ref=e179]: 46m
+                  - generic [ref=e182]: 你帮我打开浏览器，然后把飞书后台我的机器人（盛大机器人那个）改一下机器人菜单配置，改成图里这样
+                  - generic [ref=e184]: You're at the computer now — that's much easier. Let me bring up a fresh QR code; you can scan it directly off the sc...
+                - button "更多操作" [ref=e185] [cursor=pointer]:
+                  - img [ref=e186]
+              - button "+ 还有 150 个" [ref=e190] [cursor=pointer]:
+                - generic [ref=e191]: + 还有 150 个
+                - img [ref=e192]
+          - generic [ref=e194]:
+            - generic [ref=e195] [cursor=pointer]:
+              - img [ref=e196]
+              - generic [ref=e199]: Two Agents
+              - generic [ref=e200]:
+                - button "新建会话" [ref=e201]:
+                  - img [ref=e202]
+                - button "扩展插件" [ref=e203]:
+                  - img [ref=e204]
+                - button [ref=e206]:
+                  - img [ref=e207]
+                - button [ref=e210]:
+                  - img [ref=e211]
+            - generic [ref=e214]:
+              - generic [ref=e215]:
+                - 'button "Codex z-ai/glm-5.2 <1m Write a Python retry decorator with exponential backoff and jitter. Include type hints and a concise docstring. {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The ''z-ai/glm-5.2'' model is not suppo..." [ref=e740] [cursor=pointer]':
+                  - generic [ref=e217]:
+                    - img [ref=e218]
+                    - generic [ref=e219]: Codex
+                    - generic [ref=e220]: z-ai/glm-5.2
+                    - generic [ref=e222]: <1m
+                  - generic [ref=e225]: Write a Python retry decorator with exponential backoff and jitter. Include type hints and a concise docstring.
+                  - generic [ref=e227]: "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'z-ai/glm-5.2' model is not suppo..."
+                - button "更多操作" [ref=e228] [cursor=pointer]:
+                  - img [ref=e229]
+              - generic [ref=e233]:
+                - button "Claude z-ai/glm-5.2 2d Write a Python retry decorator with exponential backoff and jitter. Include type hints and a concise docstring. python" [ref=e234] [cursor=pointer]:
+                  - generic [ref=e235]:
+                    - img [ref=e236]
+                    - generic [ref=e237]: Claude
+                    - generic [ref=e238]: z-ai/glm-5.2
+                    - generic [ref=e240]: 2d
+                  - generic [ref=e243]: Write a Python retry decorator with exponential backoff and jitter. Include type hints and a concise docstring.
+                  - generic [ref=e245]: python
+                - button "更多操作" [ref=e246] [cursor=pointer]:
+                  - img [ref=e247]
+        - generic [ref=e251]:
+          - generic [ref=e252]:
+            - button "单窗口" [ref=e253] [cursor=pointer]:
+              - img [ref=e254]
+            - button "双窗口" [ref=e256] [cursor=pointer]:
+              - img [ref=e257]
+            - button "三窗口" [ref=e260] [cursor=pointer]:
+              - img [ref=e261]
+            - button "六窗口" [ref=e265] [cursor=pointer]:
+              - img [ref=e266]
+          - button "添加工作区" [ref=e273] [cursor=pointer]:
+            - img [ref=e274]
+            - text: 添加工作区
+      - generic [ref=e276]:
+        - generic [ref=e277]:
+          - generic [ref=e278]:
+            - generic [ref=e280]:
+              - generic [ref=e281]: glm-cast4
+              - generic [ref=e282]: /
+              - generic [ref=e283]: Write a Python retry decorator with exponential backoff and jitter. Include type hints and a concise docstring.
+            - generic [ref=e284]:
+              - generic "hub.created" [ref=e285]: 06/21 23:29
+              - generic "hub.updated" [ref=e286]: 1m
+              - button "文件" [ref=e287] [cursor=pointer]:
+                - img [ref=e288]
+              - button "关闭" [ref=e290] [cursor=pointer]:
+                - img [ref=e291]
+          - generic [ref=e295]:
+            - generic [ref=e297]:
+              - generic [ref=e300]: 继续上滑可加载更早的对话
+              - generic [ref=e302]:
+                - generic [ref=e304]: "Snap source test: print 1 to 20, one per line \"N — <word>\". No preamble."
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e306]:
+                - generic [ref=e308]: "After-fix oscillation check: print 1 to 25, one per line \"N — <word>\". No preamble."
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e310]:
+                - generic [ref=e312]: Write a flowing 150-word paragraph (prose, NO lists, NO headings) explaining how the TCP three-way handshake works and why it matters.
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e314]:
+                - generic [ref=e316]: 用大约120字的一段连续文字（不要列表、不要标题）解释 TCP 三次握手的过程。
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e318]:
+                - generic [ref=e320]: 再用大约150字的一段连续文字（不要列表、不要标题、不要分段）解释 TCP 为什么需要四次挥手而不是三次。
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e322]:
+                - generic [ref=e324]: 再写大约150字连续文字解释滑动窗口与拥塞控制的区别（不要列表/标题）。
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e326]:
+                - generic [ref=e328]: ZZMARK_48071 请只回复 ok
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e330]:
+                - generic [ref=e332]: 图片测试：请只回复 ok
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e334]:
+                - generic [ref=e336]: 图片测试2（修复后）：请只回复 ok
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e338]:
+                - generic [ref=e340]: "COUNT-SLOW: Without using any tools or files, slowly count from 1 to 150. Put exactly one number per line and nothing else."
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e342]:
+                - generic [ref=e344]: QUEUED-Q1-RECALL-ME
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e346]:
+                - generic [ref=e348]: QUEUED-Q2-KEEP-ME
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e771]:
+                - generic [ref=e773]: AFTERSTOP-D-must-not-be-swallowed
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+              - generic [ref=e774]:
+                - generic [ref=e775]:
+                  - img [ref=e776]
+                  - generic [ref=e777]: Codex
+                  - generic [ref=e778]: z-ai/glm-5.2 · xhigh
+                  - 'generic "Context: 5.4% · Input: 13,926 · Output (turn): 98 · Cached: 0" [ref=e779]':
+                    - generic [ref=e781]: 5.4%
+                    - generic [ref=e782]: · 14.0k tok
+                    - generic [ref=e783]: · ↑98
+                - generic [ref=e787]: "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'z-ai/glm-5.2' model is not supported when using Codex with a ChatGPT account.\"}}"
+            - generic [ref=e356]:
+              - textbox "输入消息…" [active] [ref=e357]
+              - generic [ref=e358]:
+                - button "添加图片" [ref=e359] [cursor=pointer]:
+                  - img [ref=e360]
+                - button "Codex / z-ai/glm-5.2 / Xhigh" [ref=e361] [cursor=pointer]:
+                  - img [ref=e362]
+                  - generic [ref=e363]:
+                    - generic [ref=e364]: Codex
+                    - generic [ref=e365]: /
+                    - generic "z-ai/glm-5.2" [ref=e366]
+                    - generic [ref=e367]: /
+                    - generic [ref=e368]: Xhigh
+                  - img [ref=e369]
+                - button [disabled] [ref=e371]:
+                  - img [ref=e767]
+        - generic [ref=e374]:
+          - generic [ref=e375]:
+            - generic [ref=e377]:
+              - generic [ref=e378]: pikiloom
+              - generic [ref=e379]: /
+              - generic [ref=e380]: "STREAM-TEST-A: Without using any tools or reading any files, write about 400 words explaining how prime numbers work...."
+            - generic [ref=e381]:
+              - generic "hub.created" [ref=e382]: 06/24 14:01
+              - generic "hub.updated" [ref=e383]: 2m
+              - generic [ref=e384]:
+                - img [ref=e385]
+                - text: "5"
+              - button "文件" [ref=e387] [cursor=pointer]:
+                - img [ref=e388]
+              - button "关闭" [ref=e390] [cursor=pointer]:
+                - img [ref=e391]
+          - generic [ref=e395]:
+            - generic [ref=e397]:
+              - generic [ref=e398]:
+                - generic [ref=e399]:
+                  - generic [ref=e401]: "STREAM-TEST-A: Without using any tools or reading any files, write about 400 words explaining how prime numbers work. Put one short sentence per line, and go slowly."
+                  - generic:
+                    - button "复制":
+                      - img
+                    - button "重跑":
+                      - img
+                    - button "编辑":
+                      - img
+                    - button "从此分支":
+                      - img
+                - generic [ref=e402]:
+                  - img [ref=e403]
+                  - generic [ref=e404]: Claude Code
+                  - generic [ref=e405]: opus-4-8 · max
+                  - 'generic "Context: 2.6% · Input: 7,528 · Output (turn): 929 · Cached: 6,904" [ref=e406]':
+                    - generic [ref=e408]: 2.6%
+                    - generic [ref=e409]: · 25.5k tok
+                    - generic [ref=e410]: · ↑929
+                - generic [ref=e413]:
+                  - paragraph [ref=e414]: A prime number is a whole number greater than one.
+                  - paragraph [ref=e415]: It has exactly two divisors.
+                  - paragraph [ref=e416]: Those divisors are one and the number itself.
+                  - paragraph [ref=e417]: Nothing else divides it evenly.
+                  - paragraph [ref=e418]: Take the number five as an example.
+                  - paragraph [ref=e419]: You can divide five by one.
+                  - paragraph [ref=e420]: You can divide five by five.
+                  - paragraph [ref=e421]: But two, three, and four leave a remainder.
+                  - paragraph [ref=e422]: So five is prime.
+                  - paragraph [ref=e423]: Now consider the number six.
+                  - paragraph [ref=e424]: Six can be divided by one and six.
+                  - paragraph [ref=e425]: But it can also be divided by two and three.
+                  - paragraph [ref=e426]: That gives six four divisors in total.
+                  - paragraph [ref=e427]: So six is not prime.
+                  - paragraph [ref=e428]: We call numbers like six composite.
+                  - paragraph [ref=e429]: A composite number has more than two divisors.
+                  - paragraph [ref=e430]: The number one is a special case.
+                  - paragraph [ref=e431]: One has only a single divisor, itself.
+                  - paragraph [ref=e432]: So one is neither prime nor composite.
+                  - paragraph [ref=e433]: The smallest prime number is two.
+                  - paragraph [ref=e434]: Two is also the only even prime.
+                  - paragraph [ref=e435]: Every other even number is divisible by two.
+                  - paragraph [ref=e436]: That extra divisor makes them composite.
+                  - paragraph [ref=e437]: So all primes after two are odd.
+                  - paragraph [ref=e438]: The primes begin two, three, five, seven, eleven.
+                  - paragraph [ref=e439]: They continue thirteen, seventeen, nineteen, twenty-three.
+                  - paragraph [ref=e440]: The list never ends.
+                  - paragraph [ref=e441]: Euclid proved there are infinitely many primes.
+                  - paragraph [ref=e442]: His proof is elegant and ancient.
+                  - paragraph [ref=e443]: Suppose you had a complete list of primes.
+                  - paragraph [ref=e444]: Multiply them all together.
+                  - paragraph [ref=e445]: Then add one to the result.
+                  - paragraph [ref=e446]: This new number leaves a remainder with every prime.
+                  - paragraph [ref=e447]: So it must have a prime factor not on your list.
+                  - paragraph [ref=e448]: That contradiction shows the list can never be complete.
+                  - paragraph [ref=e449]: Primes are the building blocks of arithmetic.
+                  - paragraph [ref=e450]: Every whole number factors into primes.
+                  - paragraph [ref=e451]: That factorization is unique, ignoring order.
+                  - paragraph [ref=e452]: We call this the fundamental theorem of arithmetic.
+                  - paragraph [ref=e453]: Twelve, for instance, is two times two times three.
+                  - paragraph [ref=e454]: No other set of primes produces twelve.
+                  - paragraph [ref=e455]: To test if a number is prime, try dividing it.
+                  - paragraph [ref=e456]: Check each prime up to its square root.
+                  - paragraph [ref=e457]: If none divides evenly, the number is prime.
+                  - paragraph [ref=e458]: You only need the square root because factors come in pairs.
+                  - paragraph [ref=e459]: This method is called trial division.
+                  - paragraph [ref=e460]: Larger numbers need cleverer algorithms.
+                  - paragraph [ref=e461]: Primes thin out as numbers grow larger.
+                  - paragraph [ref=e462]: But they never disappear entirely.
+                  - paragraph [ref=e463]: The gaps between them grow on average.
+                  - paragraph [ref=e464]: Yet some primes stay surprisingly close.
+                  - paragraph [ref=e465]: Pairs like eleven and thirteen differ by two.
+                  - paragraph [ref=e466]: These are called twin primes.
+                  - paragraph [ref=e467]: Primes also power modern cryptography.
+                  - paragraph [ref=e468]: Multiplying two large primes is easy.
+                  - paragraph [ref=e469]: Reversing that product is extremely hard.
+                  - paragraph [ref=e470]: That difficulty keeps secret messages safe.
+                  - paragraph [ref=e471]: So primes are both simple and profound.
+                  - paragraph [ref=e472]: They are humble numbers with deep importance.
+              - generic [ref=e473]:
+                - generic [ref=e474]:
+                  - generic [ref=e476]: RECALL-ME-NOW-queued-2nd
+                  - generic:
+                    - button "复制":
+                      - img
+                    - button "重跑":
+                      - img
+                    - button "编辑":
+                      - img
+                    - button "从此分支":
+                      - img
+                - generic [ref=e477]:
+                  - img [ref=e478]
+                  - generic [ref=e479]: Claude Code
+                  - generic [ref=e480]: opus-4-8 · max
+                  - 'generic "Context: 2.7% · Input: 573 · Output (turn): 479 · Cached: 6,904" [ref=e481]':
+                    - generic [ref=e483]: 2.7%
+                    - generic [ref=e484]: · 26.6k tok
+                    - generic [ref=e485]: · ↑479
+                - generic [ref=e488]:
+                  - paragraph [ref=e489]:
+                    - text: Received — this is the 2nd queued message (
+                    - code [ref=e490]: RECALL-ME-NOW-queued-2nd
+                    - text: ). Acknowledged.
+                  - paragraph [ref=e491]:
+                    - text: If you intended
+                    - code [ref=e492]: RECALL-ME-NOW
+                    - text: as an actual request to recall memories or do something specific, let me know and I'll act on it. Otherwise I'm treating it as a queue/streaming test marker and standing by.
+              - generic [ref=e587]:
+                - generic [ref=e588]:
+                  - generic [ref=e590]: "LONGSTREAM: Without using any tools or reading any files, write a detailed 1500-word essay on the history of computing, in flowing prose. Write continuously, do not stop early."
+                  - generic:
+                    - button "复制":
+                      - img
+                    - button "重跑":
+                      - img
+                    - button "编辑":
+                      - img
+                    - button "从此分支":
+                      - img
+                - generic [ref=e591]:
+                  - img [ref=e592]
+                  - generic [ref=e593]: Claude Code
+                  - generic [ref=e594]: opus-4-8 · max
+                  - 'generic "Context: 3.1% · Input: 2 · Output (turn): 3,030 · Cached: 6,904" [ref=e595]':
+                    - generic [ref=e597]: 3.1%
+                    - generic [ref=e598]: · 29.7k tok
+                    - generic [ref=e599]: · ↑3.0k
+                - generic [ref=e602]:
+                  - heading "The History of Computing" [level=2] [ref=e603]
+                  - paragraph [ref=e604]: The history of computing is, at its heart, the history of humanity's long struggle to extend the reach of its own mind. Long before electricity coursed through silicon, people sought tools to lighten the burden of calculation, to count herds and harvests, to track the wandering of stars, and to settle the arithmetic of trade. The story begins not with machines but with fingers and pebbles, with notched bones and knotted cords, and it stretches forward across millennia into a present so saturated with computation that we scarcely notice the calculating engines humming in our pockets and walls.
+                  - paragraph [ref=e605]: "The earliest computing device of any sophistication was the abacus, which appeared in various forms across the ancient world, from Mesopotamia to China to Rome. With beads sliding along rods or stones moving in dust-filled grooves, the abacus allowed merchants and scribes to perform addition and subtraction with remarkable speed. It encoded a profound idea that would echo through all later computing: that abstract quantities could be represented by physical positions, and that manipulating those positions according to fixed rules could yield reliable answers. The human became the processor, and the device became the memory and the workspace."
+                  - paragraph [ref=e606]: For centuries, progress was incremental. The astrolabe and other geared instruments hinted at the possibility of mechanizing calculation, and the astonishing Antikythera mechanism, built by Greek artisans around the second century before the common era, used intricate bronze gears to predict astronomical positions and eclipses. It was a computer of a kind, though its purpose was narrow and its principles were lost for nearly two thousand years. Not until the seventeenth century did the mechanical calculator truly emerge. John Napier's discovery of logarithms transformed multiplication into addition, and his invention of numbered rods, called Napier's bones, gave artisans a practical aid. Soon after, the slide rule appeared, a tool that would serve engineers and scientists faithfully until the late twentieth century.
+                  - paragraph [ref=e607]: The seventeenth century also produced the first true calculating machines. Blaise Pascal, still a teenager, built a geared adding machine to help his father with tax computations. Gottfried Wilhelm Leibniz extended the idea with his stepped reckoner, capable of multiplication and division, and he articulated the binary number system that would later become the native tongue of electronic computers. Leibniz dreamed of a universal language of reasoning, a calculus of thought in which disputes could be settled by calculation. That dream, though premature, foreshadowed the ambitions of artificial intelligence centuries later.
+                  - paragraph [ref=e608]: The decisive conceptual leap came in the nineteenth century with Charles Babbage, an English mathematician of restless genius. Frustrated by the errors riddling printed mathematical tables, he designed the Difference Engine, a massive mechanical calculator intended to compute polynomial functions automatically. Though he never completed it, his imagination soon ranged further, to the Analytical Engine, a general-purpose mechanical computer with a separate store for memory and a mill for processing, controlled by punched cards borrowed from the Jacquard loom. The Analytical Engine was, in principle, programmable, and it anticipated the architecture of modern machines with uncanny precision. Ada Lovelace, working alongside Babbage, grasped the implications more deeply than anyone of her time. She wrote what is often called the first computer program, an algorithm for computing Bernoulli numbers, and she perceived that such a machine might one day manipulate not only numbers but any symbols, including music and language. Her vision was breathtakingly modern, even as the technology to realize it lay a century away.
+                  - paragraph [ref=e609]: The practical thread of computing meanwhile ran through the problem of data. As nations grew and bureaucracies swelled, the sheer volume of information threatened to overwhelm clerks. Herman Hollerith, working on the United States census of 1890, devised an electromechanical tabulating machine that read holes punched in cards, dramatically accelerating the count. His company would eventually merge into the firm that became International Business Machines, IBM, a name that would dominate computing for much of the twentieth century. Punched cards became the medium of data processing for decades, and the marriage of electricity with mechanical counting set the stage for the revolution to come.
+                  - paragraph [ref=e610]: The intellectual foundations were laid in the 1930s. Alan Turing, a young British mathematician, published a paper that defined the abstract notion of a computing machine, a hypothetical device that could read and write symbols on an infinite tape according to a table of rules. This Turing machine clarified what it meant for a problem to be computable and proved that some problems could never be solved by any mechanical process. Around the same time, Alonzo Church reached similar conclusions through different means, and Claude Shannon showed that the logic of switching circuits could be described by Boolean algebra, linking the abstract world of logic to the concrete world of electrical relays. These ideas converged to make the electronic computer thinkable.
+                  - paragraph [ref=e611]: The Second World War turned theory into urgent practice. The need to break enemy codes and to compute artillery trajectories drove enormous investment. In Britain, the Colossus machines helped decipher German communications, while in the United States, the ENIAC, completed in 1945, filled a room with eighteen thousand vacuum tubes and performed thousands of calculations per second. These early machines were monstrous, hot, and unreliable, programmed by physically rewiring panels or setting switches. Yet they proved the power of electronic computation. The crucial refinement came with the stored-program concept, often associated with John von Neumann, who articulated an architecture in which both instructions and data resided together in memory. This meant a computer could be reprogrammed simply by loading new instructions rather than rebuilding its wiring, and the von Neumann architecture remains the blueprint for nearly all computers today.
+                  - paragraph [ref=e612]: The 1950s and 1960s brought a cascade of innovation. The invention of the transistor at Bell Labs in 1947 replaced fragile vacuum tubes with small, durable semiconductors, and the subsequent development of the integrated circuit packed many transistors onto a single chip of silicon. Computers shrank, grew faster, and consumed less power. Programming evolved as well, moving from raw machine code to assembly language and then to high-level languages such as FORTRAN, COBOL, and LISP, which allowed programmers to express ideas in forms closer to human thought. Operating systems emerged to manage the machine's resources, and the notion of time-sharing allowed many users to interact with a single computer at once, sowing the seeds of interactive computing.
+                  - paragraph [ref=e613]: The 1970s witnessed the birth of the personal computer. The microprocessor, which placed an entire central processing unit on one chip, made small affordable machines possible. Hobbyist kits like the Altair 8800 ignited a movement, and companies such as Apple, founded by Steve Jobs and Steve Wozniak, brought computers into homes and schools. IBM legitimized the personal computer for business in 1981, and a young Microsoft, led by Bill Gates, supplied the operating system that would come to dominate the market. The graphical user interface, pioneered at Xerox PARC and popularized by the Apple Macintosh, replaced cryptic commands with windows, icons, and the mouse, making computers accessible to ordinary people who had never wished to learn a programming language.
+                  - paragraph [ref=e614]: The final great transformation of the twentieth century was the network. Research funded by the United States military produced ARPANET, a system that allowed distant computers to exchange data through packet switching. Over time this grew into the Internet, a global web of interconnected networks. When Tim Berners-Lee invented the World Wide Web at the close of the 1980s, layering an easy system of linked documents atop the Internet, computing ceased to be solitary and became profoundly social. Information flowed freely across continents, commerce migrated online, and the boundaries between machines blurred into a single shared space.
+                  - paragraph [ref=e615]: The twenty-first century has accelerated every trend. Computers have become mobile, vanishing into smartphones more powerful than the room-sized machines of the past. Vast data centers, the so-called cloud, perform computation on behalf of billions, while wireless networks knit together a world of sensors and devices. Most striking of all has been the resurgence of artificial intelligence, powered by machine learning and neural networks trained on enormous quantities of data. Systems can now recognize images, translate languages, and generate fluent text, returning at last to the dream that Leibniz and Lovelace once entertained, of machines that might reason and create.
+                  - paragraph [ref=e616]: Yet for all this dazzling progress, the essential story remains continuous. From the abacus to the neural network, computing has always been about representing the world in symbols and transforming those symbols by rules, extending the human capacity to remember, to calculate, and to reason. Each generation built upon the insights of the last, often unknowingly, and the machines that surround us today are the inheritors of pebbles in dust and gears in bronze. The history of computing is unfinished, and its next chapters, like all that came before, will be written by the restless human desire to think beyond the limits of the unaided mind.
+              - generic [ref=e658]:
+                - generic [ref=e659]:
+                  - generic [ref=e661]: "STOPTEST-A: Without using any tools, write 800 words about the ocean, continuously, do not stop early."
+                  - generic:
+                    - button "复制":
+                      - img
+                    - button "重跑":
+                      - img
+                    - button "编辑":
+                      - img
+                    - button "从此分支":
+                      - img
+                - generic [ref=e662]:
+                  - img [ref=e663]
+                  - generic [ref=e664]: Claude Code
+                  - generic [ref=e665]: opus-4-8 · max
+                  - 'generic "Context: 3.5% · Input: 2,866 · Output (turn): 1,618 · Cached: 6,904" [ref=e666]':
+                    - generic [ref=e668]: 3.5%
+                    - generic [ref=e669]: · 34.3k tok
+                    - generic [ref=e670]: · ↑1.6k
+                - generic [ref=e673]:
+                  - paragraph [ref=e674]: The ocean is the great defining feature of our planet, a single connected body of saltwater that covers more than seven-tenths of the Earth's surface and holds within it nearly all the world's water. Seen from space, it is the ocean that gives Earth its famous blue glow, the color that distinguishes our world from every barren rock and gas giant we have ever observed. To speak of oceans in the plural is partly a convenience of maps; in truth the Pacific, Atlantic, Indian, Southern, and Arctic are arms of one continuous sea, their waters mingling in slow grand circulations that span the globe and take centuries to complete.
+                  - paragraph [ref=e675]: The ocean is staggeringly deep. Its average depth is nearly four kilometers, and in places such as the Mariana Trench it plunges almost eleven kilometers below the surface, deeper than Mount Everest is tall. These depths are among the least explored regions on Earth, darker and more remote than the surface of the Moon. Sunlight penetrates only the uppermost layer, perhaps two hundred meters, called the sunlit or epipelagic zone. Below that lies the twilight zone, where light fades to a dim blue gloom, and beneath it the midnight zone, where no sunlight reaches at all and creatures must make their own light through bioluminescence. In this perpetual darkness live some of the strangest animals known, from anglerfish dangling glowing lures to giant squid with eyes the size of dinner plates.
+                  - paragraph [ref=e676]: The water itself is in constant motion, driven by wind, by the heat of the sun, by the spin of the Earth, and by differences in temperature and salinity. Surface currents like the Gulf Stream carry warm tropical water toward the poles, moderating the climates of distant continents and making places like northwestern Europe far milder than their latitude would suggest. Deeper still runs the great thermohaline circulation, sometimes called the ocean conveyor belt, in which cold dense salty water sinks near the poles and creeps along the seafloor before rising again elsewhere, redistributing heat and nutrients across the entire planet over thousands of years. Tides, meanwhile, rise and fall twice a day, pulled by the gravity of the Moon and the Sun, breathing the sea against the shore in a rhythm older than life itself.
+                  - paragraph [ref=e677]: Life almost certainly began in the ocean, in warm shallow waters or perhaps around the scalding mineral-rich vents of the deep seafloor. From those origins the sea has remained the cradle and engine of life on Earth. Microscopic phytoplankton drifting near the surface perform a service no less vital than the great forests; through photosynthesis they produce a large share of the oxygen we breathe and form the base of a food web that rises through tiny grazing animals to fish, seals, sharks, and the largest creatures ever to have lived, the great whales. Coral reefs, built grain by grain over millennia by tiny animals, shelter a quarter of all marine species in vibrant underwater cities of color and motion, even though they occupy only a sliver of the ocean floor.
+                  - paragraph [ref=e678]: The ocean also governs the climate of the whole world. It absorbs enormous quantities of heat and carbon dioxide, buffering the atmosphere against the changes that human activity would otherwise inflict far more swiftly. Yet this service comes at a cost. As the ocean takes up more carbon dioxide, its waters grow more acidic, threatening the shells and skeletons of corals and countless other creatures. As it absorbs more heat, it warms and expands, raising sea levels and feeding more powerful storms. Warming waters bleach coral reefs, shift the ranges of fish, and disturb the delicate timing of migrations and breeding that countless species depend upon.
+                  - paragraph [ref=e679]: For humanity the ocean has always been both barrier and bridge. It separated peoples and protected them, and it carried explorers, traders, conquerors, and migrants across its vast expanses. Whole civilizations rose on fishing and seafaring, and even today a great share of global trade moves across the water in enormous ships. The sea feeds billions, provides livelihoods to coastal communities, and inspires art, myth, and longing in nearly every culture that has ever lived within sight of it.
+                  - paragraph [ref=e680]: And yet we have treated this immense and generous system carelessly. We have overfished its waters, emptying once teeming grounds; we have filled it with plastic that drifts in great gyres and breaks into fragments swallowed by fish and birds; we have poured pollution and noise into its depths. The ocean is vast, but it is not infinite, and its resilience has limits we are only beginning to understand. To care for the ocean is, in the end, to care for ourselves, for in its tides and currents lies the very breath and balance of our living world, the deep blue heart of the only home we have.
+              - generic [ref=e732]:
+                - generic [ref=e734]: "STOPTEST-C: Without using any tools, write a 3000-word essay about mountains. Be exhaustive and continuous."
+                - generic:
+                  - button "复制":
+                    - img
+                  - button "重跑":
+                    - img
+                  - button "编辑":
+                    - img
+                  - button "从此分支":
+                    - img
+              - generic [ref=e690]:
+                - generic [ref=e691]:
+                  - img [ref=e692]
+                  - generic [ref=e693]: Claude Code
+                  - generic [ref=e694]: opus-4-8 · max
+                  - 'generic "Context: 3.9% · Input: 3,654 · Output: 0 · Cached: 6,904" [ref=e714]':
+                    - generic [ref=e716]: 3.9%
+                    - generic [ref=e717]: · 38.0k tok
+                - generic [ref=e697]:
+                  - generic [ref=e718]:
+                    - heading "Mountains" [level=2] [ref=e719]
+                    - paragraph [ref=e720]: "Mountains are among the most commanding features of the Earth's surface, rising from plains and seabeds alike to pierce the sky and reshape the world around them. They are at once symbols of permanence and the products of restless change, monuments that seem eternal to the brief span of a human life yet are forever being born, lifted, worn down, and reborn across the immense durations of geological time. To stand at the foot of a great peak is to feel something of that paradox directly: the mountain appears utterly fixed, a wall of rock and ice that has surely always been there and always will be, and yet every grain of its substance is in motion, every summit is being slowly destroyed even as deeper forces continue to raise it. The story of mountains is therefore the story of the planet itself, of the heat in its interior, the drift of its great plates, the patient labor of water and wind, and the thin film of life that clings to even the highest and harshest of slopes."
+                    - paragraph [ref=e721]: "A mountain, in the simplest definition, is a landform that rises prominently above its surroundings, generally with steep sides and a confined summit area. Where exactly a hill becomes a mountain is a matter of convention rather than physics; different countries and traditions have drawn the line at different heights, often somewhere around three hundred meters of local relief, but the distinction is ultimately cultural. What matters geologically is not an arbitrary threshold but the processes that produce elevation and the structures that result. Mountains rarely stand alone. More often they gather into ranges, long chains of related peaks that share a common origin, and ranges in turn assemble into still larger systems and cordilleras that can stretch for thousands of kilometers across a continent. The Andes running the length of South America, the Rockies threading through North America, the great sweep of the Himalaya and its neighboring ranges across Asia, the Alps arcing through Europe: these are not collections of unrelated bumps but coherent expressions of forces operating on a planetary scale."
+                    - paragraph [ref=e735]: The deepest cause of most great mountain ranges is plate tectonics, the slow movement of the rigid plates that make up the Earth's outer shell. Driven by heat rising from the planet's interior and by the pull of dense slabs sinking back into the mantle, these plates creep across the globe at speeds comparable to the growth of a fingernail, a few centimeters a year, but over millions of years their motions accomplish staggering things. Where two plates collide, the crust has nowhere to go but up and down, crumpling and stacking and thickening like the hood of a car in a head-on crash. The Himalaya, the highest mountains on Earth, are the spectacular result of just such a collision, as the Indian plate, having torn away from an ancient southern supercontinent and raced northward across a van
+                  - generic [ref=e738]: 已停止
+            - generic [ref=e496]:
+              - textbox "输入消息…" [ref=e497]
+              - generic [ref=e498]:
+                - button "添加图片" [ref=e499] [cursor=pointer]:
+                  - img [ref=e500]
+                - button "Claude / opus-4-8 / Max" [ref=e501] [cursor=pointer]:
+                  - img [ref=e502]
+                  - generic [ref=e503]:
+                    - generic [ref=e504]: Claude
+                    - generic [ref=e505]: /
+                    - generic "claude-opus-4-8" [ref=e506]: opus-4-8
+                    - generic [ref=e507]: /
+                    - generic [ref=e508]: Max
+                  - img [ref=e509]
+                - button [disabled] [ref=e511]:
+                  - img [ref=e712]
+        - generic [ref=e789]:
+          - generic [ref=e790]:
+            - generic [ref=e791]: 新建会话
+            - generic [ref=e792]:
+              - img [ref=e793]
+              - generic [ref=e795]: pikiloom
+            - button [ref=e797] [cursor=pointer]:
+              - img [ref=e798]
+          - generic [ref=e804]: 选择工作区和 Agent，输入初始提示词开始新会话。
+          - generic [ref=e807]:
+            - textbox "输入消息…" [ref=e808]
+            - generic [ref=e809]:
+              - button "添加图片" [ref=e810] [cursor=pointer]:
+                - img [ref=e811]
+              - button "Claude / opus-4-8 / Max" [ref=e812] [cursor=pointer]:
+                - img [ref=e813]
+                - generic [ref=e814]:
+                  - generic [ref=e815]: Claude
+                  - generic [ref=e816]: /
+                  - generic "claude-opus-4-8" [ref=e817]: opus-4-8
+                  - generic [ref=e818]: /
+                  - generic [ref=e819]: Max
+                - img [ref=e820]
+              - button [disabled] [ref=e822]:
+                - img [ref=e823]

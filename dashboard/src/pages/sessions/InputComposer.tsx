@@ -6,6 +6,7 @@ import { api } from '../../api';
 import { useStore } from '../../store';
 import { Spinner } from '../../components/ui';
 import { BrandIcon } from '../../components/BrandIcon';
+import { visibleQueuedIds } from './queue-logic';
 import {
   makeComposerImageAttachment,
   revokeComposerAttachments,
@@ -332,18 +333,12 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   ]);
 
   const isActiveStream = streamPhase === 'streaming';
-  const effectiveQueuedIds: string[] = (() => {
-    const ids: string[] = [];
-    if (queuedTaskIds && queuedTaskIds.length) ids.push(...queuedTaskIds);
-    if (streamPhase === 'queued' && streamTaskId && !ids.includes(streamTaskId)) {
-      ids.unshift(streamTaskId);
-    }
-    if (localTaskId && !ids.includes(localTaskId)) {
-      const optimisticAllowed = streamPhase === 'queued' || (!streamPhase);
-      if (optimisticAllowed) ids.push(localTaskId);
-    }
-    return ids;
-  })();
+  const effectiveQueuedIds: string[] = visibleQueuedIds({
+    queuedTaskIds,
+    streamPhase,
+    streamTaskId,
+    localTaskId,
+  });
   const effectiveQueuedId = effectiveQueuedIds[effectiveQueuedIds.length - 1] || null;
   const hasQueuedTask = effectiveQueuedIds.length > 0;
   const showTaskBar = hasQueuedTask || isActiveStream;

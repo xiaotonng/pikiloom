@@ -295,7 +295,9 @@ export function sanitizeSessionQuestionPreview(text?: string | null): string {
 }
 
 export function sessionListDisplayText(session: Pick<SessionInfo, 'lastQuestion' | 'title' | 'sessionId'>): string {
-  return cleanSessionPreviewText(session.title) || sanitizeSessionQuestionPreview(session.lastQuestion) || session.sessionId;
+  return cleanSessionPreviewText(session.title)
+    || sanitizeSessionQuestionPreview(session.lastQuestion)
+    || (isPendingSessionId(session.sessionId) ? '' : session.sessionId);
 }
 
 export function sessionListContextText(

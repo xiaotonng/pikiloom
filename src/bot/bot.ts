@@ -61,6 +61,7 @@ export { envBool, envString, envInt, shellSplit, whichSync, fmtTokens, fmtUptime
 export { getHostBatteryData, getHostCpuUsageData, getHostDisplayName, getHostMemoryUsageData, type HostBatteryData, type HostCpuUsageData, type HostMemoryUsageData } from './host.js';
 export { readGitStatus, formatGitStatusLine, type GitStatus } from '../core/git.js';
 import { BOT_TIMEOUTS } from '../core/constants.js';
+import { queuedIdsToDeferForSteer } from './queue-steer.js';
 
 export const DEFAULT_RUN_TIMEOUT_S = BOT_TIMEOUTS.defaultRunTimeoutS;
 const MACOS_USER_ACTIVITY_PULSE_INTERVAL_MS = BOT_TIMEOUTS.macosUserActivityPulseInterval;
@@ -539,7 +540,7 @@ export class Bot {
           const next = snap.queuedTaskIds.filter(id => id !== event.taskId);
           snap.queuedTaskIds = next.length ? next : undefined;
           snap.updatedAt = now;
-        } else {
+        } else if (snap.taskId === event.taskId) {
           this.streamSnapshots.delete(sessionKey);
           this.forgetPromotion(sessionKey);
         }
@@ -1191,9 +1192,8 @@ export class Bot {
       const t = this.activeTasks.get(id);
       if (t) t.deferForSteer = false;
     }
-    const targetIdx = queuedIds.indexOf(targetTaskId);
-    for (let i = 0; i < targetIdx; i++) {
-      const t = this.activeTasks.get(queuedIds[i]);
+    for (const id of queuedIdsToDeferForSteer(queuedIds, targetTaskId)) {
+      const t = this.activeTasks.get(id);
       if (t && t.status === 'queued' && !t.cancelled) t.deferForSteer = true;
     }
   }

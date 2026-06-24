@@ -62,9 +62,12 @@ export interface UniversalInteraction {
   hint?: string | null;
   questions: Array<{
     id: string;
+    header?: string;
     text: string;
     type?: 'text' | 'select' | string;
-    choices?: Array<{ label: string; description?: string }>;
+    choices?: Array<{ label: string; description?: string; value?: string }>;
+    allowFreeform?: boolean;
+    allowEmpty?: boolean;
   }>;
   currentIndex?: number;
 }
@@ -72,6 +75,7 @@ export interface UniversalInteraction {
 export interface UniversalSnapshot {
   phase: SessionPhase;
   taskId?: string | null;
+  sessionId?: string | null;
   agent?: string | null;
   model?: string | null;
   effort?: string | null;
@@ -113,12 +117,15 @@ export function emptySnapshot(): UniversalSnapshot {
 
 const APPEND_FIELDS = ['text', 'reasoning'] as const;
 const STRUCT_FIELDS = ['plan', 'toolCalls', 'subAgents', 'usage', 'artifacts', 'interactions', 'queued'] as const;
-const SCALAR_FIELDS = ['phase', 'taskId', 'agent', 'model', 'effort', 'prompt', 'activity', 'error', 'incomplete', 'startedAt', 'updatedAt'] as const;
+const SCALAR_FIELDS = ['phase', 'taskId', 'sessionId', 'agent', 'model', 'effort', 'prompt', 'activity', 'error', 'incomplete', 'startedAt', 'updatedAt'] as const;
 
 export function diffSnapshot(prev: UniversalSnapshot, next: UniversalSnapshot): SnapshotPatch {
   const patch: SnapshotPatch = {};
   let set: Record<string, unknown> | undefined;
-  const put = (k: string, v: unknown) => { (set ||= {})[k] = v; };
+  // Coerce undefined → null so a field-clear survives JSON serialization on the
+  // wire (JSON.stringify drops undefined-valued keys, which would otherwise leave
+  // the receiver's cumulative snapshot holding the previous turn's value).
+  const put = (k: string, v: unknown) => { (set ||= {})[k] = v === undefined ? null : v; };
 
   for (const f of APPEND_FIELDS) {
     const a = (prev as any)[f] ?? '';

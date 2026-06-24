@@ -83,12 +83,28 @@ function channelToSnapshot(key: string, u: any): any {
   const sessionId = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key;
   const usage = u.usage || null;
   return {
-    sessionId,
+    sessionId: u.sessionId ?? sessionId,
     phase: u.phase,
     taskId: u.taskId ?? null,
     queuedTaskIds: Array.isArray(u.queued) ? u.queued.map((q: any) => q.taskId) : [],
     queuedTasks: Array.isArray(u.queued) ? u.queued : [],
-    interactions: Array.isArray(u.interactions) ? u.interactions : [],
+    interactions: Array.isArray(u.interactions) ? u.interactions.map((it: any) => ({
+      promptId: it.promptId,
+      kind: it.kind,
+      title: it.title,
+      hint: it.hint,
+      currentIndex: it.currentIndex,
+      questions: Array.isArray(it.questions) ? it.questions.map((q: any) => ({
+        id: q.id,
+        header: q.header ?? '',
+        prompt: q.prompt ?? q.text ?? '',
+        options: Array.isArray(q.options ?? q.choices)
+          ? (q.options ?? q.choices).map((c: any) => ({ label: c.label, description: c.description ?? null, value: c.value ?? c.label }))
+          : null,
+        allowFreeform: q.allowFreeform,
+        allowEmpty: q.allowEmpty,
+      })) : [],
+    })) : [],
     text: u.text || '',
     thinking: u.reasoning || '',
     activity: u.activity,
@@ -101,17 +117,17 @@ function channelToSnapshot(key: string, u: any): any {
     updatedAt: u.updatedAt,
     error: u.error ?? undefined,
     incomplete: u.incomplete,
-    previewMeta: usage ? {
-      inputTokens: usage.inputTokens ?? null,
-      outputTokens: usage.outputTokens ?? null,
-      cachedInputTokens: usage.cachedInputTokens ?? null,
-      contextUsedTokens: usage.contextUsedTokens ?? null,
-      contextPercent: usage.contextPercent ?? null,
-      turnOutputTokens: usage.turnOutputTokens ?? null,
-      providerName: usage.providerName ?? null,
+    previewMeta: (usage || u.subAgents?.length || u.toolCalls?.length) ? {
+      inputTokens: usage?.inputTokens ?? null,
+      outputTokens: usage?.outputTokens ?? null,
+      cachedInputTokens: usage?.cachedInputTokens ?? null,
+      contextUsedTokens: usage?.contextUsedTokens ?? null,
+      contextPercent: usage?.contextPercent ?? null,
+      turnOutputTokens: usage?.turnOutputTokens ?? null,
+      providerName: usage?.providerName ?? null,
       subAgents: u.subAgents ?? undefined,
       toolCalls: u.toolCalls ?? undefined,
-      generatingImages: usage.generatingImages ?? 0,
+      generatingImages: usage?.generatingImages ?? 0,
     } : null,
   };
 }

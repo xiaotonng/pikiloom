@@ -41,11 +41,14 @@ function projectInteractions(snap: StreamSnapshot): UniversalInteraction[] | und
     currentIndex: it.currentIndex,
     questions: (it.questions || []).map((q: any) => ({
       id: String(q.id),
-      text: String(q.text ?? q.label ?? ''),
+      header: q.header ?? undefined,
+      text: String(q.prompt ?? q.text ?? q.label ?? ''),
       type: q.type,
-      choices: Array.isArray(q.choices)
-        ? q.choices.map((c: any) => ({ label: String(c.label ?? c), description: c.description }))
+      choices: Array.isArray(q.options ?? q.choices)
+        ? (q.options ?? q.choices).map((c: any) => ({ label: String(c.label ?? c), description: c.description ?? undefined, value: c.value ?? c.label }))
         : undefined,
+      allowFreeform: q.allowFreeform,
+      allowEmpty: q.allowEmpty,
     })),
   }));
 }
@@ -66,6 +69,7 @@ export function projectSnapshot(sessionKey: string, snap: StreamSnapshot): Unive
   return compact({
     phase: snap.phase,
     taskId: snap.taskId ?? undefined,
+    sessionId: snap.sessionId ?? undefined,
     agent: agent || undefined,
     model: snap.model ?? undefined,
     effort: snap.effort ?? undefined,

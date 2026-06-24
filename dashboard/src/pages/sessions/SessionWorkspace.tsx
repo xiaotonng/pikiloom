@@ -10,6 +10,7 @@ import {
   fmtTime,
   fmtRelative,
   getAgentMeta,
+  isPendingSessionId,
   normalizeLiveSessionState,
   resolveCanonicalSessionId,
   shortenModel,
@@ -1022,7 +1023,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                       <span className="shrink-0 text-[10px] font-medium text-fg-5">{slot.workdir.split('/').pop() || slot.workdir}</span>
                       <span className="shrink-0 text-fg-6 text-[10px] mx-1">/</span>
                       <span className="min-w-0 truncate text-[11px] font-medium text-fg-3">
-                        {info.title || info.lastQuestion?.slice(0, 60) || slot.sessionId.slice(0, 12)}
+                        {info.title || info.lastQuestion?.slice(0, 60) || (isPendingSessionId(slot.sessionId) ? t('hub.newSession') : slot.sessionId.slice(0, 12))}
                       </span>
                     </div>
                     <div className="shrink-0 flex items-center gap-2.5 pl-4 text-[9px] text-fg-5/50 tabular-nums">
@@ -1566,7 +1567,7 @@ const SessionCard = memo(function SessionCard({
 }) {
   const meta = getAgentMeta(session.agent || '');
   const displayState = sessionDisplayState(session);
-  const displayText = sessionListDisplayText(session).slice(0, 500) || session.sessionId.slice(0, 16);
+  const displayText = sessionListDisplayText(session).slice(0, 500) || (isPendingSessionId(session.sessionId) ? '' : session.sessionId.slice(0, 16));
   const contextText = sessionListContextText(session, displayText).slice(0, 500);
   const modelShort = session.model ? shortenModel(session.model) : null;
   const indentPx = forkDepth > 0 ? Math.min(forkDepth, 3) * 14 : 0;

@@ -10,6 +10,7 @@ import type {
   GitChangesResult,
   HostInfo,
   LocalModelsProbeResponse,
+  OllamaLibraryResponse,
   LsDirResult,
   McpCatalogItem,
   McpHealthResult,
@@ -314,6 +315,12 @@ export const api = {
 
   probeLocalModels: (opts?: ApiRequestOptions) =>
     json<LocalModelsProbeResponse>('/api/local-models/probe', { timeoutMs: 8_000, ...opts }),
+
+  fetchOllamaLibrary: (refresh?: boolean, opts?: ApiRequestOptions) =>
+    json<OllamaLibraryResponse>(
+      `/api/local-models/ollama-library${refresh ? '?refresh=1' : ''}`,
+      { timeoutMs: 16_000, ...opts },
+    ),
 
   getWorkspaces: () => json<{ ok: boolean; workspaces: WorkspaceEntry[] }>('/api/workspaces'),
   getWorkspaceSessions: (workdir: string, opts?: ApiRequestOptions) =>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../../api';
 import { useStore } from '../../store';
 import type { Locale } from '../../i18n';
@@ -6,6 +6,8 @@ import type {
   LocalBackendStatus,
   LocalBackendOs,
   LocalModelCatalogEntry,
+  OllamaLibModel,
+  OllamaLibSize,
 } from '../../types';
 import { BrandIcon } from '../../components/BrandIcon';
 import { Badge, Button, Spinner, Modal, ModalHeader } from '../../components/ui';
@@ -57,6 +59,25 @@ interface Copy {
   copyCommand: string;
   copied: string;
 
+  libHeader: string;
+  libVia: string;
+  libLoading: string;
+  libErrorFallback: string;
+  libStale: string;
+  libSearchPlaceholder: (total: number) => string;
+  libClearSearch: string;
+  libFitLabel: string;
+  libFilterRunnable: string;
+  libFilterAll: string;
+  libCapsLabel: string;
+  libShowing: (n: number) => string;
+  libEmpty: string;
+  libClearFilters: string;
+  libPullsSuffix: string;
+  libUpdatedPrefix: string;
+  libSizeHint: string;
+  libRetry: string;
+
   closeBtn: string;
 }
 
@@ -106,6 +127,25 @@ function getCopy(locale: Locale): Copy {
       copyCommand: '复制',
       copied: '已复制',
 
+      libHeader: '可下载模型',
+      libVia: '来自 ollama.com 模型库',
+      libLoading: '正在从 Ollama 模型库加载…',
+      libErrorFallback: '无法连接 Ollama 模型库，已回退到内置推荐清单。',
+      libStale: '展示的是缓存列表（最近一次刷新失败）。',
+      libSearchPlaceholder: total => `在 ${total} 个模型中搜索，如 qwen、coder、vision…`,
+      libClearSearch: '清除搜索',
+      libFitLabel: '内存',
+      libFilterRunnable: '本机可跑',
+      libFilterAll: '全部',
+      libCapsLabel: '能力',
+      libShowing: n => `显示 ${n} 个模型`,
+      libEmpty: '没有符合条件的模型。',
+      libClearFilters: '清除筛选',
+      libPullsSuffix: '次下载',
+      libUpdatedPrefix: '更新于',
+      libSizeHint: '点击尺寸复制 pull 命令',
+      libRetry: '重试',
+
       closeBtn: '完成',
     };
   }
@@ -152,6 +192,25 @@ function getCopy(locale: Locale): Copy {
     pullPrefix: 'Run in terminal',
     copyCommand: 'Copy',
     copied: 'Copied',
+
+    libHeader: 'Downloadable models',
+    libVia: 'from the ollama.com library',
+    libLoading: 'Loading the Ollama model library…',
+    libErrorFallback: 'Could not reach the Ollama library; showing the built-in picks instead.',
+    libStale: 'Showing a cached list (the latest refresh failed).',
+    libSearchPlaceholder: total => `Search ${total} models — e.g. qwen, coder, vision…`,
+    libClearSearch: 'Clear search',
+    libFitLabel: 'Memory',
+    libFilterRunnable: 'Runs here',
+    libFilterAll: 'All',
+    libCapsLabel: 'Skills',
+    libShowing: n => `${n} models`,
+    libEmpty: 'No models match these filters.',
+    libClearFilters: 'Clear filters',
+    libPullsSuffix: 'pulls',
+    libUpdatedPrefix: 'updated',
+    libSizeHint: 'Click a size to copy its pull command',
+    libRetry: 'Retry',
 
     closeBtn: 'Done',
   };
@@ -391,6 +450,410 @@ function CatalogRow({
   );
 }
 
+const CAP_LABEL_ZH: Record<string, string> = {
+  tools: '工具', thinking: '思考', vision: '视觉', embedding: '嵌入', audio: '音频', insert: '填充',
+};
+function capLabel(cap: string, locale: Locale): string {
+  return locale === 'zh-CN' ? (CAP_LABEL_ZH[cap] ?? cap) : cap;
+}
+
+const FIT_RANK: Record<Fit, number> = { ok: 0, tight: 1, 'no-go': 2 };
+
+function modelBestFit(model: OllamaLibModel, totalRamGb: number | null): Fit {
+  if (!model.sizes.length) return 'ok';
+  let best: Fit = 'no-go';
+  for (const s of model.sizes) {
+    const f = fitFor(totalRamGb, s.minRamGb);
+    if (FIT_RANK[f] < FIT_RANK[best]) best = f;
+  }
+  return best;
+}
+
+function installedTagsFor(name: string, backend: LocalBackendStatus): Set<string> {
+  const set = new Set<string>();
+  const lower = name.toLowerCase();
+  const prefix = `${lower}:`;
+  for (const m of backend.models) {
+    const id = m.id.toLowerCase();
+    if (id === lower) set.add('latest');
+    else if (id.startsWith(prefix)) set.add(id.slice(prefix.length));
+  }
+  return set;
+}
+
+let libraryModuleCache: { models: OllamaLibModel[]; fetchedAt: number } | null = null;
+
+function useOllamaLibrary(enabled: boolean) {
+  const [models, setModels] = useState<OllamaLibModel[] | null>(libraryModuleCache?.models ?? null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const startedRef = useRef(false);
+
+  const load = useCallback(async (refresh: boolean) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.fetchOllamaLibrary(refresh);
+      if (!res.ok || !res.models) throw new Error(res.error || 'Failed to load the Ollama library');
+      libraryModuleCache = { models: res.models, fetchedAt: res.fetchedAt ?? Date.now() };
+      setModels(res.models);
+      setStale(!!res.stale);
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (libraryModuleCache) { setModels(libraryModuleCache.models); return; }
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void load(false);
+  }, [enabled, load]);
+
+  const reload = useCallback(() => { startedRef.current = true; void load(true); }, [load]);
+  return { models, loading, error, stale, reload };
+}
+
+function OllamaSizeChip({
+  size,
+  installed,
+  cmd,
+  fit,
+  copy,
+  onCopy,
+}: {
+  size: OllamaLibSize;
+  installed: boolean;
+  cmd: string;
+  fit: Fit;
+  copy: Copy;
+  onCopy: (cmd: string) => void;
+}) {
+  const tip = [
+    cmd,
+    size.diskGb > 0 ? `~${size.diskGb} GB` : '',
+    size.minRamGb > 0 ? `≥ ${size.minRamGb} GB RAM` : '',
+  ].filter(Boolean).join(' · ');
+  const tone = installed
+    ? 'border-[var(--th-badge-accent-bg)] bg-[var(--th-badge-accent-bg)] text-[var(--th-badge-accent-text)]'
+    : fit === 'ok'
+      ? 'border-emerald-600/40 bg-emerald-600/5 text-emerald-700 hover:border-emerald-600/70 dark:text-emerald-300'
+      : fit === 'tight'
+        ? 'border-amber-600/40 bg-amber-600/5 text-amber-700 hover:border-amber-600/70 dark:text-amber-300'
+        : 'border-edge bg-panel text-fg-5 hover:border-edge-strong';
+  return (
+    <button
+      type="button"
+      title={tip}
+      onClick={() => onCopy(cmd)}
+      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[11px] transition ${tone}`}
+    >
+      {installed && <span aria-hidden="true">✓</span>}
+      {size.tag}
+    </button>
+  );
+}
+
+function OllamaLibRow({
+  model,
+  backend,
+  totalRamGb,
+  copy,
+  locale,
+  onCopy,
+}: {
+  model: OllamaLibModel;
+  backend: LocalBackendStatus;
+  totalRamGb: number | null;
+  copy: Copy;
+  locale: Locale;
+  onCopy: (cmd: string) => void;
+}) {
+  const installedTags = useMemo(() => installedTagsFor(model.name, backend), [model.name, backend]);
+  const anyInstalled = installedTags.size > 0;
+  const cmdFor = (tag: string) => backend.pullCommandTemplate.replace('${model}', `${model.name}:${tag}`);
+
+  return (
+    <div className="rounded-md border border-edge bg-panel-alt px-3 py-2.5">
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <a
+            href={model.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[13px] font-semibold text-fg underline-offset-2 hover:underline"
+          >
+            {model.name}
+          </a>
+          {anyInstalled && <Badge variant="accent">{copy.modelInstalledBadge}</Badge>}
+          {model.capabilities.map(cap => (
+            <span
+              key={cap}
+              className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 dark:text-indigo-300"
+            >
+              {capLabel(cap, locale)}
+            </span>
+          ))}
+          <span className="ml-auto shrink-0 text-[10.5px] text-fg-5">
+            {model.pulls && <span>{model.pulls} {copy.libPullsSuffix}</span>}
+            {model.pulls && model.updated && <span className="mx-1 text-fg-6">·</span>}
+            {model.updated && <span>{copy.libUpdatedPrefix} {model.updated}</span>}
+          </span>
+        </div>
+        {model.description && (
+          <div className="line-clamp-2 text-[11.5px] leading-relaxed text-fg-4">{model.description}</div>
+        )}
+        {model.sizes.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 pt-0.5">
+            {model.sizes.map(size => (
+              <OllamaSizeChip
+                key={size.tag}
+                size={size}
+                installed={installedTags.has(size.tag.toLowerCase())}
+                cmd={cmdFor(size.tag)}
+                fit={fitFor(totalRamGb, size.minRamGb)}
+                copy={copy}
+                onCopy={onCopy}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StaticCatalogList({
+  entries,
+  backend,
+  totalRamGb,
+  copy,
+  locale,
+  onCopy,
+}: {
+  entries: LocalModelCatalogEntry[];
+  backend: LocalBackendStatus;
+  totalRamGb: number | null;
+  copy: Copy;
+  locale: Locale;
+  onCopy: (cmd: string) => void;
+}) {
+  if (!entries.length) return null;
+  return (
+    <div className="space-y-2">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-fg-5">
+        {copy.modelsRecommendedHeader}
+      </div>
+      <div className="space-y-1.5">
+        {entries.map(entry => (
+          <CatalogRow
+            key={entry.id}
+            entry={entry}
+            backend={backend}
+            totalRamGb={totalRamGb}
+            copy={copy}
+            locale={locale}
+            onCopy={onCopy}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OllamaLibrarySection({
+  enabled,
+  backend,
+  totalRamGb,
+  copy,
+  locale,
+  onCopy,
+  fallback,
+}: {
+  enabled: boolean;
+  backend: LocalBackendStatus;
+  totalRamGb: number | null;
+  copy: Copy;
+  locale: Locale;
+  onCopy: (cmd: string) => void;
+  fallback: ReactNode;
+}) {
+  const { models, loading, error, stale, reload } = useOllamaLibrary(enabled);
+  const [query, setQuery] = useState('');
+  const [onlyRunnable, setOnlyRunnable] = useState(true);
+  const [selectedCaps, setSelectedCaps] = useState<string[]>([]);
+
+  const all = models ?? [];
+  const runnable = useMemo(
+    () => all.filter(m => modelBestFit(m, totalRamGb) !== 'no-go'),
+    [all, totalRamGb],
+  );
+  const base = onlyRunnable ? runnable : all;
+
+  const capFacets = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const m of base) for (const cap of new Set(m.capabilities)) counts[cap] = (counts[cap] ?? 0) + 1;
+    const ORDER = ['tools', 'vision', 'thinking', 'embedding', 'audio', 'insert'];
+    return Object.keys(counts).sort((a, b) => {
+      const ia = ORDER.indexOf(a); const ib = ORDER.indexOf(b);
+      if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      return counts[b] - counts[a];
+    }).map(cap => ({ cap, count: counts[cap] }));
+  }, [base]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return base.filter(m => {
+      if (selectedCaps.length && !selectedCaps.every(c => m.capabilities.includes(c))) return false;
+      if (!q) return true;
+      return m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q);
+    });
+  }, [base, selectedCaps, query]);
+
+  const toggleCap = (cap: string) =>
+    setSelectedCaps(prev => (prev.includes(cap) ? prev.filter(c => c !== cap) : [...prev, cap]));
+  const filtersActive = query.trim().length > 0 || selectedCaps.length > 0;
+  const clearFilters = () => { setQuery(''); setSelectedCaps([]); };
+
+  if (loading && !models) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-edge bg-panel-alt px-3.5 py-3 text-[12px] text-fg-5">
+        <Spinner className="h-3.5 w-3.5" /> {copy.libLoading}
+      </div>
+    );
+  }
+
+  if (error && !models) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2 rounded-md border border-amber-600/30 bg-amber-600/5 px-3 py-2 text-[11.5px] text-amber-700 dark:text-amber-300">
+          <span>{copy.libErrorFallback}</span>
+          <Button variant="outline" size="sm" onClick={reload}>{copy.libRetry}</Button>
+        </div>
+        {fallback}
+      </div>
+    );
+  }
+
+  const segBtn = (active: boolean) =>
+    `px-2.5 py-1 text-[11.5px] font-medium transition ${active ? 'bg-[var(--th-badge-accent-bg)] text-[var(--th-badge-accent-text)]' : 'bg-panel-alt text-fg-4 hover:bg-panel hover:text-fg-3'}`;
+
+  return (
+    <div className="space-y-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-fg-5">
+        {copy.libHeader}
+        <span className="ml-2 normal-case tracking-normal text-fg-6">· {copy.libVia}</span>
+      </div>
+
+      {/* Search — prominent, total baked into the placeholder */}
+      <div className="relative">
+        <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-5" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+            <circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" />
+          </svg>
+        </span>
+        <input
+          type="search"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder={copy.libSearchPlaceholder(all.length)}
+          className="w-full rounded-md border border-edge bg-panel py-2 pl-8 pr-8 text-[12.5px] text-fg-2 outline-none transition placeholder:text-fg-6 focus:border-edge-strong"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery('')}
+            title={copy.libClearSearch}
+            aria-label={copy.libClearSearch}
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-fg-5 transition hover:bg-panel-alt hover:text-fg-3"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Filters — memory fit + capability facets, each carrying its own count */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-6">{copy.libFitLabel}</span>
+          <div className="flex overflow-hidden rounded-md border border-edge">
+            <button type="button" onClick={() => setOnlyRunnable(true)} className={segBtn(onlyRunnable)}>
+              {copy.libFilterRunnable} <span className="tabular-nums opacity-70">{runnable.length}</span>
+            </button>
+            <button type="button" onClick={() => setOnlyRunnable(false)} className={`border-l border-edge ${segBtn(!onlyRunnable)}`}>
+              {copy.libFilterAll} <span className="tabular-nums opacity-70">{all.length}</span>
+            </button>
+          </div>
+        </div>
+
+        {capFacets.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-6">{copy.libCapsLabel}</span>
+            {capFacets.map(({ cap, count }) => {
+              const active = selectedCaps.includes(cap);
+              return (
+                <button
+                  key={cap}
+                  type="button"
+                  onClick={() => toggleCap(cap)}
+                  className={`rounded-md border px-2 py-0.5 text-[11px] transition ${
+                    active
+                      ? 'border-[var(--th-badge-accent-bg)] bg-[var(--th-badge-accent-bg)] text-[var(--th-badge-accent-text)]'
+                      : 'border-edge bg-panel-alt text-fg-4 hover:border-edge-strong hover:text-fg-3'
+                  }`}
+                >
+                  {capLabel(cap, locale)} <span className="tabular-nums opacity-70">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {stale && (
+        <div className="rounded-md border border-amber-600/30 bg-amber-600/5 px-2.5 py-1 text-[10.5px] text-amber-700 dark:text-amber-300">
+          {copy.libStale}
+        </div>
+      )}
+
+      {/* Live result count — the headline metric — + the chip hint */}
+      <div className="flex items-center justify-between gap-2 border-t border-edge pt-2 text-[11px]">
+        <span className="font-medium text-fg-3">{copy.libShowing(filtered.length)}</span>
+        <span className="text-[10px] text-fg-6">{copy.libSizeHint}</span>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 rounded-md border border-edge bg-panel-alt px-3.5 py-6 text-[12px] text-fg-5">
+          <span>{copy.libEmpty}</span>
+          {filtersActive && (
+            <Button variant="outline" size="sm" onClick={clearFilters}>{copy.libClearFilters}</Button>
+          )}
+        </div>
+      ) : (
+        <div className="min-h-[240px] max-h-[52vh] space-y-1.5 overflow-y-auto pr-1">
+          {filtered.map(m => (
+            <OllamaLibRow
+              key={m.name}
+              model={m}
+              backend={backend}
+              totalRamGb={totalRamGb}
+              copy={copy}
+              locale={locale}
+              onCopy={onCopy}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LocalBackendModal({
   open,
   backend,
@@ -563,25 +1026,34 @@ function LocalBackendModal({
                 )}
               </div>
 
-              {backendCatalog.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-fg-5">
-                    {copy.modelsRecommendedHeader}
-                  </div>
-                  <div className="space-y-1.5">
-                    {backendCatalog.map(entry => (
-                      <CatalogRow
-                        key={entry.id}
-                        entry={entry}
-                        backend={backend}
-                        totalRamGb={totalRamGb}
-                        copy={copy}
-                        locale={locale}
-                        onCopy={onCopy}
-                      />
-                    ))}
-                  </div>
-                </div>
+              {backend.id === 'ollama' ? (
+                <OllamaLibrarySection
+                  enabled={open && backend.detected}
+                  backend={backend}
+                  totalRamGb={totalRamGb}
+                  copy={copy}
+                  locale={locale}
+                  onCopy={onCopy}
+                  fallback={
+                    <StaticCatalogList
+                      entries={backendCatalog}
+                      backend={backend}
+                      totalRamGb={totalRamGb}
+                      copy={copy}
+                      locale={locale}
+                      onCopy={onCopy}
+                    />
+                  }
+                />
+              ) : (
+                <StaticCatalogList
+                  entries={backendCatalog}
+                  backend={backend}
+                  totalRamGb={totalRamGb}
+                  copy={copy}
+                  locale={locale}
+                  onCopy={onCopy}
+                />
               )}
             </div>
           )}

@@ -269,6 +269,31 @@ export interface LocalModelsProbeResponse {
   error?: string;
 }
 
+export interface OllamaLibSize {
+  tag: string;
+  paramsB: number;
+  diskGb: number;
+  minRamGb: number;
+}
+
+export interface OllamaLibModel {
+  name: string;
+  description: string;
+  capabilities: string[];
+  sizes: OllamaLibSize[];
+  pulls: string;
+  updated: string;
+  url: string;
+}
+
+export interface OllamaLibraryResponse {
+  ok: boolean;
+  models?: OllamaLibModel[];
+  fetchedAt?: number;
+  stale?: boolean;
+  error?: string;
+}
+
 export interface InteractionOption {
   label: string;
   description?: string | null;

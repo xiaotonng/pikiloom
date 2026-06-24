@@ -247,6 +247,139 @@ async function ensureProviderForBackend(spec: BackendSpec): Promise<string | nul
   }
 }
 
+export interface OllamaLibSize {
+  tag: string;
+  paramsB: number;
+  diskGb: number;
+  minRamGb: number;
+}
+
+export interface OllamaLibModel {
+  name: string;
+  description: string;
+  capabilities: string[];
+  sizes: OllamaLibSize[];
+  pulls: string;
+  updated: string;
+  url: string;
+}
+
+const OLLAMA_QUANT_FACTOR = 0.7;
+
+export function parseOllamaSizeToParamsB(token: string): number | null {
+  const t = token.trim().toLowerCase();
+  let m = t.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)b$/);
+  if (m) return parseFloat(m[1]) * parseFloat(m[2]);
+  m = t.match(/^e(\d+(?:\.\d+)?)b$/);
+  if (m) return parseFloat(m[1]);
+  m = t.match(/^(\d+(?:\.\d+)?)m$/);
+  if (m) return parseFloat(m[1]) / 1000;
+  m = t.match(/^(\d+(?:\.\d+)?)b$/);
+  if (m) return parseFloat(m[1]);
+  return null;
+}
+
+export function estimateOllamaDiskGb(paramsB: number): number {
+  return Math.round(paramsB * OLLAMA_QUANT_FACTOR * 10) / 10;
+}
+
+export function estimateOllamaMinRamGb(paramsB: number): number {
+  return Math.max(4, Math.round(paramsB * OLLAMA_QUANT_FACTOR * 1.5 + 4));
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
+}
+
+function allGroups(src: string, re: RegExp): string[] {
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) out.push(m[1]);
+  return out;
+}
+
+export function parseOllamaLibrary(html: string): OllamaLibModel[] {
+  const blocks = html.split('<li x-test-model').slice(1);
+  const out: OllamaLibModel[] = [];
+  for (const b of blocks) {
+    const name = b.match(/title="([^"]+)"/)?.[1]?.trim();
+    if (!name) continue;
+    const descRaw = b.match(/<p[^>]*max-w-lg[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? '';
+    const description = decodeEntities(descRaw.replace(/<[^>]+>/g, '')).trim();
+    const capabilities = allGroups(b, /x-test-capability[^>]*>([^<]+)</g).map(s => s.trim());
+    const sizes: OllamaLibSize[] = allGroups(b, /x-test-size[^>]*>([^<]+)</g).map(raw => {
+      const tag = raw.trim();
+      const paramsB = parseOllamaSizeToParamsB(tag);
+      if (paramsB == null) return { tag, paramsB: 0, diskGb: 0, minRamGb: 0 };
+      return { tag, paramsB, diskGb: estimateOllamaDiskGb(paramsB), minRamGb: estimateOllamaMinRamGb(paramsB) };
+    });
+    const pulls = (b.match(/x-test-pull-count[^>]*>([^<]+)</)?.[1] ?? '').trim();
+    const updated = (b.match(/x-test-updated[^>]*>([^<]+)</)?.[1] ?? '').trim();
+    out.push({ name, description, capabilities, sizes, pulls, updated, url: `https://ollama.com/library/${name}` });
+  }
+  return out;
+}
+
+const OLLAMA_LIBRARY_URL = 'https://ollama.com/library?sort=popular';
+const OLLAMA_LIBRARY_TTL_MS = 6 * 60 * 60 * 1000;
+const OLLAMA_LIBRARY_TIMEOUT_MS = 12000;
+
+let libraryCache: { at: number; models: OllamaLibModel[] } | null = null;
+let libraryInflight: Promise<OllamaLibModel[]> | null = null;
+
+async function fetchOllamaLibrary(): Promise<OllamaLibModel[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OLLAMA_LIBRARY_TIMEOUT_MS);
+  try {
+    const res = await fetch(OLLAMA_LIBRARY_URL, {
+      signal: controller.signal,
+      headers: { 'user-agent': 'Mozilla/5.0 (pikiloom local-models)' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const models = parseOllamaLibrary(await res.text());
+    if (!models.length) throw new Error('no models parsed from Ollama library');
+    return models;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getOllamaLibrary(force: boolean): Promise<{ models: OllamaLibModel[]; fetchedAt: number; stale: boolean }> {
+  const fresh = libraryCache && Date.now() - libraryCache.at < OLLAMA_LIBRARY_TTL_MS;
+  if (libraryCache && fresh && !force) {
+    return { models: libraryCache.models, fetchedAt: libraryCache.at, stale: false };
+  }
+  if (!libraryInflight) {
+    libraryInflight = fetchOllamaLibrary()
+      .then(models => { libraryCache = { at: Date.now(), models }; return models; })
+      .finally(() => { libraryInflight = null; });
+  }
+  try {
+    const models = await libraryInflight;
+    return { models, fetchedAt: libraryCache!.at, stale: false };
+  } catch (e) {
+    if (libraryCache) return { models: libraryCache.models, fetchedAt: libraryCache.at, stale: true };
+    throw e;
+  }
+}
+
+router.get('/api/local-models/ollama-library', async c => {
+  try {
+    const force = c.req.query('refresh') === '1';
+    const { models, fetchedAt, stale } = await getOllamaLibrary(force);
+    return c.json({ ok: true, models, fetchedAt, stale });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message || String(e) }, 502);
+  }
+});
+
 router.get('/api/local-models/probe', async c => {
   try {
     const initialProviders = listProviders();

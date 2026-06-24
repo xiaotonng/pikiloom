@@ -158,7 +158,6 @@ function isLocalProvider(provider: ProviderConfig): boolean {
 function isResponsesNativeProvider(provider: ProviderConfig): boolean {
   const host = providerHost(provider);
   if (host.includes('openrouter')) return true;
-  if (host.includes('volces') || host.includes('volcengine') || host.includes('doubao')) return true;
   return false;
 }
 

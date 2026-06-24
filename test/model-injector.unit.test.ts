@@ -161,13 +161,16 @@ describe('resolveAgentInjection — Codex routing (Responses-only)', () => {
     expect(ovr.some(o => o.includes('wire_api'))).toBe(false);
   });
 
-  it('points codex straight at 豆包/Ark as a Responses-native provider (no bridge hop)', async () => {
+  it('routes 豆包/Ark codex through the bridge (its native Responses rejects codex namespace/web_search tool types)', async () => {
     const inj = await bindCodex('openai-compatible', '豆包 (Volcengine Ark)', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-1-pro-260628');
     const ovr = overrides(inj);
     expect(ovr).toContain('model_provider="doubao"');
-    expect(ovr).toContain('model_providers.doubao.base_url="https://ark.cn-beijing.volces.com/api/v3"');
+    const baseLine = ovr.find(o => o.startsWith('model_providers.doubao.base_url='));
+    const m = baseLine?.match(/^model_providers\.doubao\.base_url="(http:\/\/127\.0\.0\.1:\d+\/u\/([^"]+))"$/);
+    expect(m, `base_url should point at the bridge, got: ${baseLine}`).toBeTruthy();
+    expect(Buffer.from(m![2], 'base64url').toString('utf8')).toBe('https://ark.cn-beijing.volces.com/api/v3');
     expect(inj.env.ARK_API_KEY).toBe('sk-test-key');
-    expect(ovr.some(o => o.includes('127.0.0.1'))).toBe(false);
+    expect(ovr.some(o => o.includes('wire_api'))).toBe(false);
     expect(inj.modelOverride).toBe('doubao-seed-2-1-pro-260628');
   });
 

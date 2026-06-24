@@ -237,7 +237,7 @@ function asText(content: any): string {
   return '';
 }
 
-function toChatRequest(body: any): any {
+export function toChatRequest(body: any): any {
   const messages: any[] = [];
   if (typeof body.instructions === 'string' && body.instructions.trim()) {
     messages.push({ role: 'system', content: body.instructions });
@@ -273,9 +273,7 @@ function toChatRequest(body: any): any {
     }
   }
 
-  const tools = Array.isArray(body.tools)
-    ? body.tools.map(toChatTool).filter((t: any) => t)
-    : undefined;
+  const tools = Array.isArray(body.tools) ? flattenResponsesTools(body.tools) : undefined;
 
   const req: any = { model: body.model, messages, stream: true, stream_options: { include_usage: true } };
   if (tools && tools.length) req.tools = tools;
@@ -285,6 +283,30 @@ function toChatRequest(body: any): any {
   if (typeof body.max_output_tokens === 'number') req.max_tokens = body.max_output_tokens;
   if (typeof body.parallel_tool_calls === 'boolean' && req.tools) req.parallel_tool_calls = body.parallel_tool_calls;
   return req;
+}
+
+function flattenResponsesTools(rawTools: any[]): any[] | undefined {
+  const out: any[] = [];
+  const seen = new Set<string>();
+  const push = (t: any) => {
+    const chat = toChatTool(t);
+    if (!chat) return;
+    const name = chat.function?.name;
+    if (typeof name === 'string') {
+      if (seen.has(name)) return;
+      seen.add(name);
+    }
+    out.push(chat);
+  };
+  for (const t of rawTools) {
+    if (!t || typeof t !== 'object') continue;
+    if (t.type === 'namespace' && Array.isArray(t.tools)) {
+      for (const nested of t.tools) push(nested);
+      continue;
+    }
+    push(t);
+  }
+  return out.length ? out : undefined;
 }
 
 function toChatTool(t: any): any {

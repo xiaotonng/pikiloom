@@ -8,6 +8,7 @@ import {
 } from '../src/model/index.js';
 import { sealInline } from '../src/core/secrets/index.js';
 import { shutdownResponsesBridge } from '../src/model/responses-bridge.js';
+import { shutdownAnthropicBridge } from '../src/model/anthropic-bridge.js';
 
 describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
   let tmpDir: string;
@@ -24,6 +25,8 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  afterAll(() => { shutdownAnthropicBridge(); });
 
   async function bindClaude(kind: ProviderKind, baseURL: string, modelId: string) {
     const provider = await addProvider({
@@ -79,6 +82,17 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
   it('keeps the historical strip-/v1 default for unmapped providers (OpenRouter)', async () => {
     const inj = await bindClaude('openai-compatible', 'https://openrouter.ai/api/v1', 'anthropic/claude-sonnet-4');
     expect(inj.env.ANTHROPIC_BASE_URL).toBe('https://openrouter.ai/api');
+  });
+
+  it('routes 豆包/Ark (OpenAI-only, no native /v1/messages) through the Anthropic↔Chat bridge', async () => {
+    const inj = await bindClaude('openai-compatible', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-1-pro-260628');
+    const m = inj.env.ANTHROPIC_BASE_URL.match(/^http:\/\/127\.0\.0\.1:\d+\/u\/([^/]+)$/);
+    expect(m, `ANTHROPIC_BASE_URL should point at the bridge, got: ${inj.env.ANTHROPIC_BASE_URL}`).toBeTruthy();
+    expect(Buffer.from(m![1], 'base64url').toString('utf8')).toBe('https://ark.cn-beijing.volces.com/api/v3');
+    expect(inj.modelOverride).toBe('doubao-seed-2-1-pro-260628');
+    expect(inj.env.ANTHROPIC_SMALL_FAST_MODEL).toBe('doubao-seed-2-1-pro-260628');
+    expect(inj.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-test-key');
+    expect(inj.env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0');
   });
 
   it('suppresses the churning attribution header on third-party proxy routes', async () => {
@@ -145,6 +159,16 @@ describe('resolveAgentInjection — Codex routing (Responses-only)', () => {
     expect(inj.env.OPENROUTER_API_KEY).toBe('sk-test-key');
     expect(ovr.some(o => o.includes('127.0.0.1'))).toBe(false);
     expect(ovr.some(o => o.includes('wire_api'))).toBe(false);
+  });
+
+  it('points codex straight at 豆包/Ark as a Responses-native provider (no bridge hop)', async () => {
+    const inj = await bindCodex('openai-compatible', '豆包 (Volcengine Ark)', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-1-pro-260628');
+    const ovr = overrides(inj);
+    expect(ovr).toContain('model_provider="doubao"');
+    expect(ovr).toContain('model_providers.doubao.base_url="https://ark.cn-beijing.volces.com/api/v3"');
+    expect(inj.env.ARK_API_KEY).toBe('sk-test-key');
+    expect(ovr.some(o => o.includes('127.0.0.1'))).toBe(false);
+    expect(inj.modelOverride).toBe('doubao-seed-2-1-pro-260628');
   });
 
   it('selects codex built-in `ollama` provider for a localhost endpoint (no custom provider, no key)', async () => {

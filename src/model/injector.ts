@@ -3,6 +3,7 @@ import { writeScopedLog } from '../core/logging.js';
 import { getActiveProfile, getProvider } from './store.js';
 import { peekProviderModelInfo, prefetchProviderModels } from './provider-models.js';
 import { ensureResponsesBridge, upstreamToken } from './responses-bridge.js';
+import { ensureAnthropicBridge } from './anthropic-bridge.js';
 import type { ProviderConfig, ModelProfileConfig, ProviderKind } from './types.js';
 
 export interface InjectedSpawnConfig {
@@ -91,17 +92,41 @@ function isFirstPartyAnthropic(baseURL: string): boolean {
   return host === 'anthropic.com' || host.endsWith('.anthropic.com');
 }
 
+function claudeUsesNativeAnthropic(provider: ProviderConfig): boolean {
+  if (provider.kind === 'anthropic') return true;
+  const slug = providerSlug(provider);
+  if (slug in ANTHROPIC_ENDPOINT_BY_SLUG) return true;
+  if (slug === 'openrouter') return true;
+  return false;
+}
+
 type AgentInjector = (
   provider: ProviderConfig,
   profile: ModelProfileConfig,
   apiKey: string,
 ) => InjectedSpawnConfig | Promise<InjectedSpawnConfig>;
 
-const claudeInjector: AgentInjector = (provider, profile, apiKey) => {
+const claudeInjector: AgentInjector = async (provider, profile, apiKey) => {
   if (provider.kind !== 'anthropic' && provider.kind !== 'openai-compatible') {
     return {
       ...EMPTY,
-      detail: `Claude BYOK requires Anthropic or OpenAI-compatible (Anthropic-API-shaped) provider; got ${provider.kind}.`,
+      detail: `Claude BYOK requires Anthropic or OpenAI-compatible provider; got ${provider.kind}.`,
+    };
+  }
+  if (!claudeUsesNativeAnthropic(provider)) {
+    const port = await ensureAnthropicBridge();
+    const base = `http://127.0.0.1:${port}/u/${upstreamToken(provider.baseURL)}`;
+    return {
+      env: {
+        ANTHROPIC_BASE_URL: base,
+        ANTHROPIC_API_KEY: apiKey,
+        ANTHROPIC_AUTH_TOKEN: apiKey,
+        ANTHROPIC_SMALL_FAST_MODEL: profile.modelId,
+        CLAUDE_CODE_ATTRIBUTION_HEADER: '0',
+      },
+      argvAppend: [],
+      modelOverride: profile.modelId,
+      detail: `Claude BYOK → ${provider.name} / ${profile.modelId} via Anthropic↔Chat bridge`,
     };
   }
   const baseURL = claudeAnthropicBaseURL(provider);
@@ -131,7 +156,10 @@ function isLocalProvider(provider: ProviderConfig): boolean {
 }
 
 function isResponsesNativeProvider(provider: ProviderConfig): boolean {
-  return providerHost(provider).includes('openrouter');
+  const host = providerHost(provider);
+  if (host.includes('openrouter')) return true;
+  if (host.includes('volces') || host.includes('volcengine') || host.includes('doubao')) return true;
+  return false;
 }
 
 function codexLocalProvider(provider: ProviderConfig): 'ollama' | 'lmstudio' {

@@ -116,9 +116,22 @@ export function readDeliveredArtifacts(agent: Agent, sessionId: string): Deliver
   return out;
 }
 
-export function deliveredArtifactBlocks(agent: Agent, sessionId: string): MessageBlock[] {
+export function latestDeliveredTaskId(agent: Agent, sessionId: string): string | undefined {
+  let latest: DeliveredArtifact | undefined;
+  for (const a of readDeliveredArtifacts(agent, sessionId)) {
+    if (a.taskId && (!latest || a.ts >= latest.ts)) latest = a;
+  }
+  return latest?.taskId;
+}
+
+export function deliveredArtifactBlocks(
+  agent: Agent,
+  sessionId: string,
+  filter?: (a: DeliveredArtifact) => boolean,
+): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   for (const a of readDeliveredArtifacts(agent, sessionId)) {
+    if (filter && !filter(a)) continue;
     if (!fs.existsSync(a.path)) continue;
     if (a.kind === 'photo' && PHOTO_EXTS.has(path.extname(a.fileName).toLowerCase())) {
       blocks.push({

@@ -44,6 +44,7 @@ export {
   deliverArtifact,
   readDeliveredArtifacts,
   deliveredArtifactBlocks,
+  latestDeliveredTaskId,
   mimeForArtifact,
   type DeliveredArtifact,
   type ArtifactKind,

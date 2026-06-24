@@ -7,7 +7,7 @@ import { loadUserConfig } from '../../core/config/user-config.js';
 import {
   listAgents, listSkills,
   decodeAttachmentPathParam, resolveAllowedAttachmentPath, rewriteAttachmentBlocksForTransport,
-  deliveredArtifactBlocks, mimeForArtifact,
+  deliveredArtifactBlocks, latestDeliveredTaskId, mimeForArtifact,
   type Agent, type SessionInfo, type SessionMessagesResult, type RichMessage, type MessageBlock,
 } from '../../agent/index.js';
 import { getSessionStatusForBot } from '../../bot/session-status.js';
@@ -499,8 +499,13 @@ function prepareSessionMessagesForDashboard(
 
   const includesTail = !result.window || !result.window.hasNewer;
   if (includesTail) {
+    // Only surface the latest turn's delivered files. Artifacts are persisted in a
+    // session-wide manifest, so without this scope every file ever sent in the session
+    // would be re-appended onto the latest reply (cross-turn image bleed). Legacy
+    // artifacts predating taskId tagging fall back to the full set.
+    const latestTask = latestDeliveredTaskId(agent, sessionId);
     const delivered = rewriteAttachmentBlocksForTransport(
-      deliveredArtifactBlocks(agent, sessionId),
+      deliveredArtifactBlocks(agent, sessionId, latestTask ? (a => a.taskId === latestTask) : undefined),
       { agent, sessionId },
     );
     if (delivered.length) {

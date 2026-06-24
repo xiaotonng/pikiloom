@@ -645,7 +645,10 @@ export class Bot {
         if (!sid || isPendingSessionId(sid)) return result;
 
         const kind = sendOpts?.kind === 'photo' ? 'photo' : 'document';
-        const record = deliverArtifact(agent, sid, filePath, { kind, caption: sendOpts?.caption });
+        const taskId = sessionKey
+          ? this.streamSnapshots.get(this.resolveSessionKey(sessionKey))?.taskId
+          : undefined;
+        const record = deliverArtifact(agent, sid, filePath, { kind, caption: sendOpts?.caption, ...(taskId ? { taskId } : {}) });
         if (record && sessionKey) {
           this.emitStream(this.resolveSessionKey(sessionKey), {
             type: 'artifact',

@@ -18,13 +18,17 @@ export function ensureGitignore(dir: string) {
       '.claude/skills/',
       '.agents/skills/',
     ]);
-    const rawLines = fs.readFileSync(gi, 'utf8').split(/\r?\n/);
-    const normalized = rawLines.filter(line => {
-      const trimmed = line.trim();
-      return trimmed && !managedLines.includes(trimmed) && !legacyLines.has(trimmed);
-    });
-    const next = [...normalized, ...managedLines, ''].join('\n');
     const current = fs.readFileSync(gi, 'utf8');
+    const rawLines = current.split(/\r?\n/);
+    const kept = rawLines.filter(line => !legacyLines.has(line.trim()));
+    const present = new Set(kept.map(line => line.trim()));
+    const missing = managedLines.filter(line => !present.has(line));
+    if (kept.length === rawLines.length && missing.length === 0) return;
+    let next = kept.join('\n');
+    if (missing.length) {
+      if (next.length && !next.endsWith('\n')) next += '\n';
+      next += missing.join('\n') + '\n';
+    }
     if (current === next) return;
     fs.writeFileSync(gi, next);
   } catch {  }

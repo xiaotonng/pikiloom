@@ -6,6 +6,7 @@ import {
   deliverArtifact,
   readDeliveredArtifacts,
   deliveredArtifactBlocks,
+  latestDeliveredTaskId,
   mimeForArtifact,
 } from '../src/agent/artifacts.ts';
 
@@ -94,6 +95,35 @@ describe('delivered-artifact manifest', () => {
     const after = deliveredArtifactBlocks('gemini', 'sess-3');
     expect(after).toHaveLength(1);
     expect(after[0].type).toBe('image');
+  });
+
+  it('scopes blocks to the latest task so prior turns do not bleed onto the current reply', () => {
+    const q1 = path.join(workdir, 'qr1.png');
+    const q2 = path.join(workdir, 'qr2.png');
+    const shot = path.join(workdir, 'final.png');
+    for (const f of [q1, q2, shot]) fs.writeFileSync(f, PNG_BYTES);
+
+    // two earlier turns each deliver a QR, a later turn delivers the final screenshot
+    deliverArtifact('claude', 'sess-bleed', q1, { kind: 'photo', taskId: 't-1' });
+    deliverArtifact('claude', 'sess-bleed', q2, { kind: 'photo', taskId: 't-2' });
+    deliverArtifact('claude', 'sess-bleed', shot, { kind: 'photo', taskId: 't-3' });
+
+    expect(latestDeliveredTaskId('claude', 'sess-bleed')).toBe('t-3');
+
+    const latest = latestDeliveredTaskId('claude', 'sess-bleed');
+    const scoped = deliveredArtifactBlocks('claude', 'sess-bleed', a => a.taskId === latest);
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0].imagePath).toContain('final.png');
+
+    // unscoped still returns the whole session (used as the legacy fallback)
+    expect(deliveredArtifactBlocks('claude', 'sess-bleed')).toHaveLength(3);
+  });
+
+  it('returns no latest task id for legacy deliveries that predate taskId tagging', () => {
+    const a = path.join(workdir, 'legacy.png');
+    fs.writeFileSync(a, PNG_BYTES);
+    deliverArtifact('claude', 'sess-legacy', a, { kind: 'photo' });
+    expect(latestDeliveredTaskId('claude', 'sess-legacy')).toBeUndefined();
   });
 
   it('maps common extensions to sensible MIME types', () => {

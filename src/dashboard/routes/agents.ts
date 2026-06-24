@@ -190,6 +190,10 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
     const activeProfile = getActiveProfile(agentId);
     const byokProvider = activeProfile ? getProvider(activeProfile.providerId) : null;
     const byokProviderName = byokProvider?.name || null;
+    const byokProfileName = activeProfile
+      && activeProfile.name.trim().toLowerCase() !== activeProfile.modelId.trim().toLowerCase()
+      ? activeProfile.name
+      : null;
 
     const nativeSelectedModel = runtimeSelectedModel || nativeConfig?.model || null;
     const nativeSelectedEffort = runtimeSelectedEffort || nativeConfig?.effort || null;
@@ -222,6 +226,7 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
       nativeConfig,
       byokProviderName,
       byokModels,
+      byokProfileName,
       capabilities: getDriverCapabilities(agentId),
       latestVersion: updateState?.latestVersion || null,
       updateAvailable: updateState?.updateAvailable || false,

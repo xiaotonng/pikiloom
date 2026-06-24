@@ -85,6 +85,7 @@ function brandIdForNativeSlug(slug: string | undefined | null): string {
 
 interface BoundProfileInfo {
   profileId: string;
+  profileName: string;
   providerId: string;
   providerName: string;
   providerBrand: string;
@@ -118,6 +119,7 @@ function buildBoundInfo(layer: ModelLayerSnapshot, agentId: string): BoundProfil
   if (!provider) return null;
   return {
     profileId: profile.id,
+    profileName: profile.name,
     providerId: provider.id,
     providerName: provider.name,
     providerBrand: brandIdForProvider(provider),
@@ -689,7 +691,9 @@ function buildRowSummary(
     return {
       providerBrand: boundInfo.providerBrand,
       providerLabel: boundInfo.providerName,
-      modelText: boundInfo.modelId || copy.rowSummaryNoModel,
+      modelText: (boundInfo.profileName.trim().toLowerCase() !== boundInfo.modelId.trim().toLowerCase()
+        ? boundInfo.profileName
+        : boundInfo.modelId) || copy.rowSummaryNoModel,
       effortText: agent.workflowEnabled ? 'ultra' : (boundInfo.effort || copy.rowSummaryNoEffort),
     };
   }

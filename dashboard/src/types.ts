@@ -63,6 +63,7 @@ export interface AgentRuntimeStatus extends AgentInfo {
   nativeConfig?: AgentNativeConfig | null;
   capabilities?: { fork?: boolean; modelSwitch?: boolean; workflow?: boolean };
   byokProviderName?: string | null;
+  byokProfileName?: string | null;
   byokModels?: { id: string; alias: string | null }[] | null;
   latestVersion?: string | null;
   updateAvailable?: boolean;

@@ -66,6 +66,7 @@ export const SessionPanel = memo(function SessionPanel({
   const globalEffort = agentRuntime?.selectedEffort ?? null;
   const globalModel = agentRuntime?.selectedModel ?? null;
   const byokProviderName = agentRuntime?.byokProviderName ?? null;
+  const byokProfileName = agentRuntime?.byokProfileName ?? null;
   const t = useMemo(() => createT(locale), [locale]);
   const meta = getAgentMeta(session.agent || '');
   const displayState = sessionDisplayState(session);
@@ -676,7 +677,9 @@ export const SessionPanel = memo(function SessionPanel({
     (liveStream?.effort || session.thinkingEffort || globalEffort) || null,
     session.workflowEnabled ?? agentRuntime?.workflowEnabled,
   ) || null;
-  const displayModelShort = displayModel ? shortenModel(displayModel) : null;
+  const displayModelShort = (byokProfileName && (!displayModel || displayModel === globalModel))
+    ? byokProfileName
+    : (displayModel ? shortenModel(displayModel) : null);
   const runFailureDetail = getSessionRunFailureDetail(session, {
     streaming,
     hasLiveStream: !!liveStream,

@@ -46,11 +46,18 @@ export interface QueueSessionTaskRequest {
   sessionId: string;
   prompt: string;
   model?: string | null;
+  profileId?: string | null;
   effort?: string | null;
   workflow?: boolean;
   attachments?: string[];
   previousAgent?: Agent | string | null;
   previousSessionId?: string | null;
+}
+
+function resolveProfileIdOverride(value: string | null | undefined): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value === 'string') return value.trim() || null;
+  return undefined;
 }
 
 function resolveHandoverFrom(request: QueueSessionTaskRequest, targetAgent: Agent): HandoverRef | null {
@@ -77,6 +84,7 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     ? request.agent as Agent
     : runtime.getRuntimeDefaultAgent(config);
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
+  const profileId = resolveProfileIdOverride(request.profileId);
   const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
     typeof request.effort === 'string' ? request.effort : '',
   );
@@ -124,6 +132,7 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     prompt: prompt || 'Please inspect the attached file(s).',
     attachments,
     ...(modelId ? { modelId } : {}),
+    ...(profileId !== undefined ? { profileId } : {}),
     ...(thinkingEffort ? { thinkingEffort } : {}),
     workflowEnabled,
     ...(handoverFrom ? { handoverFrom } : {}),
@@ -175,6 +184,7 @@ export interface ForkSessionTaskRequest {
   atTurn: number;
   prompt: string;
   model?: string | null;
+  profileId?: string | null;
   effort?: string | null;
   attachments?: string[];
 }
@@ -195,6 +205,7 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
   }
 
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
+  const profileId = resolveProfileIdOverride(request.profileId);
   const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
     typeof request.effort === 'string' ? request.effort : '',
   );
@@ -230,6 +241,7 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
     attachments,
     forkOf: { parentSessionId: request.parentSessionId, atTurn: request.atTurn },
     ...(modelId ? { modelId } : {}),
+    ...(profileId !== undefined ? { profileId } : {}),
     ...(thinkingEffort ? { thinkingEffort } : {}),
     ...(ultraWorkflow ? { workflowEnabled: true } : {}),
   });

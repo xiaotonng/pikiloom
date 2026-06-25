@@ -289,6 +289,7 @@ export interface SubmitSessionTaskOpts {
   prompt: string;
   attachments?: string[];
   modelId?: string | null;
+  profileId?: string | null;
   thinkingEffort?: string | null;
   workflowEnabled?: boolean;
   sourceMessageId?: number | string;
@@ -1543,8 +1544,8 @@ export class Bot {
           this.createInteractionHandler(chatId, taskId),
           undefined,
           undefined,
-          (opts.forkOf || opts.workflowEnabled !== undefined)
-            ? { ...(opts.forkOf ? { forkOf: opts.forkOf } : {}), ...(opts.workflowEnabled !== undefined ? { workflowEnabled: opts.workflowEnabled } : {}) }
+          (opts.forkOf || opts.workflowEnabled !== undefined || opts.profileId !== undefined)
+            ? { ...(opts.forkOf ? { forkOf: opts.forkOf } : {}), ...(opts.workflowEnabled !== undefined ? { workflowEnabled: opts.workflowEnabled } : {}), ...(opts.profileId !== undefined ? { profileId: opts.profileId } : {}) }
             : undefined,
         );
         this.emitStreamDone(taskId, session.key, {
@@ -2249,7 +2250,7 @@ export class Bot {
     onInteraction?: (request: AgentInteraction) => Promise<Record<string, any> | null>,
     onSteerReady?: (steer: (prompt: string, attachments?: string[]) => Promise<boolean>) => void,
     onCodexTurnReady?: (control: CodexTurnControl) => void,
-    extras?: { forkOf?: { parentSessionId: string; atTurn: number }; workflowEnabled?: boolean },
+    extras?: { forkOf?: { parentSessionId: string; atTurn: number }; workflowEnabled?: boolean; profileId?: string | null },
   ): Promise<StreamResult> {
     const agentConfig = this.agentConfigs[cs.agent] || {};
     const sessionWorkdirForConfig = 'workdir' in cs && typeof cs.workdir === 'string' && cs.workdir ? cs.workdir : this.workdir;
@@ -2329,6 +2330,7 @@ export class Bot {
     const opts: StreamOpts = {
       agent: cs.agent, prompt, workdir: sessionWorkdir, timeout: this.runTimeout,
       sessionId: cs.sessionId, model: null,
+      profileId: extras?.profileId,
       thinkingEffort: resolvedThinkingEffort, onText,
       onSessionId: syncNativeSessionId,
       attachments: attachments.length ? attachments : undefined,

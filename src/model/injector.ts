@@ -1,6 +1,6 @@
 import { resolveCredential } from '../core/secrets/index.js';
 import { writeScopedLog } from '../core/logging.js';
-import { getActiveProfile, getProvider } from './store.js';
+import { getActiveProfile, getProfile, getProvider } from './store.js';
 import { peekProviderModelInfo, prefetchProviderModels } from './provider-models.js';
 import { ensureResponsesBridge, upstreamToken } from './responses-bridge.js';
 import { ensureAnthropicBridge } from './anthropic-bridge.js';
@@ -303,8 +303,13 @@ const AGENT_INJECT_TABLE: Record<string, AgentInjector | undefined> = {
   hermes: hermesInjector,
 };
 
-export async function resolveAgentInjection(agentId: string): Promise<InjectedSpawnConfig | null> {
-  const profile = getActiveProfile(agentId);
+export async function resolveAgentInjection(
+  agentId: string,
+  profileIdOverride?: string | null,
+): Promise<InjectedSpawnConfig | null> {
+  const profile = profileIdOverride === undefined
+    ? getActiveProfile(agentId)
+    : (profileIdOverride ? getProfile(profileIdOverride) : null);
   if (!profile) return null;
   const provider = getProvider(profile.providerId);
   if (!provider) return null;

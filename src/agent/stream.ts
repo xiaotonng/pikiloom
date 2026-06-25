@@ -9,7 +9,7 @@ import { AGENT_DETECT_TIMEOUTS, AGENT_STREAM_HARD_KILL_GRACE_MS, AGENT_UPDATE_TI
 import { awaitAgentUpdateIdle } from './auto-update.js';
 import { getDriver, allDrivers, getAcceptedProviderKinds, hasDriver } from './driver.js';
 import {
-  resolveAgentInjection, getActiveProfile, getActiveProfileId, getProvider, updateProfile, listProfiles,
+  resolveAgentInjection, getActiveProfile, getActiveProfileId, getProfile, getProvider, updateProfile, listProfiles,
 } from '../model/index.js';
 import type {
   Agent, AgentDetectOptions, AgentInfo, AgentListResult,
@@ -385,13 +385,15 @@ function prepareStreamOpts(opts: StreamOpts): { prepared: StreamOpts; session: S
   };
 }
 
-function finalizeStreamResult(result: StreamResult, workdir: string, prompt: string, session: SessionWorkspaceInfo, workflowEnabled?: boolean): StreamResult {
+function finalizeStreamResult(result: StreamResult, workdir: string, prompt: string, session: SessionWorkspaceInfo, workflowEnabled?: boolean, profileIdOverride?: string | null): StreamResult {
   if (result.sessionId) syncManagedSessionIdentity(session, workdir, result.sessionId);
   session.record.model = result.model || session.record.model;
   if (result.thinkingEffort) session.record.thinkingEffort = result.thinkingEffort;
   if (workflowEnabled !== undefined) session.record.workflowEnabled = workflowEnabled;
   try {
-    session.record.profileId = getActiveProfileId(session.record.agent);
+    session.record.profileId = profileIdOverride !== undefined
+      ? (profileIdOverride || null)
+      : getActiveProfileId(session.record.agent);
   } catch {
   }
   const displayPrompt = collapseSkillPrompt(prompt) ?? prompt;
@@ -460,7 +462,7 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
   }
 
   try {
-    const injection = await resolveAgentInjection(prepared.agent);
+    const injection = await resolveAgentInjection(prepared.agent, prepared.profileId);
     if (injection) {
       prepared.extraEnv = { ...(prepared.extraEnv || {}), ...injection.env };
       if (injection.modelOverride) {
@@ -485,7 +487,9 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       }
       agentLog(`[byok] ${injection.detail}`);
     }
-    const activeProfile = getActiveProfile(prepared.agent);
+    const activeProfile = prepared.profileId === undefined
+      ? getActiveProfile(prepared.agent)
+      : (prepared.profileId ? getProfile(prepared.profileId) : null);
     if (activeProfile) {
       if (activeProfile.effort) prepared.thinkingEffort = activeProfile.effort;
       const profileLabel = activeProfile.name?.trim();
@@ -504,6 +508,14 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     if (opts.claudeWorkflowEnabled !== undefined) {
       session.record.workflowEnabled = opts.claudeWorkflowEnabled;
     }
+    const turnModel = prepared.model
+      || (prepared.agent === 'claude' ? prepared.claudeModel
+        : prepared.agent === 'codex' ? prepared.codexModel
+        : prepared.agent === 'gemini' ? prepared.geminiModel
+        : prepared.agent === 'hermes' ? prepared.hermesModel
+        : null);
+    if (turnModel) session.record.model = turnModel;
+    if (prepared.profileId !== undefined) session.record.profileId = prepared.profileId || null;
     saveSessionRecord(opts.workdir, session.record);
   } catch (e: any) {
     agentWarn(`[session] turn-start metadata stamp failed: ${e?.message || e}`);
@@ -516,7 +528,7 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     }
     await awaitAgentUpdateIdle(prepared.agent, AGENT_UPDATE_TIMEOUTS.spawnWait);
     const result = await driver.doStream(prepared);
-    const finalized = finalizeStreamResult(result, opts.workdir, opts.prompt, session, opts.claudeWorkflowEnabled);
+    const finalized = finalizeStreamResult(result, opts.workdir, opts.prompt, session, opts.claudeWorkflowEnabled, opts.profileId);
     finalized.byokProviderName = prepared.byokProviderName ?? null;
     finalized.byokProfileName = prepared.byokProfileName ?? null;
     if (opts.forkOf && finalized.sessionId) {

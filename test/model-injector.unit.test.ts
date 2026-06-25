@@ -186,3 +186,45 @@ describe('resolveAgentInjection — Codex routing (Responses-only)', () => {
     expect(overrides(inj)).toEqual(['model_provider="lmstudio"']);
   });
 });
+
+describe('resolveAgentInjection — per-session profile override (dashboard does not mutate the global default)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-override-'));
+    process.env.PIKILOOM_CONFIG = path.join(tmpDir, 'setting.json');
+    fs.writeFileSync(process.env.PIKILOOM_CONFIG, JSON.stringify({ models: {} }));
+  });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+  afterAll(() => { shutdownAnthropicBridge(); });
+
+  async function seedTwoProfiles() {
+    const provider = await addProvider({
+      kind: 'anthropic', name: 'anthropic', baseURL: 'https://api.anthropic.com',
+      credentialRef: { source: 'inline', sealed: sealInline('sk-test-key') },
+    });
+    const active = addProfile({ providerId: provider.id, modelId: 'claude-active' });
+    const other = addProfile({ providerId: provider.id, modelId: 'claude-other' });
+    setActiveProfile('claude', active.id);
+    return { active, other };
+  }
+
+  it('undefined override falls back to the global active profile (IM / default path)', async () => {
+    const { active } = await seedTwoProfiles();
+    const inj = await resolveAgentInjection('claude');
+    expect(inj?.modelOverride).toBe(active.modelId);
+  });
+
+  it('a profileId override injects that profile without touching the global active one', async () => {
+    const { active, other } = await seedTwoProfiles();
+    const inj = await resolveAgentInjection('claude', other.id);
+    expect(inj?.modelOverride).toBe(other.modelId);
+    // the global default is unchanged — a fresh (undefined) resolution still sees the active profile
+    expect((await resolveAgentInjection('claude'))?.modelOverride).toBe(active.modelId);
+  });
+
+  it('a null override means native — no injection even when a BYOK profile is active globally', async () => {
+    await seedTwoProfiles();
+    expect(await resolveAgentInjection('claude', null)).toBeNull();
+  });
+});

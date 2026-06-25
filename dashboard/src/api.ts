@@ -39,6 +39,7 @@ export interface ApiRequestOptions extends RequestInit {
 export interface SessionSendRequestOptions extends ApiRequestOptions {
   attachments?: File[];
   model?: string | null;
+  profileId?: string | null;
   effort?: string | null;
   previousAgent?: string | null;
   previousSessionId?: string | null;
@@ -399,6 +400,7 @@ export const api = {
     const {
       attachments = [],
       model,
+      profileId,
       effort,
       previousAgent,
       previousSessionId,
@@ -412,6 +414,7 @@ export const api = {
       sessionId,
       prompt,
       ...(typeof model === 'string' && model.trim() ? { model: model.trim() } : {}),
+      ...(profileId !== undefined ? { profileId } : {}),
       ...(typeof effort === 'string' && effort.trim() ? { effort: effort.trim() } : {}),
       ...(prevAgent && prevSessionId ? { previousAgent: prevAgent, previousSessionId: prevSessionId } : {}),
     };
@@ -430,6 +433,7 @@ export const api = {
     body.set('sessionId', sessionId);
     body.set('prompt', prompt);
     if (typeof model === 'string' && model.trim()) body.set('model', model.trim());
+    if (profileId !== undefined) body.set('profileId', profileId ?? '');
     if (typeof effort === 'string' && effort.trim()) body.set('effort', effort.trim());
     if (prevAgent && prevSessionId) {
       body.set('previousAgent', prevAgent);

@@ -69,6 +69,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const [agents, setAgents] = useState<AgentRuntimeStatus[]>(storeAgents || []);
   const [selectedAgent, setSelectedAgent] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null | undefined>(undefined);
   const [selectedEffort, setSelectedEffort] = useState('');
   const [imageAttachments, setImageAttachments] = useState<ComposerImageAttachment[]>([]);
   const [previewImageId, setPreviewImageId] = useState<string | null>(null);
@@ -148,6 +149,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     if (isPromotion) return;
     setSelectedAgent('');
     setSelectedModel('');
+    setSelectedProfileId(undefined);
     setSelectedEffort('');
     setPendingAgent(null);
     setPendingModel(null);
@@ -274,6 +276,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
       || (sendOwnsSessionAgent ? (session.model || '') : '')
       || targetStatus?.selectedModel
       || '').trim() || null;
+    const targetProfileId: string | null | undefined = selectedProfileId !== undefined
+      ? selectedProfileId
+      : (sendOwnsSessionAgent && session.model ? (session.profileId ?? null) : undefined);
     const targetEffort = targetAgent === 'gemini'
       ? null
       : ((selectedEffort
@@ -295,6 +300,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     api.sendSessionMessage(workdir, targetAgent, targetSessionId, prompt, {
       attachments,
       model: targetModel,
+      profileId: targetProfileId,
       effort: targetEffort,
       previousAgent,
       previousSessionId,
@@ -326,9 +332,12 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     selectedAgent,
     selectedEffort,
     selectedModel,
+    selectedProfileId,
     sending,
     session.agent,
     session.sessionId,
+    session.model,
+    session.profileId,
     workdir,
   ]);
 
@@ -476,6 +485,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const firstProfileIdx = useMemo(() => models.findIndex(m => m.kind === 'profile'), [models]);
   const activeProfileIdForAgent = activeProfiles[cascadeAgentId] || null;
   const sessionOwnsAgent = !!session.agent && effectiveAgent === session.agent;
+  const sessionProfileId: string | null | undefined = selectedProfileId !== undefined
+    ? selectedProfileId
+    : (sessionOwnsAgent ? (session.profileId ?? null) : undefined);
   const currentModel = selectedModel
     || (sessionOwnsAgent ? (session.model || '') : '')
     || currentAgent?.selectedModel
@@ -512,25 +524,15 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     setPendingProfileSelection(undefined);
   };
 
-  const applyCascade = useCallback(async (agent: string, model: string, effort: string | null) => {
+  const applyCascade = useCallback((agent: string, model: string, effort: string | null) => {
     const nextEffort = agent === 'gemini' ? '' : (effort || '');
-    if (pendingProfileSelection !== undefined) {
-      try {
-        await fetch(`/api/models/agents/${agent}/active`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ profileId: pendingProfileSelection }),
-        });
-        void refreshModelLayer();
-        void refreshAgentStatus();
-      } catch {  }
-    }
     setSelectedAgent(agent);
     setSelectedModel(model);
+    if (pendingProfileSelection !== undefined) setSelectedProfileId(pendingProfileSelection);
     setSelectedEffort(nextEffort);
     resetCascade();
     setCascadeStep('closed');
-  }, [pendingProfileSelection, refreshModelLayer, refreshAgentStatus]);
+  }, [pendingProfileSelection]);
 
   const toggleCascade = () => {
     if (cascadeStep === 'closed') {
@@ -548,7 +550,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const shortModel = displayModel ? shortenModel(displayModel) : '';
 
   const displayProfile = (() => {
-    const id = activeProfiles[displayAgent];
+    const id = (!pendingAgent && sessionProfileId !== undefined)
+      ? sessionProfileId
+      : (activeProfiles[displayAgent] ?? null);
     return id ? profiles.find(p => p.id === id) ?? null : null;
   })();
   const displayProvider = displayProfile
@@ -900,7 +904,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                         const showProfileHeader = idx === firstProfileIdx && m.kind === 'profile';
                         const stagedProfile = pendingProfileSelection !== undefined
                           ? pendingProfileSelection
-                          : activeProfileIdForAgent;
+                          : (cascadeAgentId === effectiveAgent && sessionProfileId !== undefined
+                              ? sessionProfileId
+                              : activeProfileIdForAgent);
                         const isSelected = m.kind === 'profile'
                           ? !!m.profileId && m.profileId === stagedProfile
                           : !stagedProfile && m.id === (pendingModel ?? currentModel);

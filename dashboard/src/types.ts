@@ -327,6 +327,7 @@ export interface SessionInfo {
   running?: boolean;
   isCurrent?: boolean;
   model?: string;
+  profileId?: string | null;
   thinkingEffort?: string | null;
   workflowEnabled?: boolean | null;
   workdir?: string;

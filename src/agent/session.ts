@@ -376,7 +376,7 @@ function writeSessionMeta(record: ManagedSessionRecord) {
     workspacePath: record.workspacePath,
     threadId: record.threadId,
     createdAt: record.createdAt, updatedAt: record.updatedAt,
-    title: record.title, model: record.model, thinkingEffort: record.thinkingEffort, workflowEnabled: record.workflowEnabled, stagedFiles: record.stagedFiles,
+    title: record.title, model: record.model, thinkingEffort: record.thinkingEffort, workflowEnabled: record.workflowEnabled, profileId: record.profileId, stagedFiles: record.stagedFiles,
     runState: record.runState, runDetail: record.runDetail, runUpdatedAt: record.runUpdatedAt,
     runPid: record.runPid,
     classification: record.classification,

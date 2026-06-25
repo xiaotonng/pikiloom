@@ -177,6 +177,7 @@ async function parseSessionSendRequest(c: any): Promise<{
   sessionId: string;
   prompt: string;
   model: string;
+  profileId: string | null | undefined;
   effort: string;
   workflow: boolean;
   attachments: string[];
@@ -194,6 +195,7 @@ async function parseSessionSendRequest(c: any): Promise<{
       sessionId: readStringField(form.get('sessionId')),
       prompt: readStringField(form.get('prompt')),
       model: readStringField(form.get('model')),
+      profileId: form.has('profileId') ? (readStringField(form.get('profileId')) || null) : undefined,
       effort: readStringField(form.get('effort')).toLowerCase(),
       workflow: readStringField(form.get('workflow')) === '1',
       attachments: uploads.attachments,
@@ -210,6 +212,9 @@ async function parseSessionSendRequest(c: any): Promise<{
     sessionId: readStringField(body?.sessionId),
     prompt: readStringField(body?.prompt),
     model: readStringField(body?.model),
+    profileId: body && 'profileId' in body
+      ? (body.profileId === null ? null : (typeof body.profileId === 'string' && body.profileId.trim() ? body.profileId.trim() : null))
+      : undefined,
     effort: readStringField(body?.effort).toLowerCase(),
     workflow: body?.workflow === true,
     attachments: [],
@@ -686,13 +691,14 @@ app.get('/api/session-hub/skills', (c) => {
 
 app.post('/api/session-hub/session/send', async (c) => {
   try {
-    const { workdir, agent, sessionId, prompt, model, effort, workflow, attachments, previousAgent, previousSessionId, cleanup } = await parseSessionSendRequest(c);
+    const { workdir, agent, sessionId, prompt, model, profileId, effort, workflow, attachments, previousAgent, previousSessionId, cleanup } = await parseSessionSendRequest(c);
     const queued = await queueDashboardSessionTask({
       workdir,
       agent,
       sessionId,
       prompt,
       model,
+      ...(profileId !== undefined ? { profileId } : {}),
       effort,
       workflow,
       attachments,
@@ -726,7 +732,7 @@ app.get('/api/session-hub/session/stream-state', (c) => {
 app.post('/api/session-hub/session/fork', async (c) => {
   try {
     const body = await c.req.json();
-    const { workdir, agent, sessionId, atTurn, prompt, model, effort, attachments } = body || {};
+    const { workdir, agent, sessionId, atTurn, prompt, model, profileId, effort, attachments } = body || {};
     if (!workdir || !agent || !sessionId || typeof atTurn !== 'number' || !prompt) {
       return c.json({ ok: false, error: 'workdir, agent, sessionId, atTurn (number), and prompt are required' }, 400);
     }
@@ -737,6 +743,7 @@ app.post('/api/session-hub/session/fork', async (c) => {
       atTurn,
       prompt,
       model: model || null,
+      ...(profileId !== undefined ? { profileId } : {}),
       effort: effort || null,
       attachments: Array.isArray(attachments) ? attachments : [],
     });

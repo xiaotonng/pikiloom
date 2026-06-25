@@ -92,6 +92,7 @@ export interface StreamOpts {
   timeout: number;
   sessionId: string | null;
   model: string | null;
+  profileId?: string | null;
   thinkingEffort: string;
   onText: (
     text: string,

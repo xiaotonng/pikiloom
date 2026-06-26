@@ -841,6 +841,23 @@ function createCodexStreamState(opts: StreamOpts): CodexStreamState {
   };
 }
 
+// Codex on a ChatGPT-account login rejects non-OpenAI models with a raw upstream JSON blob
+// (e.g. {"detail":"The 'deepseek-v4-pro' model is not supported when using Codex with a
+// ChatGPT account."}). When a third-party model is correctly bound to a Provider profile the
+// injector routes around this; this only fires when no binding exists, so turn the opaque
+// upstream error into an actionable instruction instead of leaking JSON to the chat bubble.
+export function humanizeCodexError(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const match = raw.match(/The '([^']+)' model is not supported when using Codex with a ChatGPT account/i);
+  if (match) {
+    const model = match[1];
+    return `Codex 正在使用 ChatGPT 账号登录，无法运行第三方模型「${model}」。`
+      + `请在「智能体配置」页接入该模型的供应商（填入 Base URL 与 API Key），添加对应模型档案并绑定到 Codex，`
+      + `或改用 Codex 原生模型（如 gpt-5.5）。`;
+  }
+  return raw;
+}
+
 function codexErrorResult(
   error: string, start: number,
   sessionId: string | null, model: string | null, thinkingEffort: string,
@@ -1189,7 +1206,7 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
     if (threadResp.error) {
       const errMsg = threadResp.error.message || 'thread/start failed';
       agentWarn(`[codex-rpc] thread error: ${errMsg}`);
-      return codexErrorResult(errMsg, start, opts.sessionId, opts.model, opts.thinkingEffort);
+      return codexErrorResult(humanizeCodexError(errMsg) ?? errMsg, start, opts.sessionId, opts.model, opts.thinkingEffort);
     }
 
     const threadResult = threadResp.result;
@@ -1276,7 +1293,7 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
       unsubscribeRequests();
       const errMsg = turnResp.error.message || 'turn/start failed';
       agentWarn(`[codex-rpc] turn/start error: ${errMsg}`);
-      return codexErrorResult(errMsg, start, s.sessionId, s.model, s.thinkingEffort);
+      return codexErrorResult(humanizeCodexError(errMsg) ?? errMsg, start, s.sessionId, s.model, s.thinkingEffort);
     }
     s.turnId = turnResp.result?.turn?.id ?? null;
     publishTurnControl();
@@ -1293,7 +1310,7 @@ export async function doCodexStream(opts: StreamOpts): Promise<StreamResult> {
     }
 
     const ok = s.turnStatus === 'completed' && !timedOut && !interrupted;
-    const error = s.turnError
+    const error = humanizeCodexError(s.turnError)
       || (interrupted ? 'Interrupted by user.' : null)
       || (timedOut ? `Timed out after ${opts.timeout}s waiting for turn completion.` : null)
       || (!ok ? `Turn ${s.turnStatus || 'unknown'}.` : null);

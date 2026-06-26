@@ -87,7 +87,7 @@ export {
 
 export {
   detectAgentBin, listAgents, resolveDefaultAgent,
-  run, doStream,
+  run, doStream, recoverProfileIdForModel,
   listModels, resolveAgentModels, getUsage, getAgentBoundModelId, setAgentBoundModelId,
 } from './stream.js';
 
@@ -167,6 +167,6 @@ export {
 } from './cli/index.js';
 
 export { doClaudeStream } from './drivers/claude.js';
-export { doCodexStream, buildCodexTurnInput, shutdownCodexServer, getCodexUsageLive } from './drivers/codex.js';
+export { doCodexStream, buildCodexTurnInput, shutdownCodexServer, getCodexUsageLive, humanizeCodexError } from './drivers/codex.js';
 export { doGeminiStream } from './drivers/gemini.js';
 export { doHermesStream } from './drivers/hermes.js';

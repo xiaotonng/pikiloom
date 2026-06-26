@@ -414,6 +414,34 @@ interface SessionWorkspaceInfo {
   record: import('./types.js').ManagedSessionRecord;
 }
 
+function requestedModelForAgent(opts: StreamOpts): string {
+  switch (opts.agent) {
+    case 'claude': return (opts.claudeModel || opts.model || '').trim();
+    case 'codex': return (opts.codexModel || opts.model || '').trim();
+    case 'gemini': return (opts.geminiModel || opts.model || '').trim();
+    case 'hermes': return (opts.hermesModel || opts.model || '').trim();
+  }
+  return (opts.model || '').trim();
+}
+
+// When a session carries a third-party model id but its profile binding was lost
+// (stale/deleted profileId, or a model selected without a binding), resolveAgentInjection
+// returns null and the agent silently falls back to its native account — e.g. Codex on a
+// ChatGPT login rejects "deepseek-v4-pro". If exactly one configured profile (for a provider
+// kind this agent accepts) declares that model id, the intent is unambiguous: recover it.
+export function recoverProfileIdForModel(agent: Agent, modelId: string): string | null {
+  const model = modelId.trim();
+  if (!model) return null;
+  const accepted = new Set(getAcceptedProviderKinds(agent));
+  if (accepted.size === 0) return null;
+  const matches = listProfiles().filter(profile => {
+    if (profile.modelId !== model) return false;
+    const provider = getProvider(profile.providerId);
+    return !!provider && accepted.has(provider.kind);
+  });
+  return matches.length === 1 ? matches[0].id : null;
+}
+
 export async function doStream(opts: StreamOpts): Promise<StreamResult> {
   let session: SessionWorkspaceInfo;
   let prepared: StreamOpts;
@@ -462,7 +490,18 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
   }
 
   try {
-    const injection = await resolveAgentInjection(prepared.agent, prepared.profileId);
+    let injection = await resolveAgentInjection(prepared.agent, prepared.profileId);
+    if (!injection) {
+      const requestedModel = requestedModelForAgent(prepared);
+      const recoveredProfileId = recoverProfileIdForModel(prepared.agent, requestedModel);
+      if (recoveredProfileId) {
+        injection = await resolveAgentInjection(prepared.agent, recoveredProfileId);
+        if (injection) {
+          prepared.profileId = recoveredProfileId;
+          agentLog(`[byok] recovered lost provider binding: agent=${prepared.agent} model=${requestedModel} → profile=${recoveredProfileId}`);
+        }
+      }
+    }
     if (injection) {
       prepared.extraEnv = { ...(prepared.extraEnv || {}), ...injection.env };
       if (injection.modelOverride) {

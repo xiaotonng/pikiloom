@@ -124,6 +124,33 @@ export function latestDeliveredTaskId(agent: Agent, sessionId: string): string |
   return latest?.taskId;
 }
 
+export function tailDeliveredBlocks(
+  agent: Agent,
+  sessionId: string,
+  opts: { currentTaskId?: string | null; lastActivityMs?: number | null; staleAfterMs: number },
+): MessageBlock[] {
+  // While a turn is running or just finished, the bot still knows its task id. Scope
+  // strictly to it: the latest turn's deliveries only, and nothing when the latest turn
+  // delivered no file — so a prior turn's image does not re-append onto every later reply.
+  if (opts.currentTaskId != null) {
+    const filter = (a: DeliveredArtifact) => a.taskId === opts.currentTaskId;
+    return readDeliveredArtifacts(agent, sessionId).some(filter)
+      ? deliveredArtifactBlocks(agent, sessionId, filter)
+      : [];
+  }
+  // Idle / cold reload: the delivering turn is long over and task ids are not persisted
+  // per turn. Fall back to the most recent delivery, suppressed once the session has kept
+  // running well past it.
+  const latestTask = latestDeliveredTaskId(agent, sessionId);
+  const filter = latestTask ? (a: DeliveredArtifact) => a.taskId === latestTask : undefined;
+  const scoped = readDeliveredArtifacts(agent, sessionId).filter(a => !filter || filter(a));
+  if (!scoped.length) return [];
+  let newestTs = scoped[0].ts;
+  for (const a of scoped) if (a.ts > newestTs) newestTs = a.ts;
+  if (opts.lastActivityMs != null && opts.lastActivityMs - newestTs > opts.staleAfterMs) return [];
+  return deliveredArtifactBlocks(agent, sessionId, filter);
+}
+
 export function deliveredArtifactBlocks(
   agent: Agent,
   sessionId: string,

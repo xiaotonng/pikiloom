@@ -6,6 +6,7 @@ import {
   deliverArtifact,
   readDeliveredArtifacts,
   deliveredArtifactBlocks,
+  tailDeliveredBlocks,
   latestDeliveredTaskId,
   mimeForArtifact,
 } from '../src/agent/artifacts.ts';
@@ -117,6 +118,40 @@ describe('delivered-artifact manifest', () => {
 
     // unscoped still returns the whole session (used as the legacy fallback)
     expect(deliveredArtifactBlocks('claude', 'sess-bleed')).toHaveLength(3);
+  });
+
+  it('tailDeliveredBlocks scopes to the latest task and ignores activity it has no info about', () => {
+    const q1 = path.join(workdir, 'qr1.png');
+    const shot = path.join(workdir, 'final.png');
+    for (const f of [q1, shot]) fs.writeFileSync(f, PNG_BYTES);
+    deliverArtifact('claude', 'sess-tail', q1, { kind: 'photo', taskId: 't-1' });
+    deliverArtifact('claude', 'sess-tail', shot, { kind: 'photo', taskId: 't-2' });
+
+    const blocks = tailDeliveredBlocks('claude', 'sess-tail', { lastActivityMs: null, staleAfterMs: 60_000 });
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].imagePath).toContain('final.png');
+  });
+
+  it('tailDeliveredBlocks suppresses a delivery the session kept running well past', () => {
+    const t0 = Date.now();
+    const shot = path.join(workdir, 'arch.png');
+    fs.writeFileSync(shot, PNG_BYTES);
+    deliverArtifact('claude', 'sess-stale', shot, { kind: 'photo', taskId: 't-1' });
+
+    // last turn ended 3h after the delivery (later turns delivered nothing) -> stale.
+    const stale = tailDeliveredBlocks('claude', 'sess-stale', {
+      lastActivityMs: t0 + 3 * 60 * 60_000,
+      staleAfterMs: 60 * 60_000,
+    });
+    expect(stale).toEqual([]);
+
+    // delivery is part of the latest turn (ended seconds later) -> still surfaced.
+    const fresh = tailDeliveredBlocks('claude', 'sess-stale', {
+      lastActivityMs: t0 + 5_000,
+      staleAfterMs: 60 * 60_000,
+    });
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0].imagePath).toContain('arch.png');
   });
 
   it('returns no latest task id for legacy deliveries that predate taskId tagging', () => {

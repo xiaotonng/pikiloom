@@ -7,7 +7,7 @@ import { loadUserConfig } from '../../core/config/user-config.js';
 import {
   listAgents, listSkills,
   decodeAttachmentPathParam, resolveAllowedAttachmentPath, rewriteAttachmentBlocksForTransport,
-  deliveredArtifactBlocks, latestDeliveredTaskId, mimeForArtifact,
+  tailDeliveredBlocks, mimeForArtifact,
   type Agent, type SessionInfo, type SessionMessagesResult, type RichMessage, type MessageBlock,
 } from '../../agent/index.js';
 import { getSessionStatusForBot } from '../../bot/session-status.js';
@@ -37,7 +37,7 @@ import {
   resolveUserStatus,
   type UserStatus, type SessionQueryResult,
 } from '../../bot/session-hub.js';
-import { DASHBOARD_PAGINATION } from '../../core/constants.js';
+import { DASHBOARD_PAGINATION, DELIVERED_ARTIFACT_TAIL_STALE_MS } from '../../core/constants.js';
 import { runtime } from '../runtime.js';
 import type { Bot } from '../../bot/bot.js';
 
@@ -484,7 +484,10 @@ app.post('/api/session-hub/session/messages', async (c) => {
       turnLimit: Number.isFinite(turnLimit) ? turnLimit : undefined,
       rich,
     });
-    return c.json(prepareSessionMessagesForDashboard(result, agent, sessionId));
+    const record = findPikiloomSession(workdir, agent, sessionId);
+    const lastActivity = record ? Date.parse(record.runUpdatedAt || record.updatedAt) : NaN;
+    const lastActivityMs = Number.isFinite(lastActivity) ? lastActivity : null;
+    return c.json(prepareSessionMessagesForDashboard(result, agent, sessionId, lastActivityMs));
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
   }
@@ -494,6 +497,7 @@ function prepareSessionMessagesForDashboard(
   result: SessionMessagesResult,
   agent: Agent,
   sessionId: string,
+  lastActivityMs: number | null,
 ): SessionMessagesResult {
   if (result.richMessages === undefined) return result;
 
@@ -504,13 +508,13 @@ function prepareSessionMessagesForDashboard(
 
   const includesTail = !result.window || !result.window.hasNewer;
   if (includesTail) {
-    // Only surface the latest turn's delivered files. Artifacts are persisted in a
-    // session-wide manifest, so without this scope every file ever sent in the session
-    // would be re-appended onto the latest reply (cross-turn image bleed). Legacy
-    // artifacts predating taskId tagging fall back to the full set.
-    const latestTask = latestDeliveredTaskId(agent, sessionId);
+    // Surface the latest turn's delivered files. Artifacts live in a session-wide
+    // manifest, so the dump is scoped to the latest task (without it every file ever
+    // sent would re-append onto the latest reply) and suppressed once the session has
+    // kept running well past the last delivery — an out-of-band file is only "tail"
+    // content for the turn that sent it, not for later turns that delivered nothing.
     const delivered = rewriteAttachmentBlocksForTransport(
-      deliveredArtifactBlocks(agent, sessionId, latestTask ? (a => a.taskId === latestTask) : undefined),
+      tailDeliveredBlocks(agent, sessionId, { lastActivityMs, staleAfterMs: DELIVERED_ARTIFACT_TAIL_STALE_MS }),
       { agent, sessionId },
     );
     if (delivered.length) {

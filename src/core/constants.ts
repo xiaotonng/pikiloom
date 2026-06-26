@@ -11,6 +11,8 @@ export const MCP_TIMEOUTS = {
 
 export const MCP_ARTIFACT_MAX_BYTES = 20 * 1024 * 1024;
 
+export const DELIVERED_ARTIFACT_TAIL_STALE_MS = 60 * 60_000;
+
 export const DASHBOARD_TIMEOUTS = {
   agentStatusModels: 4_000,
   agentStatusUsage: 1_500,

@@ -294,3 +294,41 @@ describe('Claude session-context env scrub', () => {
     expect(env.PATH).toBe('/usr/bin');
   });
 });
+
+describe('normalizeClaudeSessionEntrypoint — surface Pikiloom sessions in --resume + VSCode ext', () => {
+  it('flips entrypoint sdk-cli→cli in the transcript and leaves an already-clean file untouched', async () => {
+    const { normalizeClaudeSessionEntrypoint, claudeProjectDirName } = await import('../src/agent/drivers/claude.ts');
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const prevHome = process.env.HOME;
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'piki-ep-'));
+    try {
+      process.env.HOME = tmpHome;
+      const workdir = '/tmp/some-workspace';
+      const dir = path.join(tmpHome, '.claude', 'projects', claudeProjectDirName(workdir));
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 'sess-1234.jsonl');
+      fs.writeFileSync(file, [
+        '{"type":"user","entrypoint":"sdk-cli","userType":"external"}',
+        '{"type":"assistant","entrypoint":"sdk-cli"}',
+      ].join('\n'));
+
+      normalizeClaudeSessionEntrypoint(workdir, 'sess-1234');
+      const out = fs.readFileSync(file, 'utf-8');
+      expect(out).not.toContain('"entrypoint":"sdk-cli"');
+      expect(out.match(/"entrypoint":"cli"/g)?.length).toBe(2);
+
+      const mtimeBefore = fs.statSync(file).mtimeMs;
+      normalizeClaudeSessionEntrypoint(workdir, 'sess-1234');
+      expect(fs.statSync(file).mtimeMs).toBe(mtimeBefore);
+
+      normalizeClaudeSessionEntrypoint(workdir, null);
+      normalizeClaudeSessionEntrypoint(workdir, 'missing-session');
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});

@@ -1038,6 +1038,18 @@ export async function doClaudeStream(opts: StreamOpts): Promise<StreamResult> {
 
 export const claudeProjectDirName = encodePathAsDirName;
 
+export function normalizeClaudeSessionEntrypoint(workdir: string, sessionId: string | null | undefined): void {
+  if (!sessionId) return;
+  const home = getHome();
+  if (!home) return;
+  const file = path.join(home, '.claude', 'projects', claudeProjectDirName(workdir), `${sessionId}.jsonl`);
+  try {
+    const data = fs.readFileSync(file, 'utf-8');
+    if (!data.includes('"entrypoint":"sdk-cli"')) return;
+    fs.writeFileSync(file, data.split('"entrypoint":"sdk-cli"').join('"entrypoint":"cli"'));
+  } catch {}
+}
+
 function extractClaudeTailQA(filePath: string): { lastQuestion: string | null; lastAnswer: string | null; lastMessageText: string | null } {
   const lines = readTailLines(filePath, 1024 * 1024);
   let lastQuestion: string | null = null;
@@ -1955,7 +1967,9 @@ class ClaudeDriver implements AgentDriver {
   readonly acceptedProviderKinds = ['anthropic', 'openai-compatible'] as const;
 
   async doStream(opts: StreamOpts): Promise<StreamResult> {
-    return doClaudeWithRetry(opts);
+    const result = await doClaudeWithRetry(opts);
+    normalizeClaudeSessionEntrypoint(opts.workdir, result.sessionId);
+    return result;
   }
 
   async getSessions(workdir: string, limit?: number): Promise<SessionListResult> {

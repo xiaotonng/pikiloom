@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { cn } from '../../utils';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
-import { createMarkdownComponents, mdPlugins } from './markdown';
+import { createMarkdownComponents, mdPlugins, LinkifyPaths } from './markdown';
 import { lastNLines, summarizeToolResult, summarizeToolUse } from './utils';
 import { ImageLightbox } from './TurnView';
 import { SubAgentCard } from './LivePreview';
@@ -17,7 +17,7 @@ export function AssistantMsg({ message, t, workdir }: { message: RichMessage; t:
   if (!hasContent) return null;
   return (
     <div className="space-y-3">
-      {activityBlocks.length > 0 && <ActivitySection blocks={activityBlocks} t={t} />}
+      {activityBlocks.length > 0 && <ActivitySection blocks={activityBlocks} t={t} workdir={workdir} />}
       {subAgentBlocks.map(block => block.subAgent ? (
         <SubAgentCard key={block.toolId || block.subAgent.id} sub={block.subAgent} t={t} />
       ) : null)}
@@ -80,7 +80,7 @@ export function SystemNoticeSection({ blocks, t }: { blocks: MessageBlock[]; t: 
   );
 }
 
-export function ActivitySection({ blocks, t }: { blocks: MessageBlock[]; t: (k: string) => string }) {
+export function ActivitySection({ blocks, t, workdir }: { blocks: MessageBlock[]; t: (k: string) => string; workdir?: string | null }) {
   const [open, setOpen] = useState(false);
   const useBlocks = blocks.filter(b => b.type === 'tool_use');
   const totalOps = useBlocks.length;
@@ -93,31 +93,32 @@ export function ActivitySection({ blocks, t }: { blocks: MessageBlock[]; t: (k: 
       onToggle={() => setOpen(v => !v)}
       dot={{ color: 'bg-cyan-400/60' }}
       label={t('hub.activity')}
-      preview={<span className="text-[11.5px] font-mono text-fg-4 truncate">{preview}</span>}
+      preview={<span className="text-[11.5px] font-mono text-fg-4 truncate"><LinkifyPaths text={preview} workdir={workdir} /></span>}
       badge={totalOps > 0 ? <CountBadge>{totalOps}</CountBadge> : undefined}
     >
       <div className="px-3.5 py-2.5 space-y-0.5">
-        {blocks.map((block, i) => <ActivityLine key={i} block={block} />)}
+        {blocks.map((block, i) => <ActivityLine key={i} block={block} workdir={workdir} />)}
       </div>
     </CollapsibleCard>
   );
 }
 
-export function ActivityLine({ block }: { block: MessageBlock }) {
+export function ActivityLine({ block, workdir }: { block: MessageBlock; workdir?: string | null }) {
   const [open, setOpen] = useState(false);
   const isUse = block.type === 'tool_use';
   const summary = isUse ? summarizeToolUse(block) : summarizeToolResult(block);
+  const expanded = block.content.length > 3000 ? block.content.slice(0, 3000) + '\n\u2026' : block.content;
   return (
     <div>
       <button onClick={() => block.content && setOpen(v => !v)} className={cn('flex items-center gap-2 py-[3px] w-full text-left group rounded-sm transition-colors', block.content && 'hover:bg-panel-h/30')}>
         <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', isUse ? 'bg-fg-5/40' : 'bg-ok/40')} />
         <span className="text-[11px] font-mono text-fg-5/60 group-hover:text-fg-3 transition-colors truncate">
-          {summary}
+          <LinkifyPaths text={summary} workdir={workdir} />
         </span>
       </button>
       {open && block.content && (
         <pre className="ml-3 mt-1 mb-2 p-3 rounded-md bg-inset border border-edge text-[11px] leading-[1.6] text-fg-4 font-mono whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto">
-          {block.content.length > 3000 ? block.content.slice(0, 3000) + '\n\u2026' : block.content}
+          <LinkifyPaths text={expanded} workdir={workdir} />
         </pre>
       )}
     </div>

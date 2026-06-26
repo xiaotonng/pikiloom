@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { isFileLocator } from '../dashboard/src/pages/sessions/markdown.tsx';
+import { isFileLocator, segmentPaths } from '../dashboard/src/pages/sessions/markdown.tsx';
 import { resolveOpenPathLocator } from '../src/dashboard/routes/config.ts';
 import { makeTmpDir } from './support/env.ts';
 
@@ -26,6 +26,39 @@ describe('dashboard file link parsing', () => {
     expect(isFileLocator('https://example.com/file.ts')).toBe(false);
     expect(isFileLocator('github.com/openai')).toBe(false);
     expect(isFileLocator('v0.4.15')).toBe(false);
+  });
+});
+
+describe('tool-activity path linkification (segmentPaths)', () => {
+  const links = (text: string) => segmentPaths(text).filter(s => s.type === 'link') as Array<{ type: 'link'; locator: string; display: string }>;
+
+  it('linkifies the path in a tool summary line', () => {
+    const found = links('Read /tmp/pikiloom-arch/v4c_mid.png');
+    expect(found).toHaveLength(1);
+    expect(found[0].locator).toBe('/tmp/pikiloom-arch/v4c_mid.png');
+  });
+
+  it('linkifies the quoted path value inside a tool-input JSON dump', () => {
+    const found = links('{ "file_path": "/tmp/pikiloom-arch/v4c_mid.png" }');
+    expect(found).toHaveLength(1);
+    expect(found[0].locator).toBe('/tmp/pikiloom-arch/v4c_mid.png');
+  });
+
+  it('preserves a line/column suffix for grep-style hits', () => {
+    const found = links('Edit src/dashboard/routes/config.ts:42');
+    expect(found).toHaveLength(1);
+    expect(found[0].locator).toBe('src/dashboard/routes/config.ts:42');
+  });
+
+  it('does not linkify bare filenames or truncated paths', () => {
+    expect(links('Write package.json')).toHaveLength(0);
+    expect(links('Read /a/very/long/path…')).toHaveLength(0);
+  });
+
+  it('round-trips surrounding whitespace and newlines for unquoted text', () => {
+    const input = 'cd /tmp/pikiloom-arch\nsips arch_v4_1.png';
+    const rebuilt = segmentPaths(input).map(s => s.type === 'link' ? s.display : s.value).join('');
+    expect(rebuilt).toBe(input);
   });
 });
 

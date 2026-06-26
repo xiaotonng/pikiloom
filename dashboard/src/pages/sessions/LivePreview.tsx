@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
-import { createMarkdownComponents, mdPlugins } from './markdown';
+import { createMarkdownComponents, mdPlugins, LinkifyPaths } from './markdown';
 import { lastNLines, classifyRunEnd } from './utils';
 import { cn, shortenModel } from '../../utils';
 import { FileChip } from './FileChip';
@@ -68,6 +68,7 @@ export function RunEndNotice({ detail, t, className }: {
 }
 
 const STREAM_MARKDOWN_THROTTLE_MS = 64;
+const HEARTBEAT_STALL_SEC = 6;
 
 function useThrottledValue<T>(value: T, intervalMs: number): T {
   const [throttled, setThrottled] = useState(value);
@@ -112,6 +113,32 @@ export function LivePreview({
     || toolCalls[toolCalls.length - 1]?.summary
     || '';
 
+  const contentSig = useMemo(() => [
+    stream.text.length,
+    stream.thinking.length,
+    toolCalls.length,
+    toolCalls[toolCalls.length - 1]?.status ?? '',
+    (stream.activity ?? '').length,
+    stream.generatingImages ?? 0,
+  ].join('|'), [stream.text, stream.thinking, toolCalls, stream.activity, stream.generatingImages]);
+  const lastContentChangeRef = useRef(Date.now());
+  const [stalledSec, setStalledSec] = useState(0);
+  useEffect(() => {
+    lastContentChangeRef.current = Date.now();
+    setStalledSec(0);
+  }, [contentSig]);
+  useEffect(() => {
+    if (stream.phase !== 'streaming') { setStalledSec(0); return; }
+    const id = window.setInterval(() => {
+      setStalledSec(Math.floor((Date.now() - lastContentChangeRef.current) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [stream.phase]);
+  const runningTool = toolCalls.find(c => c.status === 'running') ?? null;
+  const showHeartbeat = stream.phase === 'streaming'
+    && stalledSec >= HEARTBEAT_STALL_SEC
+    && (stream.generatingImages ?? 0) === 0;
+
   useLayoutEffect(() => {
     const el = activityScrollRef.current;
     if (el && activityOpen) el.scrollTop = el.scrollHeight;
@@ -147,18 +174,18 @@ export function LivePreview({
           onToggle={() => setActivityOpen(v => !v)}
           dot={{ color: 'bg-cyan-400/60', pulse: true }}
           label={t('hub.activity')}
-          preview={<span className="text-[12px] text-fg-4 truncate">{lastActivity}</span>}
+          preview={<span className="text-[12px] text-fg-4 truncate"><LinkifyPaths text={lastActivity} workdir={workdir} /></span>}
           badge={(toolCalls.length || activityLines.length) > 1
             ? <CountBadge>{toolCalls.length || activityLines.length}</CountBadge>
             : undefined}
         >
           <div ref={activityScrollRef} className="px-3.5 py-2.5 space-y-0.5 max-h-[280px] overflow-y-auto">
             {toolCalls.length > 0
-              ? toolCalls.map(call => <ToolCallRow key={call.id} call={call} />)
+              ? toolCalls.map(call => <ToolCallRow key={call.id} call={call} workdir={workdir} />)
               : activityLines.map((line, i) => (
                 <div key={i} className="flex items-center gap-1.5 py-[2px]">
                   <span className="w-1 h-1 rounded-full shrink-0 bg-fg-5/30" />
-                  <span className="text-[11px] font-mono text-fg-5/60 truncate">{line}</span>
+                  <span className="text-[11px] font-mono text-fg-5/60 truncate"><LinkifyPaths text={line} workdir={workdir} /></span>
                 </div>
               ))}
           </div>
@@ -208,7 +235,7 @@ export function LivePreview({
         </div>
       )}
 
-      {!stream.text && stream.phase === 'streaming' && (
+      {!stream.text && stream.phase === 'streaming' && !showHeartbeat && (
         <div className="py-1">
           <ThinkingDots className="text-fg-5" />
         </div>
@@ -228,6 +255,18 @@ export function LivePreview({
         </div>
       )}
 
+      {showHeartbeat && (
+        <div className="flex items-center gap-2 text-[12px] text-fg-5/55">
+          <ThinkingDots className="text-fg-5/50 shrink-0" />
+          <span className="min-w-0 truncate">
+            {runningTool
+              ? `${t('hub.stillRunning') || 'still running'}: ${runningTool.summary}`
+              : (t('hub.stillWorking') || 'still working…')}
+          </span>
+          <span className="shrink-0 tabular-nums text-fg-5/45">{stalledSec}s</span>
+        </div>
+      )}
+
       {failureLabelKey && stream.error && (
         <RunEndNotice detail={stream.error} t={t} className="pt-0.5" />
       )}
@@ -235,7 +274,7 @@ export function LivePreview({
   );
 }
 
-function ToolCallRow({ call }: { call: StreamToolCall }) {
+function ToolCallRow({ call, workdir }: { call: StreamToolCall; workdir?: string | null }) {
   const [open, setOpen] = useState(false);
   const expandable = !!(call.input || call.result);
   const dotColor = call.status === 'failed' ? 'bg-rose-400/70'
@@ -250,7 +289,7 @@ function ToolCallRow({ call }: { call: StreamToolCall }) {
         title={expandable ? undefined : call.summary}
       >
         <span className={`w-1 h-1 rounded-full shrink-0 ${dotColor} ${call.status === 'running' ? 'animate-pulse' : ''}`} />
-        <span className="text-[11px] font-mono text-fg-5/60 truncate flex-1">{call.summary}</span>
+        <span className="text-[11px] font-mono text-fg-5/60 truncate flex-1"><LinkifyPaths text={call.summary} workdir={workdir} /></span>
         {expandable && (
           <span className={`shrink-0 text-[9px] text-fg-5/40 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
         )}
@@ -258,10 +297,10 @@ function ToolCallRow({ call }: { call: StreamToolCall }) {
       {open && (
         <div className="ml-2.5 mt-0.5 mb-1 space-y-1 border-l border-white/[0.06] pl-2.5">
           {call.input && (
-            <pre className="whitespace-pre-wrap break-words text-[10.5px] font-mono leading-[1.55] text-fg-4/80 max-h-[140px] overflow-y-auto">{call.input}</pre>
+            <pre className="whitespace-pre-wrap break-words text-[10.5px] font-mono leading-[1.55] text-fg-4/80 max-h-[140px] overflow-y-auto"><LinkifyPaths text={call.input} workdir={workdir} /></pre>
           )}
           {call.result && (
-            <pre className="whitespace-pre-wrap break-words text-[10.5px] font-mono leading-[1.55] text-fg-5/70 max-h-[140px] overflow-y-auto border-t border-white/[0.04] pt-1">{call.result}</pre>
+            <pre className="whitespace-pre-wrap break-words text-[10.5px] font-mono leading-[1.55] text-fg-5/70 max-h-[140px] overflow-y-auto border-t border-white/[0.04] pt-1"><LinkifyPaths text={call.result} workdir={workdir} /></pre>
           )}
         </div>
       )}

@@ -71,21 +71,63 @@ function openFileLocator(locator: string, workdir?: string | null) {
 function fileKeyDown(e: KeyboardEvent<HTMLElement>, locator: string, workdir?: string | null) {
   if (e.key !== 'Enter' && e.key !== ' ') return;
   e.preventDefault();
+  e.stopPropagation();
   openFileLocator(locator, workdir);
 }
 
-function FileLink({ locator, workdir, children }: { locator: string; workdir?: string | null; children?: ReactNode }) {
+const FILE_LINK_CLASS = 'text-blue-400 underline underline-offset-2 decoration-blue-400/30 cursor-pointer hover:text-blue-300 transition-colors';
+
+// Subtle affordance for the muted tool-activity surfaces (dotted underline, blue on hover).
+export const SUBTLE_FILE_LINK_CLASS = 'underline decoration-dotted decoration-fg-5/40 underline-offset-2 cursor-pointer hover:text-blue-300 hover:decoration-blue-300/50 transition-colors';
+
+export function FileLink({ locator, workdir, className, children }: { locator: string; workdir?: string | null; className?: string; children?: ReactNode }) {
   return (
     <span
       role="link"
       tabIndex={0}
       title={locator}
-      className="text-blue-400 underline underline-offset-2 decoration-blue-400/30 cursor-pointer hover:text-blue-300 transition-colors"
-      onClick={() => openFileLocator(locator, workdir)}
+      className={className ?? FILE_LINK_CLASS}
+      onClick={e => { e.stopPropagation(); openFileLocator(locator, workdir); }}
       onKeyDown={e => fileKeyDown(e, locator, workdir)}
     >
       {children ?? locator}
     </span>
+  );
+}
+
+export type PathSegment = { type: 'text'; value: string } | { type: 'link'; locator: string; display: string };
+
+// Tokenize plain text and pick out clickable file paths. Used ONLY for structured
+// tool-activity I/O (summaries, tool input/result dumps) — never the model's prose,
+// which stays governed by the inline-code/markdown-link policy. Bare filenames and
+// truncated paths are deliberately not linkified.
+export function segmentPaths(text: string): PathSegment[] {
+  const segments: PathSegment[] = [];
+  if (!text) return segments;
+  for (const part of text.split(/(\s+)/)) {
+    if (!part) continue;
+    if (/^\s+$/.test(part)) { segments.push({ type: 'text', value: part }); continue; }
+    const { text: core, trailing } = trimFileToken(part);
+    const locator = stripWrapping(core);
+    if (locator && !locator.endsWith('…') && isFileLocator(locator)) {
+      segments.push({ type: 'link', locator, display: trailing ? part.slice(0, part.length - trailing.length) : part });
+      if (trailing) segments.push({ type: 'text', value: trailing });
+    } else {
+      segments.push({ type: 'text', value: part });
+    }
+  }
+  return segments;
+}
+
+export function LinkifyPaths({ text, workdir, className }: { text: string; workdir?: string | null; className?: string }) {
+  const segments = segmentPaths(text);
+  if (!segments.some(s => s.type === 'link')) return <>{text}</>;
+  return (
+    <>
+      {segments.map((seg, i) => seg.type === 'link'
+        ? <FileLink key={i} locator={seg.locator} workdir={workdir} className={className ?? SUBTLE_FILE_LINK_CLASS}>{seg.display}</FileLink>
+        : <span key={i}>{seg.value}</span>)}
+    </>
   );
 }
 

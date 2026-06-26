@@ -3,7 +3,7 @@ import { api } from '../../api';
 import { createT, type Locale } from '../../i18n';
 import { useStore } from '../../store';
 import type { Agent, AgentRuntimeStatus, AgentStatusResponse, ModelInfo } from '../../types';
-import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, foldUltraEffort, getAgentMeta } from '../../utils';
+import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, foldUltraEffort, getAgentMeta } from '../../utils';
 import { displayableUsageWindows, usagePercentText, usageTone, usageWindowTone, worstUsageWindow } from '../../usage';
 import { BrandIcon } from '../../components/BrandIcon';
 import { UsageTooltipContent } from '../../components/UsageTooltip';
@@ -478,12 +478,12 @@ function AgentInlineConfig({
   const nativeReadOnly = isNative && externalNative;
 
   const effortOptions = useMemo(() => {
-    const levels = EFFORT_OPTIONS[agentId] || EFFORT_OPTIONS['claude'];
+    const levels = agentStatus.effortOptions ?? [];
     return [
       { value: '', label: copy.effortDefault },
-      ...levels.map(v => ({ value: v, label: v })),
+      ...levels.map(l => ({ value: l.id, label: l.label })),
     ];
-  }, [agentId, copy.effortDefault]);
+  }, [agentStatus.effortOptions, copy.effortDefault]);
 
   const modelOptions = useMemo(() => {
     type RichOpt = { value: string; label: string; description?: string; meta?: string; group?: string };

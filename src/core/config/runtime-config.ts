@@ -161,3 +161,46 @@ export function decomposeEffortSelection(raw: string | null | undefined): { effo
   if (value === ULTRA_EFFORT) return { effort: 'max', workflow: true };
   return { effort: value, workflow: false };
 }
+
+export interface EffortLevel { id: string; label: string }
+
+// Single source of truth for reasoning-effort levels, ordered low→high. BOTH the dashboard
+// (which receives them via the agent/model API payload) and the IM bot consume this — do not
+// reintroduce a second copy. Resolve options through effortOptionsFor(), never index directly,
+// so per-model/provider rules stay in one place.
+const AGENT_EFFORT_LEVELS: Partial<Record<Agent, EffortLevel[]>> = {
+  claude: [
+    { id: 'low', label: 'Low' },
+    { id: 'medium', label: 'Medium' },
+    { id: 'high', label: 'High' },
+    { id: 'xhigh', label: 'Very High' },
+    { id: 'max', label: 'Max' },
+    { id: ULTRA_EFFORT, label: 'Ultra' },
+  ],
+  codex: [
+    { id: 'low', label: 'Low' },
+    { id: 'medium', label: 'Medium' },
+    { id: 'high', label: 'High' },
+    { id: 'xhigh', label: 'Very High' },
+  ],
+  // gemini intentionally has no UI-exposed effort levels: pikiloom sends it no reasoning-effort
+  // (see the gemini→null guards in InputComposer). Add a gemini entry here to surface low/high.
+  hermes: [
+    { id: 'minimal', label: 'Minimal' },
+    { id: 'low', label: 'Low' },
+    { id: 'medium', label: 'Medium' },
+    { id: 'high', label: 'High' },
+    { id: 'xhigh', label: 'Very High' },
+  ],
+};
+
+// Valid effort levels for a given (agent, model, providerKind). Returns [] when reasoning
+// effort does not apply (the UI then hides the selector entirely). model/providerKind are the
+// seam for per-model rules — add them here and nowhere else.
+export function effortOptionsFor(
+  agent: Agent,
+  _model?: string | null,
+  _providerKind?: string | null,
+): EffortLevel[] {
+  return AGENT_EFFORT_LEVELS[agent] ?? [];
+}

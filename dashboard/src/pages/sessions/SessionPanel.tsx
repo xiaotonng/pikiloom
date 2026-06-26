@@ -25,6 +25,7 @@ import {
   mergeOlderHistory,
   mergeLatestHistory,
   sameUserText,
+  streamPromptMatchesTurnText,
   type Turn,
   type TurnHistoryWindow,
 } from './utils';
@@ -710,11 +711,16 @@ export const SessionPanel = memo(function SessionPanel({
     const liveText = (liveStream.text || '').trim();
     const lastAssistantText = last.assistant.text?.trim() || '';
     const isStreamingTurn = streamPrompt != null
-      ? sameUserText(last.user?.text, streamPrompt)
+      ? streamPromptMatchesTurnText(last.user?.text, streamPrompt)
       : !!lastAssistantText && !!liveText
         && (liveText.startsWith(lastAssistantText) || lastAssistantText.startsWith(liveText));
     if (!isStreamingTurn) return result;
-    return [...result.slice(0, -1), { ...last, assistant: null }];
+    // If the history turn is only a truncated preview of the streaming prompt, show the
+    // authoritative full prompt instead of the truncated text.
+    const user = last.user && streamPrompt && !sameUserText(last.user.text, streamPrompt)
+      ? { ...last.user, text: streamPrompt }
+      : last.user;
+    return [...result.slice(0, -1), { ...last, user, assistant: null }];
   }, [rawTurns, liveStream, pendingPrompt, optimisticBridgesImages]);
 
   return (
@@ -782,7 +788,7 @@ export const SessionPanel = memo(function SessionPanel({
             {(pendingPrompt || pendingImageUrls.length > 0)
               && (optimisticBridgesImages
                   || !(pendingPrompt && rawTurns.length > 0
-                       && sameUserText(rawTurns[rawTurns.length - 1]?.user?.text, pendingPrompt))) && (
+                       && streamPromptMatchesTurnText(rawTurns[rawTurns.length - 1]?.user?.text, pendingPrompt))) && (
               <div className="session-turn">
                 <UserBubble text={pendingPrompt || ''} blocks={pendingImageUrls.map(u => ({ type: 'image' as const, content: u }))} t={t} />
                 {!liveStream && (
@@ -794,14 +800,14 @@ export const SessionPanel = memo(function SessionPanel({
             )}
             {liveStream && liveStreamShouldRender(liveStream) && !pendingPrompt && liveStream.question
               && !(rawTurns.length > 0
-                   && sameUserText(rawTurns[rawTurns.length - 1]?.user?.text, liveStream.question)) && (
+                   && streamPromptMatchesTurnText(rawTurns[rawTurns.length - 1]?.user?.text, liveStream.question)) && (
               <div className="session-turn">
                 <UserBubble text={liveStream.question} t={t} />
               </div>
             )}
             {liveStream && liveStreamShouldRender(liveStream) && (
               <div className="mb-6">
-                <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} liveStartedAt={liveStream.phase === 'streaming' ? liveStream.startedAt ?? null : null} />
+                <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} hideContextUsage />
                 <LivePreview stream={liveStream} t={t} workdir={workdir} />
               </div>
             )}

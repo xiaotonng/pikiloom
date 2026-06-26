@@ -362,33 +362,27 @@ class Runtime {
       return { channel, key, cached: null, livePromise: this.validateChannel(channel, config), fallback: fallback[idx] };
     });
 
-    const resolved = await Promise.all(plans.map(plan => {
-      if (plan.cached) return Promise.resolve(plan.cached);
-      return withTimeoutFallback(plan.livePromise!, CHANNEL_STATUS_VALIDATION_TIMEOUT_MS, plan.fallback);
-    }));
+    // Never block /api/state on live network validation — Feishu/Weixin round-trips can take
+    // seconds and this is the sole caller. Return fresh-cached states where available, local
+    // fallback otherwise, and validate uncached channels in the background to populate the
+    // cache. The dashboard re-polls while any channel is pending (hasPendingChannelValidation)
+    // and converges to the live result on the next poll.
+    const resolved = plans.map(plan => plan.cached ?? plan.fallback);
 
-    plans.forEach((plan, i) => {
-      if (!plan.livePromise) return;
-      const state = resolved[i];
-      if (shouldCacheChannelStates([state])) {
-        this.channelStateCache.set(plan.channel, {
-          key: plan.key,
-          expiresAt: now + CHANNEL_STATUS_CACHE_TTL_MS,
-          state,
-        });
-        return;
-      }
-      void plan.livePromise.then(bgState => {
-        if (!shouldCacheChannelStates([bgState])) return;
-        const current = this.channelStateCache.get(plan.channel);
-        if (current && current.key !== plan.key) return;
-        this.channelStateCache.set(plan.channel, {
-          key: plan.key,
-          expiresAt: Date.now() + CHANNEL_STATUS_CACHE_TTL_MS,
-          state: bgState,
-        });
-      }).catch(() => {});
-    });
+    for (const plan of plans) {
+      if (!plan.livePromise) continue;
+      void withTimeoutFallback(plan.livePromise, CHANNEL_STATUS_VALIDATION_TIMEOUT_MS, plan.fallback)
+        .then(bgState => {
+          if (!shouldCacheChannelStates([bgState])) return;
+          const current = this.channelStateCache.get(plan.channel);
+          if (current && current.key !== plan.key) return;
+          this.channelStateCache.set(plan.channel, {
+            key: plan.key,
+            expiresAt: Date.now() + CHANNEL_STATUS_CACHE_TTL_MS,
+            state: bgState,
+          });
+        }).catch(() => {});
+    }
 
     return resolved;
   }

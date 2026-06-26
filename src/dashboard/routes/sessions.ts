@@ -37,7 +37,7 @@ import {
   resolveUserStatus,
   type UserStatus, type SessionQueryResult,
 } from '../../bot/session-hub.js';
-import { DASHBOARD_PAGINATION, DELIVERED_ARTIFACT_TAIL_STALE_MS } from '../../core/constants.js';
+import { DASHBOARD_PAGINATION } from '../../core/constants.js';
 import { runtime } from '../runtime.js';
 import type { Bot } from '../../bot/bot.js';
 
@@ -484,10 +484,11 @@ app.post('/api/session-hub/session/messages', async (c) => {
       turnLimit: Number.isFinite(turnLimit) ? turnLimit : undefined,
       rich,
     });
-    const record = findPikiloomSession(workdir, agent, sessionId);
-    const lastActivity = record ? Date.parse(record.runUpdatedAt || record.updatedAt) : NaN;
-    const lastActivityMs = Number.isFinite(lastActivity) ? lastActivity : null;
-    return c.json(prepareSessionMessagesForDashboard(result, agent, sessionId, lastActivityMs));
+    // Scope the delivered-artifact tail to the session's last-run turn (its task id, from the
+    // live snapshot which persists after the turn). A later turn that delivered nothing then
+    // yields no tail blocks, so a prior turn's image can't re-append onto the newest reply.
+    const lastRunTaskId = runtime.getBotRef()?.getStreamSnapshot(`${agent}:${sessionId}`)?.taskId ?? null;
+    return c.json(prepareSessionMessagesForDashboard(result, agent, sessionId, lastRunTaskId));
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
   }
@@ -497,7 +498,7 @@ function prepareSessionMessagesForDashboard(
   result: SessionMessagesResult,
   agent: Agent,
   sessionId: string,
-  lastActivityMs: number | null,
+  lastRunTaskId: string | null,
 ): SessionMessagesResult {
   if (result.richMessages === undefined) return result;
 
@@ -508,13 +509,11 @@ function prepareSessionMessagesForDashboard(
 
   const includesTail = !result.window || !result.window.hasNewer;
   if (includesTail) {
-    // Surface the latest turn's delivered files. Artifacts live in a session-wide
-    // manifest, so the dump is scoped to the latest task (without it every file ever
-    // sent would re-append onto the latest reply) and suppressed once the session has
-    // kept running well past the last delivery — an out-of-band file is only "tail"
-    // content for the turn that sent it, not for later turns that delivered nothing.
+    // Out-of-band delivered files (im_send_file) aren't in the transcript, so the latest turn's
+    // deliveries are appended as a trailing message. tailDeliveredBlocks scopes strictly to the
+    // last-run task id — only THIS turn's files surface, never a prior turn's (no time heuristic).
     const delivered = rewriteAttachmentBlocksForTransport(
-      tailDeliveredBlocks(agent, sessionId, { lastActivityMs, staleAfterMs: DELIVERED_ARTIFACT_TAIL_STALE_MS }),
+      tailDeliveredBlocks(agent, sessionId, lastRunTaskId),
       { agent, sessionId },
     );
     if (delivered.length) {

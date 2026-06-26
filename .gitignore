@@ -12,6 +12,8 @@ dashboard-loaded.png
 dashboard-*.png
 # Browser-MCP / dev screenshots dropped at the project root.
 /*.png
+/*.jpg
+/*.jpeg
 .playwright-mcp/
 **/.playwright-mcp/
 # Antigravity CLI local project state (symlink farm into ~/.gemini); machine-local.

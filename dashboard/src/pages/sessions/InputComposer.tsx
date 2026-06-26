@@ -1,9 +1,9 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
-import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, EFFORT_OPTIONS, foldUltraEffort, getAgentMeta, isPendingSessionId, shortenModel } from '../../utils';
+import { AGENT_ACCEPTED_PROVIDER_KINDS, cn, foldUltraEffort, getAgentMeta, isPendingSessionId, shortenModel } from '../../utils';
 import { usageWindowTone, worstUsageWindow } from '../../usage';
 import { api } from '../../api';
-import { useStore } from '../../store';
+import { useStore, type ModelLayer } from '../../store';
 import { Spinner } from '../../components/ui';
 import { BrandIcon } from '../../components/BrandIcon';
 import { visibleQueuedIds } from './queue-logic';
@@ -15,12 +15,16 @@ import {
   parseSessionKey,
   type ComposerImageAttachment,
 } from './utils';
-import type { SessionInfo, AgentRuntimeStatus, SkillInfo } from '../../types';
+import type { SessionInfo, AgentRuntimeStatus, SkillInfo, EffortLevel } from '../../types';
 
-type CascadeStep = 'closed' | 'agent' | 'model' | 'effort';
+type CascadeStep = 'closed' | 'agent' | 'model';
 
 const draftStore = new Map<string, { text: string; files: File[] }>();
 function draftKey(agent: string, sessionId: string) { return `${agent}:${sessionId}`; }
+
+const EMPTY_PROVIDERS: ModelLayer['providers'] = [];
+const EMPTY_PROFILES: ModelLayer['profiles'] = [];
+const EMPTY_ACTIVE_PROFILES: ModelLayer['activeProfiles'] = {};
 
 function brandIdForProvider(p: { kind: string; baseURL: string }): string {
   const host = (() => { try { return new URL(p.baseURL).host.toLowerCase(); } catch { return ''; } })();
@@ -92,30 +96,16 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   const skillMenuRef = useRef<HTMLDivElement>(null);
   const refreshAgentStatus = useStore(s => s.refreshAgentStatus);
 
-  const [profiles, setProfiles] = useState<Array<{
-    id: string; name: string; providerId: string; modelId: string; effort?: string | null;
-  }>>([]);
-  const [providers, setProviders] = useState<Array<{ id: string; name: string; kind: string; baseURL: string }>>([]);
-  const [activeProfiles, setActiveProfiles] = useState<Record<string, string | null>>({});
+  // Model layer (providers/profiles/agent bindings) is global config shared by every panel;
+  // it lives in the store and is fetched once, not re-pulled per composer mount.
+  const modelLayer = useStore(s => s.modelLayer);
+  const ensureModelLayer = useStore(s => s.ensureModelLayer);
+  const refreshModelLayer = useStore(s => s.refreshModelLayer);
+  const providers = modelLayer?.providers ?? EMPTY_PROVIDERS;
+  const profiles = modelLayer?.profiles ?? EMPTY_PROFILES;
+  const activeProfiles = modelLayer?.activeProfiles ?? EMPTY_ACTIVE_PROFILES;
 
-  const refreshModelLayer = useCallback(async () => {
-    try {
-      const [pRes, profRes, bRes] = await Promise.all([
-        fetch('/api/models/providers').then(r => r.json()),
-        fetch('/api/models/profiles').then(r => r.json()),
-        fetch('/api/models/agents').then(r => r.json()),
-      ]);
-      if (pRes?.ok) setProviders(pRes.providers || []);
-      if (profRes?.ok) setProfiles(profRes.profiles || []);
-      if (bRes?.ok) {
-        const map: Record<string, string | null> = {};
-        for (const b of bRes.bindings || []) map[b.agent] = b.activeProfileId;
-        setActiveProfiles(map);
-      }
-    } catch {  }
-  }, []);
-
-  useEffect(() => { void refreshModelLayer(); }, [refreshModelLayer]);
+  useEffect(() => { void ensureModelLayer(); }, [ensureModelLayer]);
 
   useEffect(() => { if (storeAgents?.length) setAgents(storeAgents); }, [storeAgents]);
   useEffect(() => { attachmentsRef.current = imageAttachments; }, [imageAttachments]);
@@ -501,7 +491,9 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   useEffect(() => {
     onSelectionChange?.({ model: currentModel || null, effort: currentEffort || null });
   }, [currentModel, currentEffort, onSelectionChange]);
-  const effortLevels = EFFORT_OPTIONS[cascadeAgentId as keyof typeof EFFORT_OPTIONS] || [];
+  // Effort levels for the effective agent come from the backend catalog (SSOT), not a
+  // hardcoded frontend list. Empty ⇒ the effort dropdown hides (e.g. gemini).
+  const effortOptions: EffortLevel[] = currentAgent?.effortOptions ?? [];
   const previewAttachment = previewImageId ? imageAttachments.find(item => item.id === previewImageId) || null : null;
   const activePreview: LightboxSource | null = previewAttachment
     ? {
@@ -524,15 +516,21 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     setPendingProfileSelection(undefined);
   };
 
-  const applyCascade = useCallback((agent: string, model: string, effort: string | null) => {
-    const nextEffort = agent === 'gemini' ? '' : (effort || '');
+  const applyCascade = useCallback((agent: string, model: string) => {
     setSelectedAgent(agent);
     setSelectedModel(model);
     if (pendingProfileSelection !== undefined) setSelectedProfileId(pendingProfileSelection);
-    setSelectedEffort(nextEffort);
+    // Effort is chosen independently via the effort dropdown; only reset it on an agent switch
+    // so the new agent's own default applies instead of an incompatible carry-over.
+    if (agent !== effectiveAgent) setSelectedEffort('');
     resetCascade();
     setCascadeStep('closed');
-  }, [pendingProfileSelection]);
+  }, [pendingProfileSelection, effectiveAgent]);
+
+  const handleEffortSelect = useCallback((effortId: string) => {
+    setSelectedEffort(effortId);
+    setPendingEffort(null);
+  }, []);
 
   const toggleCascade = () => {
     if (cascadeStep === 'closed') {
@@ -569,7 +567,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     displayMeta.shortLabel,
     displayProvider ? displayProvider.name : null,
     displayModelLabel || null,
-    displayEffort ? displayEffort.charAt(0).toUpperCase() + displayEffort.slice(1) : null,
   ].filter(Boolean).join(' / ');
 
   return (
@@ -805,12 +802,6 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                       <span className="truncate" title={displayModel || undefined}>{displayModelLabel}</span>
                     </>
                   )}
-                  {displayEffort && (
-                    <>
-                      <span className="text-fg-5/40 shrink-0">/</span>
-                      <span className="shrink-0">{displayEffort.charAt(0).toUpperCase() + displayEffort.slice(1)}</span>
-                    </>
-                  )}
                 </span>
               ) : (
                 <span className="max-w-[420px] truncate">{t('hub.selectAgent')}</span>
@@ -830,14 +821,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                 <div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5 border-b border-edge/20">
                   {cascadeStep !== 'agent' && (
                     <button
-                      onClick={() => {
-                        if (cascadeStep === 'effort') {
-                          const supportsModelSwitch = cascadeAgent?.capabilities?.modelSwitch !== false;
-                          setCascadeStep(supportsModelSwitch ? 'model' : 'agent');
-                        } else {
-                          setCascadeStep('agent');
-                        }
-                      }}
+                      onClick={() => setCascadeStep('agent')}
                       className="p-0.5 rounded text-fg-5/50 hover:text-fg-3 transition-colors"
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -846,14 +830,14 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                     </button>
                   )}
                   <span className="text-[10px] font-semibold text-fg-5 uppercase tracking-wider">
-                    {cascadeStep === 'agent' ? t('hub.selectAgent') : cascadeStep === 'model' ? t('hub.selectModel') : t('hub.selectEffort')}
+                    {cascadeStep === 'agent' ? t('hub.selectAgent') : t('hub.selectModel')}
                   </span>
                   <div className="ml-auto flex items-center gap-0.5">
                     {(() => {
                       const supportsModelSwitch = cascadeAgent?.capabilities?.modelSwitch !== false;
                       const steps = supportsModelSwitch
-                        ? (['agent', 'model', 'effort'] as const)
-                        : (['agent', 'effort'] as const);
+                        ? (['agent', 'model'] as const)
+                        : (['agent'] as const);
                       const activeIdx = steps.indexOf(cascadeStep as any);
                       return steps.map((step, idx) => (
                         <span key={step} className={cn(
@@ -877,9 +861,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                         setPendingEffort(a.selectedEffort || '');
                         const supportsModelSwitch = a.capabilities?.modelSwitch !== false;
                         if (!supportsModelSwitch) {
-                          const efforts = EFFORT_OPTIONS[a.agent as keyof typeof EFFORT_OPTIONS] || [];
-                          if (efforts.length) setCascadeStep('effort');
-                          else { void applyCascade(a.agent, a.selectedModel || '', null); }
+                          void applyCascade(a.agent, a.selectedModel || '');
                           return;
                         }
                         setCascadeStep('model');
@@ -922,11 +904,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                               const finalAgent = pendingAgent || effectiveAgent;
                               setPendingModel(m.id);
                               setPendingProfileSelection(m.profileId ?? null);
-                              if (EFFORT_OPTIONS[finalAgent as keyof typeof EFFORT_OPTIONS]?.length) {
-                                setCascadeStep('effort');
-                                return;
-                              }
-                              void applyCascade(finalAgent, m.id, null);
+                              void applyCascade(finalAgent, m.id);
                             }}>
                               <div className="min-w-0 flex-1">
                                 <div className={cn('truncate text-[11.5px]', m.kind === 'native' && 'font-mono text-[11px]')} title={m.id}>
@@ -943,20 +921,12 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                       {models.length === 0 && <div className="px-3 py-3 text-[11px] text-fg-5 text-center">{t('config.noModel')}</div>}
                     </>
                   )}
-                  {cascadeStep === 'effort' && effortLevels.map(e => (
-                    <CascadeItem key={e} selected={e === (pendingEffort || currentEffort)} onClick={() => {
-                      setPendingEffort(e);
-                      const finalAgent = pendingAgent || effectiveAgent;
-                      const finalModel = pendingModel ?? currentModel;
-                      void applyCascade(finalAgent, finalModel, e);
-                    }}>
-                      {e.charAt(0).toUpperCase() + e.slice(1)}
-                    </CascadeItem>
-                  ))}
                 </div>
               </div>,
               document.body,
             )}
+
+            <EffortChip current={displayEffort} options={effortOptions} onSelect={handleEffortSelect} label={t('hub.selectEffort')} />
 
             <div className="flex-1" />
 
@@ -1093,5 +1063,59 @@ export function CascadeItem({ selected, onClick, children }: {
         </svg>
       )}
     </button>
+  );
+}
+
+// Independent reasoning-effort dropdown. Options come from the backend SSOT (effortOptionsFor)
+// via the agent payload; renders nothing when the agent/model exposes no effort levels.
+function EffortChip({ current, options, onSelect, label }: {
+  current: string;
+  options: EffortLevel[];
+  onSelect: (id: string) => void;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  if (!options.length) return null;
+  const currentLabel = options.find(o => o.id === current)?.label
+    || (current ? current.charAt(0).toUpperCase() + current.slice(1) : '—');
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        title={label}
+        className={cn(
+          'flex items-center gap-1.5 h-[28px] px-2.5 rounded-lg text-[11px] font-medium transition-all duration-200 select-none',
+          open
+            ? 'bg-panel-h border border-edge-h text-fg-3'
+            : 'text-fg-5/60 hover:text-fg-4 hover:bg-panel-h/50 border border-transparent',
+        )}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" />
+        </svg>
+        <span className="shrink-0">{currentLabel}</span>
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+          className={cn('text-fg-5/30 transition-transform duration-200', open && 'rotate-180')}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1.5 z-[200] min-w-[150px] rounded-xl border border-edge/40 bg-[var(--th-dropdown)] backdrop-blur-xl shadow-lg overflow-hidden animate-in py-1">
+          {options.map(o => (
+            <CascadeItem key={o.id} selected={o.id === current} onClick={() => { onSelect(o.id); setOpen(false); }}>
+              {o.label}
+            </CascadeItem>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

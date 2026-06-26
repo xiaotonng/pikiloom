@@ -120,38 +120,38 @@ describe('delivered-artifact manifest', () => {
     expect(deliveredArtifactBlocks('claude', 'sess-bleed')).toHaveLength(3);
   });
 
-  it('tailDeliveredBlocks scopes to the latest task and ignores activity it has no info about', () => {
+  it('tailDeliveredBlocks surfaces only the last-run turn\'s deliveries', () => {
     const q1 = path.join(workdir, 'qr1.png');
     const shot = path.join(workdir, 'final.png');
     for (const f of [q1, shot]) fs.writeFileSync(f, PNG_BYTES);
     deliverArtifact('claude', 'sess-tail', q1, { kind: 'photo', taskId: 't-1' });
     deliverArtifact('claude', 'sess-tail', shot, { kind: 'photo', taskId: 't-2' });
 
-    const blocks = tailDeliveredBlocks('claude', 'sess-tail', { lastActivityMs: null, staleAfterMs: 60_000 });
+    // last-run task is t-2 -> only its file, never t-1's.
+    const blocks = tailDeliveredBlocks('claude', 'sess-tail', 't-2');
     expect(blocks).toHaveLength(1);
     expect(blocks[0].imagePath).toContain('final.png');
   });
 
-  it('tailDeliveredBlocks suppresses a delivery the session kept running well past', () => {
-    const t0 = Date.now();
+  it('tailDeliveredBlocks suppresses a prior turn\'s image once a newer turn runs (the bleed)', () => {
     const shot = path.join(workdir, 'arch.png');
     fs.writeFileSync(shot, PNG_BYTES);
-    deliverArtifact('claude', 'sess-stale', shot, { kind: 'photo', taskId: 't-1' });
+    // turn t-1 delivered an image; later turns t-2/t-3 ran but delivered nothing.
+    deliverArtifact('claude', 'sess-bleed2', shot, { kind: 'photo', taskId: 't-1' });
 
-    // last turn ended 3h after the delivery (later turns delivered nothing) -> stale.
-    const stale = tailDeliveredBlocks('claude', 'sess-stale', {
-      lastActivityMs: t0 + 3 * 60 * 60_000,
-      staleAfterMs: 60 * 60_000,
-    });
-    expect(stale).toEqual([]);
+    // viewing while the last-run task is t-2 (which delivered nothing) -> no bleed.
+    expect(tailDeliveredBlocks('claude', 'sess-bleed2', 't-2')).toEqual([]);
+    // and t-1 itself still shows its own file when it is the last-run task.
+    expect(tailDeliveredBlocks('claude', 'sess-bleed2', 't-1')).toHaveLength(1);
+  });
 
-    // delivery is part of the latest turn (ended seconds later) -> still surfaced.
-    const fresh = tailDeliveredBlocks('claude', 'sess-stale', {
-      lastActivityMs: t0 + 5_000,
-      staleAfterMs: 60 * 60_000,
-    });
-    expect(fresh).toHaveLength(1);
-    expect(fresh[0].imagePath).toContain('arch.png');
+  it('tailDeliveredBlocks shows nothing when the last-run task is unknown (cold start)', () => {
+    const shot = path.join(workdir, 'cold.png');
+    fs.writeFileSync(shot, PNG_BYTES);
+    deliverArtifact('claude', 'sess-cold', shot, { kind: 'photo', taskId: 't-1' });
+    // no snapshot / unknown task id -> never guess by time, so no stale bleed.
+    expect(tailDeliveredBlocks('claude', 'sess-cold', null)).toEqual([]);
+    expect(tailDeliveredBlocks('claude', 'sess-cold', undefined)).toEqual([]);
   });
 
   it('returns no latest task id for legacy deliveries that predate taskId tagging', () => {

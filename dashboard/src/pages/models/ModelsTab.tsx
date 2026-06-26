@@ -679,6 +679,12 @@ export function useModelLayer(): ModelLayerSnapshot {
     const map: Record<string, string | null> = {};
     for (const b of agents.bindings || []) map[b.agent] = b.activeProfileId;
     setBindings(map);
+    // Push into the shared store so open session composers reflect edits without re-fetching.
+    useStore.getState().setModelLayer({
+      providers: (p.providers || []).map(x => ({ id: x.id, name: x.name, kind: x.kind, baseURL: x.baseURL })),
+      profiles: (prof.profiles || []).map(x => ({ id: x.id, name: x.name, providerId: x.providerId, modelId: x.modelId, effort: x.effort ?? null })),
+      activeProfiles: map,
+    });
   }, []);
 
   const setActiveProfile = useCallback(async (agent: string, profileId: string | null) => {

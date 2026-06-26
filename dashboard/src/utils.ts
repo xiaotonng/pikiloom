@@ -116,13 +116,6 @@ export function getAgentMeta(agent: string): AgentMeta {
   return agentMeta[agent] || { ...defaultMeta, label: agent, shortLabel: agent };
 }
 
-export const EFFORT_OPTIONS: Record<Agent, string[]> = {
-  claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  codex: ['low', 'medium', 'high', 'xhigh'],
-  gemini: ['low', 'high'],
-  hermes: ['low', 'medium', 'high', 'xhigh'],
-};
-
 export function foldUltraEffort(
   agentId: string,
   effort: string | null | undefined,

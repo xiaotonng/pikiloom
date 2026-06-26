@@ -7,6 +7,7 @@ import {
   listAllMcpExtensions, listSkills as listAllSkills,
 } from '../agent/index.js';
 import { getDriver } from '../agent/driver.js';
+import { effortOptionsFor } from '../core/config/runtime-config.js';
 import { getActiveProfile, getProvider } from '../model/index.js';
 import { buildWelcomeIntro, buildSkillCommandName, indexSkillsByCommand, SKILL_CMD_PREFIX } from './menu.js';
 import { buildBotMenuState } from './orchestration.js';
@@ -531,35 +532,11 @@ export function modelMatchesSelection(agent: Agent, selection: string, currentMo
   return !!a && a === b;
 }
 
-const EFFORT_LEVELS: Record<string, { id: string; label: string }[]> = {
-  claude: [
-    { id: 'low', label: 'Low' },
-    { id: 'medium', label: 'Medium' },
-    { id: 'high', label: 'High' },
-    { id: 'xhigh', label: 'Very High' },
-    { id: 'max', label: 'Max' },
-    { id: 'ultra', label: 'Ultra' },
-  ],
-  codex: [
-    { id: 'low', label: 'Low' },
-    { id: 'medium', label: 'Medium' },
-    { id: 'high', label: 'High' },
-    { id: 'xhigh', label: 'Very High' },
-  ],
-  hermes: [
-    { id: 'minimal', label: 'Minimal' },
-    { id: 'low', label: 'Low' },
-    { id: 'medium', label: 'Medium' },
-    { id: 'high', label: 'High' },
-    { id: 'xhigh', label: 'Very High' },
-  ],
-};
-
-function buildEffortData(bot: Bot, agent: Agent): ModelsListData['effort'] {
+function buildEffortData(bot: Bot, agent: Agent, model: string): ModelsListData['effort'] {
   const currentEffort = bot.effortSelectionForAgent(agent);
   if (!currentEffort) return null;
-  const levels = EFFORT_LEVELS[agent];
-  if (!levels) return null;
+  const levels = effortOptionsFor(agent, model);
+  if (!levels.length) return null;
   return {
     current: currentEffort,
     levels: levels.map(l => ({ ...l, isCurrent: l.id === currentEffort })),
@@ -591,7 +568,7 @@ export async function getModelsListData(bot: Bot, chatId: ChatId): Promise<Model
         providerName: m.providerName ?? null,
       };
     }),
-    effort: buildEffortData(bot, cs.agent),
+    effort: buildEffortData(bot, cs.agent, currentModel),
   };
 }
 

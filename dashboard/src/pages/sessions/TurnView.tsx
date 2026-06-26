@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import { cn, getAgentMeta } from '../../utils';
 import { BrandIcon } from '../../components/BrandIcon';
 import { createMarkdownComponents, mdPlugins } from './markdown';
-import { isContinuationSummary } from './utils';
+import { isContinuationSummary, formatTokens, formatTokensShort, contextDotClass } from './utils';
 import { AssistantMsg, hasRenderableAssistant } from './AssistantContent';
 import type { MessageBlock, StreamPreviewMeta } from '../../types';
 import type { Turn } from './utils';
@@ -191,20 +191,21 @@ export function BubbleAction({ label, onClick, children }: { label: string; onCl
   );
 }
 
-export function TurnDivider({ agent, meta, model, effort, providerName: providerNameProp, previewMeta, liveStartedAt }: {
+export function TurnDivider({ agent, meta, model, effort, providerName: providerNameProp, previewMeta, hideContextUsage }: {
   agent: string;
   meta: ReturnType<typeof getAgentMeta>;
   model?: string | null;
   effort?: string | null;
   providerName?: string | null;
   previewMeta?: StreamPreviewMeta | null;
-  liveStartedAt?: number | null;
+  // While a turn streams, usage + elapsed are shown together in LivePreview's live-status
+  // line; suppress them here so the header stays a clean identity line during streaming.
+  hideContextUsage?: boolean;
 }) {
-  const ctxPct = previewMeta?.contextPercent ?? null;
-  const ctxTokens = previewMeta?.contextUsedTokens ?? 0;
-  const turnOutTokens = previewMeta?.turnOutputTokens ?? 0;
+  const ctxPct = hideContextUsage ? null : (previewMeta?.contextPercent ?? null);
+  const ctxTokens = hideContextUsage ? 0 : (previewMeta?.contextUsedTokens ?? 0);
+  const turnOutTokens = hideContextUsage ? 0 : (previewMeta?.turnOutputTokens ?? 0);
   const showCtx = ctxPct != null || ctxTokens > 0 || turnOutTokens > 0;
-  const showLiveElapsed = liveStartedAt != null && liveStartedAt > 0;
   const providerName = previewMeta?.providerName ?? providerNameProp ?? null;
   return (
     <div className="flex items-center gap-1.5 mt-1 mb-3">
@@ -223,7 +224,7 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
           via {providerName}
         </span>
       )}
-      {(showCtx || showLiveElapsed) && (
+      {showCtx && (
         <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-mono text-fg-5/55" title={formatContextTitle(previewMeta)}>
           {ctxPct != null && <ContextDot pct={ctxPct} />}
           <span>{ctxPct != null ? `${ctxPct.toFixed(1)}%` : ''}</span>
@@ -231,45 +232,10 @@ export function TurnDivider({ agent, meta, model, effort, providerName: provider
           {turnOutTokens > 0 && (
             <span className="text-fg-5/40">· ↑{formatTokensShort(turnOutTokens)}</span>
           )}
-          {showLiveElapsed && <LiveElapsedChip startedAt={liveStartedAt!} leadingDot={showCtx} />}
         </span>
       )}
     </div>
   );
-}
-
-function LiveElapsedChip({ startedAt, leadingDot }: { startedAt: number; leadingDot: boolean }) {
-  const [, forceTick] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => forceTick(n => n + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const elapsed = Math.max(0, Date.now() - startedAt);
-  return (
-    <span className="text-fg-5/55 tabular-nums" title="Elapsed time of the running turn">
-      {leadingDot ? '· ' : ''}{formatElapsedCompact(elapsed)}
-    </span>
-  );
-}
-
-export function formatElapsedCompact(ms: number): string {
-  const totalS = Math.floor(ms / 1000);
-  if (totalS < 60) return `${totalS}s`;
-  const m = Math.floor(totalS / 60);
-  const s = totalS % 60;
-  if (m < 60) return `${m}m${s.toString().padStart(2, '0')}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h${(m % 60).toString().padStart(2, '0')}m`;
-}
-
-export function formatTokens(n: number): string {
-  return `${formatTokensShort(n)} tok`;
-}
-
-export function formatTokensShort(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return `${n}`;
 }
 
 function formatContextTitle(meta: StreamPreviewMeta | null | undefined): string {
@@ -284,6 +250,5 @@ function formatContextTitle(meta: StreamPreviewMeta | null | undefined): string 
 }
 
 function ContextDot({ pct }: { pct: number }) {
-  const color = pct >= 85 ? 'bg-rose-400/70' : pct >= 60 ? 'bg-amber-400/70' : 'bg-emerald-400/70';
-  return <span className={`h-1.5 w-1.5 rounded-full ${color}`} />;
+  return <span className={`h-1.5 w-1.5 rounded-full ${contextDotClass(pct)}`} />;
 }

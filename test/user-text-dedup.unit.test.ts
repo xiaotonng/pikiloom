@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeUserText, sameUserText } from '../dashboard/src/pages/sessions/utils';
+import { normalizeUserText, sameUserText, streamPromptMatchesTurnText } from '../dashboard/src/pages/sessions/utils';
+
+// shortValue(text, 500): first (500-3) chars, trimEnd, + '...'
+function shortValue(text: string, max = 500): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
+}
 
 describe('sameUserText (image-dedup whitespace robustness)', () => {
   it('matches a multi-line prompt against its whitespace-collapsed transcript form', () => {
@@ -23,3 +29,57 @@ describe('sameUserText (image-dedup whitespace robustness)', () => {
     expect(sameUserText('', null)).toBe(true);
   });
 });
+
+describe('streamPromptMatchesTurnText (truncated managed-fallback dedup)', () => {
+  // The bug: a new long-prompt session shows the user message twice during streaming —
+  // a truncated managed-fallback history turn (shortValue→500) plus the full live-question
+  // bubble — because plain sameUserText(truncated, full) is false. This helper must match.
+  const longEn =
+    'Without using any tools and without reading any files, write a slow reflective essay. '
+    + 'Count from 1 to 25 and for each number output the number on its own line followed by a '
+    + 'short original one-sentence reflection about software architecture, layering, or '
+    + 'orthogonality. Take your time and produce each line deliberately so the output streams '
+    + 'gradually. After reaching 25 write a two-sentence conclusion about why clean layering '
+    + 'matters. Do not call any tool. This prompt is intentionally long so it resembles a '
+    + 'realistic multi-paragraph instruction sent together with an attached screenshot image.';
+  const longZh =
+    '我希望完整的初始化整个项目。你看这里的定义，Model 层的服务是其他人提供的，你这里只要有一个底层能够跨领域调用模型的方式即可。'.repeat(20);
+
+  it('matches the 500-char truncated preview against the full English prompt', () => {
+    const truncated = shortValue(longEn, 500);
+    expect(truncated.length).toBeLessThanOrEqual(500);
+    expect(sameUserText(truncated, longEn)).toBe(false); // plain dedup fails (the bug)
+    expect(streamPromptMatchesTurnText(truncated, longEn)).toBe(true);
+  });
+
+  it('matches the truncated preview against a CJK prompt (no word boundaries)', () => {
+    const truncated = shortValue(longZh, 500);
+    expect(sameUserText(truncated, longZh)).toBe(false);
+    expect(streamPromptMatchesTurnText(truncated, longZh)).toBe(true);
+  });
+
+  it('still matches when the transcript collapses whitespace differently at the cut', () => {
+    const truncated = shortValue(longEn, 500).replace(/\s+/g, '  '); // doubled spaces
+    expect(streamPromptMatchesTurnText(truncated, longEn)).toBe(true);
+  });
+
+  it('does NOT match an unrelated earlier turn that merely ends with an ellipsis', () => {
+    expect(streamPromptMatchesTurnText('Summarize the meeting notes...', longEn)).toBe(false);
+  });
+
+  it('does NOT prefix-match a turn without a truncation ellipsis', () => {
+    // A full (non-truncated) earlier turn that happens to be a prefix must not match.
+    const prefixNoEllipsis = longEn.slice(0, 120);
+    expect(streamPromptMatchesTurnText(prefixNoEllipsis, longEn)).toBe(false);
+  });
+
+  it('does NOT match a short truncated-looking turn (too little shared prefix)', () => {
+    expect(streamPromptMatchesTurnText('ok...', longEn)).toBe(false);
+  });
+
+  it('keeps exact equality working for short prompts (no truncation)', () => {
+    expect(streamPromptMatchesTurnText('What is in this image?', 'What is in this image?')).toBe(true);
+    expect(streamPromptMatchesTurnText('换一个问题', '那这个报告说的是什么')).toBe(false);
+  });
+});
+

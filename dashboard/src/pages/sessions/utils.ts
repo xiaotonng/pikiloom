@@ -21,6 +21,29 @@ export function sameUserText(a: string | null | undefined, b: string | null | un
   return normalizeUserText(a) === normalizeUserText(b);
 }
 
+// While a turn streams (before its native transcript is parseable) the history turn can
+// carry a managed-fallback preview of the prompt truncated by shortValue ("<prefix>...").
+// That truncated text never equals the full live prompt, so a plain sameUserText dedup
+// fails and the same turn renders twice (truncated history bubble + full live-question
+// bubble). Treat a truncated prefix as the same turn. Gated on a trailing ellipsis + a
+// substantial prefix so unrelated earlier turns never false-match.
+export function streamPromptMatchesTurnText(
+  turnText: string | null | undefined,
+  streamPrompt: string | null | undefined,
+): boolean {
+  if (sameUserText(turnText, streamPrompt)) return true;
+  const turn = normalizeUserText(turnText);
+  const prompt = normalizeUserText(streamPrompt);
+  if (!turn || !prompt || turn.length >= prompt.length) return false;
+  if (!/(?:\.\.\.|…)$/.test(turn)) return false;
+  const core = turn.replace(/(?:\s*(?:\.\.\.|…))+$/, '').trim();
+  // Compare a slightly shortened prefix so a cut landing mid-token (and whitespace
+  // re-normalization at the boundary) doesn't defeat the match.
+  const probeLen = core.length - 4;
+  if (probeLen < 32) return false;
+  return prompt.startsWith(core.slice(0, probeLen));
+}
+
 export function normalizeTurnHistory(result: SessionMessagesResult): TurnHistoryWindow {
   const richMessages = result.richMessages?.length
     ? result.richMessages
@@ -108,6 +131,30 @@ export function isContinuationSummary(text: string): boolean {
   const leading = trimmed.match(/^<([a-z][a-z0-9_-]*)\b/i);
   if (leading && SYSTEM_INJECTED_USER_TAGS.has(leading[1].toLowerCase())) return true;
   return CONTINUATION_MARKERS.some(m => text.includes(m));
+}
+
+export function formatTokensShort(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
+}
+
+export function formatTokens(n: number): string {
+  return `${formatTokensShort(n)} tok`;
+}
+
+export function contextDotClass(pct: number): string {
+  return pct >= 85 ? 'bg-rose-400/70' : pct >= 60 ? 'bg-amber-400/70' : 'bg-emerald-400/70';
+}
+
+export function formatElapsedCompact(ms: number): string {
+  const totalS = Math.floor(ms / 1000);
+  if (totalS < 60) return `${totalS}s`;
+  const m = Math.floor(totalS / 60);
+  const s = totalS % 60;
+  if (m < 60) return `${m}m${s.toString().padStart(2, '0')}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${(m % 60).toString().padStart(2, '0')}m`;
 }
 
 export function lastNLines(text: string, n: number): string {

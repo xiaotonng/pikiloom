@@ -49,10 +49,17 @@ export interface AgentInstallInfo {
   note?: string;
 }
 
+// Wire shape of one reasoning-effort level; the authoritative catalog lives in the backend
+// (core/config/runtime-config.ts effortOptionsFor). The dashboard only consumes these.
+export interface EffortLevel { id: string; label: string }
+
 export interface AgentRuntimeStatus extends AgentInfo {
   install?: AgentInstallInfo | null;
   selectedModel: string | null;
   selectedEffort: string | null;
+  // Authoritative effort levels for this agent's current (agent, model), from the backend
+  // catalog. Empty/absent ⇒ no effort selector. Do not hardcode a list in the frontend.
+  effortOptions?: EffortLevel[];
   nativeSelectedModel?: string | null;
   nativeSelectedEffort?: string | null;
   workflowEnabled?: boolean;

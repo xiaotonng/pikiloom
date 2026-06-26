@@ -8,7 +8,7 @@ import { setAgentBoundModelId, type AgentDetectOptions, type UsageResult } from 
 import { getAgentUpdateState, checkAgentLatestVersion, manualAgentUpdate } from '../../agent/auto-update.js';
 import type { Agent } from '../../agent/index.js';
 import { getDriver, getDriverCapabilities } from '../../agent/driver.js';
-import { decomposeEffortSelection } from '../../core/config/runtime-config.js';
+import { decomposeEffortSelection, effortOptionsFor } from '../../core/config/runtime-config.js';
 import {
   getActiveProfile, getProvider,
   peekProviderModelList, prefetchProviderModels,
@@ -215,6 +215,7 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
       ...agentState,
       selectedModel,
       selectedEffort,
+      effortOptions: effortOptionsFor(agentId, selectedModel, byokProvider?.kind ?? null),
       nativeSelectedModel,
       nativeSelectedEffort,
       workflowEnabled: runtime.getRuntimeWorkflowEnabled(agentId, config),

@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
 import { createMarkdownComponents, mdPlugins, LinkifyPaths } from './markdown';
-import { lastNLines, classifyRunEnd } from './utils';
+import { lastNLines, classifyRunEnd, formatTokens, formatTokensShort, contextDotClass, formatElapsedCompact } from './utils';
 import { cn, shortenModel } from '../../utils';
 import { FileChip } from './FileChip';
 import type { StreamPlan, StreamSubAgent, StreamPreviewMeta, StreamToolCall, SnapshotArtifact } from '../../types';
@@ -19,6 +19,7 @@ export interface LiveStreamView {
   generatingImages?: number;
   previewMeta?: StreamPreviewMeta | null;
   artifacts?: SnapshotArtifact[] | null;
+  startedAt?: number | null;
 }
 
 export function liveStreamHasBody(stream: LiveStreamView): boolean {
@@ -68,7 +69,6 @@ export function RunEndNotice({ detail, t, className }: {
 }
 
 const STREAM_MARKDOWN_THROTTLE_MS = 64;
-const HEARTBEAT_STALL_SEC = 6;
 
 function useThrottledValue<T>(value: T, intervalMs: number): T {
   const [throttled, setThrottled] = useState(value);
@@ -113,31 +113,18 @@ export function LivePreview({
     || toolCalls[toolCalls.length - 1]?.summary
     || '';
 
-  const contentSig = useMemo(() => [
-    stream.text.length,
-    stream.thinking.length,
-    toolCalls.length,
-    toolCalls[toolCalls.length - 1]?.status ?? '',
-    (stream.activity ?? '').length,
-    stream.generatingImages ?? 0,
-  ].join('|'), [stream.text, stream.thinking, toolCalls, stream.activity, stream.generatingImages]);
-  const lastContentChangeRef = useRef(Date.now());
-  const [stalledSec, setStalledSec] = useState(0);
-  useEffect(() => {
-    lastContentChangeRef.current = Date.now();
-    setStalledSec(0);
-  }, [contentSig]);
-  useEffect(() => {
-    if (stream.phase !== 'streaming') { setStalledSec(0); return; }
-    const id = window.setInterval(() => {
-      setStalledSec(Math.floor((Date.now() - lastContentChangeRef.current) / 1000));
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [stream.phase]);
-  const runningTool = toolCalls.find(c => c.status === 'running') ?? null;
-  const showHeartbeat = stream.phase === 'streaming'
-    && stalledSec >= HEARTBEAT_STALL_SEC
-    && (stream.generatingImages ?? 0) === 0;
+  // Single live-status line: loading pulse + a glanceable count of this turn's tool executions +
+  // token usage + elapsed — dot-separated, nothing else. The per-tool detail lives in the
+  // Activity card above (so no noisy hover blob of raw commands). The header (TurnDivider)
+  // suppresses usage/elapsed for the live turn, so this is the one place they appear; the dots
+  // are the sole loading effect (no inline after-text dots).
+  const toolCount = toolCalls.length;
+  const liveCtxPct = stream.previewMeta?.contextPercent ?? null;
+  const liveCtxTokens = stream.previewMeta?.contextUsedTokens ?? 0;
+  const liveTurnOutTokens = stream.previewMeta?.turnOutputTokens ?? 0;
+  const streaming = stream.phase === 'streaming';
+  const showElapsed = streaming && stream.startedAt != null && stream.startedAt > 0;
+  const showLiveStatus = streaming;
 
   useLayoutEffect(() => {
     const el = activityScrollRef.current;
@@ -213,7 +200,6 @@ export function LivePreview({
       {stream.text && (
         <div className="session-md text-[13.5px] leading-[1.75] text-fg-2">
           {responseMarkdown}
-          {stream.phase === 'streaming' && <ThinkingDots className="ml-1 inline-flex align-text-bottom text-fg-4" />}
         </div>
       )}
 
@@ -235,12 +221,6 @@ export function LivePreview({
         </div>
       )}
 
-      {!stream.text && stream.phase === 'streaming' && !showHeartbeat && (
-        <div className="py-1">
-          <ThinkingDots className="text-fg-5" />
-        </div>
-      )}
-
       {stream.phase === 'streaming' && (stream.generatingImages ?? 0) > 0 && (
         <div className="flex items-center gap-2 text-[12px] text-fg-4">
           <span className="relative inline-flex items-center justify-center w-3 h-3">
@@ -255,15 +235,16 @@ export function LivePreview({
         </div>
       )}
 
-      {showHeartbeat && (
-        <div className="flex items-center gap-2 text-[12px] text-fg-5/55">
-          <ThinkingDots className="text-fg-5/50 shrink-0" />
-          <span className="min-w-0 truncate">
-            {runningTool
-              ? `${t('hub.stillRunning') || 'still running'}: ${runningTool.summary}`
-              : (t('hub.stillWorking') || 'still working…')}
-          </span>
-          <span className="shrink-0 tabular-nums text-fg-5/45">{stalledSec}s</span>
+      {showLiveStatus && (
+        <div className="flex items-center gap-2 text-[11px] font-mono text-fg-5/50 tabular-nums">
+          <ThinkingDots className="text-fg-5/45 shrink-0" />
+          <LiveStatusMetrics
+            toolCount={toolCount}
+            ctxPct={liveCtxPct}
+            ctxTokens={liveCtxTokens}
+            turnOutTokens={liveTurnOutTokens}
+            startedAt={showElapsed ? stream.startedAt! : null}
+          />
         </div>
       )}
 
@@ -312,6 +293,63 @@ export function ThinkingDots({ className }: { className?: string }) {
   return (
     <span className={`thinking-dots inline-flex items-center gap-[3px] ${className || ''}`}>
       <span /><span /><span />
+    </span>
+  );
+}
+
+// One live-status row: tool-execution count + context% + cumulative tokens + this turn's output
+// + elapsed, rendered as dot-separated segments (each omitted when it has no value).
+function LiveStatusMetrics({ toolCount, ctxPct, ctxTokens, turnOutTokens, startedAt }: {
+  toolCount: number;
+  ctxPct: number | null;
+  ctxTokens: number;
+  turnOutTokens: number;
+  startedAt: number | null;
+}) {
+  const segs: ReactNode[] = [];
+  if (toolCount > 0) {
+    segs.push(
+      <span key="ops" className="flex items-center gap-1 text-fg-5/55" title={`${toolCount} tool ${toolCount === 1 ? 'call' : 'calls'} this turn`}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </svg>
+        {toolCount}
+      </span>,
+    );
+  }
+  if (ctxPct != null) {
+    segs.push(
+      <span key="ctx" className="flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 rounded-full ${contextDotClass(ctxPct)}`} />{ctxPct.toFixed(1)}%
+      </span>,
+    );
+  }
+  if (ctxTokens > 0) segs.push(<span key="tok" className="text-fg-5/40">{formatTokens(ctxTokens)}</span>);
+  if (turnOutTokens > 0) segs.push(<span key="out" className="text-fg-5/40">↑{formatTokensShort(turnOutTokens)}</span>);
+  if (startedAt != null) segs.push(<LiveElapsed key="elapsed" startedAt={startedAt} />);
+  if (!segs.length) return null;
+  return (
+    <span className="shrink-0 flex items-center gap-1.5">
+      {segs.map((seg, i) => (
+        <span key={i} className="flex items-center gap-1.5">
+          {i > 0 && <span className="text-fg-5/25">·</span>}
+          {seg}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function LiveElapsed({ startedAt }: { startedAt: number }) {
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => forceTick(n => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const elapsed = Math.max(0, Date.now() - startedAt);
+  return (
+    <span className="text-fg-5/55 tabular-nums" title="Elapsed time of the running turn">
+      {formatElapsedCompact(elapsed)}
     </span>
   );
 }

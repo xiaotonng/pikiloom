@@ -12,6 +12,16 @@ export interface Toast {
 
 export type Theme = 'dark' | 'light';
 
+export interface ModelLayer {
+  providers: Array<{ id: string; name: string; kind: string; baseURL: string }>;
+  profiles: Array<{ id: string; name: string; providerId: string; modelId: string; effort?: string | null }>;
+  activeProfiles: Record<string, string | null>;
+}
+
+// Global model config (providers/profiles/agent bindings) is identical across every session
+// panel, so it lives here once instead of being re-fetched by each InputComposer on mount.
+let _modelLayerInFlight: Promise<ModelLayer | null> | null = null;
+
 const CACHE_KEY = 'pikiloom-store-cache';
 
 interface CachedSlices {
@@ -57,6 +67,7 @@ interface StoreState {
   state: AppState | null;
   host: HostInfo | null;
   agentStatus: AgentStatusResponse | null;
+  modelLayer: ModelLayer | null;
   toasts: Toast[];
   allSessions: Record<string, { sessions: SessionInfo[] }>;
   theme: Theme;
@@ -68,6 +79,9 @@ interface StoreState {
   reload: () => Promise<AppState | null>;
   refreshAgentStatus: () => Promise<AgentStatusResponse | null>;
   setAgentStatus: (status: AgentStatusResponse) => void;
+  ensureModelLayer: () => Promise<ModelLayer | null>;
+  refreshModelLayer: () => Promise<ModelLayer | null>;
+  setModelLayer: (layer: ModelLayer) => void;
   reloadUntil: (
     predicate: (state: AppState) => boolean,
     opts?: { attempts?: number; intervalMs?: number },
@@ -84,6 +98,7 @@ export const useStore = create<StoreState>()((set, get) => ({
   state: _cached.state,
   host: _cached.host,
   agentStatus: _cached.agentStatus,
+  modelLayer: null,
   toasts: [],
   allSessions: {},
   theme: initialTheme,
@@ -136,6 +151,42 @@ export const useStore = create<StoreState>()((set, get) => ({
   setAgentStatus: (status) => {
     set({ agentStatus: status });
     writeCache({ agentStatus: status });
+  },
+
+  setModelLayer: (layer) => set({ modelLayer: layer }),
+
+  refreshModelLayer: async () => {
+    if (_modelLayerInFlight) return _modelLayerInFlight;
+    _modelLayerInFlight = (async () => {
+      try {
+        const [pRes, profRes, bRes] = await Promise.all([
+          api.getModelProviders().catch(() => null),
+          api.getModelProfiles().catch(() => null),
+          api.getModelAgentBindings().catch(() => null),
+        ]);
+        const prev = get().modelLayer;
+        const layer: ModelLayer = {
+          providers: pRes?.ok ? (pRes.providers || []) : (prev?.providers || []),
+          profiles: profRes?.ok ? (profRes.profiles || []) : (prev?.profiles || []),
+          activeProfiles: bRes?.ok
+            ? Object.fromEntries((bRes.bindings || []).map(b => [b.agent, b.activeProfileId]))
+            : (prev?.activeProfiles || {}),
+        };
+        set({ modelLayer: layer });
+        return layer;
+      } catch {
+        return get().modelLayer;
+      } finally {
+        _modelLayerInFlight = null;
+      }
+    })();
+    return _modelLayerInFlight;
+  },
+
+  ensureModelLayer: async () => {
+    const cur = get().modelLayer;
+    if (cur) return cur;
+    return get().refreshModelLayer();
   },
 
   reloadUntil: async (predicate, opts) => {

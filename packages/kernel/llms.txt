@@ -1,0 +1,98 @@
+# @pikiloom/kernel
+
+> Reusable core that turns heterogeneous coding-agent CLIs (Claude Code, Codex, Gemini, ACP/Hermes)
+> into ONE uniform, accumulating `UniversalSnapshot` + control verbs (prompt/stop/steer/interact),
+> exposed over pluggable surfaces (IM, Web, tunnel, raw PTY). You read one snapshot shape and never
+> parse a CLI's native output. ESM-only, Node >= 20. Runtime dep: `ws`; optional: `node-pty` (raw TUI).
+
+This file is an LLM-oriented summary. Full prose: README.md. Exact types: the bundled `dist/**/*.d.ts`.
+
+## Install & import
+
+```
+npm i @pikiloom/kernel
+```
+ESM only. Main export re-exports everything; subpaths: `@pikiloom/kernel/drivers`, `/surfaces`, `/protocol`.
+
+## Three usage tiers
+
+1) ONE turn, no persistence — `runTurn(driver, input, opts?) => Promise<{ result, snapshot }>`:
+```ts
+import { runTurn, ClaudeDriver } from '@pikiloom/kernel';
+const { result, snapshot } = await runTurn(
+  new ClaudeDriver(),
+  { prompt: 'hi', workdir: process.cwd(), effort: 'high' },            // AgentTurnInput
+  { onSnapshot: (s) => render(s), onSteer: (steer) => {}, signal },    // RunTurnOptions (signal = AbortSignal to stop)
+);
+// result: { ok, text, reasoning?, error?, stopReason?, sessionId?, usage? }
+```
+
+2) FULL multi-session backend — `createLoom(config) => Loom`:
+```ts
+import { createLoom, ClaudeDriver, WebSurface } from '@pikiloom/kernel';
+const loom = createLoom({ drivers: [new ClaudeDriver()], surfaces: [new WebSurface({ port: 8787 })], defaultAgent: 'claude' });
+await loom.start();
+const { sessionKey, taskId } = await loom.io.prompt({ prompt: 'hi', agent: 'claude' });
+const unsub = loom.io.subscribe((key, snapshot, patch, seq) => render(snapshot));
+```
+Every port has a default (zero config). Override any: sessionStore, modelResolver, toolProvider, systemPromptBuilder, catalog, interactionHandler, plugins, serialPerSession, appNamespace, workdir, defaultAgent, log.
+
+3) RAW TUI passthrough — `loom.runTui({ agent, workdir })` (full stdio passthrough) or `loom.openTui(...) => PtyBridge` (onData/write/resize/onExit). Needs optional `node-pty`; `ptyAvailable()` reports it.
+
+## UniversalSnapshot — the shape you render (accumulates across a turn)
+
+```ts
+interface UniversalSnapshot {
+  phase: 'idle'|'queued'|'streaming'|'done';
+  taskId?; sessionId?; agent?; model?; effort?; prompt?: string|null;
+  text?: string;        // accumulated assistant output (append)
+  reasoning?: string;   // accumulated thinking (append; empty if the model/auth withholds it — see gotchas)
+  activity?: string;    // human-readable execution trail, kernel-derived from toolCalls (one line per tool, status suffix)
+  plan?: { explanation: string|null; steps: { text: string; status: 'pending'|'inProgress'|'completed' }[] } | null;
+  toolCalls?: { id; name; summary; input?; result?; status: 'running'|'done'|'failed' }[];
+  subAgents?: { id; kind; description; model; tools[]; status }[];
+  usage?: { inputTokens; outputTokens; cachedInputTokens; contextUsedTokens?; contextPercent; providerName? } | null;
+  artifacts?: { url?; path?; fileName; mime?; kind: 'photo'|'document'; caption? }[];
+  interactions?: { promptId; kind: 'user-input'|'permission'|'confirmation'; title; questions: { id; text; type?: 'text'|'select'; choices? }[] }[];
+  queued?: { taskId; prompt }[];
+  error?: string|null; incomplete?: boolean; startedAt?; updatedAt: number;
+}
+```
+Wire delta helpers: `diffSnapshot(prev,next) => SnapshotPatch` (prefix-append text/reasoning; undefined→null clears) and `applySnapshotPatch(prev,patch)`. `emptySnapshot()`, `PROTOCOL_VERSION`.
+
+## Control verbs (LoomIO, via loom.io)
+
+- `prompt({ prompt, agent?, sessionKey?, workdir?, model?, effort?, attachments? }) => Promise<{ sessionKey, taskId }>`
+- `stop(sessionKey) => boolean`  (interrupts current turn; queued tasks stay and the next promotes)
+- `steer(taskId, prompt, attachments?) => Promise<boolean>`  (mid-turn; only drivers with capabilities.steer)
+- `interact(promptId, 'select'|'text'|'skip'|'cancel', value?) => boolean`  (answer a pending interaction)
+- `subscribe((sessionKey, snapshot, patch, seq) => void) => unsubscribe`
+- `getSnapshot(sessionKey)`, `getHistory(sessionKey)`, `listSessions()`, `listAgents()`, `listAgentInfo()`
+- discovery: `listModels(agent)`, `listEffort(agent, model?)`, `listTools(agent, workdir?)`, `listSkills(agent, workdir?)`
+Concurrent prompts to one session queue by default (serialPerSession=true).
+
+## Drivers (pass to createLoom({drivers}) or loom.registerDriver)
+
+- ClaudeDriver (id 'claude'): `claude` CLI stream-json, supports --effort; steer ✓, resume ✓, tui ✓
+- CodexDriver (id 'codex'): `codex app-server` JSON-RPC; steer ✓, HITL via askUser, resume ✓, tui ✓
+- GeminiDriver (id 'gemini'): `gemini` stream-json; resume ✓, tui ✓
+- HermesDriver (id 'hermes'): ACP session/update; resume ✓
+- EchoDriver (id 'echo'): hermetic in-process test driver; all caps ✓
+
+Write a driver: implement `AgentDriver { id; capabilities?; run(input, ctx); tui?(input) }`. In run(), call `ctx.emit(event)`:
+`DriverEvent = {type:'session',sessionId} | {type:'text',delta} | {type:'reasoning',delta} | {type:'tool',call:UniversalToolCall} | {type:'plan',plan} | {type:'subagent',subagent} | {type:'usage',usage} | {type:'artifact',artifact} | {type:'activity',line}`.
+`ctx = { signal: AbortSignal, emit, askUser(interaction)=>Promise<answers>, registerSteer(fn) }`. Return `DriverResult { ok, text, reasoning?, error?, stopReason?, sessionId?, usage? }`. Emit a `tool` event on BOTH start (status 'running') and completion (status 'done'/'failed'); the kernel projects `activity` from these.
+
+## Surfaces & Ports
+
+- Surface (上层, binds LoomIO): built-in `WebSurface` (ws host, wire protocol), `CliSurface`. Implement `Surface { id; capabilities?; start(io, host?); stop() }` for an IM channel.
+- Plugin: `{ id; tools?({agent,workdir}); decorateSnapshot?(snapshot) }`.
+- Ports (defaults in parens): SessionStore (FsSessionStore), ModelResolver (NullModelResolver = native login; override for BYOK), ToolProvider (NoopToolProvider), SystemPromptBuilder (PassthroughSystemPromptBuilder), Catalog (NoopCatalog), InteractionHandler (DeferToTerminalInteractionHandler; AutoCancelInteractionHandler for one-shots). `defaultBaseDir(ns)`.
+
+## Gotchas (read before using)
+
+- ESM only; Node >= 20. `node-pty` is OPTIONAL — required only for tui()/runTui()/openTui(); a missing one degrades gracefully (`ptyAvailable()===false`), it never breaks import.
+- `reasoning` is only populated when the agent streams plaintext thinking. Subscription/OAuth Claude withholds it (streams only an encrypted signature) → `reasoning` empty; BYOK Anthropic API and Codex DO stream it. Not a kernel bug.
+- `activity` is derived by the kernel from structured `toolCalls`+`subAgents` (you don't build it). Rich UIs can use `toolCalls` directly; simple/text surfaces can use the `activity` string.
+- The kernel bakes in ZERO model knowledge: model/effort/tool/skill lists come from the Catalog port (your app's SSOT). Per-agent capabilities come from the driver registry (`listAgentInfo()`).
+- `stop` interrupts only the running turn (queued tasks promote); it is not "cancel everything".

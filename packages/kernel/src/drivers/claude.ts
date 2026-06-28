@@ -1,0 +1,333 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec } from '../contracts/driver.js';
+import type { UniversalUsage, UniversalPlan, UniversalSubAgent } from '../protocol/index.js';
+
+// Real driver: shells the local `claude` CLI in stream-json mode and normalizes its
+// events into kernel DriverEvents. Faithful to pikiloom's claude.ts event shapes
+// (system / stream_event{message_start,content_block_delta,message_delta} / assistant / result),
+// but fully self-contained. Proves "下层 Claude 不变".
+export class ClaudeDriver implements AgentDriver {
+  readonly id = 'claude';
+  readonly capabilities = { steer: true, interact: false, resume: true, tui: true };
+
+  constructor(private readonly bin: string = 'claude') {}
+
+  // Interactive Claude Code TUI (no -p): the kernel spawns this in a PTY and passes
+  // the terminal through. Model/resume/BYOK-env come from the kernel's resolution.
+  tui(input: TuiInput): TuiSpec {
+    const args: string[] = [];
+    if (input.model) args.push('--model', input.model);
+    if (input.sessionId) args.push('--resume', input.sessionId);
+    if (input.extraArgs?.length) args.push(...input.extraArgs);
+    return { command: this.bin, args, cwd: input.workdir, env: input.env };
+  }
+
+  run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult> {
+    const steerable = !!input.steerable;
+    const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages'];
+    if (input.model) args.push('--model', input.model);
+    if (input.effort) args.push('--effort', input.effort === 'ultra' ? 'max' : input.effort); // request extended thinking (ultra is a display-only alias for max)
+    if (input.sessionId) args.push('--resume', input.sessionId);
+    if (input.systemPrompt) args.push('--append-system-prompt', input.systemPrompt);
+    if (input.mcpConfigPath) args.push('--mcp-config', input.mcpConfigPath);
+    if (input.permissionMode) args.push('--permission-mode', input.permissionMode); // parity: keep bypass/accept-edits on the kernel path
+    if (steerable) args.push('--input-format', 'stream-json', '--replay-user-messages'); // parity: mid-turn steer
+    if (input.extraArgs?.length) args.push(...input.extraArgs);
+
+    const state = {
+      text: '', reasoning: '', streamedText: false, streamedReasoning: false,
+      sessionId: null as string | null, model: null as string | null,
+      stopReason: null as string | null, error: null as string | null,
+      input: null as number | null, output: null as number | null, cached: null as number | null,
+      subAgents: new Map<string, any>(),
+      tools: new Map<string, { name: string; summary: string }>(),
+    };
+
+    return new Promise<DriverResult>((resolve) => {
+      let child: ChildProcess;
+      let settled = false;
+      const finish = (r: DriverResult) => {
+        if (settled) return; settled = true;
+        try { child?.stdin?.end(); } catch { /* ignore */ }
+        if (steerable) { try { child?.kill('SIGTERM'); } catch { /* ignore */ } } // replay mode keeps the process alive past the turn
+        resolve(r);
+      };
+      try {
+        child = spawn(this.bin, args, { cwd: input.workdir, env: { ...process.env, ...(input.env || {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch (err: any) {
+        finish({ ok: false, text: '', error: `spawn failed: ${err?.message || err}`, stopReason: 'error' });
+        return;
+      }
+
+      const onAbort = () => { try { child.kill('SIGTERM'); } catch { /* ignore */ } };
+      if (ctx.signal.aborted) onAbort();
+      else ctx.signal.addEventListener('abort', onAbort, { once: true });
+
+      if (steerable) {
+        ctx.registerSteer(async (prompt: string) => {
+          try { child.stdin!.write(claudeUserMessage(prompt) + '\n'); return true; } catch { return false; }
+        });
+      }
+
+      const usageOf = () => this.usage(state);
+      let buf = '';
+      let stderr = '';
+      child.stdout!.on('data', (chunk: Buffer) => {
+        buf += chunk.toString('utf8');
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          let ev: any;
+          try { ev = JSON.parse(trimmed); } catch { continue; }
+          handleClaudeEvent(ev, state, ctx.emit);
+          if (steerable && ev.type === 'result') {
+            // In replay mode the turn ends on `result` but the process lingers; settle now.
+            finish({ ok: !state.error, text: state.text, reasoning: state.reasoning || undefined, error: state.error, stopReason: state.stopReason, sessionId: state.sessionId, usage: usageOf() });
+          }
+        }
+      });
+      child.stderr!.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
+      child.on('error', (err) => finish({ ok: false, text: state.text, error: `claude spawn error: ${err.message}`, stopReason: 'error' }));
+      child.on('close', (code) => {
+        if (ctx.signal.aborted) { finish({ ok: false, text: state.text, reasoning: state.reasoning, error: 'Interrupted by user.', stopReason: 'interrupted', sessionId: state.sessionId, usage: usageOf() }); return; }
+        const ok = !state.error && code === 0;
+        finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason: state.stopReason, sessionId: state.sessionId, usage: usageOf() });
+      });
+
+      try {
+        if (steerable) child.stdin!.write(claudeUserMessage(input.prompt) + '\n'); // keep stdin open for steering
+        else { child.stdin!.write(input.prompt); child.stdin!.end(); }
+      } catch { /* ignore */ }
+    });
+  }
+
+  private usage(s: { input: number | null; output: number | null; cached: number | null }): UniversalUsage {
+    return { inputTokens: s.input, outputTokens: s.output, cachedInputTokens: s.cached, contextPercent: null };
+  }
+
+}
+
+// Parse one claude stream-json event into kernel DriverEvents (pure + exported for
+// hermetic testing). Faithful to pikiloom's claudeParse shapes.
+export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => void): void {
+  const t = ev.type || '';
+  // Child events of a spawned sub-agent are tagged with parent_tool_use_id; route their
+  // tool_uses into that sub-agent rather than the main turn (mirrors pikiloom).
+  const parentId: string | null = (typeof ev.parent_tool_use_id === 'string' && ev.parent_tool_use_id) ? ev.parent_tool_use_id : null;
+  if (parentId) {
+    const sub: UniversalSubAgent | undefined = s.subAgents?.get?.(parentId);
+    if (sub) {
+      if (t === 'assistant') {
+        for (const b of (ev.message?.content || [])) {
+          if (b?.type !== 'tool_use') continue;
+          sub.tools.push({ id: String(b.id || ''), name: String(b.name || 'Tool'), summary: String(b.name || 'Tool') });
+        }
+        const m = ev.message?.model; if (typeof m === 'string' && m.trim()) sub.model = m;
+        emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
+      } else if (t === 'system' && typeof ev.model === 'string' && ev.model.trim()) {
+        sub.model = ev.model;
+        emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
+      }
+    }
+    return;
+  }
+  if (t === 'system') {
+    if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
+    s.model = ev.model ?? s.model;
+    return;
+  }
+  if (t === 'stream_event') {
+    const inner = ev.event || {};
+    if (inner.type === 'message_start') {
+      const u = inner.message?.usage;
+      if (u) { s.input = u.input_tokens ?? s.input; s.cached = u.cache_read_input_tokens ?? s.cached; }
+    } else if (inner.type === 'content_block_delta') {
+      const d = inner.delta || {};
+      if (d.type === 'text_delta' && d.text) { s.text += d.text; s.streamedText = true; emit({ type: 'text', delta: d.text }); }
+      else if (d.type === 'thinking_delta' && d.thinking) { s.reasoning += d.thinking; s.streamedReasoning = true; emit({ type: 'reasoning', delta: d.thinking }); }
+    } else if (inner.type === 'message_delta') {
+      const u = inner.usage;
+      if (u) {
+        if (u.output_tokens != null) s.output = u.output_tokens;
+        if (u.input_tokens != null) s.input = u.input_tokens;
+        if (u.cache_read_input_tokens != null) s.cached = u.cache_read_input_tokens;
+        emit({ type: 'usage', usage: { inputTokens: s.input, outputTokens: s.output, cachedInputTokens: s.cached, contextPercent: null } });
+      }
+      if (inner.delta?.stop_reason) s.stopReason = inner.delta.stop_reason;
+    }
+    if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
+    return;
+  }
+  if (t === 'assistant') {
+    const contents = ev.message?.content || [];
+    for (const b of contents) {
+      if (b?.type !== 'tool_use') continue;
+      const id = String(b.id || '');
+      const name = String(b.name || 'Tool');
+      if (name === 'TodoWrite') {
+        const plan = todoWriteToPlan(b.input);
+        if (plan) emit({ type: 'plan', plan });
+        continue;
+      }
+      if (name === 'Task' || name === 'Agent') {
+        const input = b.input || {};
+        const sub: UniversalSubAgent = {
+          id,
+          kind: typeof input.subagent_type === 'string' ? input.subagent_type : null,
+          description: typeof input.description === 'string' ? input.description : null,
+          model: null, tools: [], status: 'running',
+        };
+        (s.subAgents ||= new Map()).set(id, sub);
+        emit({ type: 'subagent', subagent: { ...sub, tools: [] } });
+        continue;
+      }
+      const summary = summarizeToolUse(name, b.input);
+      (s.tools ||= new Map()).set(id, { name, summary });
+      emit({ type: 'tool', call: { id, name, summary, input: shortToolValue(toolInputDetail(name, b.input), 200) || null, status: 'running' } });
+    }
+    emitClaudeImages(contents, s, emit);
+    // Reasoning fallback: when thinking is NOT streamed as thinking_delta (claude can deliver
+    // it as a complete `thinking` block in the assistant message instead), capture it here.
+    // Mirrors the legacy driver — without this the kernel path silently drops all thinking.
+    if (!s.streamedReasoning) {
+      const th = contents.filter((b: any) => b?.type === 'thinking').map((b: any) => b.thinking || '').filter(Boolean).join('\n\n');
+      if (th) { const delta = s.reasoning ? '\n\n' + th : th; s.reasoning += delta; emit({ type: 'reasoning', delta }); }
+    }
+    if (!s.streamedText) {
+      const tx = contents.filter((b: any) => b?.type === 'text').map((b: any) => b.text || '').join('\n\n');
+      if (tx) { s.text = tx; emit({ type: 'text', delta: tx }); }
+    }
+    return;
+  }
+  if (t === 'user') {
+    // Tool results: surface generated images as artifacts AND close out the tool call
+    // (status done/failed + a result detail) so toolCalls is a faithful structured SSOT
+    // and the runtime's activity projection can render the execution trail.
+    const contents = ev.message?.content || [];
+    for (const b of contents) {
+      if (b?.type !== 'tool_result') continue;
+      emitClaudeImages(b.content || [], s, emit);
+      const id = String(b.tool_use_id || '').trim();
+      const tool = id ? s.tools?.get(id) : undefined;
+      if (!tool) continue;
+      const isError = !!b.is_error;
+      // File-shaped tools have no useful result detail (mirrors pikiloom): just mark done.
+      const fileTool = tool.name === 'Read' || tool.name === 'Edit' || tool.name === 'Write' || tool.name === 'TodoWrite';
+      const detail = (isError || !fileTool) ? firstResultLine(b.content) : null;
+      emit({ type: 'tool', call: { id, name: tool.name, summary: tool.summary, status: isError ? 'failed' : 'done', result: detail || null } });
+    }
+    return;
+  }
+  if (t === 'result') {
+    if (ev.session_id) s.sessionId = ev.session_id;
+    if (ev.is_error && Array.isArray(ev.errors) && ev.errors.length) s.error = ev.errors.join('; ');
+    if (ev.result && !s.text.trim()) { s.text = ev.result; }
+    if (ev.stop_reason && !s.stopReason) s.stopReason = ev.stop_reason;
+    const u = ev.usage;
+    if (u) {
+      if (s.input == null && u.input_tokens != null) s.input = u.input_tokens;
+      if (s.output == null && u.output_tokens != null) s.output = u.output_tokens;
+      const cached = u.cache_read_input_tokens ?? u.cached_input_tokens;
+      if (s.cached == null && cached != null) s.cached = cached;
+    }
+    return;
+  }
+}
+
+// A stream-json user message (for --input-format stream-json; used to send the prompt and
+// to inject mid-turn steer messages while stdin stays open).
+export function claudeUserMessage(text: string): string {
+  return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
+}
+
+// Surface base64 image content blocks as artifacts (data URLs), deduped per turn.
+export function emitClaudeImages(blocks: any[], s: any, emit: (e: DriverEvent) => void): void {
+  if (!Array.isArray(blocks)) return;
+  s.seenImages ||= new Set<string>();
+  let n = 0;
+  for (const b of blocks) {
+    if (b?.type !== 'image' || b?.source?.type !== 'base64' || typeof b.source.data !== 'string') continue;
+    const mime = String(b.source.media_type || 'image/png');
+    const key = `${mime}:${b.source.data.length}:${b.source.data.slice(0, 32)}`;
+    if (s.seenImages.has(key)) continue;
+    s.seenImages.add(key);
+    const ext = mime.split('/')[1] || 'png';
+    emit({ type: 'artifact', artifact: { url: `data:${mime};base64,${b.source.data}`, fileName: `image-${++n}.${ext}`, mime, kind: 'photo' } });
+  }
+}
+
+// Claude's TodoWrite tool input -> a normalized UniversalPlan (ported from pikiloom).
+export function todoWriteToPlan(input: any): UniversalPlan | null {
+  if (!input || typeof input !== 'object') return null;
+  const rawTodos = Array.isArray(input.todos) ? input.todos : [];
+  const steps: UniversalPlan['steps'] = [];
+  for (const todo of rawTodos) {
+    if (!todo || typeof todo !== 'object') continue;
+    const text = typeof todo.content === 'string' ? todo.content.trim() : '';
+    if (!text) continue;
+    const raw = typeof todo.status === 'string' ? todo.status : 'pending';
+    const status = raw === 'completed' ? 'completed' : raw === 'in_progress' ? 'inProgress' : 'pending';
+    steps.push({ text, status });
+  }
+  return steps.length ? { explanation: null, steps } : null;
+}
+
+// ── Tool-call summarization (ported from pikiloom's summarizeClaudeToolUse) ──────────
+// Turns a Claude tool_use {name,input} into a one-line human summary. The runtime's
+// activity projector joins these into snapshot.activity; the structured form lives in
+// toolCalls. Kept driver-local: knowing Claude's tool input shapes is the driver's job.
+
+export function shortToolValue(value: unknown, max = 140): string {
+  if (value == null) return '';
+  const text = (typeof value === 'string' ? value : String(value)).replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return text.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
+}
+
+function toolInputDetail(name: string, input: any): string {
+  const i = input || {};
+  return i.command || i.file_path || i.path || i.pattern || i.query || i.url || i.description || '';
+}
+
+export function summarizeToolUse(name: string, input: any): string {
+  const tool = String(name || '').trim() || 'Tool';
+  const i = input || {};
+  const description = shortToolValue(i.description, 120);
+  switch (tool) {
+    case 'Read': { const t = shortToolValue(i.file_path || i.path); return t ? `Read ${t}` : 'Read file'; }
+    case 'Edit': { const t = shortToolValue(i.file_path || i.path); return t ? `Edit ${t}` : 'Edit file'; }
+    case 'Write': { const t = shortToolValue(i.file_path || i.path); return t ? `Write ${t}` : 'Write file'; }
+    case 'Glob': { const p = shortToolValue(i.pattern || i.glob, 120); return p ? `List files: ${p}` : 'List files'; }
+    case 'Grep': { const p = shortToolValue(i.pattern || i.query, 120); return p ? `Search text: ${p}` : 'Search text'; }
+    case 'WebFetch': { const u = shortToolValue(i.url, 120); return u ? `Fetch ${u}` : 'Fetch web page'; }
+    case 'WebSearch': { const q = shortToolValue(i.query, 120); return q ? `Search web: ${q}` : 'Search web'; }
+    case 'TodoWrite': return 'Update plan';
+    case 'Task': { const p = shortToolValue(i.description || i.prompt, 120); return p ? `Run task: ${p}` : 'Run task'; }
+    case 'Bash': {
+      if (description) return `Run shell: ${description}`;
+      const c = shortToolValue(i.command, 120);
+      return c ? `Run shell: ${c}` : 'Run shell command';
+    }
+    default: {
+      const mcpMatch = tool.match(/^mcp__[^_]+__(.+)$/);
+      const bare = mcpMatch ? mcpMatch[1] : tool;
+      if (bare === 'im_send_file') { const p = shortToolValue(i.path, 120); return p ? `Send file: ${p}` : 'Send file'; }
+      if (bare === 'im_list_files') return 'List workspace files';
+      if (bare === 'im_ask_user') { const q = shortToolValue(i.question, 120); return q ? `Ask user: ${q}` : 'Ask user'; }
+      if (description) return `${tool}: ${description}`;
+      const d = shortToolValue(toolInputDetail(tool, i), 120);
+      return d ? `${tool}: ${d}` : tool;
+    }
+  }
+}
+
+// First non-empty line of a tool_result content (string | block[]), for the "summary -> detail" form.
+export function firstResultLine(content: any): string {
+  let text = '';
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) text = content.map((b: any) => (typeof b === 'string' ? b : b?.type === 'text' ? b.text || '' : '')).join('\n');
+  for (const line of text.split('\n')) { const t = line.trim(); if (t) return shortToolValue(t, 120); }
+  return '';
+}

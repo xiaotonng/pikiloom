@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>@pikiloom/kernel — console</title>
+<style>
+  :root { --bg:#f6f8fa; --panel:#fff; --line:#e3e8ef; --ink:#1f2937; --muted:#6b7280; --accent:#0ea5b7; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; gap:10px; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header .dot { width:9px; height:9px; border-radius:50%; background:#cbd5e1; }
+  header .dot.on { background:#10b981; }
+  header b { font-size:15px; } header .tag { font-size:12px; color:var(--muted); background:#eef2f7; padding:2px 8px; border-radius:999px; }
+  main { max-width:860px; margin:0 auto; padding:18px; }
+  .msg { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+  .msg.user { background:#eef9fb; border-color:#cdeef2; }
+  .role { font-size:12px; color:var(--muted); margin-bottom:4px; display:flex; gap:8px; align-items:center; }
+  .phase { font-size:11px; padding:1px 7px; border-radius:999px; background:#eef2f7; color:var(--muted); }
+  .phase.streaming { background:#fff7ed; color:#c2410c; } .phase.done { background:#ecfdf5; color:#047857; }
+  .reasoning { color:var(--muted); font-style:italic; white-space:pre-wrap; border-left:2px solid var(--line); padding-left:10px; margin:6px 0; }
+  .text { white-space:pre-wrap; }
+  .meta { font-size:11px; color:var(--muted); margin-top:8px; }
+  footer { position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:12px 18px; }
+  .row { max-width:860px; margin:0 auto; display:flex; gap:10px; }
+  textarea { flex:1; resize:none; height:46px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:0 18px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <b>@pikiloom/kernel</b>
+  <span class="tag" id="hosttag">connecting…</span>
+  <span class="tag" id="agenttag"></span>
+</header>
+<main id="log"></main>
+<footer><div class="row">
+  <textarea id="inp" placeholder="Ask the kernel-driven agent…  (Enter to send)"></textarea>
+  <button id="send" disabled>Send</button>
+</div></footer>
+<script>
+const log = document.getElementById('log');
+const dot = document.getElementById('dot');
+const hosttag = document.getElementById('hosttag');
+const agenttag = document.getElementById('agenttag');
+const inp = document.getElementById('inp');
+const sendBtn = document.getElementById('send');
+let agents = [];
+const snaps = {};        // sessionKey -> cumulative snapshot
+const cards = {};        // sessionKey -> DOM
+const userBubbles = {};  // taskId -> shown
+
+function applyPatch(prev, patch) {
+  if (patch.full) return patch.full;
+  const n = prev ? {...prev} : { phase:'idle', updatedAt:0 };
+  if (patch.appendText) n.text = (n.text||'') + patch.appendText;
+  if (patch.appendReasoning) n.reasoning = (n.reasoning||'') + patch.appendReasoning;
+  if (patch.set) Object.assign(n, patch.set);
+  return n;
+}
+function render(key) {
+  const s = snaps[key]; if (!s) return;
+  let c = cards[key];
+  if (!c) { c = document.createElement('div'); c.className='msg'; log.appendChild(c); cards[key]=c; }
+  const u = s.usage || {};
+  c.innerHTML =
+    '<div class="role">🧵 '+(s.agent||'agent')+(s.model?(' · '+s.model):'')+
+      ' <span class="phase '+s.phase+'">'+s.phase+'</span></div>'+
+    (s.reasoning ? '<div class="reasoning">'+esc(s.reasoning)+'</div>' : '')+
+    '<div class="text">'+esc(s.text||(s.phase==='streaming'?'…':''))+'</div>'+
+    (s.error ? '<div class="meta" style="color:#b91c1c">'+esc(s.error)+'</div>' : '')+
+    '<div class="meta">in '+(u.inputTokens??'–')+' · out '+(u.outputTokens??'–')+' tok'+(s.sessionId?(' · '+s.sessionId.slice(0,8)):'')+'</div>';
+  window.scrollTo(0, document.body.scrollHeight);
+}
+function esc(t){ return (t||'').replace(/[&<>]/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
+function addUser(text){ const d=document.createElement('div'); d.className='msg user'; d.innerHTML='<div class="role">🙋 you</div><div class="text">'+esc(text)+'</div>'; log.appendChild(d); }
+
+const ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/');
+ws.onopen = () => { ws.send(JSON.stringify({type:'hello', v:1, client:{name:'kernel-console', platform:navigator.userAgent}})); };
+ws.onclose = () => { dot.className='dot'; hosttag.textContent='disconnected'; sendBtn.disabled=true; };
+ws.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.type==='welcome'){ dot.className='dot on'; hosttag.textContent=m.host.name+' v'+m.host.version+' · '+m.host.transport; sendBtn.disabled=false; ws.send(JSON.stringify({type:'subscribe', sessionKey:'*'})); }
+  if (m.type==='session'){ snaps[m.sessionKey]=applyPatch(snaps[m.sessionKey], m.patch); render(m.sessionKey); }
+};
+function send(){
+  const prompt = inp.value.trim(); if(!prompt) return;
+  addUser(prompt); inp.value='';
+  ws.send(JSON.stringify({type:'prompt', prompt}));
+}
+sendBtn.onclick = send;
+inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }});
+</script>
+</body>
+</html>

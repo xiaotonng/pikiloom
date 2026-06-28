@@ -29,6 +29,18 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # The reusable core is published alongside pikiloom on every release, for EXTERNAL
+      # reuse. pikiloom itself bundles packages/kernel/dist in its own tarball, so this
+      # step failing (e.g. @pikiloom scope missing / NPM_TOKEN lacks scope access) must NOT
+      # block the release — pikiloom already published and works off the bundled copy.
+      - name: Publish @pikiloom/kernel to npm
+        continue-on-error: true
+        run: |
+          npx tsc -p packages/kernel/tsconfig.json
+          npm publish ./packages/kernel --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:

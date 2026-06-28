@@ -626,6 +626,14 @@ async function launchChannels(
 export async function main() {
   if (await handleMcpServeMode()) return;
 
+  // Cutover gate: LOOM_KERNEL_APP=1 boots the backend on @pikiloom/kernel (new version)
+  // instead of the legacy app. Non-PIKILOOM_ prefix so it survives dev.sh's env scrub.
+  if (process.env.LOOM_KERNEL_APP === '1') {
+    const { runKernelApp } = await import('./kernel-app.js');
+    await runKernelApp(process.argv.slice(2));
+    return;
+  }
+
   const args = parseArgs(process.argv.slice(2));
   let userConfig = loadUserConfig();
 

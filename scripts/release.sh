@@ -75,6 +75,17 @@ fi
 echo "  ✓ Verified: $INSTALLED"
 echo "  ✓ Verified global link: $GLOBAL_INSTALLED"
 
+# ── 2b. Kernel package: bump patch + build (CI publishes it alongside pikiloom) ──
+KERNEL_DIR="packages/kernel"
+if [ -f "$KERNEL_DIR/package.json" ]; then
+  KERNEL_PREV=$(node -p "require('./$KERNEL_DIR/package.json').version")
+  KERNEL_NEW=$(node -e "const v=require('./$KERNEL_DIR/package.json').version.split('.').map(Number); v[2]++; process.stdout.write(v.join('.'))")
+  node -e "const fs=require('fs'),p='$KERNEL_DIR/package.json';const j=JSON.parse(fs.readFileSync(p));j.version='$KERNEL_NEW';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+  echo "▸ Kernel @pikiloom/kernel: $KERNEL_PREV → $KERNEL_NEW"
+  npx tsc -p "$KERNEL_DIR/tsconfig.json"
+  echo "  ✓ kernel typechecked & built (published by CI; needs @pikiloom scope + NPM_TOKEN access)"
+fi
+
 # ── 3. Git commit, tag & push ────────────────────────────────────────────────
 
 echo "▸ Committing…"

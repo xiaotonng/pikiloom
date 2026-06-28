@@ -1,0 +1,43 @@
+{
+  "name": "@pikiloom/kernel",
+  "version": "0.1.0",
+  "description": "Heterogeneous coding agents (Claude / Codex / Gemini / ACP) -> an interaction-friendly, accumulating session snapshot + control handle, over pluggable surfaces (IM, Web, tunnel, TUI). The reusable core pikiloom itself is built on.",
+  "type": "module",
+  "license": "MIT",
+  "author": "xiaotonng",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaotonng/pikiloom.git",
+    "directory": "packages/kernel"
+  },
+  "keywords": ["ai", "agent", "claude", "codex", "orchestrator", "tui", "pty", "websocket"],
+  "exports": {
+    ".": "./dist/index.js",
+    "./drivers": "./dist/drivers/index.js",
+    "./surfaces": "./dist/surfaces/index.js",
+    "./protocol": "./dist/protocol/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist/", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": { "node": ">=20.0.0" }
+}

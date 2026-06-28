@@ -31,6 +31,7 @@ import {
 } from './session.js';
 import { clearAwaitResume } from './await-resume.js';
 import { collapseSkillPrompt } from './skills.js';
+import { shouldUseKernelPipeline, kernelStream } from './kernel-bridge.js';
 
 function trimSessionText(value: unknown, max = 24_000): string | null {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -566,7 +567,22 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       throw new Error(`Agent ${prepared.agent} does not support fork`);
     }
     await awaitAgentUpdateIdle(prepared.agent, AGENT_UPDATE_TIMEOUTS.spawnWait);
-    const result = await driver.doStream(prepared);
+    // Cutover seam: when enabled (default ON for claude/codex/gemini/hermes), route the
+    // agent turn through @pikiloom/kernel. kernelStream throws ONLY if the kernel package
+    // can't be loaded (missing dist) — every in-turn error is returned as a result. So a
+    // throw here means "kernel unavailable": fall back to the legacy driver rather than
+    // failing the turn. See agent/kernel-bridge.ts.
+    let result: StreamResult;
+    if (shouldUseKernelPipeline(prepared.agent)) {
+      try {
+        result = await kernelStream(prepared);
+      } catch (kernelErr: any) {
+        agentWarn(`[kernel-bridge] kernel unavailable, falling back to legacy driver: ${kernelErr?.message || kernelErr}`);
+        result = await driver.doStream(prepared);
+      }
+    } else {
+      result = await driver.doStream(prepared);
+    }
     const finalized = finalizeStreamResult(result, opts.workdir, opts.prompt, session, opts.claudeWorkflowEnabled, opts.profileId);
     finalized.byokProviderName = prepared.byokProviderName ?? null;
     finalized.byokProfileName = prepared.byokProfileName ?? null;

@@ -1,0 +1,33 @@
+name: Publish kernel
+
+# Manual, on-demand publish of @pikiloom/kernel for external reuse, using the same
+# NPM_TOKEN as the release flow. pikiloom does NOT depend on this — it bundles the
+# kernel in its own tarball. Use this when the kernel needs to go out without cutting
+# a full pikiloom release (e.g. after the @pikiloom org was first created).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-kernel:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - name: Build @pikiloom/kernel
+        run: npx tsc -p packages/kernel/tsconfig.json
+
+      - name: Publish @pikiloom/kernel to npm
+        run: npm publish ./packages/kernel --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

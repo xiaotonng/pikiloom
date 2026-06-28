@@ -1,6 +1,6 @@
 {
   "name": "@pikiloom/kernel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Heterogeneous coding agents (Claude / Codex / Gemini / ACP) -> an interaction-friendly, accumulating session snapshot + control handle, over pluggable surfaces (IM, Web, tunnel, TUI). The reusable core pikiloom itself is built on.",
   "type": "module",
   "license": "MIT",
@@ -10,7 +10,16 @@
     "url": "git+https://github.com/xiaotonng/pikiloom.git",
     "directory": "packages/kernel"
   },
-  "keywords": ["ai", "agent", "claude", "codex", "orchestrator", "tui", "pty", "websocket"],
+  "keywords": [
+    "ai",
+    "agent",
+    "claude",
+    "codex",
+    "orchestrator",
+    "tui",
+    "pty",
+    "websocket"
+  ],
   "exports": {
     ".": "./dist/index.js",
     "./drivers": "./dist/drivers/index.js",
@@ -18,7 +27,10 @@
     "./protocol": "./dist/protocol/index.js"
   },
   "types": "./dist/index.d.ts",
-  "files": ["dist/", "README.md"],
+  "files": [
+    "dist/",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -39,5 +51,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "engines": { "node": ">=20.0.0" }
+  "engines": {
+    "node": ">=20.0.0"
+  }
 }

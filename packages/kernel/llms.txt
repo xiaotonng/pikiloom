@@ -86,7 +86,9 @@ Write a driver: implement `AgentDriver { id; capabilities?; run(input, ctx); tui
 ## Surfaces & Ports
 
 - Surface (上层, binds LoomIO): built-in `WebSurface` (ws host, wire protocol), `CliSurface`. Implement `Surface { id; capabilities?; start(io, host?); stop() }` for an IM channel.
-- Plugin: `{ id; tools?({agent,workdir}); decorateSnapshot?(snapshot) }`.
+- Plugin = the registration unit for everything ONE capability adds to a session (register via `createLoom({plugins})` or `loom.registerPlugin(p)`):
+  `{ id; tools?({agent,workdir})=>McpServerSpec[]; promptFragment?({agent,workdir,isFirstTurn})=>string|null; contributeSpawn?({agent,workdir,mode:'run'|'tui',sessionId?,model?})=>SpawnContribution|null; decorateSnapshot?(snap) }`.
+  `SpawnContribution = { env?; extraArgs?; configOverrides? }`. Kernel merges per-spawn (NEVER touches global process.env), order `[ModelResolver → ToolProvider.env → plugins]` (plugin overrides resolver — e.g. a hijack redirecting `ANTHROPIC_BASE_URL` to a local proxy, applied on BOTH run() and tui()). `promptFragment`s append to the SystemPromptBuilder base. So tools + their usage-prompt + env/flags register in ONE place. The singular ModelResolver/SystemPromptBuilder remain the authoritative model-cred/base-prompt source; plugins are the composable layer on top.
 - Ports (defaults in parens): SessionStore (FsSessionStore), ModelResolver (NullModelResolver = native login; override for BYOK), ToolProvider (NoopToolProvider), SystemPromptBuilder (PassthroughSystemPromptBuilder), Catalog (NoopCatalog), InteractionHandler (DeferToTerminalInteractionHandler; AutoCancelInteractionHandler for one-shots). `defaultBaseDir(ns)`.
 
 ## Gotchas (read before using)

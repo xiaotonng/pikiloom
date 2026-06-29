@@ -26,7 +26,7 @@ export type {
   ToolProvider, SystemPromptBuilder, InteractionHandler, Catalog,
 } from './contracts/ports.js';
 export type {
-  LoomIO, PromptInput, Surface, SurfaceCapabilities, Plugin,
+  LoomIO, PromptInput, Surface, SurfaceCapabilities, Plugin, SpawnContribution,
 } from './contracts/surface.js';
 // AgentInfo + Model/Effort/Tool/Skill descriptors are wire vocabulary — exported via protocol below.
 

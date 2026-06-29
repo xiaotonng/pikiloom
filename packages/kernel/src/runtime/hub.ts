@@ -8,7 +8,7 @@ import type { AgentDriver, AgentTurnInput, McpServerSpec, TuiSpec } from '../con
 import type {
   SessionStore, ModelResolver, ToolProvider, SystemPromptBuilder, InteractionHandler, Catalog,
 } from '../contracts/ports.js';
-import type { LoomIO, PromptInput, Plugin } from '../contracts/surface.js';
+import type { LoomIO, PromptInput, Plugin, SpawnContribution } from '../contracts/surface.js';
 import { SessionRunner } from './session-runner.js';
 
 export interface HubDeps {
@@ -94,7 +94,11 @@ export class Hub implements LoomIO {
     if (!driver.tui) throw new Error(`Driver "${agent}" does not support TUI mode`);
     const workdir = opts.workdir || this.deps.workdir;
     const injection = await this.deps.modelResolver.resolve(agent, { model: opts.model, profileId: null }).catch(() => null);
-    return driver.tui({ workdir, model: injection?.model ?? opts.model ?? null, sessionId: opts.sessionId ?? null, env: injection?.env });
+    const model = injection?.model ?? opts.model ?? null;
+    // Same merge as run(), so the raw-PTY rail also gets plugin env/args (e.g. a hijack redirect).
+    const pluginParts = await this.pluginSpawn(agent, workdir, 'tui', opts.sessionId ?? null, model);
+    const spawn = this.mergeSpawn([{ env: injection?.env, extraArgs: injection?.extraArgs }, ...pluginParts]);
+    return driver.tui({ workdir, model, sessionId: opts.sessionId ?? null, env: spawn.env, extraArgs: spawn.extraArgs });
   }
 
   async prompt(input: PromptInput): Promise<{ sessionKey: string; taskId: string }> {
@@ -152,10 +156,18 @@ export class Hub implements LoomIO {
     // prior turn's native session id and any refreshed credentials/tools.
     const rec = await this.deps.sessionStore.get(agent, sessionId);
     const injection = await this.deps.modelResolver.resolve(agent, { model: input.model, profileId: null }).catch(() => null);
-    const tools = await this.collectTools(agent, workdir, workspacePath);
     const model = injection?.model ?? input.model ?? null;
     const effort = input.effort ?? null;
-    const systemPrompt = this.deps.systemPromptBuilder.compose({ agent, base: this.deps.systemPromptBase, isFirstTurn: !preExisted });
+    const tools = await this.collectTools(agent, workdir, workspacePath);
+    const pluginParts = await this.pluginSpawn(agent, workdir, 'run', sessionId, model);
+    // precedence: ModelResolver (model/creds) -> ToolProvider.env -> plugins (last, so a
+    // model-traffic hijack plugin can override the resolver's base URL).
+    const spawn = this.mergeSpawn([
+      { env: injection?.env, extraArgs: injection?.extraArgs, configOverrides: injection?.configOverrides },
+      { env: tools.env },
+      ...pluginParts,
+    ]);
+    const systemPrompt = await this.composeSystemPrompt(agent, workdir, !preExisted);
 
     const turnInput: AgentTurnInput = {
       prompt: input.prompt,
@@ -163,10 +175,10 @@ export class Hub implements LoomIO {
       sessionId: rec?.nativeSessionId || (input.sessionKey ? sessionId : null),
       workdir,
       model, effort, systemPrompt,
-      env: injection?.env,
-      extraArgs: injection?.extraArgs,           // BYOK flags from the ModelResolver
-      configOverrides: injection?.configOverrides, // codex BYOK -c routing
-      extraMcpServers: tools,
+      env: spawn.env,
+      extraArgs: spawn.extraArgs,
+      configOverrides: spawn.configOverrides,
+      extraMcpServers: tools.servers,
     };
 
     runner.run(driver, turnInput, input.prompt, model, effort)
@@ -204,18 +216,63 @@ export class Hub implements LoomIO {
     if (entry?.runner) this.onRunnerUpdate(sessionKey, entry.runner.snapshot, entry.runner.currentSeq);
   }
 
-  private async collectTools(agent: string, workdir: string, workspacePath: string): Promise<McpServerSpec[]> {
-    const out: McpServerSpec[] = [];
+  // MCP servers (ToolProvider + each plugin) PLUS the ToolProvider's session env (previously
+  // dropped) — surfaced so the spawn env merge can apply it.
+  private async collectTools(agent: string, workdir: string, workspacePath: string): Promise<{ servers: McpServerSpec[]; env?: Record<string, string> }> {
+    const servers: McpServerSpec[] = [];
+    let env: Record<string, string> | undefined;
     try {
       const base = await this.deps.toolProvider.provideForSession({ agent, workdir, workspacePath });
-      out.push(...base.servers);
+      servers.push(...base.servers);
+      if (base.env && Object.keys(base.env).length) env = base.env;
     } catch (e: any) { this.deps.log?.(`[hub] toolProvider failed: ${e?.message || e}`); }
     for (const plugin of this.deps.plugins) {
       if (!plugin.tools) continue;
-      try { out.push(...(await plugin.tools({ agent, workdir }))); }
+      try { servers.push(...(await plugin.tools({ agent, workdir }))); }
       catch (e: any) { this.deps.log?.(`[hub] plugin ${plugin.id} tools failed: ${e?.message || e}`); }
     }
+    return { servers, env };
+  }
+
+  // Merge ordered spawn contributions: env keys later-wins, extraArgs/configOverrides concatenate.
+  // Callers order parts [ModelResolver, ToolProvider.env, ...plugins] so a plugin (e.g. a model-
+  // traffic hijack) can override the resolver's base URL. Never touches global process.env.
+  private mergeSpawn(parts: Array<SpawnContribution | null | undefined>): { env?: Record<string, string>; extraArgs?: string[]; configOverrides?: string[] } {
+    let env: Record<string, string> | undefined;
+    const extraArgs: string[] = [];
+    const configOverrides: string[] = [];
+    for (const p of parts) {
+      if (!p) continue;
+      if (p.env && Object.keys(p.env).length) env = { ...(env || {}), ...p.env };
+      if (p.extraArgs?.length) extraArgs.push(...p.extraArgs);
+      if (p.configOverrides?.length) configOverrides.push(...p.configOverrides);
+    }
+    return { env, extraArgs: extraArgs.length ? extraArgs : undefined, configOverrides: configOverrides.length ? configOverrides : undefined };
+  }
+
+  private async pluginSpawn(agent: string, workdir: string, mode: 'run' | 'tui', sessionId: string | null, model: string | null): Promise<SpawnContribution[]> {
+    const out: SpawnContribution[] = [];
+    for (const plugin of this.deps.plugins) {
+      if (!plugin.contributeSpawn) continue;
+      try { const c = await plugin.contributeSpawn({ agent, workdir, mode, sessionId, model }); if (c) out.push(c); }
+      catch (e: any) { this.deps.log?.(`[hub] plugin ${plugin.id} contributeSpawn failed: ${e?.message || e}`); }
+    }
     return out;
+  }
+
+  // Final system/developer prompt = the singular SystemPromptBuilder base + each plugin's
+  // promptFragment (in registration order), joined. Delivered via AgentTurnInput.systemPrompt,
+  // which each driver applies its own way (claude --append-system-prompt / codex / gemini).
+  private async composeSystemPrompt(agent: string, workdir: string, isFirstTurn: boolean): Promise<string | undefined> {
+    const parts: string[] = [];
+    const base = this.deps.systemPromptBuilder.compose({ agent, base: this.deps.systemPromptBase, isFirstTurn });
+    if (base && base.trim()) parts.push(base);
+    for (const plugin of this.deps.plugins) {
+      if (!plugin.promptFragment) continue;
+      try { const f = await plugin.promptFragment({ agent, workdir, isFirstTurn }); if (f && f.trim()) parts.push(f); }
+      catch (e: any) { this.deps.log?.(`[hub] plugin ${plugin.id} promptFragment failed: ${e?.message || e}`); }
+    }
+    return parts.length ? parts.join('\n\n') : undefined;
   }
 
   private onRunnerUpdate(sessionKey: string, snapshot: UniversalSnapshot, _seq: number): void {

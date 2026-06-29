@@ -38,6 +38,7 @@ export interface LoomConfig {
 export interface Loom {
   readonly io: LoomIO;
   registerDriver(driver: AgentDriver): void;
+  registerPlugin(plugin: Plugin): void;   // dynamic, in addition to LoomConfig.plugins
   start(): Promise<void>;
   stop(): Promise<void>;
   status(): { agents: string[]; surfaces: string[]; started: boolean };
@@ -54,6 +55,8 @@ export function createLoom(config: LoomConfig = {}): Loom {
   const drivers = new Map<string, AgentDriver>();
   for (const d of config.drivers || []) drivers.set(d.id, d);
   const defaultAgent = config.defaultAgent || config.drivers?.[0]?.id || 'echo';
+  // Held as a live reference so registerPlugin() mutates the same array the Hub iterates.
+  const plugins: Plugin[] = [...(config.plugins || [])];
 
   const hub = new Hub({
     drivers,
@@ -66,7 +69,7 @@ export function createLoom(config: LoomConfig = {}): Loom {
     catalog: config.catalog || new NoopCatalog(),
     interactionHandler: config.interactionHandler || new DeferToTerminalInteractionHandler(),
     serialPerSession: config.serialPerSession,
-    plugins: config.plugins || [],
+    plugins,
     systemPromptBase: config.systemPromptBase,
     log,
   });
@@ -84,6 +87,7 @@ export function createLoom(config: LoomConfig = {}): Loom {
   return {
     io: hub,
     registerDriver(driver: AgentDriver) { drivers.set(driver.id, driver); },
+    registerPlugin(plugin: Plugin) { plugins.push(plugin); },
     async start() {
       if (started) return;
       started = true;

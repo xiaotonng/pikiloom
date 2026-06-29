@@ -73,11 +73,33 @@ export interface Surface {
   stop(): Promise<void>;
 }
 
-// A plugin contributes tools (MCP/skills) and/or augments snapshots. Management UX
-// (catalog, health, OAuth, install) stays in the app — the kernel only wires the
-// per-session tool contribution.
+// What a plugin contributes to ONE spawned agent turn/TUI, beyond MCP tools: env vars,
+// verbatim CLI flags, and codex `-c key=value` config overrides. The kernel merges these
+// per-spawn (never mutating global process.env) so cross-cutting concerns — e.g. pointing
+// an agent's model base URL at a local proxy — register here instead of reaching for the
+// global environment. env/extraArgs/configOverrides are the full vocabulary for
+// parameterizing a spawned agent CLI.
+export interface SpawnContribution {
+  env?: Record<string, string>;
+  extraArgs?: string[];
+  configOverrides?: string[];
+}
+
+// A plugin is the registration unit for everything ONE capability adds to a session:
+// MCP tools, an init prompt fragment (how to use those tools / behavior guidance), per-spawn
+// parameters (env/args/config), and snapshot decoration. The kernel composes all plugins'
+// contributions deterministically (registration order; plugins merge AFTER the singular
+// ModelResolver/SystemPromptBuilder, so a plugin can override them). Management UX
+// (catalog, health, OAuth, install) stays in the app.
 export interface Plugin {
   readonly id: string;
   tools?(opts: { agent: string; workdir: string }): McpServerSpec[] | Promise<McpServerSpec[]>;
+  // First-turn (or every-turn) system/developer prompt fragment for this capability —
+  // composed onto the base SystemPromptBuilder output and delivered via the agent's native
+  // mechanism (claude --append-system-prompt / codex developerInstructions / gemini system).
+  promptFragment?(opts: { agent: string; workdir: string; isFirstTurn: boolean }): string | null | undefined | Promise<string | null | undefined>;
+  // Per-spawn env/args/config for this capability. `mode` distinguishes the structured run()
+  // rail from the raw-PTY tui() rail (a redirect knob may differ, e.g. env vs launch arg).
+  contributeSpawn?(opts: { agent: string; workdir: string; mode: 'run' | 'tui'; sessionId?: string | null; model?: string | null }): SpawnContribution | null | undefined | Promise<SpawnContribution | null | undefined>;
   decorateSnapshot?(snapshot: UniversalSnapshot): UniversalSnapshot;
 }

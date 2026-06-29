@@ -250,7 +250,28 @@ add an IM channel or your own UI.
 | `Catalog` | `NoopCatalog` | model/effort/tool/skill discovery for composers |
 | `InteractionHandler` | `DeferToTerminalInteractionHandler` | programmatic HITL answers (`AutoCancelInteractionHandler` for one-shots) |
 
-**Plugins** contribute per-session tools (`tools()`) and/or augment snapshots (`decorateSnapshot()`).
+**Plugins** are the registration unit for everything ONE capability adds to a session —
+register many, composed deterministically (and dynamically via `loom.registerPlugin(...)`):
+
+```ts
+interface Plugin {
+  id: string;
+  tools?(opts: { agent; workdir }): McpServerSpec[];                          // MCP servers
+  promptFragment?(opts: { agent; workdir; isFirstTurn }): string | null;       // how-to-use / behavior prompt
+  contributeSpawn?(opts: { agent; workdir; mode: 'run'|'tui'; sessionId?; model? }): SpawnContribution | null; // { env?, extraArgs?, configOverrides? }
+  decorateSnapshot?(snapshot): UniversalSnapshot;
+}
+```
+
+The kernel merges contributions per spawn — **never mutating global `process.env`** — in order
+`[ModelResolver → ToolProvider.env → plugins (registration order)]`, so a plugin can override
+the resolver (e.g. point an agent's `ANTHROPIC_BASE_URL` at a local proxy). `promptFragment`s are
+appended to the `SystemPromptBuilder` base and delivered via each agent's native mechanism. This
+is how a capability registers its tools **and** their usage prompt **and** any env/flags in one
+place — and how a model-traffic interceptor injects a redirect on both the `run()` and `tui()`
+rails without the kernel knowing anything about it. (The singular `ModelResolver` /
+`SystemPromptBuilder` ports remain the one authoritative model-credential / base-prompt source;
+plugins are the composable per-capability layer on top.)
 
 ---
 
@@ -264,7 +285,7 @@ Main entry `@pikiloom/kernel` re-exports everything. Subpaths: `@pikiloom/kernel
 - Surfaces: `WebSurface`, `CliSurface`
 - Ports/defaults: `FsSessionStore`, `NullModelResolver`, `NoopToolProvider`, `PassthroughSystemPromptBuilder`, `AutoCancelInteractionHandler`, `DeferToTerminalInteractionHandler`, `NoopCatalog`, `defaultBaseDir`
 - Protocol: `UniversalSnapshot`, `diffSnapshot`, `applySnapshotPatch`, `emptySnapshot`, `PROTOCOL_VERSION`, all wire/`Client*`/`Server*` message types
-- Types: `AgentDriver`, `AgentTurnInput`, `DriverContext`, `DriverEvent`, `DriverResult`, `LoomIO`, `PromptInput`, `Surface`, `Plugin`, `SessionStore`, `ModelResolver`, `ToolProvider`, `SystemPromptBuilder`, `InteractionHandler`, `Catalog`, …
+- Types: `AgentDriver`, `AgentTurnInput`, `DriverContext`, `DriverEvent`, `DriverResult`, `LoomIO`, `PromptInput`, `Surface`, `Plugin`, `SpawnContribution`, `SessionStore`, `ModelResolver`, `ToolProvider`, `SystemPromptBuilder`, `InteractionHandler`, `Catalog`, …
 
 ---
 

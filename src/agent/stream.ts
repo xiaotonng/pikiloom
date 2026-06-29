@@ -666,6 +666,17 @@ function isLocalProviderBaseURL(baseURL: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::|\/|$)/i.test(baseURL);
 }
 
+// A model surfaced as a BYOK profile must NOT also appear under the native group. Drivers seed
+// their native list with the active model (via opts.currentModel) so it stays visible — but when
+// a BYOK profile is active that "current model" is the profile's third-party model (e.g. a 豆包 /
+// deepseek id), which then wrongly shows up as an "official / 官方 / Native" model. The profile row
+// already represents it, so drop any native entry shadowed by a profile id.
+export function dropNativeShadowedByProfiles(native: ModelInfo[], profileRows: ModelInfo[]): ModelInfo[] {
+  if (!profileRows.length) return native;
+  const shadowed = new Set(profileRows.map(m => m.id.trim().toLowerCase()).filter(Boolean));
+  return native.filter(m => !shadowed.has(m.id.trim().toLowerCase()));
+}
+
 export async function resolveAgentModels(agent: Agent, opts: ModelListOpts = {}): Promise<ModelListResult> {
   const driver = getDriver(agent);
 
@@ -675,7 +686,7 @@ export async function resolveAgentModels(agent: Agent, opts: ModelListOpts = {})
   } catch {
     nativeResult = { agent, models: [], sources: [], note: null };
   }
-  const native: ModelInfo[] = nativeResult.models.map(m => ({
+  const nativeRaw: ModelInfo[] = nativeResult.models.map(m => ({
     id: m.id,
     alias: m.alias,
     group: 'native',
@@ -700,6 +711,8 @@ export async function resolveAgentModels(agent: Agent, opts: ModelListOpts = {})
       (isLocal ? local : cloud).push(entry);
     }
   }
+
+  const native = dropNativeShadowedByProfiles(nativeRaw, [...cloud, ...local]);
 
   const sources = [...nativeResult.sources];
   if (cloud.length) sources.push(`${cloud.length} cloud profile${cloud.length === 1 ? '' : 's'}`);

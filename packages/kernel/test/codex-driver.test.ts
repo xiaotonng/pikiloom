@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CodexDriver } from '../src/drivers/codex.js';
+import {
+  CodexDriver, captureCodexReasoning, captureCodexAgentMessage, codexReasoningItemText,
+  codexFinalText, codexFinalReasoning, codexToolSummary, type CodexContentState,
+} from '../src/drivers/codex.js';
 import type { DriverContext, DriverEvent } from '../src/contracts/driver.js';
 
 // A fake `codex app-server` speaking the newline-JSON-RPC the driver expects, so the
@@ -82,5 +85,109 @@ describe('CodexDriver native (app-server JSON-RPC, hermetic via fake server)', (
     expect(spec.command).toBe('codex');
     expect(spec.args).toContain('-m');
     expect(spec.args).toContain('gpt-5.5');
+  });
+});
+
+// Regression: codex (notably Chat→Responses bridged third-party models) can deliver the final
+// answer and reasoning as *completed items* with NO preceding deltas. The kernel must still
+// surface them — parity with the legacy driver's s.msgs / s.thinkParts + end-of-turn fallback.
+const FAKE_COMPLETED_ONLY_SERVER = `#!/usr/bin/env node
+let buf = '';
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id, result }) + '\\n');
+const notify = (method, params) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', method, params }) + '\\n');
+const TID = 'codex-thread-completed';
+process.stdin.on('data', (d) => {
+  buf += d; const lines = buf.split('\\n'); buf = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.method === 'initialize') reply(m.id, {});
+    else if (m.method === 'thread/start') reply(m.id, { thread: { id: TID } });
+    else if (m.method === 'turn/start') {
+      reply(m.id, {});
+      notify('turn/started', { threadId: TID, turn: { id: 'turn-1' } });
+      // No agentMessage/reasoning deltas — only completed items.
+      notify('rawResponseItem/completed', { threadId: TID, item: { type: 'reasoning', summary: [{ type: 'summary_text', text: 'REASONED-VIA-RAW' }] } });
+      notify('item/completed', { threadId: TID, item: { type: 'agentMessage', id: 'msg1', phase: 'final_answer', text: 'FINAL-VIA-COMPLETED' } });
+      notify('turn/completed', { threadId: TID, turn: { id: 'turn-1', status: 'completed' } });
+    }
+  }
+});
+`;
+
+describe('CodexDriver completed-item fallback (no deltas)', () => {
+  let tmp: string; let fake: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-done-'));
+    fake = path.join(tmp, 'fake-codex.mjs');
+    fs.writeFileSync(fake, FAKE_COMPLETED_ONLY_SERVER);
+    fs.chmodSync(fake, 0o755);
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('captures text + reasoning from completed items and streams them live', async () => {
+    const { ctx, events } = ctxCollect();
+    const result = await new CodexDriver(fake).run({ prompt: 'hi', workdir: tmp }, ctx);
+
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('FINAL-VIA-COMPLETED');
+    expect(result.reasoning).toBe('REASONED-VIA-RAW');
+    // Streamed live (not just present in the terminal result) so the snapshot fills mid-turn.
+    expect(events.filter(e => e.type === 'text').map(e => (e as any).delta).join('')).toBe('FINAL-VIA-COMPLETED');
+    expect(events.filter(e => e.type === 'reasoning').map(e => (e as any).delta).join('')).toBe('REASONED-VIA-RAW');
+  }, 20_000);
+});
+
+describe('codexToolSummary (content items must NOT become Activity tools)', () => {
+  it('returns null for agentMessage and reasoning — they are content, rendered below', () => {
+    expect(codexToolSummary({ id: 'm1', type: 'agentMessage', phase: 'final_answer', text: 'the answer' })).toBeNull();
+    expect(codexToolSummary({ id: 'r1', type: 'reasoning', summary: ['thinking'] })).toBeNull();
+  });
+  it('summarizes real tool calls (shell / edit / mcp+dynamic+collab)', () => {
+    expect(codexToolSummary({ id: 'c1', type: 'commandExecution', command: 'ls -la' })).toMatchObject({ name: 'shell' });
+    expect(codexToolSummary({ id: 'f1', type: 'fileChange', changes: [{ path: 'a/b.ts' }] })).toMatchObject({ name: 'edit' });
+    expect(codexToolSummary({ id: 't1', type: 'mcpToolCall', tool: 'sim.run_case' })).toMatchObject({ name: 'run_case' });
+    expect(codexToolSummary({ id: 'd1', type: 'dynamicToolCall', name: 'web.search' })).toMatchObject({ name: 'search' });
+  });
+  it('ignores unknown/content item types and id-less items', () => {
+    expect(codexToolSummary({ id: 'x1', type: 'tokenCount' })).toBeNull();
+    expect(codexToolSummary({ type: 'mcpToolCall', tool: 'x' })).toBeNull(); // no id
+  });
+});
+
+describe('codex completed-item helpers (pure)', () => {
+  const fresh = (): CodexContentState => ({ text: '', reasoning: '', streamedReasoning: false, msgs: [], thinkParts: [] });
+
+  it('extracts reasoning text from string and {text}-object arrays', () => {
+    expect(codexReasoningItemText({ summary: ['a', 'b'] })).toBe('a\nb');
+    expect(codexReasoningItemText({ summary: [{ text: 'x' }], content: [{ text: 'y' }] })).toBe('x\ny');
+    expect(codexReasoningItemText({ summary: [] })).toBe('');
+  });
+
+  it('does NOT re-emit completed reasoning when deltas already streamed (dedup)', () => {
+    const emits: DriverEvent[] = [];
+    const s = fresh(); s.reasoning = 'streamed'; s.streamedReasoning = true;
+    captureCodexReasoning('completed dup', s, (e) => emits.push(e));
+    expect(emits).toHaveLength(0);                 // not streamed again
+    expect(s.thinkParts).toEqual(['completed dup']); // but kept as fallback material
+    expect(s.reasoning).toBe('streamed');
+  });
+
+  it('does NOT re-emit a completed agentMessage already streamed via delta', () => {
+    const emits: DriverEvent[] = [];
+    const s = fresh(); s.text = 'streamed';
+    const deltaItems = new Set<string>(['msg1']);
+    captureCodexAgentMessage({ id: 'msg1', phase: 'final_answer', text: 'streamed' }, s, deltaItems, new Map(), (e) => emits.push(e));
+    expect(emits).toHaveLength(0);
+    expect(s.text).toBe('streamed');
+  });
+
+  it('finalizers prefer streamed content, fall back to completed-item parts', () => {
+    const streamed: CodexContentState = { text: 'live', reasoning: 'think', streamedReasoning: true, msgs: ['m'], thinkParts: ['t'] };
+    expect(codexFinalText(streamed)).toBe('live');
+    expect(codexFinalReasoning(streamed)).toBe('think');
+    const completedOnly: CodexContentState = { text: '', reasoning: '', streamedReasoning: false, msgs: ['m1', 'm2'], thinkParts: ['t1', 't2'] };
+    expect(codexFinalText(completedOnly)).toBe('m1\n\nm2');
+    expect(codexFinalReasoning(completedOnly)).toBe('t1\n\nt2');
   });
 });

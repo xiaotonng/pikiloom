@@ -516,16 +516,20 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     setPendingProfileSelection(undefined);
   };
 
-  const applyCascade = useCallback((agent: string, model: string) => {
+  const applyCascade = useCallback((agent: string, model: string, profileId?: string | null) => {
     setSelectedAgent(agent);
     setSelectedModel(model);
-    if (pendingProfileSelection !== undefined) setSelectedProfileId(pendingProfileSelection);
+    // profileId is passed explicitly by the caller — reading pendingProfileSelection here is a
+    // stale closure (setPendingProfileSelection on the same click hasn't applied yet), which made
+    // picking a native model skip clearing the profile → it kept running the active BYOK profile.
+    // Tri-state: undefined = leave as-is, null = native (clear profile), string = bind that profile.
+    if (profileId !== undefined) setSelectedProfileId(profileId);
     // Effort is chosen independently via the effort dropdown; only reset it on an agent switch
     // so the new agent's own default applies instead of an incompatible carry-over.
     if (agent !== effectiveAgent) setSelectedEffort('');
     resetCascade();
     setCascadeStep('closed');
-  }, [pendingProfileSelection, effectiveAgent]);
+  }, [effectiveAgent]);
 
   const handleEffortSelect = useCallback((effortId: string) => {
     setSelectedEffort(effortId);
@@ -902,9 +906,10 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                             )}
                             <CascadeItem selected={isSelected} onClick={() => {
                               const finalAgent = pendingAgent || effectiveAgent;
+                              const profileSel = m.profileId ?? null;   // native row → null (clear BYOK profile)
                               setPendingModel(m.id);
-                              setPendingProfileSelection(m.profileId ?? null);
-                              void applyCascade(finalAgent, m.id);
+                              setPendingProfileSelection(profileSel);
+                              void applyCascade(finalAgent, m.id, profileSel);
                             }}>
                               <div className="min-w-0 flex-1">
                                 <div className={cn('truncate text-[11.5px]', m.kind === 'native' && 'font-mono text-[11px]')} title={m.id}>

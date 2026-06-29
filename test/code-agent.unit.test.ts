@@ -8,6 +8,7 @@ import {
   doCodexStream,
   doGeminiStream,
   doStream,
+  dropNativeShadowedByProfiles,
   ensureManagedSession,
   findManagedThreadSession,
   getSessions,
@@ -23,6 +24,7 @@ import {
   sessionListDisplayTitle,
   shutdownCodexServer,
   stageSessionFiles,
+  type ModelInfo,
   type StreamOpts,
 } from '../src/agent/index.ts';
 import {
@@ -2084,6 +2086,31 @@ echo '{"type":"result","session_id":"s-wf"}'`;
     expect(ultraArgs).not.toContain('--effort ultra');
     expect(ultraArgs).not.toContain('--disallowed-tools Workflow');
     }
+  });
+});
+
+describe('dropNativeShadowedByProfiles (a BYOK profile must never appear as native/官方)', () => {
+  const nat = (id: string): ModelInfo => ({ id, alias: null, group: 'native' });
+  const prof = (id: string, providerName: string): ModelInfo =>
+    ({ id, alias: providerName, group: 'cloud', profileId: `p-${id}`, providerName });
+
+  it('drops native rows shadowed by a profile id (case/space-insensitive)', () => {
+    // Codex/Claude seed the native list with the active model; when a 豆包 profile is bound that
+    // model is the profile id and must not show up under native.
+    const native = [nat('gpt-5.5'), nat('doubao-seed-1-6'), nat(' Doubao-Seed-1-6 ')];
+    const profiles = [prof('doubao-seed-1-6', '豆包')];
+    expect(dropNativeShadowedByProfiles(native, profiles).map(m => m.id)).toEqual(['gpt-5.5']);
+  });
+
+  it('is a no-op when there are no profiles', () => {
+    const native = [nat('gpt-5.5'), nat('doubao-seed-1-6')];
+    expect(dropNativeShadowedByProfiles(native, [])).toBe(native);
+  });
+
+  it('keeps genuine native models that no profile shadows', () => {
+    const native = [nat('gpt-5.5'), nat('gpt-5.5-codex')];
+    const profiles = [prof('deepseek-v4', 'DeepSeek')];
+    expect(dropNativeShadowedByProfiles(native, profiles).map(m => m.id)).toEqual(['gpt-5.5', 'gpt-5.5-codex']);
   });
 });
 

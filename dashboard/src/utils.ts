@@ -127,9 +127,12 @@ export function foldUltraEffort(
 
 export function shortenModel(model: string): string {
   let s = model;
-  s = s.replace(/-\d{8,}$/, '');
+  s = s.replace(/-\d{8,}$/, '');           // drop date suffixes (…-20251001)
   s = s.replace(/-(preview|latest|exp)$/, '');
-  s = s.replace(/^(claude-|gemini-|gpt-)/, '');
+  // Strip only the claude-/gemini- family prefix — what's left is still a recognizable name
+  // (opus-4-8, 3.1-pro). Do NOT strip gpt-: it would leave a bare ambiguous version ("5.5"),
+  // so codex models keep their original name (gpt-5.5).
+  s = s.replace(/^(claude-|gemini-)/, '');
   return s;
 }
 

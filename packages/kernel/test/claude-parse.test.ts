@@ -96,6 +96,21 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(usage.usage).toMatchObject({ inputTokens: 10, outputTokens: 3 });
   });
 
+  // Regression: consecutive text blocks (one per tool-use round) must be paragraph-separated so
+  // the live preview shows line breaks. Without the content_block_start handler the kernel ran
+  // them together ("...first.Second...").
+  it('inserts a paragraph break between consecutive text blocks (content_block_start)', () => {
+    const events = run([
+      { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'First block.' } } },
+      // a tool round happens, then claude opens a NEW text block:
+      { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Second block.' } } },
+    ]);
+    const text = events.filter(e => e.type === 'text').map(e => (e as any).delta).join('');
+    expect(text).toBe('First block.\n\nSecond block.');   // no leading break, \n\n between blocks
+  });
+
   // Regression: the kernel path must project the three DERIVED live signals (context %,
   // cumulative context tokens, this-turn output), not just raw input/output. When it only
   // emitted {inputTokens,outputTokens,cachedInputTokens,contextPercent:null} the dashboard's

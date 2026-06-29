@@ -88,7 +88,7 @@ export {
 export {
   detectAgentBin, listAgents, resolveDefaultAgent,
   run, doStream, recoverProfileIdForModel,
-  listModels, resolveAgentModels, getUsage, getAgentBoundModelId, setAgentBoundModelId,
+  listModels, resolveAgentModels, dropNativeShadowedByProfiles, getUsage, getAgentBoundModelId, setAgentBoundModelId,
 } from './stream.js';
 
 export {

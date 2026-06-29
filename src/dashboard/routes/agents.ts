@@ -148,6 +148,11 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
 
     const runtimeSelectedModel = runtime.getRuntimeModel(agentId, config);
     const runtimeSelectedEffort = runtime.getRuntimeEffort(agentId, config);
+    const activeProfile = getActiveProfile(agentId);
+    // runtimeSelectedModel is the model that will RUN (profile-aware): when a BYOK profile is
+    // bound it is the profile's third-party model. The NATIVE model list must not be seeded with
+    // it, else it shows under the "官方 / Native" group (it is surfaced separately via byokModels).
+    const nativeRuntimeModel = activeProfile ? '' : runtimeSelectedModel;
     let models: { id: string; alias: string | null }[] = [];
     let usage: UsageResult = emptyUsage(agentId, 'Agent not installed.');
     let nativeConfig: ReturnType<NonNullable<ReturnType<typeof getDriver>['getNativeConfig']>> = null;
@@ -158,11 +163,11 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
         if (driver.getNativeConfig) {
           try { nativeConfig = driver.getNativeConfig(); } catch {  }
         }
-        const modelFallback = runtimeSelectedModel ? [{ id: runtimeSelectedModel, alias: null }] : [];
+        const modelFallback = nativeRuntimeModel ? [{ id: nativeRuntimeModel, alias: null }] : [];
         const cachedUsage = driver.getUsage({ agent: agentId, model: runtimeSelectedModel });
         const [resolvedModels, resolvedUsage] = await Promise.all([
           withTimeoutFallback(
-            driver.listModels({ workdir, currentModel: runtimeSelectedModel }).then(result => dedupeModels([
+            driver.listModels({ workdir, currentModel: nativeRuntimeModel || undefined }).then(result => dedupeModels([
               ...modelFallback,
               ...result.models,
             ])),
@@ -187,7 +192,6 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
 
     const updateState = getAgentUpdateState(agentId);
 
-    const activeProfile = getActiveProfile(agentId);
     const byokProvider = activeProfile ? getProvider(activeProfile.providerId) : null;
     const byokProviderName = byokProvider?.name || null;
     const byokProfileName = activeProfile
@@ -195,7 +199,7 @@ async function buildAgentStatusResponse(config = loadUserConfig(), agentOptions:
       ? activeProfile.name
       : null;
 
-    const nativeSelectedModel = runtimeSelectedModel || nativeConfig?.model || null;
+    const nativeSelectedModel = nativeRuntimeModel || nativeConfig?.model || null;
     const nativeSelectedEffort = runtimeSelectedEffort || nativeConfig?.effort || null;
     const selectedModel = activeProfile?.modelId || nativeSelectedModel;
     const selectedEffort = activeProfile?.effort || nativeSelectedEffort;

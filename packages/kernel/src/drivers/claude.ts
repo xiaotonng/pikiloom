@@ -198,6 +198,19 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       s.cached = u?.cache_read_input_tokens ?? 0;
       s.cacheCreation = u?.cache_creation_input_tokens ?? 0;
       s.output = 0;
+    } else if (inner.type === 'content_block_start') {
+      // Claude emits multiple text/thinking blocks per turn (one set per tool-use round). Insert a
+      // paragraph break before a NEW block when prior content exists, so the live preview shows
+      // breaks between segments instead of running them together. Mirrors the legacy driver; the
+      // separator is emitted as a delta so the runtime's accumulated snapshot stays in sync with s.
+      const bt = inner.content_block?.type;
+      if (bt === 'text' && s.text && !s.text.endsWith('\n\n')) {
+        const sep = s.text.endsWith('\n') ? '\n' : '\n\n';
+        s.text += sep; emit({ type: 'text', delta: sep });
+      } else if (bt === 'thinking' && s.reasoning && !s.reasoning.endsWith('\n\n')) {
+        const sep = s.reasoning.endsWith('\n') ? '\n' : '\n\n';
+        s.reasoning += sep; emit({ type: 'reasoning', delta: sep });
+      }
     } else if (inner.type === 'content_block_delta') {
       const d = inner.delta || {};
       if (d.type === 'text_delta' && d.text) { s.text += d.text; s.streamedText = true; emit({ type: 'text', delta: d.text }); }

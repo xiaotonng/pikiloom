@@ -66,9 +66,10 @@ export class CodexAppServer {
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => { this.kill(); resolve(false); }, CODEX_APPSERVER_SPAWN_TIMEOUT_MS);
       const args = ['app-server'];
-      const overrides = this.configOverrides.some(entry => /^features\.goals\s*=/.test(entry))
-        ? this.configOverrides
-        : [...this.configOverrides, 'features.goals=true'];
+      // Do NOT force model_reasoning_summary — reasoning summaries stay OFF by default (respecting
+      // ~/.codex/config.toml = original behavior). A caller wanting thinking passes it via configOverrides.
+      const overrides = [...this.configOverrides];
+      if (!overrides.some(entry => /^features\.goals\s*=/.test(entry))) overrides.push('features.goals=true');
       for (const c of overrides) args.push('-c', c);
       agentLog(`[codex-rpc] spawning: codex ${args.join(' ')}`);
       const proc = spawn('codex', args, {

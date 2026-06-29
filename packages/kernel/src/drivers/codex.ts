@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type {
-  AgentDriver, AgentTurnInput, DriverContext, DriverResult, TuiInput, TuiSpec,
+  AgentDriver, AgentTurnInput, DriverContext, DriverEvent, DriverResult, TuiInput, TuiSpec,
 } from '../contracts/driver.js';
 import type { UniversalPlan, UniversalUsage, UniversalInteraction } from '../protocol/index.js';
 
@@ -23,7 +23,11 @@ class AppServer {
 
   async start(): Promise<boolean> {
     const args = ['app-server'];
-    const overrides = this.configOverrides.some(c => /^features\.goals\s*=/.test(c)) ? this.configOverrides : [...this.configOverrides, 'features.goals=true'];
+    // Do NOT force model_reasoning_summary — codex reasoning summaries stay OFF by default
+    // (respecting ~/.codex/config.toml, which is the original behavior). A caller that wants
+    // thinking can pass `model_reasoning_summary=...` via configOverrides; we never inject it.
+    const overrides = [...this.configOverrides];
+    if (!overrides.some(c => /^features\.goals\s*=/.test(c))) overrides.push('features.goals=true');
     for (const c of overrides) args.push('-c', c);
     try {
       this.proc = spawn(this.bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.env ? { ...process.env, ...this.env } : process.env });
@@ -100,13 +104,23 @@ function codexFileChangeSummary(item: any): string {
 
 // Normalize a codex app-server item -> {id, name, summary}. The summary mirrors pikiloom's
 // vocabulary ("Run shell: <cmd>", "Edit <path>") so the activity projection reads naturally.
-function codexToolSummary(item: any): { id: string; name: string; summary: string } | null {
+// Only ACTUAL tool calls become Activity rows. agentMessage (the answer text) and reasoning
+// (thinking) are CONTENT — they render below as message text / thinking, never as tools. The old
+// fallback to `item.type` wrongly turned every item (incl. agentMessage/reasoning) into a bogus
+// "tool" in the Activity card. Mirrors the legacy driver's isCodexToolCallItem whitelist.
+const CODEX_TOOL_CALL_TYPES = new Set(['dynamicToolCall', 'mcpToolCall', 'collabAgentToolCall']);
+export function codexToolSummary(item: any): { id: string; name: string; summary: string } | null {
   const id = String(item?.id || '');
   if (!id) return null;
   if (item.type === 'commandExecution') { const c = codexCommandPreview(item.command); return { id, name: 'shell', summary: c ? `Run shell: ${c}` : 'Run shell command' }; }
   if (item.type === 'fileChange' || item.type === 'patch') return { id, name: 'edit', summary: codexFileChangeSummary(item) };
-  const tool = typeof item?.tool === 'string' ? item.tool : typeof item?.name === 'string' ? item.name : item?.type;
-  return tool ? { id, name: String(tool), summary: String(tool) } : null;
+  if (CODEX_TOOL_CALL_TYPES.has(item.type)) {
+    const raw = typeof item.tool === 'string' && item.tool.trim() ? item.tool.trim()
+      : typeof item.name === 'string' && item.name.trim() ? item.name.trim() : '';
+    const name = raw ? (raw.split('.').pop() || raw) : 'tool';
+    return { id, name, summary: raw ? `Use ${name}` : 'Use tool' };
+  }
+  return null;
 }
 
 // codex `item/tool/requestUserInput` params -> a normalized UniversalInteraction
@@ -130,6 +144,68 @@ function codexUserInputToInteraction(params: any, promptId: string): UniversalIn
   return { promptId, kind: 'user-input', title: 'User Input Required', hint: 'Use the buttons when available, or reply with text.', questions };
 }
 
+// ── Completed-item fallback (parity with the legacy codex driver) ───────────────
+// Codex streams the final answer and reasoning as deltas (item/agentMessage/delta,
+// item/reasoning/*Delta) on the native path — but delivers them as *completed items*
+// (item/completed, rawResponseItem/completed) when deltas are absent, which is common for
+// Chat→Responses bridged third-party models (glm / deepseek / 豆包). The kernel previously
+// only read the delta path, so those turns surfaced empty text/thinking. These helpers
+// capture the completed-item form and stream it live, mirroring the legacy driver's
+// s.msgs / s.thinkParts accumulators + end-of-turn fallback, and the claude driver's
+// !streamedText / !streamedReasoning fallbacks.
+
+export interface CodexContentState {
+  text: string; reasoning: string; streamedReasoning: boolean;
+  msgs: string[]; thinkParts: string[];
+}
+
+// Reasoning text from a completed `reasoning` item (item/completed or rawResponseItem/completed):
+// summary/content arrays of plain strings or {text} objects.
+export function codexReasoningItemText(item: any): string {
+  const parts = [
+    ...(Array.isArray(item?.summary) ? item.summary : []),
+    ...(Array.isArray(item?.content) ? item.content : []),
+  ];
+  return parts.map((p: any) => (typeof p === 'string' ? p : p?.text || '')).filter(Boolean).join('\n').trim();
+}
+
+// A completed final_answer agentMessage that did NOT stream deltas: append + emit it live.
+// deltaItems holds the ids already streamed, so a completed item echoing a streamed one is
+// not double-counted (matches the legacy driver's deltaSeenForItem guard).
+export function captureCodexAgentMessage(
+  item: any, s: CodexContentState, deltaItems: Set<string>, phases: Map<string, string>,
+  emit: (e: DriverEvent) => void,
+): void {
+  const phase = item?.phase || (item?.id ? phases.get(item.id) : null) || 'final_answer';
+  if (phase !== 'final_answer') return;
+  const text = typeof item?.text === 'string' ? item.text.trim() : '';
+  if (!text) return;
+  s.msgs.push(text);
+  if (item.id && deltaItems.has(item.id)) return;
+  const delta = s.text.trim() ? `\n\n${text}` : text;
+  s.text += delta;
+  emit({ type: 'text', delta });
+}
+
+// A completed reasoning item: keep it for the end-of-turn fallback, and stream it live only
+// when nothing arrived as reasoning deltas (so the streamed path is never double-emitted).
+export function captureCodexReasoning(text: string, s: CodexContentState, emit: (e: DriverEvent) => void): void {
+  if (!text) return;
+  s.thinkParts.push(text);
+  if (s.streamedReasoning) return;
+  const delta = s.reasoning.trim() ? `\n\n${text}` : text;
+  s.reasoning += delta;
+  emit({ type: 'reasoning', delta });
+}
+
+// End-of-turn finalizers: prefer streamed text/reasoning, fall back to completed-item parts.
+export function codexFinalText(s: CodexContentState): string {
+  return s.text.trim() ? s.text : s.msgs.join('\n\n');
+}
+export function codexFinalReasoning(s: CodexContentState): string {
+  return s.reasoning.trim() ? s.reasoning : s.thinkParts.join('\n\n');
+}
+
 export class CodexDriver implements AgentDriver {
   readonly id = 'codex';
   readonly capabilities = { steer: true, interact: false, resume: true, tui: true };
@@ -142,9 +218,10 @@ export class CodexDriver implements AgentDriver {
     // to the native account.
     const config: string[] = [...(input.configOverrides || [])];
     const srv = new AppServer(this.bin, config, input.env);
-    const state = { text: '', reasoning: '', sessionId: input.sessionId ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, contextUsed: null as number | null, contextWindow: null as number | null, status: null as string | null, error: null as string | null, turnId: null as string | null };
+    const state = { text: '', reasoning: '', streamedReasoning: false, msgs: [] as string[], thinkParts: [] as string[], sessionId: input.sessionId ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, contextUsed: null as number | null, contextWindow: null as number | null, status: null as string | null, error: null as string | null, turnId: null as string | null };
     const phases = new Map<string, string>();
     const toolSummaries = new Map<string, string>();
+    const deltaItems = new Set<string>();
     let steerRegistered = false;
 
     const ok = await srv.start();
@@ -192,17 +269,29 @@ export class CodexDriver implements AgentDriver {
           }
           case 'item/agentMessage/delta': {
             const phase = params?.itemId ? (phases.get(params.itemId) || 'final_answer') : 'final_answer';
-            if (phase === 'final_answer' && params?.delta) { state.text += params.delta; ctx.emit({ type: 'text', delta: params.delta }); }
+            if (phase === 'final_answer' && params?.delta) {
+              state.text += params.delta;
+              if (params.itemId) deltaItems.add(params.itemId);
+              ctx.emit({ type: 'text', delta: params.delta });
+            }
             break;
           }
           case 'item/reasoning/textDelta':
           case 'item/reasoning/summaryTextDelta':
-            if (params?.delta) { state.reasoning += params.delta; ctx.emit({ type: 'reasoning', delta: params.delta }); }
+            if (params?.delta) { state.reasoning += params.delta; state.streamedReasoning = true; ctx.emit({ type: 'reasoning', delta: params.delta }); }
             break;
           case 'item/completed': {
             const item = params?.item || {};
+            // Final answer / reasoning delivered as a completed item (no preceding deltas).
+            if (item.type === 'agentMessage') captureCodexAgentMessage(item, state, deltaItems, phases, ctx.emit);
+            else if (item.type === 'reasoning') captureCodexReasoning(codexReasoningItemText(item), state, ctx.emit);
             const t = codexToolSummary(item);
             if (t && toolSummaries.has(t.id)) ctx.emit({ type: 'tool', call: { id: t.id, name: t.name, summary: toolSummaries.get(t.id) || t.summary, status: item.status === 'failed' ? 'failed' : 'done' } });
+            break;
+          }
+          case 'rawResponseItem/completed': {
+            const item = params?.item || {};
+            if (item?.type === 'reasoning') captureCodexReasoning(codexReasoningItemText(item), state, ctx.emit);
             break;
           }
           case 'turn/plan/updated': { const plan = planFromUpdate(params); if (plan) ctx.emit({ type: 'plan', plan }); break; }
@@ -247,10 +336,11 @@ export class CodexDriver implements AgentDriver {
       await turnDone;
       const usage: UniversalUsage = codexUsageOf(state);
       const ok2 = (state.status === 'completed' || state.status == null) && !state.error && !ctx.signal.aborted;
+      const finalReasoning = codexFinalReasoning(state);
       return {
         ok: ok2,
-        text: state.text,
-        reasoning: state.reasoning || undefined,
+        text: codexFinalText(state),
+        reasoning: finalReasoning || undefined,
         error: state.error || (ctx.signal.aborted ? 'Interrupted by user.' : null),
         stopReason: ctx.signal.aborted ? 'interrupted' : (state.status || 'end_turn'),
         sessionId: state.sessionId,

@@ -66,8 +66,25 @@ export const SessionPanel = memo(function SessionPanel({
   const agentRuntime = useStore(s => s.agentStatus?.agents?.find(a => a.agent === session.agent) ?? null);
   const globalEffort = agentRuntime?.selectedEffort ?? null;
   const globalModel = agentRuntime?.selectedModel ?? null;
-  const byokProviderName = agentRuntime?.byokProviderName ?? null;
-  const byokProfileName = agentRuntime?.byokProfileName ?? null;
+  // Provider/profile shown for THIS session must reflect its OWN binding (session.profileId),
+  // not the agent's GLOBAL active profile — else a session switched to a native model still shows
+  // the global BYOK provider it no longer uses (e.g. "via 豆包火山" on a native gpt-5.5 turn).
+  // Tri-state: undefined = legacy/unbound → global; null = native (no provider); string = that profile.
+  const modelLayer = useStore(s => s.modelLayer);
+  const sessionProfile = session.profileId
+    ? (modelLayer?.profiles.find(p => p.id === session.profileId) ?? null)
+    : null;
+  const sessionProvider = sessionProfile
+    ? (modelLayer?.providers.find(pr => pr.id === sessionProfile.providerId) ?? null)
+    : null;
+  const byokProviderName = session.profileId === undefined
+    ? (agentRuntime?.byokProviderName ?? null)
+    : (sessionProvider?.name ?? null);
+  const byokProfileName = session.profileId === undefined
+    ? (agentRuntime?.byokProfileName ?? null)
+    : (sessionProfile && sessionProfile.name.trim().toLowerCase() !== sessionProfile.modelId.trim().toLowerCase()
+        ? sessionProfile.name
+        : null);
   const t = useMemo(() => createT(locale), [locale]);
   const meta = getAgentMeta(session.agent || '');
   const displayState = sessionDisplayState(session);

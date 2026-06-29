@@ -96,6 +96,32 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(usage.usage).toMatchObject({ inputTokens: 10, outputTokens: 3 });
   });
 
+  // Regression: the kernel path must project the three DERIVED live signals (context %,
+  // cumulative context tokens, this-turn output), not just raw input/output. When it only
+  // emitted {inputTokens,outputTokens,cachedInputTokens,contextPercent:null} the dashboard's
+  // live "xx.x% · NNk · ↑NN" row vanished mid-execution (it keys on exactly these fields).
+  it('projects context%, cumulative context tokens, and per-turn output across tool rounds', () => {
+    const events = run([
+      { type: 'system', session_id: 'sess-ctx', model: 'claude-opus-4-8' },           // sets the effective context window
+      // message #1: 50k prompt (+10k cache), 200 output
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 50_000, cache_read_input_tokens: 10_000 } } } },
+      { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 200 } } },
+      // message #2 (a tool round within the same turn): 60k prompt (+12k cache), 150 output
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 60_000, cache_read_input_tokens: 12_000 } } } },
+      { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 150 } } },
+    ]);
+    const usage = (events.filter(e => e.type === 'usage').pop() as any).usage;
+    expect(usage).toMatchObject({
+      inputTokens: 60_000,
+      outputTokens: 150,
+      cachedInputTokens: 12_000,
+      contextUsedTokens: 72_150,   // latest message occupancy: 60000 + 12000 + 0 + 150
+      turnOutputTokens: 350,       // SUMS the turn: 200 (carried from msg #1) + 150
+    });
+    // 72150 / (1_000_000 - 33_000 reserve) -> 7.5%
+    expect(usage.contextPercent).toBe(7.5);
+  });
+
   it('creates a sub-agent on Task and routes child tool_uses into it (parent_tool_use_id)', () => {
     const events = run([
       { type: 'assistant', message: { content: [

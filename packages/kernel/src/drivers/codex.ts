@@ -142,7 +142,7 @@ export class CodexDriver implements AgentDriver {
     // to the native account.
     const config: string[] = [...(input.configOverrides || [])];
     const srv = new AppServer(this.bin, config, input.env);
-    const state = { text: '', reasoning: '', sessionId: input.sessionId ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, status: null as string | null, error: null as string | null, turnId: null as string | null };
+    const state = { text: '', reasoning: '', sessionId: input.sessionId ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, contextUsed: null as number | null, contextWindow: null as number | null, status: null as string | null, error: null as string | null, turnId: null as string | null };
     const phases = new Map<string, string>();
     const toolSummaries = new Map<string, string>();
     let steerRegistered = false;
@@ -207,17 +207,16 @@ export class CodexDriver implements AgentDriver {
           }
           case 'turn/plan/updated': { const plan = planFromUpdate(params); if (plan) ctx.emit({ type: 'plan', plan }); break; }
           case 'thread/tokenUsage/updated': {
-            const u = params?.tokenUsage || params?.usage || {};
-            if (u.input_tokens != null || u.inputTokens != null) state.input = u.input_tokens ?? u.inputTokens;
-            if (u.output_tokens != null || u.outputTokens != null) state.output = u.output_tokens ?? u.outputTokens;
-            if (u.cached_input_tokens != null || u.cachedInputTokens != null) state.cached = u.cached_input_tokens ?? u.cachedInputTokens;
-            ctx.emit({ type: 'usage', usage: { inputTokens: state.input, outputTokens: state.output, cachedInputTokens: state.cached, contextPercent: null } });
+            applyCodexTokenUsage(state, params?.tokenUsage || params?.usage);
+            ctx.emit({ type: 'usage', usage: codexUsageOf(state) });
             break;
           }
           case 'turn/completed': {
             const turn = params?.turn || {};
             state.status = turn.status ?? 'completed';
             if (turn.error) state.error = turn.error.message || turn.error.code || 'turn error';
+            applyCodexTokenUsage(state, params?.tokenUsage || turn.tokenUsage || turn.usage);
+            ctx.emit({ type: 'usage', usage: codexUsageOf(state) });
             settle();
             break;
           }
@@ -246,7 +245,7 @@ export class CodexDriver implements AgentDriver {
       if (turnResp.error) return { ok: false, text: state.text, error: turnResp.error.message || 'turn/start failed', stopReason: 'error', sessionId: state.sessionId };
 
       await turnDone;
-      const usage: UniversalUsage = { inputTokens: state.input, outputTokens: state.output, cachedInputTokens: state.cached, contextPercent: null };
+      const usage: UniversalUsage = codexUsageOf(state);
       const ok2 = (state.status === 'completed' || state.status == null) && !state.error && !ctx.signal.aborted;
       return {
         ok: ok2,
@@ -279,4 +278,77 @@ function buildTurnInput(prompt: string, attachments: string[]): any[] {
   }
   input.push({ type: 'text', text: prompt });
   return input;
+}
+
+// ── Token usage / context projection (ported from pikiloom's codex driver) ──────
+// Codex reports usage as a nested {info:{last, total, model_context_window}} (and
+// sometimes a flat shape). The live UI wants contextUsedTokens / context% / this-turn
+// output — none of which the raw input/output counts carry. This is the codex-side
+// analog of the claude driver's claudeUsageOf; without it the kernel path shows no
+// live token row for codex sessions.
+
+export interface CodexUsageState {
+  input: number | null; output: number | null; cached: number | null;
+  contextUsed?: number | null; contextWindow?: number | null;
+}
+
+function codexNum(...vals: any[]): number | null {
+  for (const v of vals) { const n = typeof v === 'number' ? v : Number(v); if (Number.isFinite(n)) return n; }
+  return null;
+}
+
+// Context occupancy from one usage record: prefer total_tokens, else input(+output).
+function codexContextUsed(raw: any): number | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const total = codexNum(raw.total_tokens, raw.totalTokens);
+  if (total != null && total >= 0) return total;
+  const i = codexNum(raw.input_tokens, raw.inputTokens);
+  const o = codexNum(raw.output_tokens, raw.outputTokens);
+  if (i != null && o != null) return i + o;
+  return i;
+}
+
+// Fold a codex tokenUsage payload into driver state: last-turn counts, context
+// occupancy, and the model window. Tolerant of nested {info:{…}} and flat shapes.
+export function applyCodexTokenUsage(s: CodexUsageState, rawUsage: any): void {
+  if (!rawUsage || typeof rawUsage !== 'object') return;
+  const info = rawUsage.info && typeof rawUsage.info === 'object' ? rawUsage.info : rawUsage;
+  const last = info.last ?? info.lastTokenUsage ?? info.last_token_usage ?? rawUsage.last;
+  const li = codexNum(last?.input_tokens, last?.inputTokens);
+  const lo = codexNum(last?.output_tokens, last?.outputTokens);
+  const lc = codexNum(last?.cached_input_tokens, last?.cachedInputTokens);
+  if (li != null) s.input = li;
+  if (lo != null) s.output = lo;
+  if (lc != null) s.cached = lc;
+  const used = codexContextUsed(last);
+  if (used != null) s.contextUsed = used;
+  // Cumulative total as fallback for the per-turn counts (the trailing `?? rawUsage`
+  // also catches the flat shape, where there is no nested `last`).
+  const total = info.total ?? info.totalTokenUsage ?? info.total_token_usage ?? rawUsage.total ?? rawUsage;
+  if (total && typeof total === 'object') {
+    const ti = codexNum(total.input_tokens, total.inputTokens);
+    const to = codexNum(total.output_tokens, total.outputTokens);
+    const tc = codexNum(total.cached_input_tokens, total.cachedInputTokens);
+    if (li == null && ti != null) s.input = ti;
+    if (lo == null && to != null) s.output = to;
+    if (lc == null && tc != null) s.cached = tc;
+  }
+  const cw = codexNum(info.modelContextWindow, info.model_context_window, rawUsage.modelContextWindow, rawUsage.model_context_window);
+  if (cw != null && cw > 0) s.contextWindow = cw;
+}
+
+export function codexUsageOf(s: CodexUsageState): UniversalUsage {
+  const fallback = (s.input ?? 0) + (s.cached ?? 0);
+  const used = s.contextUsed ?? (fallback > 0 ? fallback : null);
+  const window = s.contextWindow ?? null;
+  const contextPercent = used != null && window ? Math.min(99.9, Math.round((used / window) * 1000) / 10) : null;
+  const turnOutput = s.output ?? 0;
+  return {
+    inputTokens: s.input,
+    outputTokens: s.output,
+    cachedInputTokens: s.cached,
+    contextUsedTokens: used,
+    contextPercent,
+    turnOutputTokens: turnOutput > 0 ? turnOutput : null,
+  };
 }

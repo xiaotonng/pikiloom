@@ -39,6 +39,8 @@ export class ClaudeDriver implements AgentDriver {
       sessionId: null as string | null, model: null as string | null,
       stopReason: null as string | null, error: null as string | null,
       input: null as number | null, output: null as number | null, cached: null as number | null,
+      cacheCreation: null as number | null,
+      contextWindow: null as number | null, turnOutputTokensBase: 0,
       subAgents: new Map<string, any>(),
       tools: new Map<string, { name: string; summary: string }>(),
     };
@@ -103,10 +105,55 @@ export class ClaudeDriver implements AgentDriver {
     });
   }
 
-  private usage(s: { input: number | null; output: number | null; cached: number | null }): UniversalUsage {
-    return { inputTokens: s.input, outputTokens: s.output, cachedInputTokens: s.cached, contextPercent: null };
+  private usage(s: ClaudeUsageState): UniversalUsage {
+    return claudeUsageOf(s);
   }
 
+}
+
+// ── Token usage / context projection (ported from pikiloom's claude driver) ──────
+// Claude reports per-message usage; the live UI wants three derived signals the raw
+// counts don't carry: context-window %, cumulative context tokens, and this turn's
+// output. Computing them here (not just inputTokens/outputTokens) is what restores the
+// live "xx.x% · NNk · ↑NN" row the kernel path previously dropped.
+
+export interface ClaudeUsageState {
+  input: number | null; output: number | null; cached: number | null;
+  cacheCreation?: number | null; contextWindow?: number | null; turnOutputTokensBase?: number | null;
+}
+
+export function claudeUsageOf(s: ClaudeUsageState): UniversalUsage {
+  const used = (s.input ?? 0) + (s.cached ?? 0) + (s.cacheCreation ?? 0) + (s.output ?? 0);
+  const window = s.contextWindow ?? null;
+  const contextPercent = window && used > 0 ? Math.min(99.9, Math.round((used / window) * 1000) / 10) : null;
+  const turnOutput = (s.turnOutputTokensBase ?? 0) + (s.output ?? 0);
+  return {
+    inputTokens: s.input,
+    outputTokens: s.output,
+    cachedInputTokens: s.cached,
+    contextUsedTokens: used > 0 ? used : null,
+    contextPercent,
+    turnOutputTokens: turnOutput > 0 ? turnOutput : null,
+  };
+}
+
+// Advertised context window by Claude model id (best-effort; unknown -> null so the
+// percent simply stays absent rather than wrong). Anchor-free so vendor-prefixed ids
+// (us.anthropic.claude-…) still match.
+export function claudeContextWindowFromModel(model: unknown): number | null {
+  const id = String(model ?? '').trim().toLowerCase();
+  if (!id) return null;
+  if (id === 'haiku' || /claude-haiku-/.test(id)) return 200_000;
+  if (id === 'opus' || id === 'sonnet' || id === 'fable') return 1_000_000;
+  if (/claude-(opus|sonnet)-/.test(id) || /claude-fable-/.test(id)) return 1_000_000;
+  return null;
+}
+
+// Usable window = advertised minus Claude's max-output (20k) + autocompact (13k) reserve.
+const CLAUDE_USABLE_WINDOW_RESERVE = 33_000;
+export function claudeEffectiveContextWindow(advertised: number | null): number | null {
+  if (advertised == null) return null;
+  return advertised <= CLAUDE_USABLE_WINDOW_RESERVE ? advertised : advertised - CLAUDE_USABLE_WINDOW_RESERVE;
 }
 
 // Parse one claude stream-json event into kernel DriverEvents (pure + exported for
@@ -136,13 +183,21 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
   if (t === 'system') {
     if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
     s.model = ev.model ?? s.model;
+    s.contextWindow = claudeEffectiveContextWindow(claudeContextWindowFromModel(s.model)) ?? s.contextWindow;
     return;
   }
   if (t === 'stream_event') {
     const inner = ev.event || {};
     if (inner.type === 'message_start') {
       const u = inner.message?.usage;
-      if (u) { s.input = u.input_tokens ?? s.input; s.cached = u.cache_read_input_tokens ?? s.cached; }
+      // Claude emits one message per tool-use round within a single turn. Carry the prior
+      // message's output into the per-turn base, then reset to the new message's prompt size
+      // so contextUsedTokens tracks current occupancy while turnOutputTokens sums the turn.
+      s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + (s.output ?? 0);
+      s.input = u?.input_tokens ?? 0;
+      s.cached = u?.cache_read_input_tokens ?? 0;
+      s.cacheCreation = u?.cache_creation_input_tokens ?? 0;
+      s.output = 0;
     } else if (inner.type === 'content_block_delta') {
       const d = inner.delta || {};
       if (d.type === 'text_delta' && d.text) { s.text += d.text; s.streamedText = true; emit({ type: 'text', delta: d.text }); }
@@ -153,7 +208,8 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
         if (u.output_tokens != null) s.output = u.output_tokens;
         if (u.input_tokens != null) s.input = u.input_tokens;
         if (u.cache_read_input_tokens != null) s.cached = u.cache_read_input_tokens;
-        emit({ type: 'usage', usage: { inputTokens: s.input, outputTokens: s.output, cachedInputTokens: s.cached, contextPercent: null } });
+        if (u.cache_creation_input_tokens != null) s.cacheCreation = u.cache_creation_input_tokens;
+        emit({ type: 'usage', usage: claudeUsageOf(s) });
       }
       if (inner.delta?.stop_reason) s.stopReason = inner.delta.stop_reason;
     }
@@ -231,6 +287,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       if (s.output == null && u.output_tokens != null) s.output = u.output_tokens;
       const cached = u.cache_read_input_tokens ?? u.cached_input_tokens;
       if (s.cached == null && cached != null) s.cached = cached;
+      if (s.cacheCreation == null && u.cache_creation_input_tokens != null) s.cacheCreation = u.cache_creation_input_tokens;
     }
     return;
   }

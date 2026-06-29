@@ -117,6 +117,7 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
       cachedInputTokens: s.usage?.cachedInputTokens ?? null,
       contextUsedTokens: s.usage?.contextUsedTokens ?? null,
       contextPercent: s.usage?.contextPercent ?? null,
+      turnOutputTokens: s.usage?.turnOutputTokens ?? null,
       toolCalls: s.toolCalls?.length ? (s.toolCalls as StreamToolCall[]) : undefined,
       subAgents: s.subAgents?.length ? s.subAgents : undefined,
       providerName: opts.byokProviderName ?? null,

@@ -530,6 +530,23 @@ export const SessionPanel = memo(function SessionPanel({
   }, [clearPending]);
 
   const handleSteerTask = useCallback(async (taskId: string) => {
+    // Steering interrupts the current turn so this queued task jumps ahead as a fresh turn.
+    // During the interrupt→start transition the task briefly leaves both the running slot and
+    // the queue, so the queue-prune (which revokes blob URLs of sends that leave liveTaskIds)
+    // would drop its attached images before the snapshot-driven promotion can claim them — the
+    // bubble then falls back to the live-question path, which renders text but no image.
+    // Promote the send's prompt + images into the live bubble HERE (transfer blob ownership,
+    // never revoke) so the image survives and renders via the optimistic pending path.
+    const promoted = pendingQueuedSendsRef.current.find(s => s.taskId === taskId) || null;
+    if (promoted && promoted.imageUrls.length > 0) {
+      for (const u of pendingImageUrlsRef.current) URL.revokeObjectURL(u);
+      setPendingPrompt(promoted.prompt || null);
+      setPendingImageUrls(promoted.imageUrls);
+      pendingImageUrlsRef.current = promoted.imageUrls;
+      setPendingTaskId(taskId);
+      pendingTaskIdRef.current = taskId;
+      setPendingQueuedSends(prev => prev.filter(s => s.taskId !== taskId));
+    }
     try { await api.steerSession(taskId); } catch {}
   }, []);
 

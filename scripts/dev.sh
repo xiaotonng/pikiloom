@@ -166,11 +166,13 @@ fi
 
 if (( _is_detached_worker )); then
   {
+    npm run build:kernel
     npm run build:dashboard
     npx tsx src/cli/main.ts --no-daemon --dashboard-port "${DEV_PORT}" "$@"
   } >>"${LOG_FILE}" 2>&1
 else
   {
+    npm run build:kernel
     npm run build:dashboard
     npx tsx src/cli/main.ts --no-daemon --dashboard-port "${DEV_PORT}" "$@"
   } 2>&1 | node scripts/retained-tee.mjs "${LOG_FILE}"

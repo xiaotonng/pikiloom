@@ -677,7 +677,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
           />
 
           {imageAttachments.length > 0 && (
-            <div className="px-3 pt-3">
+            <div className="px-4 pt-3">
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {imageAttachments.map(item => (
                   <div key={item.id} className="relative shrink-0">
@@ -754,11 +754,11 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
             onCompositionEnd={() => { composingRef.current = false; }}
             placeholder={t('hub.inputPlaceholder')}
             rows={1}
-            className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[13.5px] text-fg outline-none placeholder:text-fg-5/25 leading-[1.6]"
+            className="block w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[13.5px] text-fg outline-none placeholder:text-fg-5/25 leading-[1.6]"
             style={{ maxHeight: 200, overflow: input.split('\n').length > 6 ? 'auto' : 'hidden' }}
           />
 
-          <div className="flex items-center gap-1.5 px-2.5 pb-2 pt-1">
+          <div className="flex items-center gap-1 px-2.5 pb-2 pt-1">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -777,7 +777,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
               disabled={!agents.length}
               title={agents.length ? cascadeLabel : undefined}
               className={cn(
-                'flex items-center gap-1.5 h-[28px] px-2.5 rounded-lg text-[11px] font-medium transition-all duration-200 select-none',
+                'flex items-center gap-1 h-[28px] pl-2 pr-0.5 rounded-lg text-[11px] font-medium transition-all duration-200 select-none',
                 cascadeStep !== 'closed'
                   ? 'bg-panel-h border border-edge-h text-fg-3'
                   : 'text-fg-5/60 hover:text-fg-4 hover:bg-panel-h/50 border border-transparent',
@@ -1085,6 +1085,12 @@ function EffortChip({ current, options, onSelect, label }: {
   if (!options.length) return null;
   const currentLabel = options.find(o => o.id === current)?.label
     || (current ? current.charAt(0).toUpperCase() + current.slice(1) : '—');
+  // Gauge needle sweeps with the level's position in the ordered (low→high) options;
+  // ultra (claude's top level) additionally paints the dial+needle with a vivid gradient.
+  const levelIdx = options.findIndex(o => o.id === current);
+  const levelFrac = options.length > 1 && levelIdx >= 0 ? levelIdx / (options.length - 1) : 0.5;
+  const needleAngle = Math.round(-80 + levelFrac * 160);
+  const isUltra = current === 'ultra';
   return (
     <div className="relative shrink-0" ref={ref}>
       <button
@@ -1092,16 +1098,26 @@ function EffortChip({ current, options, onSelect, label }: {
         onClick={() => setOpen(v => !v)}
         title={label}
         className={cn(
-          'flex items-center gap-1.5 h-[28px] px-2.5 rounded-lg text-[11px] font-medium transition-all duration-200 select-none',
+          'flex items-center gap-1 h-[28px] pl-0.5 pr-2 rounded-lg text-[11px] font-medium transition-all duration-200 select-none',
           open
             ? 'bg-panel-h border border-edge-h text-fg-3'
             : 'text-fg-5/60 hover:text-fg-4 hover:bg-panel-h/50 border border-transparent',
         )}
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" />
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={isUltra ? 'url(#effortUltraGrad)' : 'currentColor'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {isUltra && (
+            <defs>
+              <linearGradient id="effortUltraGrad" x1="2" y1="20" x2="22" y2="6" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stopColor="#22d3ee" />
+                <stop offset="55%" stopColor="#a855f7" />
+                <stop offset="100%" stopColor="#fb7185" />
+              </linearGradient>
+            </defs>
+          )}
+          <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+          <path d="M12 14L12 7.5" transform={`rotate(${needleAngle} 12 14)`} />
         </svg>
-        <span className="shrink-0">{currentLabel}</span>
+        <span className={cn('shrink-0', isUltra && 'bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 bg-clip-text text-transparent font-semibold')}>{currentLabel}</span>
         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
           className={cn('text-fg-5/30 transition-transform duration-200', open && 'rotate-180')}>
           <polyline points="6 9 12 15 18 9" />

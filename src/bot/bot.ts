@@ -26,6 +26,7 @@ import {
 } from './session-hub.js';
 import { getDriver, hasDriver, allDriverIds, getDriverCapabilities } from '../agent/driver.js';
 import { resolveGuiIntegrationConfig, type McpSendFileCallback, type McpSendFileResult } from '../agent/mcp/bridge.js';
+import { composeSessionToolPrompt } from '../agent/mcp/capabilities.js';
 import { terminateProcessTree } from '../core/process-control.js';
 import { expandTilde } from '../core/platform.js';
 import { VERSION } from '../core/version.js';
@@ -83,20 +84,6 @@ function appendExtraPrompt(base: string | undefined, extra: string): string {
   if (!lhs) return rhs;
   if (!rhs) return lhs;
   return `${lhs}\n\n${rhs}`;
-}
-
-function buildMcpDeliveryPrompt(): string {
-  return [
-    '[Artifact Return]',
-    'To hand a file to the user — a screenshot, report, archive, generated asset, anything they asked you to "send" — call the `im_send_file` tool with the file path and a short caption. It is delivered through whatever terminal the user is on (an IM chat or the web dashboard) and stays retrievable even when they are connected remotely. Do NOT just print a local filesystem path: a remote user cannot open paths on this machine.',
-  ].join('\n');
-}
-
-function buildClaudeAskUserPrompt(): string {
-  return [
-    '[Asking the user]',
-    'The built-in `AskUserQuestion` tool is disabled here and will fail. If you would otherwise call it, call `mcp__pikiloom__im_ask_user` instead — same intent (a question plus optional choices), it blocks until the user replies via the IM/dashboard channel. Default behaviour is unchanged: infer obvious decisions yourself and only ask when you genuinely cannot proceed.',
-  ].join('\n');
 }
 
 function buildBrowserAutomationPrompt(browserEnabled: boolean): string {
@@ -2302,12 +2289,11 @@ export class Bot {
     const deliverySessionKey = ('key' in cs && typeof cs.key === 'string') ? cs.key : null;
     const wrappedSendFile = this.buildArtifactSendFile(cs.agent, deliverySessionKey, cs, mcpSendFile);
 
+    // Session tool capabilities (im_send_file / im_ask_user) bundle their usage prompt with
+    // the tool itself — see agent/mcp/capabilities.ts. Browser/workflow remain session policy.
     const mcpSystemPrompt = appendExtraPrompt(
       appendExtraPrompt(
-        appendExtraPrompt(
-          buildMcpDeliveryPrompt(),
-          onInteraction && cs.agent === 'claude' ? buildClaudeAskUserPrompt() : '',
-        ),
+        composeSessionToolPrompt({ agent: cs.agent, onInteraction: !!onInteraction }),
         buildBrowserAutomationPrompt(browserEnabled),
       ),
       workflowEnabled ? buildWorkflowOptInPrompt() : '',

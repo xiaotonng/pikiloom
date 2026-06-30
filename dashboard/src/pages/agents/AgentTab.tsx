@@ -12,6 +12,7 @@ import { SectionCard } from '../shared';
 import ModelsSection, { useModelLayer, type ModelLayerSnapshot } from '../models/ModelsTab';
 import LocalModelsSection, { useLocalBackends } from '../local-models/LocalModelsSection';
 import ProfilesSection from '../profiles/ProfilesSection';
+import { AccountsPanel } from './AccountsPanel';
 
 const NATIVE_PROVIDER_VALUE = '__native__';
 const AGENT_ORDER: Agent[] = ['claude', 'codex', 'gemini', 'hermes'];
@@ -655,6 +656,10 @@ function AgentInlineConfig({
 
       {agentStatus.capabilities?.workflow && draft.effort === 'ultra' && (
         <div className="text-[11px] leading-relaxed text-fg-5">{copy.workflowHint}</div>
+      )}
+
+      {agentId === 'claude' && draft.kind === 'native' && (
+        <AccountsPanel agentId={agentId} />
       )}
 
       {nativeReadOnly && (

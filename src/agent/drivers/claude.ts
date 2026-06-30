@@ -1686,8 +1686,8 @@ function getClaudeOAuthToken(): string | null {
   } catch { return null; }
 }
 
-function getClaudeUsageFromOAuth(): UsageResult | null {
-  const token = getClaudeOAuthToken();
+function getClaudeUsageFromOAuth(tokenOverride?: string): UsageResult | null {
+  const token = tokenOverride || getClaudeOAuthToken();
   if (!token) return null;
 
   try {
@@ -1733,6 +1733,106 @@ function getClaudeUsageFromOAuth(): UsageResult | null {
 
     return { ok: true, agent: 'claude', source: 'oauth-api', capturedAt, status: overallStatus, windows, error: null };
   } catch { return null; }
+}
+
+// Per-account usage for a specific account's `claude setup-token`.
+//
+// IMPORTANT: setup-tokens are minted with the `user:inference` scope only — they do NOT carry
+// `user:profile`, so the read-only OAuth usage endpoint (`/api/oauth/usage`) rejects them with
+// `permission_error … scope requirement user:profile`. The native/default-login token works
+// there because it's a full login. So for account tokens we read the limit state from the
+// `anthropic-ratelimit-unified-*` *response headers* of a tiny inference call instead — those
+// headers come back on every `/v1/messages` response regardless of scope, and are exactly what
+// Claude Code itself uses to learn 5h / 7d limits. Cost is ~1 output token per probe, cached
+// for 5min per token (60s back-off on failure), with in-flight de-dup so concurrent surfaces
+// (cards + header + IM) share one probe.
+const TOKEN_USAGE_OK_TTL_MS = CLAUDE_USAGE_QUERY_TTL_MS;
+const TOKEN_USAGE_RETRY_TTL_MS = 60_000;
+const CLAUDE_USAGE_PROBE_MODEL = 'claude-haiku-4-5-20251001';
+const claudeTokenUsageCache = new Map<string, { value: UsageResult | null; at: number; ok: boolean }>();
+const claudeTokenUsageInflight = new Map<string, Promise<UsageResult | null>>();
+
+function usageFromRatelimitHeaders(h: Headers): UsageResult | null {
+  const makeWindow = (label: string, prefix: string): UsageWindowInfo | null => {
+    const raw = h.get(`anthropic-ratelimit-unified-${prefix}-utilization`);
+    if (raw == null || raw === '') return null;
+    const usedPercent = roundPercent(Number(raw) * 100);
+    if (usedPercent == null) return null;
+    const remainingPercent = Math.max(0, Math.round((100 - usedPercent) * 10) / 10);
+    const resetAt = toIsoFromEpochSeconds(h.get(`anthropic-ratelimit-unified-${prefix}-reset`));
+    let resetAfterSeconds: number | null = null;
+    if (resetAt) {
+      const resetAtMs = Date.parse(resetAt);
+      if (Number.isFinite(resetAtMs)) resetAfterSeconds = Math.max(0, Math.round((resetAtMs - Date.now()) / 1000));
+    }
+    return {
+      label, usedPercent, remainingPercent, resetAt, resetAfterSeconds,
+      status: usedPercent >= 100 ? 'limit_reached' : usedPercent >= 80 ? 'warning' : 'allowed',
+    };
+  };
+  // Only 5h + 7d are real here. The inference headers expose an overage (Extra) on/off STATUS
+  // but never a utilization number, and `/api/oauth/usage` (which returns the actual extra_usage
+  // figure) is scope-blocked for setup-tokens — so we deliberately do NOT synthesize an "Extra"
+  // window for token accounts. Showing a fabricated 0% misrepresents real Extra spend.
+  const windows = [makeWindow('5h', '5h'), makeWindow('7d', '7d')].filter((w): w is UsageWindowInfo => w != null);
+  if (!windows.length) return null;
+  const overallStatus = windows.some(w => w.status === 'limit_reached') ? 'limit_reached'
+    : windows.some(w => w.status === 'warning') ? 'warning' : 'allowed';
+  return { ok: true, agent: 'claude', source: 'ratelimit-headers', capturedAt: new Date().toISOString(), status: overallStatus, windows, error: null };
+}
+
+async function claudeUsageFromInferenceHeaders(token: string): Promise<UsageResult | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: CLAUDE_USAGE_PROBE_MODEL, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+      signal: controller.signal,
+    });
+    // The unified rate-limit headers ride on every response (incl. 429), so parse them before
+    // worrying about the status code. Drain the body so the socket can be reused/closed.
+    const usage = usageFromRatelimitHeaders(res.headers);
+    void res.text().catch(() => {});
+    return usage;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function claudeUsageForToken(token: string): Promise<UsageResult | null> {
+  const t = String(token || '');
+  if (!t) return Promise.resolve(null);
+  const now = Date.now();
+  const cached = claudeTokenUsageCache.get(t);
+  if (cached) {
+    const ttl = cached.ok ? TOKEN_USAGE_OK_TTL_MS : TOKEN_USAGE_RETRY_TTL_MS;
+    if (now - cached.at < ttl) return Promise.resolve(cached.value);
+  }
+  const inflight = claudeTokenUsageInflight.get(t);
+  if (inflight) return inflight;
+  const p = (async () => {
+    const fresh = await claudeUsageFromInferenceHeaders(t);
+    const at = Date.now();
+    if (fresh) {
+      claudeTokenUsageCache.set(t, { value: fresh, at, ok: true });
+      return fresh;
+    }
+    // Probe failed (network / transient): keep serving last-good, but back off retries.
+    const value = claudeTokenUsageCache.get(t)?.value ?? null;
+    claudeTokenUsageCache.set(t, { value, at, ok: false });
+    return value;
+  })().finally(() => claudeTokenUsageInflight.delete(t));
+  claudeTokenUsageInflight.set(t, p);
+  return p;
 }
 
 function getClaudeUsageFromTelemetry(home: string, model?: string | null): UsageResult | null {

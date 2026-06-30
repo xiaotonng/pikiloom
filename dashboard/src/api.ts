@@ -23,14 +23,36 @@ import type {
   SessionMessagesResult,
   SkillInfo,
   StreamPlan,
+  MessageBlock,
+  QueuedTaskPreview,
   SessionTailMessage,
   SessionsPageResult,
+  UsageResult,
   WorkspaceEntry,
   WorkspaceGitResult,
   WeixinLoginStartResult,
   WeixinLoginWaitResult,
   WeixinValidationResult,
 } from './types';
+
+export interface AgentAccountInfo {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  active: boolean;
+  usage: UsageResult | null;
+}
+
+export interface AgentAccountsResponse {
+  ok: boolean;
+  agent: string;
+  supported: boolean;
+  accounts: AgentAccountInfo[];
+  activeAccountId: string | null;
+  max: number;
+  error?: string;
+}
 
 export interface ApiRequestOptions extends RequestInit {
   timeoutMs?: number;
@@ -98,6 +120,22 @@ export const api = {
   getState: () => json<AppState>('/api/state'),
   getHost: () => json<HostInfo>('/api/host'),
   getAgentStatus: () => json<AgentStatusResponse>('/api/agent-status'),
+  getAgentAccounts: (agent: string, opts?: ApiRequestOptions) =>
+    json<AgentAccountsResponse>(`/api/agents/${encodeURIComponent(agent)}/accounts`, { timeoutMs: 12_000, ...opts }),
+  addAgentAccount: (agent: string, label: string, token: string) =>
+    post<{ ok: boolean; account?: AgentAccountInfo; error?: string }>(
+      `/api/agents/${encodeURIComponent(agent)}/accounts`, { label, token }),
+  updateAgentAccount: (agent: string, id: string, patch: { label?: string; token?: string }) =>
+    json<{ ok: boolean; account?: AgentAccountInfo; error?: string }>(
+      `/api/agents/${encodeURIComponent(agent)}/accounts/${encodeURIComponent(id)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
+  removeAgentAccount: (agent: string, id: string) =>
+    json<{ ok: boolean; error?: string }>(
+      `/api/agents/${encodeURIComponent(agent)}/accounts/${encodeURIComponent(id)}`,
+      { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }),
+  setActiveAgentAccount: (agent: string, accountId: string | null) =>
+    post<{ ok: boolean; activeAccountId?: string | null; error?: string }>(
+      `/api/agents/${encodeURIComponent(agent)}/active-account`, { accountId }),
   getModelProviders: () => json<{ ok: boolean; providers?: Array<{ id: string; name: string; kind: string; baseURL: string }> }>('/api/models/providers'),
   getModelProfiles: () => json<{ ok: boolean; profiles?: Array<{ id: string; name: string; providerId: string; modelId: string; effort?: string | null }> }>('/api/models/profiles'),
   getModelAgentBindings: () => json<{ ok: boolean; bindings?: Array<{ agent: string; activeProfileId: string | null }> }>('/api/models/agents'),
@@ -533,7 +571,9 @@ export interface StreamSnapshot {
   phase: 'queued' | 'streaming' | 'done';
   taskId: string;
   queuedTaskIds?: string[];
-  queuedTasks?: Array<{ taskId: string; prompt: string }>;
+  queuedTasks?: QueuedTaskPreview[];
+  question?: string | null;
+  questionBlocks?: MessageBlock[];
   text?: string;
   thinking?: string;
   activity?: string;

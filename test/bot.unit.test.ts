@@ -472,6 +472,85 @@ describe('Bot thread-aware agent switching', () => {
 });
 
 describe('Bot external session control', () => {
+  it('projects queued/running image attachments into stream snapshots', () => {
+    const bot = new Bot() as any;
+    const workdir = process.env.PIKILOOM_WORKDIR!;
+    const runtime = bot.upsertSessionRuntime({
+      agent: 'codex',
+      sessionId: 'sess-images',
+      workdir,
+      workspacePath: null,
+      modelId: null,
+    });
+    const imagePath = path.join(workdir, 'queued-shot.png');
+    fs.writeFileSync(imagePath, 'fake-image');
+
+    bot.beginTask({
+      taskId: 'img-task',
+      chatId: 'dashboard',
+      agent: 'codex',
+      sessionKey: runtime.key,
+      prompt: 'describe this',
+      attachments: [imagePath],
+      startedAt: Date.now(),
+      sourceMessageId: 'img-task',
+    });
+    bot.emitStreamQueued(runtime.key, 'img-task');
+
+    let snap = bot.getStreamSnapshot(runtime.key);
+    expect(snap?.queuedTasks?.[0]).toMatchObject({ taskId: 'img-task', prompt: 'describe this' });
+    expect(snap?.queuedTasks?.[0].attachments?.[0]).toMatchObject({
+      type: 'image',
+      imagePath,
+      imageMime: 'image/png',
+    });
+    expect(snap?.queuedTasks?.[0].attachments?.[0].content).toContain('/api/sessions/codex/sess-images/attachment?p=');
+
+    bot.markTaskRunning('img-task', () => {});
+    bot.emitStreamStart('img-task', runtime, {});
+    snap = bot.getStreamSnapshot(runtime.key);
+    expect(snap?.question).toBe('describe this');
+    expect(snap?.questionBlocks?.[0]).toMatchObject({ type: 'image', imagePath });
+    expect(snap?.questionBlocks?.[0].content).toContain('/api/sessions/codex/sess-images/attachment?p=');
+  });
+
+  it('clears prior done artifacts when a new task enters the queue', () => {
+    const bot = new Bot() as any;
+    const workdir = process.env.PIKILOOM_WORKDIR!;
+    const runtime = bot.upsertSessionRuntime({
+      agent: 'codex',
+      sessionId: 'sess-artifacts',
+      workdir,
+      workspacePath: null,
+      modelId: null,
+    });
+
+    bot.emitStream(runtime.key, { type: 'start', taskId: 'old-task', agent: 'codex', sessionId: 'sess-artifacts', model: null, effort: null });
+    bot.emitStream(runtime.key, { type: 'text', text: 'old reply', thinking: '' });
+    bot.emitStream(runtime.key, {
+      type: 'artifact',
+      artifact: { url: '/old.png', fileName: 'old.png', fileSize: 10, mime: 'image/png', kind: 'photo' },
+    });
+    bot.emitStream(runtime.key, { type: 'done', taskId: 'old-task', sessionId: 'sess-artifacts', incomplete: false });
+    expect(bot.getStreamSnapshot(runtime.key)?.artifacts).toHaveLength(1);
+
+    bot.beginTask({
+      taskId: 'new-task',
+      chatId: 'dashboard',
+      agent: 'codex',
+      sessionKey: runtime.key,
+      prompt: 'new turn',
+      startedAt: Date.now(),
+      sourceMessageId: 'new-task',
+    });
+    bot.emitStreamQueued(runtime.key, 'new-task');
+
+    const snap = bot.getStreamSnapshot(runtime.key);
+    expect(snap).toMatchObject({ phase: 'queued', taskId: 'new-task' });
+    expect(snap?.artifacts).toBeUndefined();
+    expect(snap?.text).toBeUndefined();
+  });
+
   it('submits dashboard tasks/publishes stream state and migrates state on codex session-id promotion', async () => {
     {
     const doStreamMock = vi.mocked(doStream);

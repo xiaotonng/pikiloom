@@ -11,12 +11,22 @@ import {
   modelMatchesSelection,
   resolveSkillPrompt,
 } from './commands.js';
+import {
+  accountAgentSupported,
+  listAccounts,
+  getAccount,
+  getActiveAccountId,
+  setActiveAccount,
+  warmAccountUsages,
+  accountUsageSummary,
+} from '../agent/accounts.js';
 
 export type CommandAction =
   | { kind: 'sessions.page'; page: number }
   | { kind: 'session.new' }
   | { kind: 'session.switch'; sessionId: string }
   | { kind: 'agent.switch'; agent: Agent }
+  | { kind: 'agent.account.set'; agent: Agent; accountId: string | null }
   | { kind: 'model.switch'; modelId: string }
   | { kind: 'effort.set'; effort: string }
   | { kind: 'models.select.model'; modelId: string; profileId?: string | null }
@@ -89,6 +99,8 @@ export function encodeCommandAction(action: CommandAction): string {
       return `sess:${action.sessionId}`;
     case 'agent.switch':
       return `ag:${action.agent}`;
+    case 'agent.account.set':
+      return `agacc:${action.agent}:${action.accountId ?? ''}`;
     case 'model.switch':
       return `mod:${action.modelId}`;
     case 'effort.set':
@@ -121,6 +133,16 @@ export function decodeCommandAction(data: string): CommandAction | null {
     const sessionId = data.slice(5);
     if (!sessionId) return null;
     return { kind: 'session.switch', sessionId };
+  }
+  if (data.startsWith('agacc:')) {
+    const rest = data.slice(6);
+    const sep = rest.indexOf(':');
+    if (sep < 0) return null;
+    try {
+      return { kind: 'agent.account.set', agent: normalizeAgent(rest.slice(0, sep)), accountId: rest.slice(sep + 1) || null };
+    } catch {
+      return null;
+    }
   }
   if (data.startsWith('ag:')) {
     try {
@@ -252,15 +274,44 @@ export function buildAgentsCommandView(bot: Bot, chatId: ChatId): CommandSelecti
 
   const current = installed.find(a => a.isCurrent);
 
+  // For the current agent, if it has local accounts (claude), surface them so the user can
+  // switch the active account right here — labelled with 👤 and each account's live usage.
+  const accountRows: CommandActionButton[][] = [];
+  const accountItems: CommandSelectionItem[] = [];
+  const curAgent = data.currentAgent;
+  if (accountAgentSupported(curAgent)) {
+    const accs = listAccounts(curAgent);
+    if (accs.length) {
+      warmAccountUsages(curAgent);
+      const activeAccId = getActiveAccountId(curAgent);
+      const entry = (label: string, accountId: string | null, summary: string | null) => {
+        const isActive = accountId === activeAccId;
+        accountRows.push([{
+          label: summary ? `👤 ${label} · ${summary}` : `👤 ${label}`,
+          action: { kind: 'agent.account.set', agent: curAgent as Agent, accountId },
+          state: isActive ? 'current' : 'default',
+          primary: isActive,
+        }]);
+        accountItems.push({ label: `👤 ${label}`, detail: summary, state: isActive ? 'current' : 'default' });
+      };
+      for (const acc of accs) entry(acc.label, acc.id, accountUsageSummary(curAgent, acc.id));
+      entry('Default login', null, null);
+    }
+  }
+
+  const helperText = actions.length
+    ? (accountRows.length ? 'Tap an agent to switch · 👤 = account' : 'Tap an agent to switch.')
+    : undefined;
+
   return {
     kind: 'agents',
     title: 'Agents',
     detail: current ? current.label : undefined,
     metaLines: current ? [`Current: ${current.label}`] : [],
-    items,
+    items: [...items, ...accountItems],
     emptyText: actions.length ? undefined : 'No installed agents.',
-    helperText: actions.length ? 'Tap an agent to switch.' : undefined,
-    rows: actions.map(action => [action]),
+    helperText,
+    rows: [...actions.map(action => [action]), ...accountRows],
   };
 }
 
@@ -529,8 +580,17 @@ export async function executeCommandAction(
 
     case 'agent.switch': {
       const chat = bot.chat(chatId);
-      if (chat.agent === action.agent) return { kind: 'noop', message: `Already using ${action.agent}` };
+      const hasAccounts = accountAgentSupported(action.agent) && listAccounts(action.agent).length > 0;
+      if (chat.agent === action.agent) {
+        // Already current: reopen the menu (now showing accounts) if it has any, else no-op.
+        if (hasAccounts) return { kind: 'view', view: buildAgentsCommandView(bot, chatId), callbackText: '' };
+        return { kind: 'noop', message: `Already using ${action.agent}` };
+      }
       bot.switchAgentForChat(chatId, action.agent);
+      // For an account-capable agent, drop the user straight into its account picker.
+      if (hasAccounts) {
+        return { kind: 'view', view: buildAgentsCommandView(bot, chatId), callbackText: `Switched to ${action.agent}` };
+      }
       const resumed = bot.selectedSession(chatId);
       return {
         kind: 'notice',
@@ -546,6 +606,18 @@ export async function executeCommandAction(
           ? { agent: resumed.agent, sessionId: resumed.sessionId }
           : null,
       };
+    }
+
+    case 'agent.account.set': {
+      if (!accountAgentSupported(action.agent)) return { kind: 'noop', message: `${action.agent} has no accounts` };
+      try {
+        setActiveAccount(action.agent, action.accountId);
+      } catch (e: any) {
+        return { kind: 'noop', message: e?.message || 'Switch failed' };
+      }
+      warmAccountUsages(action.agent);
+      const label = action.accountId ? (getAccount(action.agent, action.accountId)?.label ?? action.accountId) : 'Default login';
+      return { kind: 'view', view: buildAgentsCommandView(bot, chatId), callbackText: `Account → ${label}` };
     }
 
     case 'model.switch': {

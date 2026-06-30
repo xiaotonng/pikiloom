@@ -9,14 +9,14 @@ import {
   bumpContinuationCount, pauseGoal, resumeGoal, setGoal as setGoalState, clearGoal as clearGoalState,
   setCodexGoal, getCodexGoal, clearCodexGoal, pauseCodexGoal, resumeCodexGoal,
   getClaudeNativeGoal, buildClaudeSetGoalPrompt, buildClaudeClearGoalPrompt,
-  deliverArtifact, attachmentUrl,
+  deliverArtifact, attachmentUrl, attachAgentImage, rewriteAttachmentBlocksForTransport,
   type Agent, type CodexCumulativeUsage, type StreamOpts, type StreamResult, type StreamPreviewMeta, type StreamPreviewPlan, type StreamSubAgent, type SessionInfo, type UsageResult,
   type AgentInteraction, type CodexTurnControl,
   type ModelInfo, type ModelListResult, type TailMessage, type SessionTailResult,
   type SkillInfo, type SkillListResult, type AgentDetectOptions, isPendingSessionId,
   type SessionClassification, type SessionMessagesOpts, type SessionMessagesResult,
   type ThreadGoal, type GoalStatus, type CodexThreadGoal, type ClaudeNativeGoal,
-  type HandoverRef,
+  type HandoverRef, type MessageBlock,
 } from '../agent/index.js';
 import { compactForHandover, describeHandoverRef } from '../agent/handover.js';
 import { getActiveProfileId, getActiveProfile, setActiveProfile, getProfile } from '../model/index.js';
@@ -170,8 +170,9 @@ export interface StreamSnapshot {
   phase: 'queued' | 'streaming' | 'done';
   taskId: string;
   queuedTaskIds?: string[];
-  queuedTasks?: Array<{ taskId: string; prompt: string }>;
+  queuedTasks?: Array<{ taskId: string; prompt: string; attachments?: MessageBlock[] }>;
   question?: string | null;
+  questionBlocks?: MessageBlock[];
   incomplete?: boolean;
   text?: string;
   thinking?: string;
@@ -381,15 +382,48 @@ export class Bot {
     return snap ? this.enrichSnapshot(snap) : null;
   }
 
+  private taskAttachmentBlocks(task: RunningTask | null | undefined): MessageBlock[] {
+    if (!task?.attachments?.length) return [];
+    const session = this.getSessionRuntimeByKey(task.sessionKey, { allowAnyWorkdir: true });
+    const sessionId = session?.sessionId || task.sessionKey.slice(task.agent.length + 1);
+    if (!sessionId) return [];
+    const blocks = task.attachments
+      .map(imagePath => attachAgentImage({ imagePath, inlineThresholdBytes: 0 }))
+      .filter((block): block is MessageBlock => !!block);
+    return blocks.length
+      ? rewriteAttachmentBlocksForTransport(blocks, { agent: task.agent, sessionId })
+      : [];
+  }
+
+  private taskPreview(taskId: string): { taskId: string; prompt: string; attachments?: MessageBlock[] } {
+    const task = this.activeTasks.get(taskId) || null;
+    const raw = task?.prompt || '';
+    const attachments = this.taskAttachmentBlocks(task);
+    return {
+      taskId,
+      prompt: collapseSkillPrompt(raw) ?? raw,
+      ...(attachments.length ? { attachments } : {}),
+    };
+  }
+
   private enrichSnapshot(snap: StreamSnapshot): StreamSnapshot {
     let next = snap;
-    const runningPrompt = next.taskId ? this.activeTasks.get(next.taskId)?.prompt : '';
-    if (runningPrompt) next = { ...next, question: collapseSkillPrompt(runningPrompt) ?? runningPrompt };
-    if (next.queuedTaskIds?.length) {
-      const queuedTasks = next.queuedTaskIds.map(taskId => {
-        const raw = this.activeTasks.get(taskId)?.prompt || '';
-        return { taskId, prompt: collapseSkillPrompt(raw) ?? raw };
-      });
+    const runningTask = next.taskId ? this.activeTasks.get(next.taskId) : null;
+    const runningPrompt = runningTask?.prompt || '';
+    if (runningPrompt) {
+      const questionBlocks = this.taskAttachmentBlocks(runningTask);
+      next = {
+        ...next,
+        question: collapseSkillPrompt(runningPrompt) ?? runningPrompt,
+        ...(questionBlocks.length ? { questionBlocks } : {}),
+      };
+    }
+    const queuedIds = [
+      ...(next.phase === 'queued' && next.taskId ? [next.taskId] : []),
+      ...(next.queuedTaskIds || []),
+    ].filter((taskId, index, all) => taskId && all.indexOf(taskId) === index);
+    if (queuedIds.length) {
+      const queuedTasks = queuedIds.map(taskId => this.taskPreview(taskId));
       next = { ...next, queuedTasks };
     }
     if (next.interactions?.length) {
@@ -447,11 +481,13 @@ export class Bot {
     switch (event.type) {
       case 'queued': {
         const existing = this.streamSnapshots.get(sessionKey);
-        if (existing && (existing.phase === 'streaming' || existing.phase === 'done')) {
+        if (existing && existing.phase === 'streaming') {
           const list = existing.queuedTaskIds ? [...existing.queuedTaskIds] : [];
           if (existing.taskId !== event.taskId && !list.includes(event.taskId)) list.push(event.taskId);
           existing.queuedTaskIds = list.length ? list : undefined;
           existing.updatedAt = now;
+        } else if (existing && existing.phase === 'done') {
+          this.streamSnapshots.set(sessionKey, { phase: 'queued', taskId: event.taskId, updatedAt: now });
         } else if (existing && existing.phase === 'queued') {
           const list = existing.queuedTaskIds ? [...existing.queuedTaskIds] : [];
           if (existing.taskId !== event.taskId && !list.includes(event.taskId)) list.push(event.taskId);

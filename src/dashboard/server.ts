@@ -13,6 +13,7 @@ import extensionRoutes from './routes/extensions.js';
 import cliRoutes from './routes/cli.js';
 import modelsRoutes from './routes/models.js';
 import localModelsRoutes from './routes/local-models.js';
+import accountsRoutes from './routes/accounts.js';
 import { runtime } from './runtime.js';
 import { registerProcessRuntime } from '../core/process-control.js';
 import { VERSION } from '../core/version.js';
@@ -49,6 +50,7 @@ export async function startDashboard(opts: DashboardOptions = {}): Promise<Dashb
   app.route('/', cliRoutes);
   app.route('/', modelsRoutes);
   app.route('/', localModelsRoutes);
+  app.route('/', accountsRoutes);
 
   let pikichannel: PikichannelHandle | null = null;
   try {

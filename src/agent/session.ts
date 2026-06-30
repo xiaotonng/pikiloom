@@ -234,6 +234,7 @@ function normalizeSessionRecord(raw: any, workdir: string): ManagedSessionRecord
     thinkingEffort: typeof raw?.thinkingEffort === 'string' && raw.thinkingEffort.trim() ? raw.thinkingEffort.trim() : null,
     workflowEnabled: typeof raw?.workflowEnabled === 'boolean' ? raw.workflowEnabled : null,
     profileId: typeof raw?.profileId === 'string' && raw.profileId.trim() ? raw.profileId.trim() : null,
+    accountId: typeof raw?.accountId === 'string' && raw.accountId.trim() ? raw.accountId.trim() : null,
     stagedFiles: Array.isArray(raw?.stagedFiles) ? dedupeStrings(raw.stagedFiles.filter((v: unknown) => typeof v === 'string')) : [],
     lastUserAttachments: Array.isArray(raw?.lastUserAttachments)
       ? dedupeStrings(raw.lastUserAttachments.filter((v: unknown) => typeof v === 'string'))
@@ -376,7 +377,7 @@ function writeSessionMeta(record: ManagedSessionRecord) {
     workspacePath: record.workspacePath,
     threadId: record.threadId,
     createdAt: record.createdAt, updatedAt: record.updatedAt,
-    title: record.title, model: record.model, thinkingEffort: record.thinkingEffort, workflowEnabled: record.workflowEnabled, profileId: record.profileId, stagedFiles: record.stagedFiles,
+    title: record.title, model: record.model, thinkingEffort: record.thinkingEffort, workflowEnabled: record.workflowEnabled, profileId: record.profileId, accountId: record.accountId ?? null, stagedFiles: record.stagedFiles,
     runState: record.runState, runDetail: record.runDetail, runUpdatedAt: record.runUpdatedAt,
     runPid: record.runPid,
     classification: record.classification,
@@ -612,7 +613,7 @@ export function ensureSessionWorkspace(opts: EnsureSessionWorkspaceOpts): Sessio
       workspacePath: sessionWorkspacePath(workdir, opts.agent, sessionId),
       threadId,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      title: summarizePromptTitle(opts.title) || null, model: null, thinkingEffort: null, workflowEnabled: null, profileId: null, stagedFiles: [], lastUserAttachments: [],
+      title: summarizePromptTitle(opts.title) || null, model: null, thinkingEffort: null, workflowEnabled: null, profileId: null, accountId: null, stagedFiles: [], lastUserAttachments: [],
       runState: 'completed', runDetail: null, runUpdatedAt: new Date().toISOString(),
       runPid: null,
       classification: null, userStatus: null, userNote: null,
@@ -644,6 +645,7 @@ export function managedRecordToSessionInfo(record: ManagedSessionRecord): Sessio
     thinkingEffort: record.thinkingEffort,
     workflowEnabled: record.workflowEnabled ?? null,
     profileId: record.profileId ?? null,
+    accountId: record.accountId ?? null,
     createdAt: record.createdAt,
     title,
     running: record.runState === 'running',
@@ -744,13 +746,14 @@ export async function deleteAgentSession(opts: DeleteAgentSessionOpts): Promise<
   return result;
 }
 
-export function getSessionStoredConfig(workdir: string, agent: Agent, sessionId: string): { model: string | null; thinkingEffort: string | null; workflowEnabled: boolean | null; profileId: string | null } {
+export function getSessionStoredConfig(workdir: string, agent: Agent, sessionId: string): { model: string | null; thinkingEffort: string | null; workflowEnabled: boolean | null; profileId: string | null; accountId: string | null } {
   const record = findPikiloomSession(workdir, agent, sessionId);
   return {
     model: record?.model ?? null,
     thinkingEffort: record?.thinkingEffort ?? null,
     workflowEnabled: record?.workflowEnabled ?? null,
     profileId: record?.profileId ?? null,
+    accountId: record?.accountId ?? null,
   };
 }
 
@@ -851,6 +854,7 @@ export function mergeManagedAndNativeSessions(managedSessions: SessionInfo[], na
       thinkingEffort: managed.thinkingEffort ?? native.thinkingEffort ?? null,
       workflowEnabled: managed.workflowEnabled ?? native.workflowEnabled ?? null,
       profileId: managed.profileId ?? native.profileId ?? null,
+      accountId: managed.accountId ?? native.accountId ?? null,
       createdAt: native.createdAt || managed.createdAt,
       classification: managed.classification ?? native.classification ?? null,
       userStatus: managed.userStatus ?? native.userStatus ?? null,

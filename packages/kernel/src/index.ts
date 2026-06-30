@@ -42,12 +42,16 @@ export { EchoDriver } from './drivers/echo.js';
 export { ClaudeDriver } from './drivers/claude.js';
 export { CodexDriver } from './drivers/codex.js';
 export { GeminiDriver } from './drivers/gemini.js';
+export { AcpDriver, type AcpDriverConfig } from './drivers/acp.js';
 export { HermesDriver } from './drivers/hermes.js';
 export { WebSurface, type WebSurfaceOptions } from './surfaces/web.js';
 export { CliSurface } from './surfaces/cli.js';
 
 // Workspace: unified top-level directory + session/skill/mcp management (loom.paths/sessions/skills/mcp)
 export * from './workspace/index.js';
+
+// Multi-account: per-account isolated config dirs (CLAUDE_CONFIG_DIR / CODEX_HOME)
+export * from './accounts.js';
 
 // Protocol (the wire vocabulary; shared with transports)
 export * from './protocol/index.js';

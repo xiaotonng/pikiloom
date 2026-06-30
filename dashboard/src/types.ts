@@ -453,6 +453,12 @@ export interface SnapshotArtifact {
   caption?: string;
 }
 
+export interface QueuedTaskPreview {
+  taskId: string;
+  prompt: string;
+  attachments?: MessageBlock[];
+}
+
 export interface RichMessage {
   role: 'user' | 'assistant';
   text: string;

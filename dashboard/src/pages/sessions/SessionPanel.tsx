@@ -7,7 +7,7 @@ import { useDashboardEvent, useDashboardReconnect, type DashboardEvent } from '.
 import { cn, foldUltraEffort, getAgentMeta, getSessionRunFailureDetail, shortenModel, sessionDisplayState } from '../../utils';
 import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
-import type { InteractionSnapshot, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent, SnapshotArtifact } from '../../types';
+import type { InteractionSnapshot, MessageBlock, QueuedTaskPreview, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent, SnapshotArtifact } from '../../types';
 import { TurnView, UserBubble, TurnDivider } from './TurnView';
 import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
@@ -35,7 +35,7 @@ const TOP_LOAD_THRESHOLD_PX = 160;
 const BOTTOM_STICK_THRESHOLD_PX = 96;
 
 const EMPTY_TASK_IDS: string[] = [];
-const EMPTY_QUEUED_TASKS: Array<{ taskId: string; prompt: string }> = [];
+const EMPTY_QUEUED_TASKS: QueuedTaskPreview[] = [];
 const EMPTY_INTERACTIONS: InteractionSnapshot[] = [];
 
 const MAX_HISTORY_SNAPSHOTS = 20;
@@ -109,13 +109,14 @@ export const SessionPanel = memo(function SessionPanel({
     startedAt?: number | null;
     error?: string | null;
     question?: string | null;
+    questionBlocks?: MessageBlock[] | null;
   } | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [streamPhase, setStreamPhase] = useState<string | null>(null);
   const [streamPollNonce, setStreamPollNonce] = useState(0);
   const [streamTaskId, setStreamTaskId] = useState<string | null>(null);
   const [queuedTaskIds, setQueuedTaskIds] = useState<string[]>([]);
-  const [queuedTasks, setQueuedTasks] = useState<Array<{ taskId: string; prompt: string }>>([]);
+  const [queuedTasks, setQueuedTasks] = useState<QueuedTaskPreview[]>([]);
   const [interactions, setInteractions] = useState<InteractionSnapshot[]>([]);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(initialPendingPrompt || null);
   const [pendingImageUrls, setPendingImageUrls] = useState<string[]>(initialPendingImageUrls || []);
@@ -427,6 +428,7 @@ export const SessionPanel = memo(function SessionPanel({
         startedAt: typeof state.startedAt === 'number' ? state.startedAt : null,
         error: null,
         question: state.question ?? null,
+        questionBlocks: state.questionBlocks ?? null,
       });
       setStreaming(true);
       if (state.taskId && state.taskId !== pendingTaskIdRef.current) {
@@ -468,6 +470,8 @@ export const SessionPanel = memo(function SessionPanel({
                 generatingImages: state.previewMeta?.generatingImages ?? 0,
                 artifacts: state.artifacts ?? null,
                 error: state.error,
+                question: state.question ?? null,
+                questionBlocks: state.questionBlocks ?? null,
               }
             : prev);
         const live = liveStreamRef.current;
@@ -731,6 +735,14 @@ export const SessionPanel = memo(function SessionPanel({
     const serverImages = last.user.blocks.filter(b => b.type === 'image').length;
     return serverImages < pendingImageUrls.length;
   }, [rawTurns, pendingPrompt, pendingImageUrls.length]);
+  const pendingBubbleBlocks = useMemo<MessageBlock[]>(() => {
+    if (pendingImageUrls.length) {
+      return pendingImageUrls.map(u => ({ type: 'image' as const, content: u }));
+    }
+    if (!pendingPrompt || !liveStream?.questionBlocks?.length) return [];
+    if (!sameUserText(pendingPrompt, liveStream.question)) return [];
+    return liveStream.questionBlocks;
+  }, [pendingImageUrls, pendingPrompt, liveStream]);
 
   const turns = useMemo(() => {
     let result = rawTurns;
@@ -819,12 +831,12 @@ export const SessionPanel = memo(function SessionPanel({
               );
             })}
             {runFailureDetail && <div className="mb-5 animate-in"><RunEndNotice detail={runFailureDetail} t={t} /></div>}
-            {(pendingPrompt || pendingImageUrls.length > 0)
+            {(pendingPrompt || pendingBubbleBlocks.length > 0)
               && (optimisticBridgesImages
                   || !(pendingPrompt && rawTurns.length > 0
                        && streamPromptMatchesTurnText(rawTurns[rawTurns.length - 1]?.user?.text, pendingPrompt))) && (
               <div className="session-turn">
-                <UserBubble text={pendingPrompt || ''} blocks={pendingImageUrls.map(u => ({ type: 'image' as const, content: u }))} t={t} />
+                <UserBubble text={pendingPrompt || ''} blocks={pendingBubbleBlocks} t={t} />
                 {!liveStream && (
                   <div className="mt-3 mb-5 animate-in">
                     <ThinkingDots className="text-fg-5" />
@@ -836,7 +848,7 @@ export const SessionPanel = memo(function SessionPanel({
               && !(rawTurns.length > 0
                    && streamPromptMatchesTurnText(rawTurns[rawTurns.length - 1]?.user?.text, liveStream.question)) && (
               <div className="session-turn">
-                <UserBubble text={liveStream.question} t={t} />
+                <UserBubble text={liveStream.question} blocks={liveStream.questionBlocks || undefined} t={t} />
               </div>
             )}
             {liveStream && liveStreamShouldRender(liveStream) && (

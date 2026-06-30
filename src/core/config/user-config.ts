@@ -97,6 +97,10 @@ export interface UserConfig {
     profiles?: Record<string, unknown>;
     activeProfileByAgent?: Record<string, string | null>;
   };
+  accounts?: {
+    byAgent?: Record<string, unknown[]>;
+    activeByAgent?: Record<string, string | null>;
+  };
 }
 
 interface ApplyUserConfigOptions {

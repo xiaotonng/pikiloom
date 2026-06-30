@@ -93,6 +93,7 @@ export interface StreamOpts {
   sessionId: string | null;
   model: string | null;
   profileId?: string | null;
+  accountId?: string | null;
   thinkingEffort: string;
   onText: (
     text: string,
@@ -185,6 +186,7 @@ export interface ManagedSessionRecord {
   thinkingEffort: string | null;
   workflowEnabled: boolean | null;
   profileId: string | null;
+  accountId?: string | null;
   stagedFiles: string[];
   lastUserAttachments?: string[];
   runState: SessionRunState;
@@ -242,6 +244,7 @@ export interface SessionInfo {
   thinkingEffort?: string | null;
   workflowEnabled?: boolean | null;
   profileId?: string | null;
+  accountId?: string | null;
   createdAt: string | null;
   title: string | null;
   running: boolean;
@@ -371,6 +374,7 @@ export interface EnsureManagedSessionOpts {
   model?: string | null;
   thinkingEffort?: string | null;
   profileId?: string | null;
+  accountId?: string | null;
   threadId?: string | null;
 }
 

@@ -15,7 +15,7 @@ import {
   parseSessionKey,
   type ComposerImageAttachment,
 } from './utils';
-import type { SessionInfo, AgentRuntimeStatus, SkillInfo, EffortLevel } from '../../types';
+import type { SessionInfo, AgentRuntimeStatus, SkillInfo, EffortLevel, QueuedTaskPreview } from '../../types';
 
 type CascadeStep = 'closed' | 'agent' | 'model';
 
@@ -54,7 +54,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   streamPhase: string | null;
   streamTaskId?: string | null;
   queuedTaskIds?: string[];
-  queuedTasks?: Array<{ taskId: string; prompt: string }>;
+  queuedTasks?: QueuedTaskPreview[];
   pendingQueuedSends?: Array<{ taskId: string | null; prompt: string; imageUrls?: string[] }>;
   onRecall?: (taskId: string) => void;
   onSteer?: (taskId: string) => void;
@@ -603,10 +603,13 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
                 : effectiveQueuedIds.length > 1 ? `${t('hub.queued')} #${idx + 1}` : t('hub.queued');
               const optimistic = pendingQueuedSends?.find(p => p.taskId === taskId)
                 || (isLatest ? pendingQueuedSends?.find(p => !p.taskId) : undefined);
-              const taskPrompt = queuedTasks?.find(qt => qt.taskId === taskId)?.prompt
+              const queuedTask = queuedTasks?.find(qt => qt.taskId === taskId) || null;
+              const taskPrompt = queuedTask?.prompt
                 || optimistic?.prompt
                 || null;
-              const taskImages = optimistic?.imageUrls?.length ? optimistic.imageUrls : [];
+              const taskImages = optimistic?.imageUrls?.length
+                ? optimistic.imageUrls
+                : (queuedTask?.attachments || []).filter(block => block.type === 'image').map(block => block.content);
               return (
                 <div
                   key={taskId}

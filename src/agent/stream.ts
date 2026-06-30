@@ -32,6 +32,7 @@ import {
 import { clearAwaitResume } from './await-resume.js';
 import { collapseSkillPrompt } from './skills.js';
 import { shouldUseKernelPipeline, kernelStream } from './kernel-bridge.js';
+import { accountAgentSupported, resolveAccountEnv, updateAccount } from './accounts.js';
 
 function trimSessionText(value: unknown, max = 24_000): string | null {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -541,6 +542,29 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     agentWarn(`[byok] failed to apply Profile injection: ${e?.message || e}`);
   }
 
+  // Multi-account (native subscription): when NO BYOK profile is bound, route the turn
+  // through the agent's active local account by injecting its isolated config dir
+  // (CLAUDE_CONFIG_DIR / CODEX_HOME). A BYOK profile owns the credential, so it takes over
+  // and account injection is skipped — the two axes are mutually exclusive per turn.
+  try {
+    if (accountAgentSupported(prepared.agent)) {
+      const profileBound = prepared.profileId === undefined
+        ? !!getActiveProfile(prepared.agent)
+        : !!(prepared.profileId && getProfile(prepared.profileId));
+      if (!profileBound) {
+        const resolved = await resolveAccountEnv(prepared.agent, prepared.accountId);
+        if (resolved) {
+          prepared.extraEnv = { ...(prepared.extraEnv || {}), ...resolved.env };
+          prepared.accountId = resolved.accountId;
+          agentLog(`[account] ${prepared.agent} turn → account=${resolved.accountId} (${Object.keys(resolved.env).join('+')})`);
+          void updateAccount(prepared.agent, resolved.accountId, { lastUsedAt: new Date().toISOString() }).catch(() => {});
+        }
+      }
+    }
+  } catch (e: any) {
+    agentWarn(`[account] injection failed: ${e?.message || e}`);
+  }
+
   try {
     if (prepared.thinkingEffort) {
       session.record.thinkingEffort = prepared.thinkingEffort.trim().toLowerCase() || session.record.thinkingEffort;
@@ -556,6 +580,7 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
         : null);
     if (turnModel) session.record.model = turnModel;
     if (prepared.profileId !== undefined) session.record.profileId = prepared.profileId || null;
+    if (prepared.accountId !== undefined) session.record.accountId = prepared.accountId || null;
     saveSessionRecord(opts.workdir, session.record);
   } catch (e: any) {
     agentWarn(`[session] turn-start metadata stamp failed: ${e?.message || e}`);

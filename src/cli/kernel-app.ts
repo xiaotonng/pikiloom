@@ -21,6 +21,7 @@ const DEMO_MODELS: Record<string, any[]> = {
   claude: [{ id: 'claude-opus-4-8', label: 'Opus 4.8', providerName: 'anthropic', contextWindow: 200000 }],
   codex: [{ id: 'gpt-5.5-codex', label: 'GPT-5.5 Codex', providerName: 'openai', contextWindow: 400000 }],
   gemini: [{ id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', providerName: 'google', contextWindow: 1000000 }],
+  opencode: [{ id: 'claude-sonnet-4-6', label: 'OpenCode · Sonnet 4.6 (ACP)', providerName: 'opencode', contextWindow: 200000 }],
   echo: [{ id: 'echo-1', label: 'Echo (hermetic)', providerName: 'local', contextWindow: 8192 }],
 };
 
@@ -28,7 +29,7 @@ export async function runKernelApp(argv: string[]): Promise<void> {
   const i = argv.indexOf('--dashboard-port');
   const port = (i >= 0 && parseInt(argv[i + 1], 10)) || 3940;
   const k = await loadKernel();
-  const { createLoom, ClaudeDriver, CodexDriver, GeminiDriver, HermesDriver, EchoDriver, WebSurface } = k;
+  const { createLoom, ClaudeDriver, CodexDriver, GeminiDriver, HermesDriver, AcpDriver, EchoDriver, WebSurface } = k;
 
   // Load providers/profiles so the active BYOK/豆包 bindings are visible to the resolver.
   try { applyUserConfig(loadUserConfig(), undefined, { overwrite: true, clearMissing: true }); }
@@ -91,7 +92,8 @@ export async function runKernelApp(argv: string[]): Promise<void> {
 
   const loom = createLoom({
     appNamespace: 'pikiloom-kernel',
-    drivers: [new EchoDriver(), new ClaudeDriver(), new CodexDriver(), new GeminiDriver(), new HermesDriver()],
+    // OpenCode (and any other ACP CLI) plugs in via the generic AcpDriver — same registry as the natives.
+    drivers: [new EchoDriver(), new ClaudeDriver(), new CodexDriver(), new GeminiDriver(), new HermesDriver(), new AcpDriver({ id: 'opencode', command: 'opencode', args: ['acp'] })],
     defaultAgent: 'claude',
     surfaces,
     catalog,

@@ -15,6 +15,8 @@ describe('CommandAction codec', () => {
     { kind: 'agent.switch', agent: 'codex' },
     { kind: 'agent.switch', agent: 'gemini' },
     { kind: 'agent.switch', agent: 'hermes' },
+    { kind: 'agent.account.set', agent: 'claude', accountId: 'c0f32fdb' },
+    { kind: 'agent.account.set', agent: 'claude', accountId: null },
     { kind: 'model.switch', modelId: 'claude-opus-4-7' },
     { kind: 'effort.set', effort: 'xhigh' },
     { kind: 'models.select.model', modelId: 'gpt-5', profileId: null },
@@ -41,6 +43,8 @@ describe('CommandAction codec', () => {
     expect(decodeCommandAction('unknown:foo')).toBeNull();
     expect(decodeCommandAction('sess:')).toBeNull();
     expect(decodeCommandAction('ag:notAnAgent')).toBeNull();
+    expect(decodeCommandAction('agacc:claude')).toBeNull();        // missing :accountId separator
+    expect(decodeCommandAction('agacc:notAnAgent:x')).toBeNull();  // bad agent
     expect(decodeCommandAction('sp:-1')).toBeNull();
     expect(decodeCommandAction('sp:abc')).toBeNull();
     expect(decodeCommandAction('wf:')).toBeNull();

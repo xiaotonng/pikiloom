@@ -45,6 +45,8 @@ RUN npm ci --no-audit --no-fund
 COPY tsconfig.json ./tsconfig.json
 COPY src ./src
 COPY dashboard ./dashboard
+COPY packages/kernel/package.json packages/kernel/tsconfig.json ./packages/kernel/
+COPY packages/kernel/src ./packages/kernel/src
 
 RUN npm run build
 
@@ -131,6 +133,7 @@ COPY --chown=piki:piki package.json package-lock.json ./
 COPY --from=deps    --chown=piki:piki /deps/node_modules ./node_modules
 COPY --from=builder --chown=piki:piki /build/dist ./dist
 COPY --from=builder --chown=piki:piki /build/dashboard/dist ./dashboard/dist
+COPY --from=builder --chown=piki:piki /build/packages/kernel/dist ./packages/kernel/dist
 
 # Persistent dirs the entrypoint expects to exist.
 RUN mkdir -p /workspace /home/piki/.pikiloom \

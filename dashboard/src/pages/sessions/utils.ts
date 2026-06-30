@@ -188,6 +188,66 @@ export function revokeComposerAttachments(items: ComposerImageAttachment[]) {
   for (const item of items) URL.revokeObjectURL(item.previewUrl);
 }
 
+const IMAGE_FILE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif|tiff?|ico)$/i;
+
+// An attachment counts as an image when its MIME type says so. Some clipboard / file sources
+// (screenshot tools, file managers, drag payloads) hand over a File with an empty type — fall back
+// to the file-name extension there instead of silently dropping it. A non-empty, non-image type
+// is rejected so a pasted PDF/zip never sneaks into the image attachment row.
+export function isLikelyImageFile(file: File): boolean {
+  if (file.type) return file.type.startsWith('image/');
+  return IMAGE_FILE_EXT_RE.test(file.name || '');
+}
+
+// Pasting an image copied from a web page or another app frequently yields no file entry at all —
+// only a text/html fragment whose <img> carries an inline data: URL. Pull those out so the paste
+// handler can still recover the image instead of dropping the paste entirely.
+export function extractImageDataUrlsFromHtml(html: string): string[] {
+  const urls: string[] = [];
+  const re = /<img\b[^>]*?\bsrc\s*=\s*["'](data:image\/[^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) urls.push(m[1]);
+  return urls;
+}
+
+// Turn a data:image/*;base64 URL into a File so it flows through the same attachment path as a real
+// pasted/selected file. Returns null for anything that isn't a base64 image data URL.
+export function dataUrlToImageFile(dataUrl: string, nameHint = 'pasted-image'): File | null {
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.*)$/is.exec(dataUrl.trim());
+  if (!m) return null;
+  const mime = m[1].toLowerCase();
+  try {
+    const bin = atob(m[2].replace(/\s+/g, ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const ext = mime.split('/')[1]?.split('+')[0] || 'png';
+    return new File([bytes], `${nameHint}.${ext}`, { type: mime });
+  } catch {
+    return null;
+  }
+}
+
+// Last-resort recovery: some sources expose a pasted image only through the async Clipboard API
+// (nothing usable on the paste event itself, e.g. Safari/Preview bitmaps). Reads image blobs from
+// the live clipboard; resolves to [] on any error or denied permission so callers can try blindly.
+export async function readImagesFromAsyncClipboard(): Promise<File[]> {
+  try {
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.read) return [];
+    const items = await navigator.clipboard.read();
+    const out: File[] = [];
+    for (const item of items) {
+      const imgType = item.types.find(t => t.startsWith('image/'));
+      if (!imgType) continue;
+      const blob = await item.getType(imgType);
+      const ext = imgType.split('/')[1]?.split('+')[0] || 'png';
+      out.push(new File([blob], `pasted-image.${ext}`, { type: imgType }));
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;

@@ -13,6 +13,10 @@ import {
   formatFileSize,
   copyImageFile,
   parseSessionKey,
+  isLikelyImageFile,
+  extractImageDataUrlsFromHtml,
+  dataUrlToImageFile,
+  readImagesFromAsyncClipboard,
   type ComposerImageAttachment,
 } from './utils';
 import type { SessionInfo, AgentRuntimeStatus, SkillInfo, EffortLevel, QueuedTaskPreview } from '../../types';
@@ -229,7 +233,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   }, [input]);
 
   const addImageAttachments = useCallback((files: ArrayLike<File> | null | undefined) => {
-    const nextFiles = Array.from(files || []).filter(file => file.type.startsWith('image/'));
+    const nextFiles = Array.from(files || []).filter(isLikelyImageFile);
     if (!nextFiles.length) return;
     setImageAttachments(prev => [...prev, ...nextFiles.map(makeComposerImageAttachment)]);
   }, []);
@@ -421,13 +425,40 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
   };
 
   const onPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(e.clipboardData?.items || [])
-      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+    const cd = e.clipboardData;
+    if (!cd) return;
+    // 1) Direct file entries (screenshots, copied image files). Keep image/* files, plus
+    //    empty-MIME files whose name looks like an image — some sources omit the type.
+    const files = Array.from(cd.items)
+      .filter(item => item.kind === 'file')
       .map(item => item.getAsFile())
-      .filter((file): file is File => !!file);
-    if (!files.length) return;
-    e.preventDefault();
-    addImageAttachments(files);
+      .filter((file): file is File => !!file && isLikelyImageFile(file));
+    if (files.length) {
+      e.preventDefault();
+      addImageAttachments(files);
+      return;
+    }
+    // 2) No file entry — recover an inline image pasted as HTML (copying from a web page / app
+    //    often yields only text/html with an <img src="data:..."> and no file).
+    const html = cd.getData('text/html');
+    const dataUrls = html ? extractImageDataUrlsFromHtml(html) : [];
+    const textUri = (cd.getData('text/uri-list') || cd.getData('text/plain') || '').trim();
+    if (/^data:image\//i.test(textUri)) dataUrls.push(textUri);
+    const recovered = dataUrls.map(u => dataUrlToImageFile(u)).filter((f): f is File => !!f);
+    if (recovered.length) {
+      e.preventDefault();
+      addImageAttachments(recovered);
+      return;
+    }
+    // 3) Last resort: the bitmap may live only on the async clipboard. Try it when the event
+    //    hinted at an image and carried no plain text to keep, so a normal text paste is never
+    //    swallowed nor a clipboard-permission prompt raised on unrelated pastes.
+    const hintsImage = Array.from(cd.items).some(it => it.kind === 'file')
+      || Array.from(cd.types || []).some(t => t === 'Files' || t.startsWith('image/'));
+    if (hintsImage && !textUri) {
+      e.preventDefault();
+      void readImagesFromAsyncClipboard().then(fs => { if (fs.length) addImageAttachments(fs); });
+    }
   }, [addImageAttachments]);
 
   const effectiveAgent = selectedAgent

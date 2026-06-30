@@ -258,3 +258,63 @@ describe('CodexDriver commentary (preamble) is surfaced live', () => {
     expect(tools).toEqual(['shell', 'shell']); // running + done for cmd1
   }, 20_000);
 });
+
+// Regression: aborting a codex turn must RESOLVE run() (stopReason 'interrupted'), not hang.
+// A long-running turn never sends turn/completed; onAbort interrupts and settles turnDone itself.
+// Before the fix, srv.kill() alone left `await turnDone` pending forever — the task stayed
+// "running" in the orchestrator even though the codex process was already dead.
+const FAKE_HANGING_SERVER = `#!/usr/bin/env node
+let buf = '';
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id, result }) + '\\n');
+const notify = (method, params) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', method, params }) + '\\n');
+const TID = 'codex-thread-hang';
+process.stdin.on('data', (d) => {
+  buf += d; const lines = buf.split('\\n'); buf = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.method === 'initialize') reply(m.id, {});
+    else if (m.method === 'thread/start') reply(m.id, { thread: { id: TID } });
+    else if (m.method === 'turn/start') {
+      reply(m.id, {});
+      notify('turn/started', { threadId: TID, turn: { id: 'turn-1' } });
+      // ...and then nothing: NO turn/completed (simulates an in-flight long turn).
+    }
+    else if (m.method === 'turn/interrupt') reply(m.id, {}); // ack the interrupt
+  }
+});
+`;
+
+describe('CodexDriver abort resolves the turn (no hang)', () => {
+  let tmp: string; let fake: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-hang-'));
+    fake = path.join(tmp, 'fake-codex.mjs');
+    fs.writeFileSync(fake, FAKE_HANGING_SERVER);
+    fs.chmodSync(fake, 0o755);
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('settles run() with stopReason interrupted when aborted mid-turn', async () => {
+    const ac = new AbortController();
+    const events: DriverEvent[] = [];
+    // registerSteer fires from the turn/started handler, AFTER turnId is set — use it as the
+    // "turn is underway" signal so the abort exercises the graceful turn/interrupt branch
+    // (rather than racing the app-server cold-start spawn).
+    let turnStarted: () => void = () => {};
+    const turnUnderway = new Promise<void>((r) => { turnStarted = r; });
+    const ctx: DriverContext = {
+      signal: ac.signal,
+      emit: (e) => events.push(e),
+      askUser: async () => ({}),
+      registerSteer: () => { turnStarted(); },
+    };
+    const runP = new CodexDriver(fake).run({ prompt: 'long task', workdir: tmp }, ctx);
+    await turnUnderway;
+    ac.abort();
+    const result = await runP; // must NOT hang
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('interrupted');
+    expect(result.error).toBe('Interrupted by user.');
+  }, 15_000);
+});

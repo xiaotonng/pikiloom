@@ -228,7 +228,21 @@ export class CodexDriver implements AgentDriver {
     const ok = await srv.start();
     if (!ok) return { ok: false, text: '', error: 'failed to start codex app-server', stopReason: 'error' };
 
-    const onAbort = () => srv.kill();
+    let settle: () => void = () => {};
+    const turnDone = new Promise<void>((res) => { settle = res; });
+
+    // On abort: gracefully interrupt the running turn, then settle turnDone OURSELVES. A bare
+    // srv.kill() (SIGTERM) never produces a turn/completed notification, so without this explicit
+    // settle() the `await turnDone` below hangs forever — run() never resolves and the task stays
+    // "running" in the orchestrator even though the codex process is already dead ("停止不掉，但实际上已经停了").
+    const onAbort = () => {
+      if (state.sessionId && state.turnId) {
+        srv.call('turn/interrupt', { threadId: state.sessionId, turnId: state.turnId }, 5_000).finally(() => settle());
+      } else {
+        srv.kill();
+        settle();
+      }
+    };
     if (ctx.signal.aborted) onAbort(); else ctx.signal.addEventListener('abort', onAbort, { once: true });
 
     try {
@@ -241,9 +255,6 @@ export class CodexDriver implements AgentDriver {
       if (threadResp.error) return { ok: false, text: '', error: threadResp.error.message || 'thread/start failed', stopReason: 'error' };
       const threadId = threadResp.result?.thread?.id ?? input.sessionId ?? null;
       if (threadId && threadId !== state.sessionId) { state.sessionId = threadId; ctx.emit({ type: 'session', sessionId: threadId }); }
-
-      let settle: () => void = () => {};
-      const turnDone = new Promise<void>((res) => { settle = res; });
 
       srv.onNotification((method, params) => {
         if (params?.threadId && params.threadId !== state.sessionId && method !== 'turn/started') return;

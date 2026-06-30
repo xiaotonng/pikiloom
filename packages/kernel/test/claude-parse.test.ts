@@ -41,6 +41,42 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(tool.call).toMatchObject({ id: 'r1', name: 'Read', status: 'running' });
   });
 
+  it('builds a UniversalPlan from TaskCreate/TaskUpdate (current Claude task-list mechanism)', () => {
+    const events = run([
+      // Two TaskCreate tool_uses (subjects), then their results assign ids "1" and "2".
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'design API' } },
+        { type: 'tool_use', id: 'tc2', name: 'TaskCreate', input: { subject: 'write tests' } },
+      ] } },
+      { type: 'user', toolUseResult: { task: { id: '1' } }, message: { content: [{ type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1 created' }] } },
+      { type: 'user', toolUseResult: { task: { id: '2' } }, message: { content: [{ type: 'tool_result', tool_use_id: 'tc2', content: 'Task #2 created' }] } },
+      // Flip task 1 to in_progress, then completed.
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu2', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } }] } },
+    ]);
+    const planEvents = events.filter(e => e.type === 'plan') as any[];
+    expect(planEvents.length, 'plan events should be emitted as tasks change').toBeGreaterThan(0);
+    // The latest plan reflects task 1 completed, task 2 still pending — keyed by `text` (kernel shape).
+    expect(planEvents[planEvents.length - 1].plan.steps).toEqual([
+      { text: 'design API', status: 'completed' },
+      { text: 'write tests', status: 'pending' },
+    ]);
+    // TaskCreate/TaskUpdate are plan-only — they must NOT surface as generic Activity tool calls.
+    expect(events.some(e => e.type === 'tool' && ['TaskCreate', 'TaskUpdate'].includes((e as any).call.name))).toBe(false);
+  });
+
+  it('drops a TaskUpdate status=deleted task from the plan', () => {
+    const events = run([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'keep me' } }] } },
+      { type: 'user', toolUseResult: { task: { id: '1' } }, message: { content: [{ type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tc2', name: 'TaskCreate', input: { subject: 'remove me' } }] } },
+      { type: 'user', toolUseResult: { task: { id: '2' } }, message: { content: [{ type: 'tool_result', tool_use_id: 'tc2', content: 'Task #2' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '2', status: 'deleted' } }] } },
+    ]);
+    const planEvents = events.filter(e => e.type === 'plan') as any[];
+    expect(planEvents[planEvents.length - 1].plan.steps).toEqual([{ text: 'keep me', status: 'pending' }]);
+  });
+
   it('enriches tool calls: human summary on use + done/failed status + detail on result', () => {
     const events = run([
       { type: 'assistant', message: { content: [

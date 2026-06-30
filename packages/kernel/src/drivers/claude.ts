@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { extname } from 'node:path';
 import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage, UniversalPlan, UniversalSubAgent } from '../protocol/index.js';
 import { discoverClaudeNativeSessions } from '../workspace/native.js';
@@ -29,6 +31,9 @@ export class ClaudeDriver implements AgentDriver {
 
   run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult> {
     const steerable = !!input.steerable;
+    // Image attachments must ride a stream-json user message (text-only stdin can't carry images),
+    // so enable that input mode whenever there are attachments, not just for mid-turn steering.
+    const useStreamJson = steerable || !!input.attachments?.length;
     const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages'];
     if (input.model) args.push('--model', input.model);
     if (input.effort) args.push('--effort', input.effort === 'ultra' ? 'max' : input.effort); // request extended thinking (ultra is a display-only alias for max)
@@ -36,7 +41,8 @@ export class ClaudeDriver implements AgentDriver {
     if (input.systemPrompt) args.push('--append-system-prompt', input.systemPrompt);
     if (input.mcpConfigPath) args.push('--mcp-config', input.mcpConfigPath);
     if (input.permissionMode) args.push('--permission-mode', input.permissionMode); // parity: keep bypass/accept-edits on the kernel path
-    if (steerable) args.push('--input-format', 'stream-json', '--replay-user-messages'); // parity: mid-turn steer
+    if (useStreamJson) args.push('--input-format', 'stream-json');
+    if (steerable) args.push('--replay-user-messages'); // parity: mid-turn steer
     if (input.extraArgs?.length) args.push(...input.extraArgs);
 
     const state = {
@@ -48,6 +54,9 @@ export class ClaudeDriver implements AgentDriver {
       contextWindow: null as number | null, turnOutputTokensBase: 0,
       subAgents: new Map<string, any>(),
       tools: new Map<string, { name: string; summary: string }>(),
+      taskList: new Map<string, { subject: string; status: string }>(),
+      taskOrder: [] as string[],
+      pendingTaskCreates: new Map<string, { subject: string }>(),
     };
 
     return new Promise<DriverResult>((resolve) => {
@@ -71,8 +80,8 @@ export class ClaudeDriver implements AgentDriver {
       else ctx.signal.addEventListener('abort', onAbort, { once: true });
 
       if (steerable) {
-        ctx.registerSteer(async (prompt: string) => {
-          try { child.stdin!.write(claudeUserMessage(prompt) + '\n'); return true; } catch { return false; }
+        ctx.registerSteer(async (prompt: string, attachments?: string[]) => {
+          try { child.stdin!.write(claudeUserMessage(prompt, attachments) + '\n'); return true; } catch { return false; }
         });
       }
 
@@ -104,8 +113,10 @@ export class ClaudeDriver implements AgentDriver {
       });
 
       try {
-        if (steerable) child.stdin!.write(claudeUserMessage(input.prompt) + '\n'); // keep stdin open for steering
-        else { child.stdin!.write(input.prompt); child.stdin!.end(); }
+        if (useStreamJson) {
+          child.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n');
+          if (!steerable) child.stdin!.end(); // single turn; steer mode keeps stdin open for replay
+        } else { child.stdin!.write(input.prompt); child.stdin!.end(); }
       } catch { /* ignore */ }
     });
   }
@@ -245,6 +256,29 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
         if (plan) emit({ type: 'plan', plan });
         continue;
       }
+      // Task list (current Claude mechanism): stash the subject; the tool_result assigns the id.
+      // Plan-only — like the legacy driver these never surface as Activity rows.
+      if (name === 'TaskCreate') {
+        const subject = typeof b.input?.subject === 'string' ? b.input.subject.trim() : '';
+        if (subject) (s.pendingTaskCreates ||= new Map()).set(id, { subject });
+        continue;
+      }
+      if (name === 'TaskUpdate') {
+        const taskId = String(b.input?.taskId ?? '').trim();
+        const rawStatus = String(b.input?.status ?? '').trim().toLowerCase();
+        if (taskId) {
+          if (rawStatus === 'deleted') {
+            s.taskList?.delete(taskId);
+            if (Array.isArray(s.taskOrder)) s.taskOrder = s.taskOrder.filter((x: string) => x !== taskId);
+          } else if (rawStatus) {
+            const existing = s.taskList?.get(taskId);
+            if (existing) existing.status = rawStatus;
+          }
+          const plan = rebuildClaudeTaskPlan(s);
+          if (plan) emit({ type: 'plan', plan });
+        }
+        continue;
+      }
       if (name === 'Task' || name === 'Agent') {
         const input = b.input || {};
         const sub: UniversalSubAgent = {
@@ -284,6 +318,21 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       if (b?.type !== 'tool_result') continue;
       emitClaudeImages(b.content || [], s, emit);
       const id = String(b.tool_use_id || '').trim();
+      // TaskCreate result: the assigned task id arrives here; register the task and emit the plan.
+      if (id && s.pendingTaskCreates?.has(id)) {
+        const pending = s.pendingTaskCreates.get(id);
+        const assignedId = readClaudeTaskCreateId(ev, b);
+        if (pending && assignedId) {
+          s.pendingTaskCreates.delete(id);
+          (s.taskList ||= new Map());
+          (s.taskOrder ||= []);
+          if (!s.taskList.has(assignedId)) s.taskOrder.push(assignedId);
+          s.taskList.set(assignedId, { subject: pending.subject, status: 'pending' });
+          const plan = rebuildClaudeTaskPlan(s);
+          if (plan) emit({ type: 'plan', plan });
+        }
+        continue;
+      }
       const tool = id ? s.tools?.get(id) : undefined;
       if (!tool) continue;
       const isError = !!b.is_error;
@@ -311,10 +360,30 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
   }
 }
 
-// A stream-json user message (for --input-format stream-json; used to send the prompt and
-// to inject mid-turn steer messages while stdin stays open).
-export function claudeUserMessage(text: string): string {
-  return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
+// Claude vision input formats (matches the legacy driver / Anthropic API: png, jpeg, gif, webp).
+const CLAUDE_IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp',
+};
+
+// A stream-json user message (for --input-format stream-json; used to send the prompt and to
+// inject mid-turn steer messages while stdin stays open). Image attachments are inlined as base64
+// image content blocks so the model actually sees them; other files become a text note. Without
+// this the kernel path sent text only and silently dropped pasted/attached images.
+export function claudeUserMessage(text: string, attachments?: string[]): string {
+  const content: any[] = [];
+  for (const filePath of attachments || []) {
+    const mime = CLAUDE_IMAGE_MIME[extname(filePath).toLowerCase()];
+    if (mime) {
+      try {
+        content.push({ type: 'image', source: { type: 'base64', media_type: mime, data: readFileSync(filePath).toString('base64') } });
+        continue;
+      } catch { /* unreadable -> fall through to a text note */ }
+    }
+    content.push({ type: 'text', text: `[Attached file: ${filePath}]` });
+  }
+  content.push({ type: 'text', text });
+  return JSON.stringify({ type: 'user', message: { role: 'user', content } });
 }
 
 // Surface base64 image content blocks as artifacts (data URLs), deduped per turn.
@@ -345,6 +414,43 @@ export function todoWriteToPlan(input: any): UniversalPlan | null {
     const raw = typeof todo.status === 'string' ? todo.status : 'pending';
     const status = raw === 'completed' ? 'completed' : raw === 'in_progress' ? 'inProgress' : 'pending';
     steps.push({ text, status });
+  }
+  return steps.length ? { explanation: null, steps } : null;
+}
+
+// ── Claude task-list (TaskCreate / TaskUpdate) -> UniversalPlan ──────────────────────
+// Current Claude Code drives its task list through TaskCreate/TaskUpdate, NOT TodoWrite
+// (TodoWrite is the legacy mechanism). TaskCreate carries the subject; its tool_result then
+// assigns a stable task id (toolUseResult.task.id, or "Task #N" in the text). TaskUpdate flips
+// a task's status by id. We accumulate the list in driver state and re-emit the whole plan on
+// each change. Without this the kernel path never emits a plan event for Claude, so the
+// dashboard's task-list card never renders. Ported from pikiloom's legacy claude driver.
+
+// The assigned task id from a TaskCreate tool_result. Prefer the structured field; fall back
+// to parsing "Task #N" from a string result.
+export function readClaudeTaskCreateId(ev: any, block: any): string | null {
+  const structured = ev?.toolUseResult?.task?.id;
+  if (structured != null && String(structured).trim()) return String(structured).trim();
+  const content = block?.content;
+  if (typeof content === 'string') {
+    const m = content.match(/Task #(\d+)/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+export function rebuildClaudeTaskPlan(s: any): UniversalPlan | null {
+  if (!Array.isArray(s?.taskOrder) || !s.taskOrder.length) return null;
+  const steps: UniversalPlan['steps'] = [];
+  for (const id of s.taskOrder) {
+    const task = s.taskList?.get(id);
+    if (!task) continue;
+    const lowered = String(task.status || '').toLowerCase();
+    const status = lowered === 'completed' ? 'completed'
+      : (lowered === 'in_progress' || lowered === 'inprogress') ? 'inProgress'
+      : 'pending';
+    const text = String(task.subject || '').trim();
+    if (text) steps.push({ text, status });
   }
   return steps.length ? { explanation: null, steps } : null;
 }

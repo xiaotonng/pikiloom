@@ -31,17 +31,20 @@ export class ClaudeDriver implements AgentDriver {
 
   run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult> {
     const steerable = !!input.steerable;
-    // Image attachments must ride a stream-json user message (text-only stdin can't carry images),
-    // so enable that input mode whenever there are attachments, not just for mid-turn steering.
-    const useStreamJson = steerable || !!input.attachments?.length;
-    const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages'];
+    // Always drive Claude over a stream-json stdin and keep that stdin OPEN for the whole turn.
+    // That open stdin is what lets Claude's native "launch detached background work → end the
+    // turn → wake itself up and report when the work finishes" flow play out: it only happens
+    // while stdin stays open (with it closed, Claude exits at the first `result` and the wake-up
+    // — and any in-process background agent/workflow — is lost). Image attachments also need the
+    // stream-json user message (a plain text stdin can't carry images). `--replay-user-messages`
+    // + registerSteer remain the only mid-turn-steer-specific bits.
+    const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '--input-format', 'stream-json'];
     if (input.model) args.push('--model', input.model);
     if (input.effort) args.push('--effort', input.effort === 'ultra' ? 'max' : input.effort); // request extended thinking (ultra is a display-only alias for max)
     if (input.sessionId) args.push('--resume', input.sessionId);
     if (input.systemPrompt) args.push('--append-system-prompt', input.systemPrompt);
     if (input.mcpConfigPath) args.push('--mcp-config', input.mcpConfigPath);
     if (input.permissionMode) args.push('--permission-mode', input.permissionMode); // parity: keep bypass/accept-edits on the kernel path
-    if (useStreamJson) args.push('--input-format', 'stream-json');
     if (steerable) args.push('--replay-user-messages'); // parity: mid-turn steer
     if (input.extraArgs?.length) args.push(...input.extraArgs);
 
@@ -57,17 +60,39 @@ export class ClaudeDriver implements AgentDriver {
       taskList: new Map<string, { subject: string; status: string }>(),
       taskOrder: [] as string[],
       pendingTaskCreates: new Map<string, { subject: string }>(),
+      // run_in_background lifecycle: task ids seen as started vs. reached a terminal status.
+      bgStarted: new Set<string>(), bgTerminal: new Set<string>(),
     };
 
     return new Promise<DriverResult>((resolve) => {
       let child: ChildProcess;
       let settled = false;
-      const finish = (r: DriverResult) => {
+      let holdCapTimer: ReturnType<typeof setTimeout> | null = null;
+      const usageOf = () => this.usage(state);
+      const clearHoldCap = () => { if (holdCapTimer) { clearTimeout(holdCapTimer); holdCapTimer = null; } };
+      // kill=true SIGTERMs immediately — fast exit, used once nothing is left running in the
+      // background (a normal turn, or a wake-up turn after every background task finished).
+      // kill=false only ends stdin and lets Claude shut down on its own, so any still-running
+      // detached background work survives a clean exit (a hard kill mid-flight is exactly what
+      // tore the background — and the wake-up — down before). A leak-guard SIGTERM is the backstop.
+      const finish = (r: DriverResult, kill = true) => {
         if (settled) return; settled = true;
+        clearHoldCap();
         try { child?.stdin?.end(); } catch { /* ignore */ }
-        if (steerable) { try { child?.kill('SIGTERM'); } catch { /* ignore */ } } // replay mode keeps the process alive past the turn
+        if (!child.killed && child.exitCode == null) {
+          if (kill) { try { child.kill('SIGTERM'); } catch { /* ignore */ } }
+          else {
+            const guard = setTimeout(() => { try { child?.kill('SIGTERM'); } catch { /* ignore */ } }, CLAUDE_EXIT_LEAK_GUARD_MS);
+            if (typeof (guard as any).unref === 'function') (guard as any).unref();
+          }
+        }
         resolve(r);
       };
+      const settleResult = (opts: { stopReason?: string | null; kill?: boolean } = {}) => finish({
+        ok: !state.error, text: state.text, reasoning: state.reasoning || undefined,
+        error: state.error, stopReason: opts.stopReason ?? state.stopReason, sessionId: state.sessionId, usage: usageOf(),
+      }, opts.kill ?? true);
+
       try {
         child = spawn(this.bin, args, { cwd: input.workdir, env: { ...process.env, ...(input.env || {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch (err: any) {
@@ -85,38 +110,50 @@ export class ClaudeDriver implements AgentDriver {
         });
       }
 
-      const usageOf = () => this.usage(state);
       let buf = '';
       let stderr = '';
       child.stdout!.on('data', (chunk: Buffer) => {
+        if (settled) return; // ignore the process's post-settle shutdown chatter
         buf += chunk.toString('utf8');
         const lines = buf.split('\n');
         buf = lines.pop() || '';
         for (const line of lines) {
+          if (settled) return;
           const trimmed = line.trim();
           if (!trimmed) continue;
           let ev: any;
           try { ev = JSON.parse(trimmed); } catch { continue; }
           handleClaudeEvent(ev, state, ctx.emit);
-          if (steerable && ev.type === 'result') {
-            // In replay mode the turn ends on `result` but the process lingers; settle now.
-            finish({ ok: !state.error, text: state.text, reasoning: state.reasoning || undefined, error: state.error, stopReason: state.stopReason, sessionId: state.sessionId, usage: usageOf() });
+          if (ev.type !== 'result') continue;
+          const hasError = !!ev.is_error || (Array.isArray(ev.errors) && ev.errors.length > 0) || !!state.error;
+          const pending = pendingClaudeBackgroundTasks(state);
+          if (decideClaudeResultSettle({ hasError, pendingBackground: pending }) === 'hold') {
+            // Background work is still running: do NOT end the turn here. Keep stdin open so Claude
+            // wakes itself up and streams a follow-up turn reporting the finished work — we settle
+            // on THAT result (pending back to 0). A cap bounds the wait so a never-completing daemon
+            // (e.g. a dev server) eventually settles (graceful, no kill) instead of holding forever.
+            if (!holdCapTimer) {
+              holdCapTimer = setTimeout(() => { if (!settled) settleResult({ stopReason: 'background', kill: false }); }, claudeBgHoldCapMs());
+              if (typeof (holdCapTimer as any).unref === 'function') (holdCapTimer as any).unref();
+            }
+            continue;
           }
+          settleResult();
         }
       });
       child.stderr!.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
       child.on('error', (err) => finish({ ok: false, text: state.text, error: `claude spawn error: ${err.message}`, stopReason: 'error' }));
       child.on('close', (code) => {
-        if (ctx.signal.aborted) { finish({ ok: false, text: state.text, reasoning: state.reasoning, error: 'Interrupted by user.', stopReason: 'interrupted', sessionId: state.sessionId, usage: usageOf() }); return; }
+        if (settled) return;
+        if (ctx.signal.aborted) { finish({ ok: false, text: state.text, reasoning: state.reasoning, error: 'Interrupted by user.', stopReason: 'interrupted', sessionId: state.sessionId, usage: usageOf() }, false); return; }
         const ok = !state.error && code === 0;
-        finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason: state.stopReason, sessionId: state.sessionId, usage: usageOf() });
+        finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason: state.stopReason, sessionId: state.sessionId, usage: usageOf() }, false);
       });
 
       try {
-        if (useStreamJson) {
-          child.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n');
-          if (!steerable) child.stdin!.end(); // single turn; steer mode keeps stdin open for replay
-        } else { child.stdin!.write(input.prompt); child.stdin!.end(); }
+        // Send the prompt as a stream-json user message and keep stdin OPEN (do not end it here):
+        // closing it makes Claude exit at the first `result`, before any background task finishes.
+        child.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n');
       } catch { /* ignore */ }
     });
   }
@@ -197,6 +234,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     return;
   }
   if (t === 'system') {
+    trackClaudeBackgroundTask(ev, s);
     if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
     s.model = ev.model ?? s.model;
     s.contextWindow = claudeEffectiveContextWindow(claudeContextWindowFromModel(s.model)) ?? s.contextWindow;
@@ -358,6 +396,59 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     }
     return;
   }
+}
+
+// ── run_in_background lifecycle (background → wake-up) ───────────────────────────────────
+// Claude streams a structured lifecycle for detached background work as `system` sub-events:
+//   { subtype:'task_started',      task_id, tool_use_id, description }   ← launched
+//   { subtype:'task_updated',      task_id, patch:{ status } }           ← progress / terminal
+//   { subtype:'task_notification', task_id, status }                     ← terminal (completed/killed/…)
+// A task counts as pending from task_started until a terminal task_updated/task_notification.
+// While any are pending the driver keeps the turn alive instead of ending it at `result`, so
+// Claude's own background→wake-up turn (which reports the finished work) can stream in. Pure +
+// exported for hermetic testing.
+
+// How long, with no settle, to keep holding a turn open for a background task to finish and
+// trigger Claude's wake-up turn, before giving up (so a never-completing daemon doesn't hang
+// the turn forever). Override with PIKILOOM_CLAUDE_BG_HOLD_MS.
+const CLAUDE_BG_HOLD_CAP_DEFAULT_MS = 10 * 60_000;
+export function claudeBgHoldCapMs(): number {
+  const raw = Number(process.env.PIKILOOM_CLAUDE_BG_HOLD_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_HOLD_CAP_DEFAULT_MS;
+}
+// After we settle a held turn gracefully (stdin closed, no kill), force-kill the lingering
+// process only if it hasn't exited on its own within this window. Backstop against leaks.
+const CLAUDE_EXIT_LEAK_GUARD_MS = 15_000;
+
+export function isTerminalTaskStatus(status: unknown): boolean {
+  return /^(complete|done|success|succeed|finish|kill|fail|error|stop|cancel|abort|timed?_?out|timeout)/i
+    .test(String(status ?? '').trim());
+}
+
+export function trackClaudeBackgroundTask(ev: any, s: any): void {
+  const subtype = ev?.subtype;
+  if (subtype !== 'task_started' && subtype !== 'task_updated' && subtype !== 'task_notification') return;
+  const id = String(ev?.task_id ?? ev?.tool_use_id ?? '').trim();
+  if (!id) return;
+  if (subtype === 'task_started') { (s.bgStarted ||= new Set<string>()).add(id); return; }
+  if (isTerminalTaskStatus(ev?.patch?.status ?? ev?.status)) (s.bgTerminal ||= new Set<string>()).add(id);
+}
+
+export function pendingClaudeBackgroundTasks(s: any): number {
+  const started: Set<string> | undefined = s?.bgStarted;
+  if (!started?.size) return 0;
+  const terminal: Set<string> | undefined = s?.bgTerminal;
+  let n = 0;
+  for (const id of started) if (!terminal?.has(id)) n++;
+  return n;
+}
+
+export type ClaudeResultSettleDecision = 'settle' | 'hold';
+// At a `result` event: settle the turn normally, unless background work is still running
+// (then hold the process open for the wake-up). Errors always settle.
+export function decideClaudeResultSettle(input: { hasError: boolean; pendingBackground: number }): ClaudeResultSettleDecision {
+  if (input.hasError) return 'settle';
+  return input.pendingBackground > 0 ? 'hold' : 'settle';
 }
 
 // Claude vision input formats (matches the legacy driver / Anthropic API: png, jpeg, gif, webp).

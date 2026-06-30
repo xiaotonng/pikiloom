@@ -204,7 +204,15 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
   const u = result.usage || snapshot.usage || {};
   return {
     ok: !!result.ok,
-    message: (result.text || snapshot.text || '').trim() || (finalError ?? '(no output)'),
+    // Empty-text fallback (mirrors the legacy driver): a clean turn with no prose reads
+    // "(no textual response)", not "(no output)" (which the kernel path used to show for every
+    // textless turn — including a background-launch turn that intentionally ends without prose).
+    // A turn that settled while work keeps running in the background gets an explicit note.
+    message: (result.text || snapshot.text || '').trim()
+      || finalError
+      || (result.stopReason === 'background'
+        ? 'Work is now running in the background — I’ll report back here once it finishes. (Send any message to check on it.)'
+        : result.ok ? '(no textual response)' : '(no output)'),
     thinking: (result.reasoning || snapshot.reasoning || '').trim() || null,
     plan: toPikiloomPlan(snapshot.plan),
     sessionId: finalSessionId,

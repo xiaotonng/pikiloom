@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { StreamOpts, StreamResult, StreamPreviewMeta, StreamToolCall } from './types.js';
+import type { StreamOpts, StreamResult, StreamPreviewMeta, StreamToolCall, StreamPreviewPlan } from './types.js';
 import { agentLog, agentWarn } from './utils.js';
 import { normalizeClaudeSessionEntrypoint } from './drivers/claude.js';
 import { humanizeCodexError } from './drivers/codex.js';
@@ -98,6 +98,22 @@ function buildKernelDriver(kernel: any, opts: StreamOpts): { driver: any; input:
   }
 }
 
+// Kernel plan steps key their text as { text }; pikiloom's StreamPlan and the entire dashboard
+// pipeline (pikichannel adapter -> ws.ts -> PlanProgressCard) key it as { step }. Translate at
+// this seam — the same place we already remap usage fields — so codex/claude task lists render
+// their text. Without it the progress count ("0/4") shows but every row is blank (the card reads
+// step.step, which is undefined on the kernel shape).
+export function toPikiloomPlan(plan: any): StreamPreviewPlan | null {
+  if (!plan || !Array.isArray(plan.steps)) return null;
+  const steps = plan.steps
+    .map((st: any) => ({
+      step: typeof st?.text === 'string' ? st.text : typeof st?.step === 'string' ? st.step : '',
+      status: (st?.status === 'completed' ? 'completed' : st?.status === 'inProgress' ? 'inProgress' : 'pending') as StreamPreviewPlan['steps'][number]['status'],
+    }))
+    .filter((st: { step: string }) => st.step.trim());
+  return steps.length ? { explanation: typeof plan.explanation === 'string' ? plan.explanation : null, steps } : null;
+}
+
 let _kernel: any = null;
 export async function loadKernel(): Promise<any> {
   if (_kernel) return _kernel;
@@ -159,7 +175,7 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
       subAgents: s.subAgents?.length ? s.subAgents : undefined,
       providerName: opts.byokProviderName ?? null,
     };
-    try { opts.onText(s.text || '', s.reasoning || '', s.activity || '', m, s.plan ?? null); } catch { /* isolate */ }
+    try { opts.onText(s.text || '', s.reasoning || '', s.activity || '', m, toPikiloomPlan(s.plan)); } catch { /* isolate */ }
   };
 
   let result: any; let snapshot: any = {};
@@ -190,7 +206,7 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
     ok: !!result.ok,
     message: (result.text || snapshot.text || '').trim() || (finalError ?? '(no output)'),
     thinking: (result.reasoning || snapshot.reasoning || '').trim() || null,
-    plan: snapshot.plan ?? null,
+    plan: toPikiloomPlan(snapshot.plan),
     sessionId: finalSessionId,
     workspacePath: null,
     model: input.model ?? null,

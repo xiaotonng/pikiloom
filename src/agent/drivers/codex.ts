@@ -1671,6 +1671,11 @@ function getCodexSessionMessagesFromRollout(opts: SessionMessagesOpts): SessionM
     const fallbackMsgs: TailMessage[] = [];
     let pendingAssistant: PendingCodexAssistantMessage | null = null;
     let sawAssistantResponseItems = false;
+    // Codex records the user turn twice: a rich `response_item` (role=user, carries the image as an
+    // input_image data URL or a localImage path) AND a text-only `event_msg`/user_message. The
+    // user bubble is built from the latter, so stash any images from the former and attach them
+    // when the user_message arrives — otherwise pasted images vanish from codex history on reparse.
+    let pendingUserImages: MessageBlock[] = [];
 
     const ensureAssistant = (): PendingCodexAssistantMessage => {
       if (!pendingAssistant) pendingAssistant = { blocks: [], toolNamesByCallId: new Map() };
@@ -1703,11 +1708,16 @@ function getCodexSessionMessagesFromRollout(opts: SessionMessagesOpts): SessionM
         if (ev.payload.type === 'user_message' && typeof ev.payload.message === 'string') {
           flushAssistant();
           const text = stripInjectedPrompts(ev.payload.message).trim();
-          if (!text) continue;
+          const imageBlocks = pendingUserImages;
+          pendingUserImages = [];
+          if (!text && !imageBlocks.length) continue;
           const userMessage: TailMessage = { role: 'user', text };
           fallbackMsgs.push(userMessage);
           allMsgs.push(userMessage);
-          richMsgs.push({ role: 'user', text, blocks: [{ type: 'text', content: text }] });
+          const blocks: MessageBlock[] = [];
+          if (text) blocks.push({ type: 'text', content: text });
+          blocks.push(...imageBlocks);
+          richMsgs.push({ role: 'user', text, blocks });
         } else if (ev.payload.type === 'agent_message' && typeof ev.payload.message === 'string') {
           const text = ev.payload.message.trim();
           if (text) fallbackMsgs.push({ role: 'assistant', text });
@@ -1719,6 +1729,21 @@ function getCodexSessionMessagesFromRollout(opts: SessionMessagesOpts): SessionM
       const payload = ev.payload;
 
       if (payload.type === 'message') {
+        if (payload.role === 'user') {
+          for (const c of (Array.isArray(payload.content) ? payload.content : [])) {
+            if (c?.type === 'input_image' && typeof c.image_url === 'string' && c.image_url.startsWith('data:image/')) {
+              pendingUserImages.push({ type: 'image', content: c.image_url });
+            } else if (c?.type === 'localImage' && typeof c.path === 'string') {
+              try {
+                if (fs.existsSync(c.path) && fs.statSync(c.path).size <= 4 * 1024 * 1024) {
+                  const ext = path.extname(c.path).toLowerCase();
+                  pendingUserImages.push({ type: 'image', content: `data:${mimeForExt(ext)};base64,${fs.readFileSync(c.path).toString('base64')}` });
+                }
+              } catch { /* ignore */ }
+            }
+          }
+          continue;
+        }
         if (payload.role !== 'assistant') continue;
         const text = extractCodexMessageText(payload.content);
         if (!text) continue;

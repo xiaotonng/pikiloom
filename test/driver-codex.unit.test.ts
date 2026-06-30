@@ -245,4 +245,56 @@ describe('Codex session history', () => {
       expect(imageBlock?.content.startsWith('data:image/png;base64,')).toBe(true);
     });
   });
+
+  it('reconstructs a user-attached (pasted) image from a rollout input_image item', async () => {
+    await withTempHome(async homeDir => {
+      const sessionId = 'sess-userimg';
+      const workdir = path.join(homeDir, 'project');
+      const workspacePath = path.join(workdir, '.pikiloom', 'sessions', 'codex', sessionId, 'workspace');
+      const rolloutDir = path.join(homeDir, '.codex', 'sessions', '2026', '06', '30');
+      fs.mkdirSync(workspacePath, { recursive: true });
+      fs.mkdirSync(rolloutDir, { recursive: true });
+
+      const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const imgPath = path.join(workspacePath, '2026-06-30_17-20-21.png');
+
+      // Codex writes the user turn TWICE: a rich response_item (role=user) that carries the image as
+      // an input_image data URL, then a text-only event_msg/user_message. The bubble is built from the
+      // latter, so the image must be recovered from the former — this is the regression under test.
+      const rolloutPath = path.join(rolloutDir, `rollout-2026-06-30T18-01-28-${sessionId}.jsonl`);
+      fs.writeFileSync(rolloutPath, [
+        JSON.stringify({ timestamp: '2026-06-30T18:01:28Z', type: 'session_meta', payload: { id: sessionId, cwd: workdir } }),
+        JSON.stringify({
+          timestamp: '2026-06-30T18:01:29Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: `<image: ${imgPath}>` },
+              { type: 'input_image', image_url: dataUrl, detail: 'high' },
+            ],
+          },
+        }),
+        JSON.stringify({ timestamp: '2026-06-30T18:01:29Z', type: 'event_msg', payload: { type: 'user_message', message: '你能看到这张图吗' } }),
+        JSON.stringify({
+          timestamp: '2026-06-30T18:01:40Z',
+          type: 'response_item',
+          payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: '能看到，是一张登录报错截图。' }] },
+        }),
+      ].join('\n'));
+
+      const result = await getSessionMessages({ agent: 'codex', sessionId, workdir, rich: true });
+      expect(result.ok).toBe(true);
+
+      const user = result.richMessages?.find(m => m.role === 'user');
+      expect(user).toBeTruthy();
+      expect(user?.text).toBe('你能看到这张图吗');
+      const imageBlock = user?.blocks.find(b => b.type === 'image');
+      expect(imageBlock).toBeTruthy();
+      expect(imageBlock?.content).toBe(dataUrl);
+      // text block precedes the image block
+      expect(user?.blocks[0]).toMatchObject({ type: 'text', content: '你能看到这张图吗' });
+    });
+  });
 });

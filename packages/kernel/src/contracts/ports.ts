@@ -14,9 +14,11 @@ export interface CoreSessionRecord {
   sessionId: string;            // stable kernel id (== sessionKey suffix)
   nativeSessionId?: string | null; // agent-native id for resume (e.g. claude's own id)
   workspacePath: string;
+  workdir?: string | null;      // the cwd the turn ran in — scopes managed sessions per workspace
   createdAt: string;
   updatedAt: string;
   title?: string | null;
+  preview?: string | null;      // head of the latest assistant text (for list rendering)
   model?: string | null;
   effort?: string | null;
   runState?: 'running' | 'completed' | 'incomplete';

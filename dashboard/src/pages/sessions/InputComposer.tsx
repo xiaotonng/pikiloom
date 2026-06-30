@@ -1089,7 +1089,7 @@ function EffortChip({ current, options, onSelect, label }: {
   }, [open]);
   if (!options.length) return null;
   const currentLabel = options.find(o => o.id === current)?.label
-    || (current ? current.charAt(0).toUpperCase() + current.slice(1) : '—');
+    || (current || '—');
   // Gauge needle sweeps with the level's position in the ordered (low→high) options;
   // ultra (claude's top level) additionally paints the dial+needle with a vivid gradient.
   const levelIdx = options.findIndex(o => o.id === current);

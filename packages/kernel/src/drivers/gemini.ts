@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec } from '../contracts/driver.js';
+import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage } from '../protocol/index.js';
+import { discoverGeminiNativeSessions } from '../workspace/native.js';
 
 // Native kernel Gemini driver: `gemini --output-format stream-json ... -p <prompt>` and
 // parse its stream-json events into kernel DriverEvents. Faithful to pikiloom's geminiParse.
@@ -56,6 +57,10 @@ export class GeminiDriver implements AgentDriver {
     if (input.model) args.push('--model', input.model);
     if (input.extraArgs?.length) args.push(...input.extraArgs);
     return { command: this.bin, args, cwd: input.workdir, env: input.env };
+  }
+
+  listNativeSessions(opts: { workdir: string; limit?: number }): NativeSessionInfo[] {
+    return discoverGeminiNativeSessions(opts.workdir, { limit: opts.limit });
   }
 }
 

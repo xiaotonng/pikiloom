@@ -85,6 +85,21 @@ export interface TuiSpec {
   env?: Record<string, string>;
 }
 
+// A session discovered from an agent's OWN on-disk transcript store (not created via the
+// kernel). Drivers that can read their CLI's native session history expose them here so the
+// kernel can present a unified list (managed + native). `agent` is stamped by the kernel.
+export interface NativeSessionInfo {
+  sessionId: string;
+  title: string | null;
+  preview: string | null;     // head of the latest message text
+  cwd: string | null;
+  model: string | null;
+  createdAt: string | null;   // ISO
+  updatedAt: string | null;   // ISO
+  running: boolean;
+  messageCount?: number | null;
+}
+
 export interface AgentDriver {
   readonly id: string;
   readonly capabilities?: { steer?: boolean; interact?: boolean; resume?: boolean; tui?: boolean };
@@ -92,4 +107,7 @@ export interface AgentDriver {
   // Optional: how to launch this agent's interactive TUI. Drivers that set capabilities.tui
   // must implement this. The kernel spawns it in a PTY and passes terminal I/O through.
   tui?(input: TuiInput): TuiSpec;
+  // Optional: discover the agent's own native sessions for a workdir (e.g. claude reads
+  // ~/.claude/projects/<enc>/*.jsonl). The kernel merges these with its managed sessions.
+  listNativeSessions?(opts: { workdir: string; limit?: number }): NativeSessionInfo[] | Promise<NativeSessionInfo[]>;
 }

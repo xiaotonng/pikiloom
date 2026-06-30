@@ -275,6 +275,40 @@ plugins are the composable per-capability layer on top.)
 
 ---
 
+## Workspace: unified directory + session / skill / mcp management
+
+One explicitly-configurable **top-level directory** (`createLoom({ stateDirName })`, default
+`'pikiloom'` → `.pikiloom`) gives a consuming app the same "everything under one folder" model
+pikiloom uses, resolved in two scopes — global (`~/.pikiloom`) and per-workspace
+(`<workdir>/.pikiloom`). It's exposed off the `Loom`:
+
+```ts
+const loom = createLoom({ drivers: [new ClaudeDriver(), new CodexDriver()], stateDirName: 'pikiloom' });
+
+// Unified, searchable session list — the kernel's MANAGED sessions (scoped per workspace by the
+// cwd they ran in) MERGED with each agent's OWN native sessions (claude/codex read their on-disk
+// transcripts). Global view, per-workspace view, and search — all kernel-owned:
+await loom.sessions.list({ scope: 'workspace', workdir });   // this folder (managed + native)
+await loom.sessions.list({ scope: 'global' });               // every workspace's managed sessions
+await loom.sessions.search({ query: 'deploy', workdir });
+
+// Skills registry: one canonical dir, symlinked into every agent's skills dir.
+loom.skills.ensureLinks('workspace', workdir);   // <wd>/.claude/skills + .agents/skills → <wd>/.pikiloom/skills
+loom.skills.list({ workdir });                   // installed skills (workspace + global)
+await loom.skills.search('pdf');                 // installable skills (npm)
+
+// MCP catalog + discovery (enabling a server stays on the Plugin.tools()/ToolProvider seam):
+loom.mcp.recommended();                           // curated catalog
+await loom.mcp.search('postgres');                // MCP registry → npm
+
+loom.paths.skillsDir('global');                   // ~/.pikiloom/skills, etc.
+```
+
+A driver opts into native discovery by implementing
+`listNativeSessions?({ workdir, limit }): NativeSessionInfo[]` (Claude/Codex/Gemini do; the pure
+readers are also exported as `discover{Claude,Codex,Gemini}NativeSessions`). All of this is
+node-builtins-only and additive — every existing port/default is unchanged.
+
 ## Exports
 
 Main entry `@pikiloom/kernel` re-exports everything. Subpaths: `@pikiloom/kernel/drivers`,
@@ -284,6 +318,7 @@ Main entry `@pikiloom/kernel` re-exports everything. Subpaths: `@pikiloom/kernel
 - Drivers: `EchoDriver`, `ClaudeDriver`, `CodexDriver`, `GeminiDriver`, `HermesDriver`
 - Surfaces: `WebSurface`, `CliSurface`
 - Ports/defaults: `FsSessionStore`, `NullModelResolver`, `NoopToolProvider`, `PassthroughSystemPromptBuilder`, `AutoCancelInteractionHandler`, `DeferToTerminalInteractionHandler`, `NoopCatalog`, `defaultBaseDir`
+- Workspace: `resolveLoomPaths`, `SessionsManager`, `SkillsManager`, `McpRegistry`, `ensureDirSymlink`, `discover{Claude,Codex,Gemini}NativeSessions` + types `LoomPaths`, `LoomScope`, `ManagedSessionInfo`, `NativeSessionInfo`, `SkillInfo`, `McpCatalogEntry`
 - Protocol: `UniversalSnapshot`, `diffSnapshot`, `applySnapshotPatch`, `emptySnapshot`, `PROTOCOL_VERSION`, all wire/`Client*`/`Server*` message types
 - Types: `AgentDriver`, `AgentTurnInput`, `DriverContext`, `DriverEvent`, `DriverResult`, `LoomIO`, `PromptInput`, `Surface`, `Plugin`, `SpawnContribution`, `SessionStore`, `ModelResolver`, `ToolProvider`, `SystemPromptBuilder`, `InteractionHandler`, `Catalog`, …
 

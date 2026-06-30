@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type {
-  AgentDriver, AgentTurnInput, DriverContext, DriverEvent, DriverResult, TuiInput, TuiSpec,
+  AgentDriver, AgentTurnInput, DriverContext, DriverEvent, DriverResult, TuiInput, TuiSpec, NativeSessionInfo,
 } from '../contracts/driver.js';
 import type { UniversalPlan, UniversalUsage, UniversalInteraction } from '../protocol/index.js';
+import { discoverCodexNativeSessions } from '../workspace/native.js';
 
 type RpcMsg = { jsonrpc?: string; id?: number; method?: string; params?: any; result?: any; error?: any };
 
@@ -356,6 +357,10 @@ export class CodexDriver implements AgentDriver {
     if (input.model) args.push('-m', input.model);
     if (input.extraArgs?.length) args.push(...input.extraArgs);
     return { command: this.bin, args, cwd: input.workdir, env: input.env };
+  }
+
+  listNativeSessions(opts: { workdir: string; limit?: number }): NativeSessionInfo[] {
+    return discoverCodexNativeSessions(opts.workdir, { limit: opts.limit });
   }
 }
 

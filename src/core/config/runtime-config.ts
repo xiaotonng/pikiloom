@@ -164,34 +164,27 @@ export function decomposeEffortSelection(raw: string | null | undefined): { effo
 
 export interface EffortLevel { id: string; label: string }
 
+// The one canonical, human-facing name for an effort token. The picker (effortOptionsFor →
+// dashboard composer + IM /models), the dashboard turn header, and the IM agent-status row all
+// render this, so a level reads identically on every surface — no upper layer relabels it. We
+// surface the raw token (low/medium/high/xhigh/max/ultra/minimal), not a prose label like
+// "Very High", to match the id used in config, CLI flags and logs. Change presentation here only.
+export function effortLabel(id: string | null | undefined): string {
+  return (id ?? '').trim().toLowerCase();
+}
+
 // Single source of truth for reasoning-effort levels, ordered low→high. BOTH the dashboard
 // (which receives them via the agent/model API payload) and the IM bot consume this — do not
 // reintroduce a second copy. Resolve options through effortOptionsFor(), never index directly,
-// so per-model/provider rules stay in one place.
+// so per-model/provider rules stay in one place. Labels come from effortLabel() so the picker
+// and the live status row can never diverge.
+const effortLevels = (...ids: string[]): EffortLevel[] => ids.map(id => ({ id, label: effortLabel(id) }));
 const AGENT_EFFORT_LEVELS: Partial<Record<Agent, EffortLevel[]>> = {
-  claude: [
-    { id: 'low', label: 'Low' },
-    { id: 'medium', label: 'Medium' },
-    { id: 'high', label: 'High' },
-    { id: 'xhigh', label: 'Very High' },
-    { id: 'max', label: 'Max' },
-    { id: ULTRA_EFFORT, label: 'Ultra' },
-  ],
-  codex: [
-    { id: 'low', label: 'Low' },
-    { id: 'medium', label: 'Medium' },
-    { id: 'high', label: 'High' },
-    { id: 'xhigh', label: 'Very High' },
-  ],
+  claude: effortLevels('low', 'medium', 'high', 'xhigh', 'max', ULTRA_EFFORT),
+  codex: effortLevels('low', 'medium', 'high', 'xhigh'),
   // gemini intentionally has no UI-exposed effort levels: pikiloom sends it no reasoning-effort
   // (see the gemini→null guards in InputComposer). Add a gemini entry here to surface low/high.
-  hermes: [
-    { id: 'minimal', label: 'Minimal' },
-    { id: 'low', label: 'Low' },
-    { id: 'medium', label: 'Medium' },
-    { id: 'high', label: 'High' },
-    { id: 'xhigh', label: 'Very High' },
-  ],
+  hermes: effortLevels('minimal', 'low', 'medium', 'high', 'xhigh'),
 };
 
 // Valid effort levels for a given (agent, model, providerKind). Returns [] when reasoning

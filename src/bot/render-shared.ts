@@ -5,6 +5,7 @@ import { fmtUptime, formatThinkingForDisplay, thinkLabel } from './bot.js';
 import { formatActivityCommandSummary, parseActivitySummary, renderPlanForPreview, summarizeActivityForPreview } from './streaming.js';
 import { supportsChannelCapability, type Channel } from '../channels/base.js';
 import { agentLog, agentWarn } from '../agent/index.js';
+import { effortLabel } from '../core/config/runtime-config.js';
 
 export type FooterStatus = 'running' | 'done' | 'failed';
 
@@ -100,7 +101,7 @@ export function formatFooterParts(
   if (modelLabel) identityParts.push(compactModelLabel(modelLabel));
 
   const runtimeParts: string[] = [];
-  if (decorations?.effort) runtimeParts.push(decorations.effort);
+  if (decorations?.effort) runtimeParts.push(effortLabel(decorations.effort));
   const ctx = contextPercent ?? meta?.contextPercent ?? null;
   if (ctx != null) runtimeParts.push(`${ctx}%`);
   runtimeParts.push(fmtCompactUptime(Math.max(0, Math.round(elapsedMs))));

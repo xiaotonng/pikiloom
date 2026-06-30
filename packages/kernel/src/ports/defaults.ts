@@ -34,10 +34,13 @@ export class FsSessionStore implements SessionStore {
     if (!existing) {
       const now = new Date().toISOString();
       await this.save({
-        agent, sessionId, workspacePath,
+        agent, sessionId, workspacePath, workdir: path.resolve(opts.workdir),
         createdAt: now, updatedAt: now,
         title: opts.title ?? null, runState: 'running', runDetail: null,
       });
+    } else if (!existing.workdir) {
+      existing.workdir = path.resolve(opts.workdir);
+      await this.save(existing);
     }
     return { sessionId, workspacePath };
   }
@@ -77,6 +80,7 @@ export class FsSessionStore implements SessionStore {
     rec.runDetail = result.error ?? null;
     if (result.sessionId) rec.nativeSessionId = result.sessionId;
     if (result.text && !rec.title) rec.title = result.text.slice(0, 80);
+    if (result.text) rec.preview = result.text.replace(/\s+/g, ' ').trim().slice(0, 200) || rec.preview || null;
     await this.save(rec);
   }
 

@@ -35,7 +35,7 @@ await loom.start();
 const { sessionKey, taskId } = await loom.io.prompt({ prompt: 'hi', agent: 'claude' });
 const unsub = loom.io.subscribe((key, snapshot, patch, seq) => render(snapshot));
 ```
-Every port has a default (zero config). Override any: sessionStore, modelResolver, toolProvider, systemPromptBuilder, catalog, interactionHandler, plugins, serialPerSession, appNamespace, workdir, defaultAgent, log.
+Every port has a default (zero config). Override any: sessionStore, modelResolver, toolProvider, systemPromptBuilder, catalog, interactionHandler, plugins, serialPerSession, stateDirName, appNamespace, agentSkillDirs, workdir, defaultAgent, log.
 
 3) RAW TUI passthrough — `loom.runTui({ agent, workdir })` (full stdio passthrough) or `loom.openTui(...) => PtyBridge` (onData/write/resize/onExit). Needs optional `node-pty`; `ptyAvailable()` reports it.
 
@@ -70,6 +70,28 @@ Wire delta helpers: `diffSnapshot(prev,next) => SnapshotPatch` (prefix-append te
 - `getSnapshot(sessionKey)`, `getHistory(sessionKey)`, `listSessions()`, `listAgents()`, `listAgentInfo()`
 - discovery: `listModels(agent)`, `listEffort(agent, model?)`, `listTools(agent, workdir?)`, `listSkills(agent, workdir?)`
 Concurrent prompts to one session queue by default (serialPerSession=true).
+
+## Workspace: unified top-level directory + session/skill/mcp management (loom.paths/sessions/skills/mcp)
+
+One explicitly-configurable top-level dir (`createLoom({ stateDirName })`, default `'pikiloom'` → `.pikiloom`)
+governs a session index, a skills registry and per-agent symlinks, resolved in two scopes: global
+(`~/.pikiloom`) and per-workspace (`<workdir>/.pikiloom`). Exposed off the Loom:
+
+- `loom.paths: LoomPaths` — `resolveLoomPaths({stateDirName})`. `globalRoot`, `workspaceRoot(wd)`,
+  `sessionsDir/skillsDir/mcpConfigPath(scope, wd?)`, `agentHome(scope, wd?)`. (`scope: 'global'|'workspace'`.)
+- `loom.sessions: SessionsManager` — the unified, searchable session read-model. Merges MANAGED sessions
+  (the SessionStore, scoped per workspace by the cwd they ran in) with each agent's NATIVE sessions
+  (driver.listNativeSessions — claude/codex/gemini read their own on-disk transcripts). `list({scope:'workspace'|'global'|'all', workdir?, agent?, includeNative?, limit?}) => ManagedSessionInfo[]`,
+  `search({query, ...}) `, `get(sessionKey)`. This is "全局 + 每个工作区的会话列表，含 claude/codex 自己的会话 + 搜索".
+- `loom.skills: SkillsManager` — the canonical skills registry. `canonicalDir(scope,wd?)` = `<root>/skills`;
+  `ensureLinks(scope, wd?)` symlinks it into each agent's dir (default `.claude/skills`, `.agents/skills`,
+  overridable via `agentSkillDirs`) so a skill registered once is visible to every agent. `list({workdir?,scope?})`,
+  `search(query) => npm results`.
+- `loom.mcp: McpRegistry` — `recommended(): McpCatalogEntry[]` (curated), `search(query)` (MCP registry → npm),
+  `toServerSpec(entry, env?) => McpServerSpec`. Enabling/injecting a server stays on the Plugin.tools()/ToolProvider seam.
+
+Drivers expose native discovery via the optional `AgentDriver.listNativeSessions?({workdir, limit}) => NativeSessionInfo[]`
+(implemented by Claude/Codex/Gemini; pure node-builtins, also exported as `discover{Claude,Codex,Gemini}NativeSessions`).
 
 ## Drivers (pass to createLoom({drivers}) or loom.registerDriver)
 

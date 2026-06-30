@@ -19,7 +19,7 @@ export { attachTui, type AttachTuiOptions } from './runtime/tui.js';
 // Contracts
 export type {
   AgentDriver, AgentTurnInput, DriverContext, DriverEvent, DriverResult, SteerFn, McpServerSpec,
-  TuiInput, TuiSpec,
+  TuiInput, TuiSpec, NativeSessionInfo,
 } from './contracts/driver.js';
 export type {
   SessionStore, CoreSessionRecord, ModelResolver, ModelInjection,
@@ -45,6 +45,9 @@ export { GeminiDriver } from './drivers/gemini.js';
 export { HermesDriver } from './drivers/hermes.js';
 export { WebSurface, type WebSurfaceOptions } from './surfaces/web.js';
 export { CliSurface } from './surfaces/cli.js';
+
+// Workspace: unified top-level directory + session/skill/mcp management (loom.paths/sessions/skills/mcp)
+export * from './workspace/index.js';
 
 // Protocol (the wire vocabulary; shared with transports)
 export * from './protocol/index.js';

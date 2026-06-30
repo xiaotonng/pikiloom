@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec } from '../contracts/driver.js';
+import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage, UniversalPlan, UniversalSubAgent } from '../protocol/index.js';
+import { discoverClaudeNativeSessions } from '../workspace/native.js';
 
 // Real driver: shells the local `claude` CLI in stream-json mode and normalizes its
 // events into kernel DriverEvents. Faithful to pikiloom's claude.ts event shapes
@@ -20,6 +21,10 @@ export class ClaudeDriver implements AgentDriver {
     if (input.sessionId) args.push('--resume', input.sessionId);
     if (input.extraArgs?.length) args.push(...input.extraArgs);
     return { command: this.bin, args, cwd: input.workdir, env: input.env };
+  }
+
+  listNativeSessions(opts: { workdir: string; limit?: number }): NativeSessionInfo[] {
+    return discoverClaudeNativeSessions(opts.workdir, { limit: opts.limit });
   }
 
   run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult> {

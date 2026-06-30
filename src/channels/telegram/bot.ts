@@ -63,7 +63,7 @@ import {
   dispatchImageBlocks,
   escapeHtml,
   formatMenuLines,
-  formatProviderUsageLines,
+  formatUsageOverviewLines,
   renderCommandNoticeHtml,
   renderCommandSelectionHtml,
   renderCommandSelectionKeyboard,
@@ -436,7 +436,7 @@ export class TelegramBot extends Bot {
     if (d.running) {
       lines.push(`<b>Running:</b> ${fmtUptime(Date.now() - d.running.startedAt)} - ${escapeHtml(summarizePromptForStatus(d.running.prompt))}`);
     }
-    lines.push(...formatProviderUsageLines(d.usage), '', '<b>Bot Usage</b>', `  Turns: ${d.stats.totalTurns}`);
+    lines.push(...formatUsageOverviewLines(d.usageOverview), '', '<b>Bot Usage</b>', `  Turns: ${d.stats.totalTurns}`);
     if (d.stats.totalInputTokens || d.stats.totalOutputTokens) {
       lines.push(`  In: ${fmtTokens(d.stats.totalInputTokens)}  Out: ${fmtTokens(d.stats.totalOutputTokens)}`);
       if (d.stats.totalCachedTokens) lines.push(`  Cached: ${fmtTokens(d.stats.totalCachedTokens)}`);

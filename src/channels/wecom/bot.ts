@@ -32,6 +32,7 @@ import {
   getStartData,
   getWorkspacesData,
 } from '../../bot/commands.js';
+import { buildUsageOverviewLines } from '../../bot/render-shared.js';
 import { WeComChannel, type WeComContext, type WeComMessagePayload } from './channel.js';
 import { getActiveUserConfig } from '../../core/config/user-config.js';
 
@@ -216,6 +217,7 @@ export class WeComBot extends Bot {
       `Tasks: ${d.activeTasksCount}`,
     ];
     if (d.running) lines.push(`Running: ${fmtUptime(Date.now() - d.running.startedAt)}`);
+    for (const line of buildUsageOverviewLines(d.usageOverview)) lines.push(line.text);
     await ctx.reply(lines.join('\n'));
   }
 

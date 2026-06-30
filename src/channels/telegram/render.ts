@@ -1,5 +1,5 @@
 import type { Agent, StreamPreviewMeta, StreamResult } from '../../bot/bot.js';
-import type { SkillsListData } from '../../bot/commands.js';
+import type { SkillsListData, UsageOverview } from '../../bot/commands.js';
 import type { HumanLoopPromptState, ResolvedHumanLoopAnswers } from '../../bot/human-loop.js';
 import type {
   CommandActionButton,
@@ -16,17 +16,17 @@ import {
   isHumanLoopQuestionAnswered,
   summarizeHumanLoopAnswer,
 } from '../../bot/human-loop.js';
-import type { FooterStatus, ProviderUsageSnapshot, StreamPreviewRenderInput, FooterDecorations } from '../../bot/render-shared.js';
+import type { FooterStatus, StreamPreviewRenderInput, FooterDecorations } from '../../bot/render-shared.js';
 import {
   footerStatusSymbol,
   formatFooterParts,
   trimActivityForPreview,
-  buildProviderUsageLines,
+  buildUsageOverviewLines,
   extractFinalReplyData,
   extractStreamPreviewData,
   parseGfmTable,
 } from '../../bot/render-shared.js';
-export type { FooterStatus, ProviderUsageSnapshot, StreamPreviewRenderInput } from '../../bot/render-shared.js';
+export type { FooterStatus, StreamPreviewRenderInput } from '../../bot/render-shared.js';
 export { dispatchImageBlocks } from '../../bot/render-shared.js';
 
 export interface FinalReplyRender {
@@ -370,8 +370,8 @@ function formatFinalFooterHtml(
   return `${primary}\n<i>${escapeHtml(parts.runtime)}</i>`;
 }
 
-export function formatProviderUsageLines(usage: ProviderUsageSnapshot): string[] {
-  return buildProviderUsageLines(usage).map(line =>
+export function formatUsageOverviewLines(overview: UsageOverview): string[] {
+  return buildUsageOverviewLines(overview).map(line =>
     line.bold ? `<b>${escapeHtml(line.text)}</b>` : escapeHtml(line.text),
   );
 }

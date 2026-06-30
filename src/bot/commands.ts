@@ -7,6 +7,12 @@ import {
   listAllMcpExtensions, listSkills as listAllSkills,
 } from '../agent/index.js';
 import { getDriver } from '../agent/driver.js';
+import type { UsageResult } from '../agent/index.js';
+import {
+  accountAgentSupported, listAccounts, getActiveAccountId,
+  probeAccountUsage, getCachedAccountUsage,
+} from '../agent/accounts.js';
+import { withTimeoutFallback } from '../core/utils.js';
 import { effortOptionsFor } from '../core/config/runtime-config.js';
 import { getActiveProfile, getProvider } from '../model/index.js';
 import { buildWelcomeIntro, buildSkillCommandName, indexSkillsByCommand, SKILL_CMD_PREFIX } from './menu.js';
@@ -587,19 +593,91 @@ export interface StatusData {
   running: { prompt: string; startedAt: number } | null;
   stats: { totalTurns: number; totalInputTokens: number; totalOutputTokens: number; totalCachedTokens: number };
   usage: any;
+  usageOverview: UsageOverview;
   git: GitStatus | null;
+}
+
+// One token-pool account (or the keychain default login when `id` is null) and its quota.
+export interface AccountUsageEntry {
+  id: string | null;
+  label: string;
+  active: boolean;
+  usage: UsageResult | null;
+}
+
+// One installed agent: its native/default-login usage plus, for account-capable agents
+// (claude), every saved account's own usage. `accounts` is empty when the agent has none.
+export interface AgentUsageEntry {
+  agent: Agent;
+  label: string;
+  isCurrent: boolean;
+  usage: UsageResult | null;
+  accounts: AccountUsageEntry[];
+}
+
+export interface UsageOverview {
+  agents: AgentUsageEntry[];
+}
+
+// On-demand usage probe per agent. Bounded so `/status` stays snappy: each live probe falls
+// back to the driver's cached value (and each account to its last-probed value) on timeout.
+const USAGE_PROBE_TIMEOUT_MS = 2_500;
+
+// Mirror the dashboard's top-right usage view for IM `/status`: every installed agent's usage,
+// and for account-capable agents each account's own quota with the active one marked. The plain
+// per-agent `getUsageLive` only ever reads the keychain default login, so without the per-account
+// probes `/status` would always report the default account's numbers, never the selected one.
+export async function getUsageOverview(bot: Bot, chatId: ChatId): Promise<UsageOverview> {
+  const currentAgent = bot.chat(chatId).agent;
+  const installed = bot.fetchAgents().agents.filter(a => a.installed);
+  const agents = await Promise.all(installed.map(async (info): Promise<AgentUsageEntry> => {
+    const agent = info.agent;
+    const model = bot.modelForAgent(agent);
+    const driver = getDriver(agent);
+    const cached = driver.getUsage({ agent, model });
+    const usage = driver.getUsageLive
+      ? await withTimeoutFallback(
+        driver.getUsageLive({ agent, model }).catch(() => cached),
+        USAGE_PROBE_TIMEOUT_MS,
+        cached,
+      )
+      : cached;
+
+    const accounts: AccountUsageEntry[] = [];
+    if (accountAgentSupported(agent)) {
+      const recs = listAccounts(agent);
+      if (recs.length) {
+        const activeId = getActiveAccountId(agent);
+        const usages = await Promise.all(recs.map(rec => withTimeoutFallback(
+          probeAccountUsage(agent, rec.id).catch(() => getCachedAccountUsage(agent, rec.id)),
+          USAGE_PROBE_TIMEOUT_MS,
+          getCachedAccountUsage(agent, rec.id),
+        )));
+        recs.forEach((rec, i) => accounts.push({
+          id: rec.id, label: rec.label, active: rec.id === activeId, usage: usages[i],
+        }));
+        accounts.push({ id: null, label: 'Default login', active: activeId === null, usage });
+      }
+    }
+
+    return { agent, label: agentDisplayLabel(agent), isCurrent: agent === currentAgent, usage, accounts };
+  }));
+  return { agents };
 }
 
 export async function getStatusDataAsync(bot: Bot, chatId: ChatId): Promise<StatusData> {
   const d = bot.getStatusData(chatId);
-  const driver = getDriver(d.agent);
-  const usage = driver.getUsageLive
-    ? await driver.getUsageLive({ agent: d.agent, model: d.model }).catch(() => d.usage)
-    : d.usage;
+  const usageOverview = await getUsageOverview(bot, chatId);
+  // Surface the identity that is actually selected: the active account's quota when one is
+  // bound, else the agent's native/default-login usage (matches the dashboard ring).
+  const current = usageOverview.agents.find(a => a.isCurrent);
+  const activeAccount = current?.accounts.find(a => a.active);
+  const usage = (activeAccount?.usage?.ok ? activeAccount.usage : null) ?? current?.usage ?? d.usage;
   return {
     ...d,
     running: d.running ? { prompt: d.running.prompt, startedAt: d.running.startedAt } : null,
     usage,
+    usageOverview,
     git: readGitStatus(d.workdir),
   };
 }

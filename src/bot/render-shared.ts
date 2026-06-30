@@ -1,5 +1,6 @@
 import type { Agent, StreamPreviewMeta, StreamPreviewPlan, StreamResult } from './bot.js';
-import type { MessageBlock } from '../agent/index.js';
+import type { UsageOverview } from './commands.js';
+import type { MessageBlock, UsageResult } from '../agent/index.js';
 import { materializeImage } from '../agent/index.js';
 import { fmtUptime, formatThinkingForDisplay, thinkLabel } from './bot.js';
 import { formatActivityCommandSummary, parseActivitySummary, renderPlanForPreview, summarizeActivityForPreview } from './streaming.js';
@@ -8,20 +9,6 @@ import { agentLog, agentWarn } from '../agent/index.js';
 import { effortLabel } from '../core/config/runtime-config.js';
 
 export type FooterStatus = 'running' | 'done' | 'failed';
-
-export interface ProviderUsageSnapshot {
-  ok: boolean;
-  capturedAt: string | null;
-  status: string | null;
-  windows: Array<{
-    label: string;
-    usedPercent: number | null;
-    remainingPercent: number | null;
-    resetAfterSeconds: number | null;
-    status: string | null;
-  }>;
-  error: string | null;
-}
 
 export interface StreamPreviewRenderInput {
   agent: Agent;
@@ -140,47 +127,45 @@ export function trimActivityForPreview(text: string, maxChars = 900): string {
   return [ellipsis, ...tail].join('\n');
 }
 
-function rawUsageLine(parts: Array<string | null | undefined>): string {
-  return parts.filter(part => !!part && String(part).trim()).join(' ');
-}
-
 export interface ProviderUsageLine {
   text: string;
   bold?: boolean;
 }
 
-export function buildProviderUsageLines(usage: ProviderUsageSnapshot): ProviderUsageLine[] {
+// Compact "5h 42% · 7d 18%" summary of a usage snapshot (matches the dashboard bars and the
+// `/agents` account rows), or a short reason when no quota numbers are available.
+export function formatUsageWindowsSummary(usage: UsageResult | null): string {
+  if (!usage || !usage.ok) return 'unavailable';
+  const parts = usage.windows
+    .filter(w => w.usedPercent != null)
+    .map(w => `${w.label} ${Math.round(w.usedPercent as number)}%`);
+  if (parts.length) return parts.join(' · ');
+  return usage.status ? `status=${usage.status}` : 'no data';
+}
+
+// Multi-agent / multi-account usage block for `/status`, mirroring the dashboard's top-right
+// view: each installed agent that has usage, and for account-capable agents every account's own
+// quota with the active one marked (●). Returns [] when nothing has usage so callers can skip the
+// section entirely. Leading blank + bold header follow the same shape callers already render.
+export function buildUsageOverviewLines(overview: UsageOverview): ProviderUsageLine[] {
+  const shown = overview.agents.filter(a => (a.usage?.ok && a.usage.windows.length) || a.accounts.length);
+  if (!shown.length) return [];
+
   const lines: ProviderUsageLine[] = [
     { text: '', bold: false },
     { text: 'Provider Usage', bold: true },
   ];
-
-  if (!usage.ok) {
-    lines.push({ text: `  Unavailable: ${usage.error || 'No recent usage data found.'}` });
-    return lines;
-  }
-
-  if (usage.capturedAt) {
-    const capturedAtMs = Date.parse(usage.capturedAt);
-    if (Number.isFinite(capturedAtMs)) {
-      lines.push({ text: `  Updated: ${fmtUptime(Math.max(0, Date.now() - capturedAtMs))} ago` });
+  for (const agent of shown) {
+    lines.push({ text: `${agent.label}${agent.isCurrent ? ' (current)' : ''}`, bold: true });
+    if (agent.accounts.length) {
+      for (const account of agent.accounts) {
+        const mark = account.active ? '●' : '○';
+        lines.push({ text: `  ${mark} ${account.label}: ${formatUsageWindowsSummary(account.usage)}` });
+      }
+    } else {
+      lines.push({ text: `  ${formatUsageWindowsSummary(agent.usage)}` });
     }
   }
-
-  if (!usage.windows.length) {
-    lines.push({ text: `  ${usage.status ? `status=${usage.status}` : 'No window data'}` });
-    return lines;
-  }
-
-  for (const window of usage.windows) {
-    const details = rawUsageLine([
-      window.usedPercent != null ? `${window.usedPercent}% used` : null,
-      window.status ? `status=${window.status}` : null,
-      window.resetAfterSeconds != null ? `resetAfterSeconds=${window.resetAfterSeconds}` : null,
-    ]);
-    lines.push({ text: `  ${window.label}: ${details || 'No details'}` });
-  }
-
   return lines;
 }
 

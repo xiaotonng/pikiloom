@@ -17,7 +17,7 @@ import {
   footerStatusSymbol,
   formatFooterParts,
   trimActivityForPreview,
-  buildProviderUsageLines,
+  buildUsageOverviewLines,
   extractFinalReplyData,
   extractStreamPreviewData,
 } from '../../bot/render-shared.js';
@@ -504,12 +504,8 @@ export function renderStatus(d: StatusData): string {
   if (d.running) {
     lines.push(`**Running:** ${fmtUptime(Date.now() - d.running.startedAt)} - ${summarizePromptForStatus(d.running.prompt)}`);
   }
-  const usageLines = buildProviderUsageLines(d.usage);
-  if (usageLines.length > 1) {
-    lines.push('');
-    for (const line of usageLines) {
-      lines.push(line.text);
-    }
+  for (const line of buildUsageOverviewLines(d.usageOverview)) {
+    lines.push(line.bold && line.text ? `**${line.text}**` : line.text);
   }
   lines.push('', '**Bot Usage**', `  Turns: ${d.stats.totalTurns}`);
   if (d.stats.totalInputTokens || d.stats.totalOutputTokens) {

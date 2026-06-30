@@ -182,6 +182,17 @@ describe('codex completed-item helpers (pure)', () => {
     expect(s.text).toBe('streamed');
   });
 
+  it('captures a commentary (non-final-answer) agentMessage — the preamble 中间过程, not just final_answer', () => {
+    const emits: DriverEvent[] = [];
+    const s = fresh();
+    captureCodexAgentMessage({ id: 'c1', phase: 'commentary', text: 'Let me list the files first.' }, s, new Set(), new Map(), (e) => emits.push(e));
+    expect(emits).toEqual([{ type: 'text', delta: 'Let me list the files first.' }]);
+    expect(s.text).toBe('Let me list the files first.');
+    // A subsequent final answer is separated by a blank line.
+    captureCodexAgentMessage({ id: 'm1', phase: 'final_answer', text: 'Here are the files.' }, s, new Set(), new Map(), (e) => emits.push(e));
+    expect(s.text).toBe('Let me list the files first.\n\nHere are the files.');
+  });
+
   it('finalizers prefer streamed content, fall back to completed-item parts', () => {
     const streamed: CodexContentState = { text: 'live', reasoning: 'think', streamedReasoning: true, msgs: ['m'], thinkParts: ['t'] };
     expect(codexFinalText(streamed)).toBe('live');
@@ -190,4 +201,60 @@ describe('codex completed-item helpers (pure)', () => {
     expect(codexFinalText(completedOnly)).toBe('m1\n\nm2');
     expect(codexFinalReasoning(completedOnly)).toBe('t1\n\nt2');
   });
+});
+
+// Real codex narrates what it is about to do via phase=commentary agentMessages before tool
+// calls. The kernel port used to gate on phase=final_answer and drop them, so the live preview
+// showed nothing during the "中间过程" until the final answer landed.
+const FAKE_COMMENTARY_SERVER = `#!/usr/bin/env node
+let buf = '';
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id, result }) + '\\n');
+const notify = (method, params) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', method, params }) + '\\n');
+const TID = 'codex-thread-commentary';
+process.stdin.on('data', (d) => {
+  buf += d; const lines = buf.split('\\n'); buf = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.method === 'initialize') reply(m.id, {});
+    else if (m.method === 'thread/start') reply(m.id, { thread: { id: TID } });
+    else if (m.method === 'turn/start') {
+      reply(m.id, {});
+      notify('turn/started', { threadId: TID, turn: { id: 'turn-1' } });
+      notify('item/started', { threadId: TID, item: { type: 'agentMessage', id: 'c1', phase: 'commentary' } });
+      notify('item/agentMessage/delta', { threadId: TID, itemId: 'c1', delta: "I'll list src/." });
+      notify('item/completed', { threadId: TID, item: { type: 'agentMessage', id: 'c1', phase: 'commentary', text: "I'll list src/." } });
+      notify('item/started', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', command: 'ls src' } });
+      notify('item/completed', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', status: 'completed' } });
+      notify('item/started', { threadId: TID, item: { type: 'agentMessage', id: 'm1', phase: 'final_answer' } });
+      notify('item/agentMessage/delta', { threadId: TID, itemId: 'm1', delta: 'Done.' });
+      notify('item/completed', { threadId: TID, item: { type: 'agentMessage', id: 'm1', phase: 'final_answer', text: 'Done.' } });
+      notify('turn/completed', { threadId: TID, turn: { id: 'turn-1', status: 'completed' } });
+    }
+  }
+});
+`;
+
+describe('CodexDriver commentary (preamble) is surfaced live', () => {
+  let tmp: string; let fake: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-cm-'));
+    fake = path.join(tmp, 'fake-codex.mjs');
+    fs.writeFileSync(fake, FAKE_COMMENTARY_SERVER);
+    fs.chmodSync(fake, 0o755);
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('streams commentary then final_answer (separated), and keeps shell as the only Activity tool', async () => {
+    const { ctx, events } = ctxCollect();
+    const result = await new CodexDriver(fake).run({ prompt: 'go', workdir: tmp }, ctx);
+    expect(result.ok).toBe(true);
+    // Both the preamble and the final answer are in the text, blank-line separated.
+    expect(result.text).toBe("I'll list src/.\n\nDone.");
+    const textStream = events.filter(e => e.type === 'text').map(e => (e as any).delta).join('');
+    expect(textStream).toBe("I'll list src/.\n\nDone.");
+    // The commentary did NOT become a bogus Activity tool — only the shell call did.
+    const tools = events.filter(e => e.type === 'tool').map(e => (e as any).call.name);
+    expect(tools).toEqual(['shell', 'shell']); // running + done for cmd1
+  }, 20_000);
 });

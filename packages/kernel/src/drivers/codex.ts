@@ -170,15 +170,14 @@ export function codexReasoningItemText(item: any): string {
   return parts.map((p: any) => (typeof p === 'string' ? p : p?.text || '')).filter(Boolean).join('\n').trim();
 }
 
-// A completed final_answer agentMessage that did NOT stream deltas: append + emit it live.
-// deltaItems holds the ids already streamed, so a completed item echoing a streamed one is
-// not double-counted (matches the legacy driver's deltaSeenForItem guard).
+// A completed agentMessage (commentary preamble OR final_answer) that did NOT stream deltas:
+// append + emit it live. deltaItems holds the ids already streamed, so a completed item echoing
+// a streamed one is not double-counted (matches the legacy driver's deltaSeenForItem guard).
+// Both phases are surfaced — codex's commentary preambles are part of the visible "中间过程".
 export function captureCodexAgentMessage(
   item: any, s: CodexContentState, deltaItems: Set<string>, phases: Map<string, string>,
   emit: (e: DriverEvent) => void,
 ): void {
-  const phase = item?.phase || (item?.id ? phases.get(item.id) : null) || 'final_answer';
-  if (phase !== 'final_answer') return;
   const text = typeof item?.text === 'string' ? item.text.trim() : '';
   if (!text) return;
   s.msgs.push(text);
@@ -223,6 +222,7 @@ export class CodexDriver implements AgentDriver {
     const phases = new Map<string, string>();
     const toolSummaries = new Map<string, string>();
     const deltaItems = new Set<string>();
+    let lastTextItemId: string | null = null;
     let steerRegistered = false;
 
     const ok = await srv.start();
@@ -269,12 +269,18 @@ export class CodexDriver implements AgentDriver {
             break;
           }
           case 'item/agentMessage/delta': {
-            const phase = params?.itemId ? (phases.get(params.itemId) || 'final_answer') : 'final_answer';
-            if (phase === 'final_answer' && params?.delta) {
-              state.text += params.delta;
-              if (params.itemId) deltaItems.add(params.itemId);
-              ctx.emit({ type: 'text', delta: params.delta });
+            if (!params?.delta) break;
+            // Surface BOTH commentary (preamble) and final_answer messages live. Codex narrates
+            // what it is about to do via phase=commentary agentMessages before tool calls;
+            // gating on final_answer dropped them, leaving the "中间过程" invisible. Separate
+            // distinct message items with a blank line so preamble and answer don't run together.
+            if (params.itemId && params.itemId !== lastTextItemId && state.text) {
+              state.text += '\n\n';
+              ctx.emit({ type: 'text', delta: '\n\n' });
             }
+            if (params.itemId) { lastTextItemId = params.itemId; deltaItems.add(params.itemId); }
+            state.text += params.delta;
+            ctx.emit({ type: 'text', delta: params.delta });
             break;
           }
           case 'item/reasoning/textDelta':

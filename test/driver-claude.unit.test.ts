@@ -332,3 +332,37 @@ describe('normalizeClaudeSessionEntrypoint — surface Pikiloom sessions in --re
     }
   });
 });
+
+describe('claudeUsageForToken — per-token cache + force bypass', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => ({
+      headers: new Headers({
+        'anthropic-ratelimit-unified-5h-utilization': '0.42',
+        'anthropic-ratelimit-unified-7d-utilization': '0.10',
+      }),
+      text: async () => '',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  // Guards the freshness fix: a freshly-switched account must re-probe instead of serving the
+  // previous (cached) account's usage. Without force the per-token cache is reused.
+  it('reuses the cache within TTL but re-probes when force is set', async () => {
+    const { claudeUsageForToken } = await import('../src/agent/drivers/claude.ts');
+    const token = 'sk-ant-oat01-force-bypass-fixture';
+
+    const first = await claudeUsageForToken(token);
+    expect(first?.ok).toBe(true);
+    expect(first?.windows.find(w => w.label === '5h')?.usedPercent).toBe(42);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await claudeUsageForToken(token);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await claudeUsageForToken(token, { force: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

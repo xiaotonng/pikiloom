@@ -268,7 +268,7 @@ function getCachedAgentStatus() {
   return refreshStatusCache();
 }
 
-function invalidateAgentStatus(config?: Partial<UserConfig>, opts?: AgentDetectOptions) {
+export function invalidateAgentStatus(config?: Partial<UserConfig>, opts?: AgentDetectOptions) {
   statusCache.pending = null;
   return refreshStatusCache(config, opts);
 }

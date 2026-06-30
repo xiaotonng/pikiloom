@@ -1686,53 +1686,77 @@ function getClaudeOAuthToken(): string | null {
   } catch { return null; }
 }
 
+// Shape the `/api/oauth/usage` JSON into a UsageResult (shared by the sync curl probe and the
+// async fetch probe). Returns null on an API error payload or when no usable window is present.
+function buildClaudeOAuthUsage(data: any): UsageResult | null {
+  const apiError = data?.error;
+  if (apiError && typeof apiError === 'object') return null;
+
+  const makeWindow = (label: string, entry: any): UsageWindowInfo | null => {
+    if (!entry || typeof entry !== 'object') return null;
+    const usedPercent = roundPercent(entry.utilization);
+    if (usedPercent == null) return null;
+    const remainingPercent = Math.max(0, Math.round((100 - usedPercent) * 10) / 10);
+    const resetAt = typeof entry.resets_at === 'string' ? entry.resets_at : null;
+    let resetAfterSeconds: number | null = null;
+    if (resetAt) {
+      const resetAtMs = Date.parse(resetAt);
+      if (Number.isFinite(resetAtMs)) resetAfterSeconds = Math.max(0, Math.round((resetAtMs - Date.now()) / 1000));
+    }
+    return {
+      label, usedPercent, remainingPercent, resetAt, resetAfterSeconds,
+      status: usedPercent >= 100 ? 'limit_reached' : usedPercent >= 80 ? 'warning' : 'allowed',
+    };
+  };
+
+  const windows: UsageWindowInfo[] = [];
+  for (const [label, key] of [['5h', 'five_hour'], ['7d', 'seven_day'], ['7d Opus', 'seven_day_opus'], ['7d Sonnet', 'seven_day_sonnet'], ['Extra', 'extra_usage']] as const) {
+    const w = makeWindow(label, (data as any)[key]);
+    if (w) windows.push(w);
+  }
+  if (!windows.length) return null;
+
+  const overallStatus = windows.some(w => w.status === 'limit_reached') ? 'limit_reached'
+    : windows.some(w => w.status === 'warning') ? 'warning' : 'allowed';
+
+  return { ok: true, agent: 'claude', source: 'oauth-api', capturedAt: new Date().toISOString(), status: overallStatus, windows, error: null };
+}
+
 function getClaudeUsageFromOAuth(tokenOverride?: string): UsageResult | null {
   const token = tokenOverride || getClaudeOAuthToken();
   if (!token) return null;
-
   try {
     const raw = execSync(
       `curl -s --max-time 5 -H "Authorization: Bearer ${token}" -H "anthropic-beta: oauth-2025-04-20" -H "Content-Type: application/json" "https://api.anthropic.com/api/oauth/usage"`,
       { encoding: 'utf-8', timeout: 8000 },
     ).trim();
     if (!raw || raw[0] !== '{') return null;
-
-    const data = JSON.parse(raw);
-    const capturedAt = new Date().toISOString();
-    const apiError = data?.error;
-    if (apiError && typeof apiError === 'object') {
-      return null;
-    }
-
-    const makeWindow = (label: string, entry: any): UsageWindowInfo | null => {
-      if (!entry || typeof entry !== 'object') return null;
-      const usedPercent = roundPercent(entry.utilization);
-      if (usedPercent == null) return null;
-      const remainingPercent = Math.max(0, Math.round((100 - usedPercent) * 10) / 10);
-      const resetAt = typeof entry.resets_at === 'string' ? entry.resets_at : null;
-      let resetAfterSeconds: number | null = null;
-      if (resetAt) {
-        const resetAtMs = Date.parse(resetAt);
-        if (Number.isFinite(resetAtMs)) resetAfterSeconds = Math.max(0, Math.round((resetAtMs - Date.now()) / 1000));
-      }
-      return {
-        label, usedPercent, remainingPercent, resetAt, resetAfterSeconds,
-        status: usedPercent >= 100 ? 'limit_reached' : usedPercent >= 80 ? 'warning' : 'allowed',
-      };
-    };
-
-    const windows: UsageWindowInfo[] = [];
-    for (const [label, key] of [['5h', 'five_hour'], ['7d', 'seven_day'], ['7d Opus', 'seven_day_opus'], ['7d Sonnet', 'seven_day_sonnet'], ['Extra', 'extra_usage']] as const) {
-      const w = makeWindow(label, (data as any)[key]);
-      if (w) windows.push(w);
-    }
-    if (!windows.length) return null;
-
-    const overallStatus = windows.some(w => w.status === 'limit_reached') ? 'limit_reached'
-      : windows.some(w => w.status === 'warning') ? 'warning' : 'allowed';
-
-    return { ok: true, agent: 'claude', source: 'oauth-api', capturedAt, status: overallStatus, windows, error: null };
+    return buildClaudeOAuthUsage(JSON.parse(raw));
   } catch { return null; }
+}
+
+// Non-blocking variant for the live (getUsageLive) path — execSync would stall the event loop.
+async function fetchClaudeUsageFromOAuth(tokenOverride?: string): Promise<UsageResult | null> {
+  const token = tokenOverride || getClaudeOAuthToken();
+  if (!token) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+      headers: {
+        authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'content-type': 'application/json',
+      },
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => null);
+    return data ? buildClaudeOAuthUsage(data) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Per-account usage for a specific account's `claude setup-token`.
@@ -1808,12 +1832,12 @@ async function claudeUsageFromInferenceHeaders(token: string): Promise<UsageResu
   }
 }
 
-export function claudeUsageForToken(token: string): Promise<UsageResult | null> {
+export function claudeUsageForToken(token: string, opts?: { force?: boolean }): Promise<UsageResult | null> {
   const t = String(token || '');
   if (!t) return Promise.resolve(null);
   const now = Date.now();
   const cached = claudeTokenUsageCache.get(t);
-  if (cached) {
+  if (cached && !opts?.force) {
     const ttl = cached.ok ? TOKEN_USAGE_OK_TTL_MS : TOKEN_USAGE_RETRY_TTL_MS;
     if (now - cached.at < ttl) return Promise.resolve(cached.value);
   }
@@ -2105,6 +2129,24 @@ class ClaudeDriver implements AgentDriver {
       return oauth;
     }
     return claudeUsageCache.lastGood ?? telemetry();
+  }
+
+  // Live usage for the agent-status surface. Unlike getUsage it ignores the 5-min query TTL and
+  // always re-probes, so a freshly-switched login (the keychain default-login token changed) is
+  // reflected promptly instead of serving the previous account's frozen `lastGood`. Bounded by
+  // the caller's usage timeout, with the cached value as fallback.
+  async getUsageLive(opts: UsageOpts): Promise<UsageResult> {
+    const home = getHome();
+    if (!home) return emptyUsage('claude', 'HOME is not set.');
+    const fresh = await fetchClaudeUsageFromOAuth();
+    if (fresh) {
+      claudeUsageCache.lastGood = fresh;
+      claudeUsageCache.lastAttemptAt = Date.now();
+      return fresh;
+    }
+    return claudeUsageCache.lastGood
+      ?? getClaudeUsageFromTelemetry(home, opts.model)
+      ?? emptyUsage('claude', 'No recent Claude usage data found.');
   }
 
   async deleteNativeSession(workdir: string, sessionId: string): Promise<string[]> {

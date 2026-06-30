@@ -6,6 +6,7 @@ import {
   MAX_ACCOUNTS_PER_AGENT,
   type AgentAccountRecord,
 } from '../../agent/accounts.js';
+import { invalidateAgentStatus } from './agents.js';
 
 const app = new Hono();
 
@@ -90,6 +91,11 @@ app.post('/api/agents/:agent/active-account', async (c) => {
   if (accountId === undefined) return c.json({ ok: false, error: 'accountId (string|null) is required' }, 400);
   try {
     setActiveAccount(agent, accountId);
+    // The identity that drives usage just changed: drop the cached agent-status (its native /
+    // default-login usage is now stale) and force-refresh the newly-active account's own usage,
+    // so the header reflects the latest numbers immediately instead of the previous account's.
+    if (accountId) await probeAccountUsage(agent, accountId, { force: true });
+    await invalidateAgentStatus();
     return c.json({ ok: true, agent, activeAccountId: accountId });
   } catch (e: any) {
     return c.json({ ok: false, error: e?.message || String(e) }, 400);

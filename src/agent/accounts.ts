@@ -159,13 +159,13 @@ const accountUsageById = new Map<string, UsageResult | null>();
 const usageKey = (agent: string, id: string) => `${agent}/${id}`;
 
 /** Best-effort per-account usage: read the account's quota from its token (see claudeUsageForToken). */
-export async function probeAccountUsage(agent: string, id: string): Promise<UsageResult | null> {
+export async function probeAccountUsage(agent: string, id: string, opts?: { force?: boolean }): Promise<UsageResult | null> {
   if (agent !== 'claude') return null;
   const rec = getAccount(agent, id);
   if (!rec) return null;
   try {
     const token = await resolveCredential(rec.credential);
-    const usage = token ? await claudeUsageForToken(token) : null;
+    const usage = token ? await claudeUsageForToken(token, opts) : null;
     accountUsageById.set(usageKey(agent, id), usage);
     return usage;
   } catch { return null; }

@@ -251,6 +251,20 @@ export function summarizeToolUse(block: MessageBlock): string {
       const c = shortValue(input.command, 120);
       return c ? `Bash: ${c}` : 'Bash';
     }
+    // Codex rollout tool names (completed turns are re-parsed from the codex jsonl): the live
+    // preview shows "Run shell: <cmd>" / "Edit …" via the kernel driver, but in the rollout the
+    // shell command lives under `cmd` (a string), not `command` — summarize it the same way so
+    // a finished turn's Activity matches what streamed, instead of the bare "exec_command".
+    case 'exec_command':
+    case 'shell':
+    case 'local_shell': {
+      const c = shortValue(input.cmd || input.command, 140);
+      return c ? `Run shell: ${c}` : 'Run shell';
+    }
+    case 'apply_patch': {
+      const p = shortValue(input.path || input.file_path, 140);
+      return p ? `Edit ${p}` : 'Edit files';
+    }
     default: {
       const mcp = tool.match(/^mcp__[^_]+__(.+)$/);
       const bare = mcp ? mcp[1] : tool;

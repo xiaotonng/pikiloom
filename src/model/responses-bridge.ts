@@ -126,7 +126,29 @@ async function handleResponses(
   let usage: any = null;
   const finalItems: any[] = [];
 
+  // Reasoning ("thinking") from chat-only providers arrives as delta.reasoning_content
+  // (DeepSeek / 豆包) or delta.reasoning (GLM / OpenRouter). Translate it to the Responses
+  // reasoning-summary stream so codex surfaces item/reasoning/summaryTextDelta live; without
+  // this the entire thinking phase is silent and the answer looks like it appears all at once.
+  let reasoningOpen = false, reasoningDone = false, reasoningId = '', reasoningIndex = 0, reasoningText = '';
+  const openReasoning = () => {
+    if (reasoningOpen || reasoningDone) return;
+    reasoningOpen = true; reasoningId = genId('rs'); reasoningIndex = nextIndex++;
+    emit('response.output_item.added', { output_index: reasoningIndex, item: { id: reasoningId, type: 'reasoning', summary: [] } });
+    emit('response.reasoning_summary_part.added', { item_id: reasoningId, output_index: reasoningIndex, summary_index: 0, part: { type: 'summary_text', text: '' } });
+  };
+  const closeReasoning = () => {
+    if (!reasoningOpen) return;
+    reasoningOpen = false; reasoningDone = true;
+    emit('response.reasoning_summary_text.done', { item_id: reasoningId, output_index: reasoningIndex, summary_index: 0, text: reasoningText });
+    emit('response.reasoning_summary_part.done', { item_id: reasoningId, output_index: reasoningIndex, summary_index: 0, part: { type: 'summary_text', text: reasoningText } });
+    const item = { id: reasoningId, type: 'reasoning', summary: reasoningText ? [{ type: 'summary_text', text: reasoningText }] : [] };
+    emit('response.output_item.done', { output_index: reasoningIndex, item });
+    finalItems.push(item);
+  };
+
   const openMsg = () => {
+    closeReasoning();  // a reasoning item must finish before the message item opens (ordered output)
     if (msgOpen) return;
     msgOpen = true; msgId = genId('msg'); msgIndex = nextIndex++;
     emit('response.output_item.added', { output_index: msgIndex, item: { id: msgId, type: 'message', role: 'assistant', content: [], status: 'in_progress' } });
@@ -153,12 +175,22 @@ async function handleResponses(
         const choice = chunk.choices?.[0];
         if (!choice) continue;
         const delta = choice.delta || {};
+        const reasoningChunk = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+          : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+        if (reasoningChunk && !msgOpen && tools.size === 0) {
+          openReasoning();
+          if (reasoningOpen) {
+            reasoningText += reasoningChunk;
+            emit('response.reasoning_summary_text.delta', { item_id: reasoningId, output_index: reasoningIndex, summary_index: 0, delta: reasoningChunk });
+          }
+        }
         if (typeof delta.content === 'string' && delta.content) {
           openMsg();
           msgText += delta.content;
           emit('response.output_text.delta', { item_id: msgId, output_index: msgIndex, content_index: 0, delta: delta.content });
         }
         if (Array.isArray(delta.tool_calls)) {
+          closeReasoning();  // tool calls follow the thinking phase; close the reasoning item first
           for (const tc of delta.tool_calls) {
             const idx = typeof tc.index === 'number' ? tc.index : 0;
             let st = tools.get(idx);
@@ -180,6 +212,8 @@ async function handleResponses(
   } catch (e: any) {
     warn(`stream read error: ${e?.message || e}`);
   }
+
+  closeReasoning();  // reasoning-only turn (no content/tools followed): finish the reasoning item
 
   if (msgOpen) {
     emit('response.output_text.done', { item_id: msgId, output_index: msgIndex, content_index: 0, text: msgText });

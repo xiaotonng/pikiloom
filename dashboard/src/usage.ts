@@ -94,6 +94,18 @@ export function formatResetShort(seconds: number | null): string | null {
   return remHours ? `${days}d${remHours}h` : `${days}d`;
 }
 
+export type ResetDisplay =
+  | { kind: 'countdown'; text: string }
+  | { kind: 'elapsed' }
+  | { kind: 'none' };
+
+export function resetDisplay(window: UsageWindowInfo): ResetDisplay {
+  const remain = resetSecondsFor(window);
+  if (remain != null && remain <= 0) return { kind: 'elapsed' };
+  const text = formatResetShort(remain);
+  return text ? { kind: 'countdown', text } : { kind: 'none' };
+}
+
 export function formatCapturedAt(iso: string): string | null {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return null;

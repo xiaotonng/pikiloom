@@ -1,5 +1,5 @@
 import type { UsageResult } from '../types';
-import { formatCapturedAt, formatResetShort, resetSecondsFor, usageWindowTone } from '../usage';
+import { formatCapturedAt, resetDisplay, usageWindowTone } from '../usage';
 import { USAGE_TONE_COLOR } from './UsageRing';
 
 export function UsageTooltipContent({ usage, t, title }: {
@@ -17,10 +17,9 @@ export function UsageTooltipContent({ usage, t, title }: {
       {usage.windows.map(window => {
         const tone = usageWindowTone(window);
         const percent = window.usedPercent;
-        const remain = resetSecondsFor(window);
-        const reset = remain != null && remain <= 0
-          ? t('usage.resetElapsed')
-          : formatResetShort(remain) ? `↻ ${formatResetShort(remain)}` : '';
+        const rd = resetDisplay(window);
+        const reset = rd.kind === 'elapsed' ? t('usage.resetElapsed')
+          : rd.kind === 'countdown' ? `↻ ${rd.text}` : '';
         return (
           <div key={window.label} className="flex items-center gap-2">
             <span className="w-14 shrink-0 text-fg-4">{window.label}</span>

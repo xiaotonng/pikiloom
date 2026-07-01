@@ -30,6 +30,31 @@ describe('formatUsageWindowsSummary', () => {
   it('joins windows compactly and rounds percents', () => {
     expect(formatUsageWindowsSummary(usage([['5h', 42.4], ['7d', 18.6]]))).toBe('5h 42% · 7d 19%');
   });
+  it('adds per-window reset countdowns, preferring resetAt over stale resetAfterSeconds', () => {
+    const u = usage([['5h', 42.4], ['7d', 100]]);
+    u.windows[0].resetAt = '2026-06-30T01:35:00.000Z';
+    u.windows[0].resetAfterSeconds = 0;
+    u.windows[1].resetAfterSeconds = 3600;
+    expect(formatUsageWindowsSummary(u, NOW)).toBe('5h 42% (reset 1h30m) · 7d 100% (reset 1h)');
+  });
+  it('shows reset now once the reset instant has elapsed', () => {
+    const u = usage([['5h', 100]]);
+    u.windows[0].resetAt = '2026-06-30T00:04:00.000Z';
+    expect(formatUsageWindowsSummary(u, NOW)).toBe('5h 100% (reset now)');
+  });
+  it('keeps reset time when telemetry has status but no percent', () => {
+    const u = usage([]);
+    u.status = 'warning';
+    u.windows = [{
+      label: '<1m ago',
+      usedPercent: null,
+      remainingPercent: null,
+      resetAt: '2026-06-30T02:05:00.000Z',
+      resetAfterSeconds: null,
+      status: 'warning',
+    }];
+    expect(formatUsageWindowsSummary(u, NOW)).toBe('status=warning (reset 2h)');
+  });
   it('reports unavailable for null or errored usage', () => {
     expect(formatUsageWindowsSummary(null)).toBe('unavailable');
     expect(formatUsageWindowsSummary(unavailable)).toBe('unavailable');
@@ -59,6 +84,27 @@ describe('buildUsageOverviewLines', () => {
       '  ● Work: 5h 42% · 7d 18%',
       '  ○ Personal: 5h 90% · 7d 70%',
       '  ○ Default login: 5h 12% · 7d 5%',
+    ]);
+  });
+
+  it('includes reset countdowns in account rows', () => {
+    const work = usage([['5h', 100], ['7d', 19]]);
+    work.windows[0].resetAt = '2026-06-30T00:35:00.000Z';
+    work.windows[1].resetAt = '2026-07-01T06:05:00.000Z';
+    const overview: UsageOverview = {
+      agents: [{
+        agent: 'claude', label: 'Claude Code', isCurrent: true, usage: usage([['5h', 12]]),
+        accounts: [
+          { id: 'a1', label: 'Work', active: true, usage: work },
+        ],
+      }],
+    };
+    expect(texts(overview)).toEqual([
+      '',
+      'Provider Usage',
+      '  Updated: 5m 0s ago',
+      'Claude Code (current)',
+      '  ● Work: 5h 100% (reset 30m) · 7d 19% (reset 1d6h)',
     ]);
   });
 

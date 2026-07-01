@@ -1,6 +1,8 @@
 import { Fragment } from 'react';
 import type { UsageResult } from '../types';
-import { formatResetShort, resetSecondsFor, usageWindowTone } from '../usage';
+import { createT } from '../i18n';
+import { useStore } from '../store';
+import { resetDisplay, usageWindowTone } from '../usage';
 import { USAGE_TONE_COLOR } from './UsageRing';
 
 // Compact per-account usage: every resource window (5h / 7d / …) as a labelled bar + reset
@@ -11,16 +13,17 @@ export function UsageBars({ usage, emptyText, className = '' }: {
   emptyText: string;
   className?: string;
 }) {
+  const t = createT(useStore(s => s.locale));
   const windows = usage?.ok ? usage.windows : [];
   if (!windows.length) {
     return <div className={`text-[11px] leading-relaxed text-fg-5 ${className}`}>{usage?.error || emptyText}</div>;
   }
   return (
-    <div className={`grid grid-cols-[3.5rem_minmax(0,1fr)_2.25rem_2.75rem] items-center gap-x-1.5 gap-y-1 text-[11px] ${className}`}>
+    <div className={`grid grid-cols-[3.5rem_minmax(0,1fr)_2.25rem_3.25rem] items-center gap-x-1.5 gap-y-1 text-[11px] ${className}`}>
       {windows.map(w => {
         const tone = usageWindowTone(w);
         const pct = w.usedPercent;
-        const reset = formatResetShort(resetSecondsFor(w));
+        const rd = resetDisplay(w);
         return (
           <Fragment key={w.label}>
             <span className="truncate text-fg-5">{w.label}</span>
@@ -33,7 +36,12 @@ export function UsageBars({ usage, emptyText, className = '' }: {
               )}
             </span>
             <span className="text-right font-mono text-fg-3">{pct != null ? `${Math.round(pct)}%` : (w.status || '—')}</span>
-            <span className="text-right tabular-nums text-[10px] text-fg-5">{reset ? `↻${reset}` : ''}</span>
+            <span
+              className="whitespace-nowrap text-right tabular-nums text-[10px] text-fg-5"
+              title={rd.kind === 'elapsed' ? t('usage.resetElapsed') : undefined}
+            >
+              {rd.kind === 'countdown' ? `↻${rd.text}` : rd.kind === 'elapsed' ? t('usage.resetElapsedShort') : ''}
+            </span>
           </Fragment>
         );
       })}

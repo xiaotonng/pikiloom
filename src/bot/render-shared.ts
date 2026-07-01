@@ -1,6 +1,6 @@
 import type { Agent, StreamPreviewMeta, StreamPreviewPlan, StreamResult } from './bot.js';
 import type { UsageOverview, AgentUsageEntry } from './commands.js';
-import type { MessageBlock, UsageResult } from '../agent/index.js';
+import type { MessageBlock, UsageResult, UsageWindowInfo } from '../agent/index.js';
 import { materializeImage } from '../agent/index.js';
 import { fmtUptime, formatThinkingForDisplay, thinkLabel } from './bot.js';
 import { formatActivityCommandSummary, parseActivitySummary, renderPlanForPreview, summarizeActivityForPreview } from './streaming.js';
@@ -132,14 +132,55 @@ export interface ProviderUsageLine {
   bold?: boolean;
 }
 
-// Compact "5h 42% · 7d 18%" summary of a usage snapshot (matches the dashboard bars and the
-// `/agents` account rows), or a short reason when no quota numbers are available.
-export function formatUsageWindowsSummary(usage: UsageResult | null): string {
+function usageWindowResetSeconds(window: UsageWindowInfo, now: number): number | null {
+  if (window.resetAt) {
+    const resetAtMs = Date.parse(window.resetAt);
+    if (Number.isFinite(resetAtMs)) return Math.round((resetAtMs - now) / 1000);
+  }
+  return window.resetAfterSeconds;
+}
+
+function formatUsageWindowReset(window: UsageWindowInfo, now: number): string | null {
+  const seconds = usageWindowResetSeconds(window, now);
+  if (seconds == null || !Number.isFinite(seconds)) return null;
+  if (seconds <= 0) return 'reset now';
+  return `reset ${formatUsageResetDuration(seconds)}`;
+}
+
+function formatUsageResetDuration(seconds: number): string {
+  const wholeSeconds = Math.max(0, Math.round(seconds));
+  if (wholeSeconds < 60) return `${wholeSeconds}s`;
+  const minutes = Math.max(1, Math.round(wholeSeconds / 60));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  if (hours < 24) return remMinutes ? `${hours}h${remMinutes}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours ? `${days}d${remHours}h` : `${days}d`;
+}
+
+function formatUsageWindowSummary(window: UsageWindowInfo, now: number): string {
+  const percent = window.usedPercent != null ? `${Math.round(window.usedPercent)}%` : null;
+  const reset = formatUsageWindowReset(window, now);
+  const main = percent ? `${window.label} ${percent}` : window.label;
+  return reset ? `${main} (${reset})` : main;
+}
+
+// Compact "5h 42% (reset 3h12m) · 7d 18% (reset 4d6h)" summary of a usage
+// snapshot, or a short reason when no quota numbers are available.
+export function formatUsageWindowsSummary(usage: UsageResult | null, now: number = Date.now()): string {
   if (!usage || !usage.ok) return 'unavailable';
   const parts = usage.windows
     .filter(w => w.usedPercent != null)
-    .map(w => `${w.label} ${Math.round(w.usedPercent as number)}%`);
+    .map(w => formatUsageWindowSummary(w, now));
   if (parts.length) return parts.join(' · ');
+  const resetWindow = usage.windows.find(w => usageWindowResetSeconds(w, now) != null);
+  if (resetWindow) {
+    const reset = formatUsageWindowReset(resetWindow, now);
+    const status = usage.status ? `status=${usage.status}` : resetWindow.label;
+    return reset ? `${status} (${reset})` : status;
+  }
   return usage.status ? `status=${usage.status}` : 'no data';
 }
 
@@ -180,10 +221,10 @@ export function buildUsageOverviewLines(overview: UsageOverview, now: number = D
     if (agent.accounts.length) {
       for (const account of agent.accounts) {
         const mark = account.active ? '●' : '○';
-        lines.push({ text: `  ${mark} ${account.label}: ${formatUsageWindowsSummary(account.usage)}` });
+        lines.push({ text: `  ${mark} ${account.label}: ${formatUsageWindowsSummary(account.usage, now)}` });
       }
     } else {
-      lines.push({ text: `  ${formatUsageWindowsSummary(agent.usage)}` });
+      lines.push({ text: `  ${formatUsageWindowsSummary(agent.usage, now)}` });
     }
   }
   return lines;

@@ -1234,6 +1234,31 @@ exit 1`;
     });
 
     await withTempHome(async (homeDir) => {
+      const workdir = '/Users/test/multiline';
+      const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-multiline');
+      const sessionId = 'sess-multiline-user';
+      fs.mkdirSync(projectDir, { recursive: true });
+
+      const multiline = '镜像 imgc-0aae4rxwop1t4wd5t\n密钥对 kp-4mkdhmz5ermh6lbp6\n网络 cn-shanghai+dir-5542378526\n规格 acp.std.medium(3c6g)\n这四个值 OK';
+      const events = [
+        { type: 'user', message: { role: 'user', content: [{ type: 'text', text: multiline }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'ack' }] } },
+      ];
+      fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), events.map(e => JSON.stringify(e)).join('\n'));
+
+      const result = await getSessionMessages({ agent: 'claude', sessionId, workdir, rich: true } as any);
+      expect(result.ok).toBe(true);
+      // The user's line breaks must survive into the message body (the bubble is whitespace-pre-wrap).
+      // Regression: getClaudeSessionMessages used to collapse \s+ and flatten this to one line.
+      const richUser = (result.richMessages || []).find(m => m.role === 'user');
+      expect(richUser?.text).toBe(multiline);
+      const textBlock = richUser?.blocks.find(b => b.type === 'text');
+      expect(textBlock?.content).toBe(multiline);
+      const plainUser = (result.messages || []).find(m => m.role === 'user');
+      expect(plainUser?.text).toBe(multiline);
+    });
+
+    await withTempHome(async (homeDir) => {
       const workdir = '/Users/test/proj_with.dots';
       const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-proj-with-dots');
       const sessionId = 'sess-underscored-workdir';

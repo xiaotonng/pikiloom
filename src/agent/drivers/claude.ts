@@ -1533,7 +1533,11 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
               );
             }
           }
-          const text = displayText.replace(SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE, '').replace(/\s+/g, ' ').trim();
+          // Preserve the user's line breaks: this is the actual message body shown in the bubble
+          // (whitespace-pre-wrap), not a one-line preview. Collapsing \s+ here flattened multi-line
+          // prompts into a single run once the turn hit the transcript. Session-list titles/previews
+          // are sanitized separately via sanitizeSessionUserPreviewText.
+          const text = displayText.replace(SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE, '').replace(/\r\n?/g, '\n').trim();
           if (text || imageBlocks.length) {
             pendingRole = 'user';
             pendingTextParts = text ? [text] : [];

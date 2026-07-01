@@ -72,10 +72,15 @@ export class ClaudeDriver implements AgentDriver {
       // wake-up turns can still land before we close (see claudeBgSettleQuietMs).
       let holdCapTimer: ReturnType<typeof setTimeout> | null = null;
       let quietTimer: ReturnType<typeof setTimeout> | null = null;
+      // modelStall: post-tool watchdog — fires only while the turn is waiting on the MODEL (a
+      // tool_result handed control back and no reply is streaming), never while a tool or
+      // background task is still running (see armModelStall).
+      let modelStallTimer: ReturnType<typeof setTimeout> | null = null;
       const usageOf = () => this.usage(state);
       const unref = (tm: any) => { if (tm && typeof tm.unref === 'function') tm.unref(); };
       const clearHoldCap = () => { if (holdCapTimer) { clearTimeout(holdCapTimer); holdCapTimer = null; } };
       const clearQuiet = () => { if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; } };
+      const clearModelStall = () => { if (modelStallTimer) { clearTimeout(modelStallTimer); modelStallTimer = null; } };
       // kill=true SIGTERMs immediately — fast exit, used once nothing is left running in the
       // background (a normal turn, or a wake-up turn after every background task finished).
       // kill=false only ends stdin and lets Claude shut down on its own, so any still-running
@@ -83,7 +88,7 @@ export class ClaudeDriver implements AgentDriver {
       // tore the background — and the wake-up — down before). A leak-guard SIGTERM is the backstop.
       const finish = (r: DriverResult, kill = true) => {
         if (settled) return; settled = true;
-        clearHoldCap(); clearQuiet();
+        clearHoldCap(); clearQuiet(); clearModelStall();
         try { child?.stdin?.end(); } catch { /* ignore */ }
         if (!child.killed && child.exitCode == null) {
           if (kill) { try { child.kill('SIGTERM'); } catch { /* ignore */ } }
@@ -94,8 +99,8 @@ export class ClaudeDriver implements AgentDriver {
         }
         resolve(r);
       };
-      const settleResult = (opts: { stopReason?: string | null; kill?: boolean } = {}) => finish({
-        ok: !state.error, text: state.text, reasoning: state.reasoning || undefined,
+      const settleResult = (opts: { stopReason?: string | null; kill?: boolean; ok?: boolean } = {}) => finish({
+        ok: opts.ok ?? !state.error, text: state.text, reasoning: state.reasoning || undefined,
         error: state.error, stopReason: opts.stopReason ?? state.stopReason, sessionId: state.sessionId, usage: usageOf(),
       }, opts.kill ?? true);
       // Absolute cap while holding for a still-running background task (stopReason marks it as
@@ -111,6 +116,25 @@ export class ClaudeDriver implements AgentDriver {
         clearQuiet();
         quietTimer = setTimeout(() => { if (!settled) settleResult({ kill: false }); }, claudeBgSettleQuietMs());
         unref(quietTimer);
+      };
+      // Post-tool model-stall watchdog: after a tool_result hands control back to the model, the
+      // model normally streams its next message within a couple of seconds. If instead it goes
+      // fully silent — no stream/assistant events — the turn is stuck waiting on the MODEL (a
+      // provider stall / rate-limit backoff), NOT on a tool (a running tool has no tool_result
+      // yet, so this is never armed then) and NOT on background work (its own hold, re-checked
+      // below). Left alone the kernel turn hangs forever with the answer never delivered. Bound
+      // it: settle gracefully (no kill) as incomplete with stopReason 'stalled' so the terminal
+      // shows a clear "resend to continue" note instead of a dead spinner. Armed on tool_result,
+      // cleared the moment the model emits anything.
+      const armModelStall = () => {
+        clearModelStall();
+        modelStallTimer = setTimeout(() => {
+          if (settled) return;
+          // Background work legitimately produces no stream events; keep waiting (the bg hold owns it).
+          if (pendingClaudeBackgroundTasks(state) > 0) { armModelStall(); return; }
+          settleResult({ stopReason: 'stalled', kill: false, ok: false });
+        }, claudeModelStallMs());
+        unref(modelStallTimer);
       };
 
       try {
@@ -145,7 +169,10 @@ export class ClaudeDriver implements AgentDriver {
           try { ev = JSON.parse(trimmed); } catch { continue; }
           handleClaudeEvent(ev, state, ctx.emit);
           const pending = pendingClaudeBackgroundTasks(state);
+          // Any model output means the model is alive and streaming — cancel the post-tool stall watchdog.
+          if (ev.type === 'stream_event' || ev.type === 'assistant') clearModelStall();
           if (ev.type === 'result') {
+            clearModelStall();
             const hasError = !!ev.is_error || (Array.isArray(ev.errors) && ev.errors.length > 0) || !!state.error;
             const decision = decideClaudeResultSettle({ hasError, pendingBackground: pending, sawBackground: state.bgStarted.size > 0 });
             if (decision === 'settle') { settleResult(); return; }
@@ -164,6 +191,9 @@ export class ClaudeDriver implements AgentDriver {
             if (pending > 0) { clearQuiet(); armHoldCap(); }
             else armQuiet();
           }
+          // A tool_result handed control back to the model with no background pending — arm the
+          // post-tool stall watchdog. Cleared above the moment the model's next event streams in.
+          if (ev.type === 'user' && pending === 0 && claudeUserEventHasToolResult(ev)) armModelStall();
         }
       });
       child.stderr!.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
@@ -455,6 +485,23 @@ const CLAUDE_BG_SETTLE_QUIET_DEFAULT_MS = 15_000;
 export function claudeBgSettleQuietMs(): number {
   const raw = Number(process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_SETTLE_QUIET_DEFAULT_MS;
+}
+// How long the model may stay COMPLETELY silent after a tool_result (control handed back to it,
+// no background pending) before the driver gives up and settles the turn as 'stalled'. Deliberately
+// generous: legitimate silent extended-thinking (subscription accounts stream no thinking text) and
+// slow providers must not trip it, and a still-running tool never trips it (it has no tool_result
+// yet). This is the backstop for a turn that would otherwise hang forever with the answer never
+// delivered. Override with PIKILOOM_CLAUDE_MODEL_STALL_MS.
+const CLAUDE_MODEL_STALL_DEFAULT_MS = 120_000;
+export function claudeModelStallMs(): number {
+  const raw = Number(process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_MODEL_STALL_DEFAULT_MS;
+}
+// True when a claude `type:'user'` stream event carries at least one tool_result block — i.e. the
+// tool loop just handed control back to the model. Pure + exported for hermetic testing.
+export function claudeUserEventHasToolResult(ev: any): boolean {
+  const c = ev?.message?.content;
+  return Array.isArray(c) && c.some((b: any) => b?.type === 'tool_result');
 }
 // After we settle a held turn gracefully (stdin closed, no kill), force-kill the lingering
 // process only if it hasn't exited on its own within this window. Backstop against leaks.

@@ -44,6 +44,7 @@ export {
   isTerminalTaskStatus, trackClaudeBackgroundTask, pendingClaudeBackgroundTasks,
   markClaudeTaskNotificationTerminal,
   decideClaudeResultSettle, claudeBgHoldCapMs, claudeBgSettleQuietMs, type ClaudeResultSettleDecision,
+  claudeModelStallMs, claudeUserEventHasToolResult,
 } from './drivers/claude.js';
 export { CodexDriver } from './drivers/codex.js';
 export { GeminiDriver } from './drivers/gemini.js';

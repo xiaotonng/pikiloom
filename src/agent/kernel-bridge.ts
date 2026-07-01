@@ -212,6 +212,8 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
       || finalError
       || (result.stopReason === 'background'
         ? 'Work is now running in the background — I’ll report back here once it finishes. (Send any message to check on it.)'
+        : result.stopReason === 'stalled'
+        ? 'The turn stopped responding after tool use without producing a reply (the model or provider may have stalled). Send any message to continue.'
         : result.ok ? '(no textual response)' : '(no output)'),
     thinking: (result.reasoning || snapshot.reasoning || '').trim() || null,
     plan: toPikiloomPlan(snapshot.plan),

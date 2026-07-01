@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeUserText, sameUserText, streamPromptMatchesTurnText } from '../dashboard/src/pages/sessions/utils';
+import {
+  displayPromptForPending,
+  normalizeUserText,
+  promptEndsWithUserPrompt,
+  sameUserText,
+  streamPromptMatchesTurnText,
+} from '../dashboard/src/pages/sessions/utils';
 
 // shortValue(text, 500): first (500-3) chars, trimEnd, + '...'
 function shortValue(text: string, max = 500): string {
@@ -83,3 +89,25 @@ describe('streamPromptMatchesTurnText (truncated managed-fallback dedup)', () =>
   });
 });
 
+describe('handover prompt pending dedup', () => {
+  it('treats a handover seed plus current user prompt as one display prompt', () => {
+    const prompt = 'default login 又没有了，而且左下角也没有 claude用量了，请你仔细完备修复这个问题';
+    const full = [
+      '<handover from="claude" to="codex" turns="9">',
+      'User: 我刚才更新了最新的 kernel',
+      'Assistant: 当前情况清晰了。',
+      '</handover>',
+      '[Continuing this conversation. The previous turns above ran under claude; you are now codex picking up where it left off. Your next user message follows.]',
+      '',
+      prompt,
+    ].join('\n');
+
+    expect(promptEndsWithUserPrompt(full, prompt)).toBe(true);
+    expect(displayPromptForPending(prompt, full)).toBe(full);
+  });
+
+  it('does not merge unrelated live questions with the pending prompt', () => {
+    expect(promptEndsWithUserPrompt('Please fix auth', 'Please fix usage')).toBe(false);
+    expect(displayPromptForPending('Please fix usage', 'Please fix auth')).toBe('Please fix usage');
+  });
+});

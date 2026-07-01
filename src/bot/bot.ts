@@ -294,6 +294,13 @@ export interface SubmitSessionTaskOpts {
   ) => void;
 }
 
+interface RunStreamExtras {
+  forkOf?: { parentSessionId: string; atTurn: number };
+  workflowEnabled?: boolean;
+  profileId?: string | null;
+  onPreparedPrompt?: (prompt: string) => void;
+}
+
 export interface SubmittedSessionTask {
   ok: true;
   taskId: string;
@@ -435,6 +442,20 @@ export class Bot {
       next = { ...next, interactions: refreshed };
     }
     return next;
+  }
+
+  private updateTaskPrompt(taskId: string, fallbackKey: string, prompt: string) {
+    const task = this.activeTasks.get(taskId);
+    const prepared = prompt.trim();
+    if (!task || !prepared || task.prompt === prepared) return;
+    task.prompt = prepared;
+
+    const key = this.liveSessionKey(taskId, fallbackKey);
+    const snap = this.streamSnapshots.get(key);
+    if (snap) {
+      snap.updatedAt = Date.now();
+      this.pushSnapshotToSSE(key, true);
+    }
   }
 
   private _onStreamSnapshot: ((sessionKey: string, snapshot: StreamSnapshot | null) => void) | null = null;
@@ -1552,6 +1573,13 @@ export class Bot {
         : null;
 
       try {
+        const extras: RunStreamExtras = {
+          ...(opts.forkOf ? { forkOf: opts.forkOf } : {}),
+          ...(opts.workflowEnabled !== undefined ? { workflowEnabled: opts.workflowEnabled } : {}),
+          ...(opts.profileId !== undefined ? { profileId: opts.profileId } : {}),
+          onPreparedPrompt: (preparedPrompt) => this.updateTaskPrompt(taskId, session.key, preparedPrompt),
+        };
+
         const result = await this.runStream(
           prompt,
           session,
@@ -1567,9 +1595,7 @@ export class Bot {
           this.createInteractionHandler(chatId, taskId),
           undefined,
           undefined,
-          (opts.forkOf || opts.workflowEnabled !== undefined || opts.profileId !== undefined)
-            ? { ...(opts.forkOf ? { forkOf: opts.forkOf } : {}), ...(opts.workflowEnabled !== undefined ? { workflowEnabled: opts.workflowEnabled } : {}), ...(opts.profileId !== undefined ? { profileId: opts.profileId } : {}) }
-            : undefined,
+          extras,
         );
         this.emitStreamDone(taskId, session.key, {
           sessionId: result.sessionId || session.sessionId,
@@ -2273,7 +2299,7 @@ export class Bot {
     onInteraction?: (request: AgentInteraction) => Promise<Record<string, any> | null>,
     onSteerReady?: (steer: (prompt: string, attachments?: string[]) => Promise<boolean>) => void,
     onCodexTurnReady?: (control: CodexTurnControl) => void,
-    extras?: { forkOf?: { parentSessionId: string; atTurn: number }; workflowEnabled?: boolean; profileId?: string | null },
+    extras?: RunStreamExtras,
   ): Promise<StreamResult> {
     const agentConfig = this.agentConfigs[cs.agent] || {};
     const sessionWorkdirForConfig = 'workdir' in cs && typeof cs.workdir === 'string' && cs.workdir ? cs.workdir : this.workdir;
@@ -2305,6 +2331,7 @@ export class Bot {
         });
         if (result.ok && result.seed) {
           prompt = result.seed + '\n\n' + prompt;
+          extras?.onPreparedPrompt?.(prompt);
           this.debug(
             `[runStream] handover ${describeHandoverRef(handoverFrom)} → ${cs.agent} `
             + `mode=${result.mode} msgs=${result.messagesIncluded}/${result.messagesTotal} `

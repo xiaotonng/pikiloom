@@ -21,6 +21,25 @@ export function sameUserText(a: string | null | undefined, b: string | null | un
   return normalizeUserText(a) === normalizeUserText(b);
 }
 
+export function promptEndsWithUserPrompt(
+  fullPrompt: string | null | undefined,
+  userPrompt: string | null | undefined,
+): boolean {
+  const full = normalizeUserText(fullPrompt);
+  const user = normalizeUserText(userPrompt);
+  return !!full && !!user && full !== user && full.endsWith(user);
+}
+
+export function displayPromptForPending(
+  pendingPrompt: string | null | undefined,
+  liveQuestion: string | null | undefined,
+): string | null {
+  if (liveQuestion && (!pendingPrompt || promptEndsWithUserPrompt(liveQuestion, pendingPrompt))) {
+    return liveQuestion;
+  }
+  return pendingPrompt || liveQuestion || null;
+}
+
 // While a turn streams (before its native transcript is parseable) the history turn can
 // carry a managed-fallback preview of the prompt truncated by shortValue ("<prefix>...").
 // That truncated text never equals the full live prompt, so a plain sameUserText dedup

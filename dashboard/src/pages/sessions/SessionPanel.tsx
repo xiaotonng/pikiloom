@@ -25,6 +25,8 @@ import {
   mergeOlderHistory,
   mergeLatestHistory,
   sameUserText,
+  displayPromptForPending,
+  promptEndsWithUserPrompt,
   streamPromptMatchesTurnText,
   type Turn,
   type TurnHistoryWindow,
@@ -743,6 +745,13 @@ export const SessionPanel = memo(function SessionPanel({
     if (!sameUserText(pendingPrompt, liveStream.question)) return [];
     return liveStream.questionBlocks;
   }, [pendingImageUrls, pendingPrompt, liveStream]);
+  const liveQuestion = liveStream?.question || null;
+  const effectiveStreamPrompt = displayPromptForPending(pendingPrompt, liveQuestion);
+  const liveQuestionCoversPending = promptEndsWithUserPrompt(liveQuestion, pendingPrompt);
+  const rawLastUserText = rawTurns.length > 0 ? rawTurns[rawTurns.length - 1]?.user?.text : null;
+  const pendingAlreadyInHistory = !!effectiveStreamPrompt
+    && rawTurns.length > 0
+    && streamPromptMatchesTurnText(rawLastUserText, effectiveStreamPrompt);
 
   const turns = useMemo(() => {
     let result = rawTurns;
@@ -752,8 +761,16 @@ export const SessionPanel = memo(function SessionPanel({
     }
     if (!liveStream || !result.length) return result;
     const last = result[result.length - 1];
-    if (!last.assistant) return result;
-    const streamPrompt = pendingPrompt ?? (liveStream.question || null);
+    const streamPrompt = effectiveStreamPrompt;
+    if (!last.assistant) {
+      const shouldReplaceUser = !!last.user && !!streamPrompt
+        && !sameUserText(last.user.text, streamPrompt)
+        && (streamPromptMatchesTurnText(last.user.text, streamPrompt)
+          || promptEndsWithUserPrompt(streamPrompt, last.user.text));
+      return shouldReplaceUser
+        ? [...result.slice(0, -1), { ...last, user: { ...last.user!, text: streamPrompt } }]
+        : result;
+    }
     const liveText = (liveStream.text || '').trim();
     const lastAssistantText = last.assistant.text?.trim() || '';
     const isStreamingTurn = streamPrompt != null
@@ -767,7 +784,7 @@ export const SessionPanel = memo(function SessionPanel({
       ? { ...last.user, text: streamPrompt }
       : last.user;
     return [...result.slice(0, -1), { ...last, user, assistant: null }];
-  }, [rawTurns, liveStream, pendingPrompt, optimisticBridgesImages]);
+  }, [rawTurns, liveStream, effectiveStreamPrompt, optimisticBridgesImages]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -832,9 +849,8 @@ export const SessionPanel = memo(function SessionPanel({
             })}
             {runFailureDetail && <div className="mb-5 animate-in"><RunEndNotice detail={runFailureDetail} t={t} /></div>}
             {(pendingPrompt || pendingBubbleBlocks.length > 0)
-              && (optimisticBridgesImages
-                  || !(pendingPrompt && rawTurns.length > 0
-                       && streamPromptMatchesTurnText(rawTurns[rawTurns.length - 1]?.user?.text, pendingPrompt))) && (
+              && !liveQuestionCoversPending
+              && (optimisticBridgesImages || !pendingAlreadyInHistory) && (
               <div className="session-turn">
                 <UserBubble text={pendingPrompt || ''} blocks={pendingBubbleBlocks} t={t} />
                 {!liveStream && (
@@ -844,9 +860,10 @@ export const SessionPanel = memo(function SessionPanel({
                 )}
               </div>
             )}
-            {liveStream && liveStreamShouldRender(liveStream) && !pendingPrompt && liveStream.question
+            {liveStream && liveStreamShouldRender(liveStream) && liveStream.question
+              && (!pendingPrompt || liveQuestionCoversPending)
               && !(rawTurns.length > 0
-                   && streamPromptMatchesTurnText(rawTurns[rawTurns.length - 1]?.user?.text, liveStream.question)) && (
+                   && streamPromptMatchesTurnText(rawLastUserText, liveStream.question)) && (
               <div className="session-turn">
                 <UserBubble text={liveStream.question} blocks={liveStream.questionBlocks || undefined} t={t} />
               </div>

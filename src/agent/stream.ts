@@ -355,7 +355,7 @@ function prepareStreamOpts(opts: StreamOpts): { prepared: StreamOpts; session: S
   session.record.stagedFiles = [];
   session.record.lastUserAttachments = [...attachmentRelPaths];
   if (!session.record.title) session.record.title = summarizePromptTitle(displayPrompt) || null;
-  session.record.lastQuestion = shortValue(displayPrompt, 500);
+  session.record.lastQuestion = trimSessionText(displayPrompt);
   session.record.lastMessageText = shortValue(displayPrompt, 500);
   setSessionRunState(session.record, 'running', null);
   if (session.sessionId) clearAwaitResume(opts.workdir, opts.agent, session.sessionId);
@@ -400,7 +400,7 @@ function finalizeStreamResult(result: StreamResult, workdir: string, prompt: str
   }
   const displayPrompt = collapseSkillPrompt(prompt) ?? prompt;
   if (!session.record.title) session.record.title = summarizePromptTitle(displayPrompt);
-  session.record.lastQuestion = shortValue(displayPrompt, 500);
+  session.record.lastQuestion = trimSessionText(displayPrompt);
   session.record.lastAnswer = shortValue(result.message, 500);
   session.record.lastMessageText = shortValue(result.message, 500) || shortValue(displayPrompt, 500);
   session.record.lastThinking = trimSessionText(result.thinking);
@@ -650,7 +650,7 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       byokProfileName: prepared.byokProfileName ?? null,
     };
     const failureDisplayPrompt = collapseSkillPrompt(opts.prompt) ?? opts.prompt;
-    session.record.lastQuestion = shortValue(failureDisplayPrompt, 500);
+    session.record.lastQuestion = trimSessionText(failureDisplayPrompt);
     session.record.lastAnswer = shortValue(failedResult.message, 500);
     session.record.lastMessageText = shortValue(failedResult.message, 500) || shortValue(failureDisplayPrompt, 500);
     session.record.lastThinking = null;

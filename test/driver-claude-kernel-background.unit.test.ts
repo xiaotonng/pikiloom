@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   isTerminalTaskStatus, trackClaudeBackgroundTask, pendingClaudeBackgroundTasks,
-  decideClaudeResultSettle, claudeBgHoldCapMs,
+  markClaudeTaskNotificationTerminal,
+  decideClaudeResultSettle, claudeBgHoldCapMs, claudeBgSettleQuietMs,
 } from '../packages/kernel/dist/index.js';
 
 // Regression: the kernel claude driver used to end the turn (and hard-SIGTERM the process) at the
@@ -101,16 +102,83 @@ describe('background task tracking (trackClaudeBackgroundTask + pendingClaudeBac
   });
 });
 
+describe('markClaudeTaskNotificationTerminal (wake-up delivery signal in user messages)', () => {
+  it('marks a task terminal from a `<task-notification>` string (verbatim claude 2.1.197 shape)', () => {
+    const s: any = { bgStarted: new Set(['a39ed8594ca33c5b9']), bgTerminal: new Set() };
+    markClaudeTaskNotificationTerminal(
+      '<task-notification>\n<task-id>a39ed8594ca33c5b9</task-id>\n<tool-use-id>toolu_01KDTWSPrnjpfBjibq3yNwhm</tool-use-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n</task-notification>',
+      s);
+    expect(pendingClaudeBackgroundTasks(s)).toBe(0);
+  });
+  it('treats a "process exited" failed notification as terminal too', () => {
+    const s: any = { bgStarted: new Set(['aa2f3b3d6013f7351']), bgTerminal: new Set() };
+    markClaudeTaskNotificationTerminal(
+      '<task-notification> <task-id>aa2f3b3d6013f7351</task-id> <status>failed</status> <summary>Background agent was running when the previous Claude Code process exited</summary> </task-notification>',
+      s);
+    expect(pendingClaudeBackgroundTasks(s)).toBe(0);
+  });
+  it('accepts a text-block array as well as a raw string', () => {
+    const s: any = { bgStarted: new Set(['t1']), bgTerminal: new Set() };
+    markClaudeTaskNotificationTerminal([{ type: 'text', text: '<task-notification><task-id>t1</task-id><status>completed</status></task-notification>' }], s);
+    expect(pendingClaudeBackgroundTasks(s)).toBe(0);
+  });
+  it('ignores a non-terminal status and plain user messages', () => {
+    const s: any = { bgStarted: new Set(['t1']), bgTerminal: new Set() };
+    markClaudeTaskNotificationTerminal('<task-notification><task-id>t1</task-id><status>running</status></task-notification>', s);
+    markClaudeTaskNotificationTerminal('你不要后台执行，一直在前台执行', s);
+    markClaudeTaskNotificationTerminal([{ type: 'tool_result', content: 'ok' }], s);
+    expect(pendingClaudeBackgroundTasks(s)).toBe(1);
+  });
+});
+
 describe('decideClaudeResultSettle', () => {
   it('holds the turn while background work is pending', () => {
-    expect(decideClaudeResultSettle({ hasError: false, pendingBackground: 1 })).toBe('hold');
-    expect(decideClaudeResultSettle({ hasError: false, pendingBackground: 3 })).toBe('hold');
+    expect(decideClaudeResultSettle({ hasError: false, pendingBackground: 1, sawBackground: true })).toBe('hold');
+    expect(decideClaudeResultSettle({ hasError: false, pendingBackground: 3, sawBackground: true })).toBe('hold');
   });
-  it('settles when no background work is pending', () => {
-    expect(decideClaudeResultSettle({ hasError: false, pendingBackground: 0 })).toBe('settle');
+  it('settles immediately for a plain turn that never launched background work', () => {
+    expect(decideClaudeResultSettle({ hasError: false, pendingBackground: 0, sawBackground: false })).toBe('settle');
+  });
+  it('quiet-settles (does NOT hard-exit) when background finished but this turn used background', () => {
+    // The fix: at pending==0 on a background turn, wait for Claude to go quiet rather than exiting
+    // — a trailing wake-up turn may still be undelivered.
+    expect(decideClaudeResultSettle({ hasError: false, pendingBackground: 0, sawBackground: true })).toBe('quiet-settle');
   });
   it('always settles on error, even with background pending (never hang a failed turn)', () => {
-    expect(decideClaudeResultSettle({ hasError: true, pendingBackground: 5 })).toBe('settle');
+    expect(decideClaudeResultSettle({ hasError: true, pendingBackground: 5, sawBackground: true })).toBe('settle');
+  });
+});
+
+describe('regression: 3 parallel agents finishing together must NOT kill the last wake-up', () => {
+  // Verbatim ordering from a captured claude 2.1.197 run (3 Agent(run_in_background) fan-out).
+  // The completion STATUS of the last agent lands BEFORE the previous agent's wake-up `result`, so
+  // "all tasks terminal" (pending==0) is reached while Claude still has a wake-up turn to deliver.
+  // Exiting at that result is exactly what orphaned the background agents ("was running when the
+  // previous Claude Code process exited"). The decision there must be 'quiet-settle', not 'settle'.
+  it('holds through every wake-up and only quiet-settles once truly done', () => {
+    const s = freshState();
+    const decide = (hasError = false) =>
+      decideClaudeResultSettle({ hasError, pendingBackground: pendingClaudeBackgroundTasks(s), sawBackground: s.bgStarted.size > 0 });
+
+    feed(s,
+      { type: 'system', subtype: 'task_started', task_id: 'ad2571a', tool_use_id: 'toolu_1' },
+      { type: 'system', subtype: 'task_started', task_id: 'af0d07b', tool_use_id: 'toolu_2' },
+      { type: 'system', subtype: 'task_started', task_id: 'a22ac35', tool_use_id: 'toolu_3' });
+    expect(decide()).toBe('hold'); // result "WAITING" — 3 pending
+
+    feed(s,
+      { type: 'system', subtype: 'task_updated', task_id: 'ad2571a', patch: { status: 'completed' } },
+      { type: 'system', subtype: 'task_updated', task_id: 'af0d07b', patch: { status: 'completed' } });
+    expect(decide()).toBe('hold'); // result wake-up#1 "ONE" — a22ac35 still pending
+
+    // a22ac35's completion STATUS races ahead of its wake-up delivery:
+    feed(s, { type: 'system', subtype: 'task_updated', task_id: 'a22ac35', patch: { status: 'completed' } });
+    // result wake-up#2 "TWO": pending==0 but wake-up#3 not delivered yet — the old 'settle' here
+    // hard-killed the process and lost "THREE / DONE-ALL". Now we quiet-settle instead.
+    expect(decide()).toBe('quiet-settle');
+
+    // result wake-up#3 "THREE / DONE-ALL": still quiet-settle; the grace timer closes it gracefully.
+    expect(decide()).toBe('quiet-settle');
   });
 });
 
@@ -133,5 +201,23 @@ describe('claudeBgHoldCapMs', () => {
     expect(claudeBgHoldCapMs()).toBe(10 * 60_000);
     process.env.PIKILOOM_CLAUDE_BG_HOLD_MS = '0';
     expect(claudeBgHoldCapMs()).toBe(10 * 60_000);
+  });
+});
+
+describe('claudeBgSettleQuietMs', () => {
+  const prev = process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS;
+    else process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS = prev;
+  });
+  it('defaults to 15 seconds', () => {
+    delete process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS;
+    expect(claudeBgSettleQuietMs()).toBe(15_000);
+  });
+  it('honors a positive override and ignores a bad one', () => {
+    process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS = '3000';
+    expect(claudeBgSettleQuietMs()).toBe(3_000);
+    process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS = '0';
+    expect(claudeBgSettleQuietMs()).toBe(15_000);
   });
 });

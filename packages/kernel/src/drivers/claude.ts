@@ -67,9 +67,15 @@ export class ClaudeDriver implements AgentDriver {
     return new Promise<DriverResult>((resolve) => {
       let child: ChildProcess;
       let settled = false;
+      // holdCap: hard backstop while a background task is still running (never-completing daemon).
+      // quiet: fires once all known background tasks finished AND Claude has gone quiet, so trailing
+      // wake-up turns can still land before we close (see claudeBgSettleQuietMs).
       let holdCapTimer: ReturnType<typeof setTimeout> | null = null;
+      let quietTimer: ReturnType<typeof setTimeout> | null = null;
       const usageOf = () => this.usage(state);
+      const unref = (tm: any) => { if (tm && typeof tm.unref === 'function') tm.unref(); };
       const clearHoldCap = () => { if (holdCapTimer) { clearTimeout(holdCapTimer); holdCapTimer = null; } };
+      const clearQuiet = () => { if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; } };
       // kill=true SIGTERMs immediately — fast exit, used once nothing is left running in the
       // background (a normal turn, or a wake-up turn after every background task finished).
       // kill=false only ends stdin and lets Claude shut down on its own, so any still-running
@@ -77,13 +83,13 @@ export class ClaudeDriver implements AgentDriver {
       // tore the background — and the wake-up — down before). A leak-guard SIGTERM is the backstop.
       const finish = (r: DriverResult, kill = true) => {
         if (settled) return; settled = true;
-        clearHoldCap();
+        clearHoldCap(); clearQuiet();
         try { child?.stdin?.end(); } catch { /* ignore */ }
         if (!child.killed && child.exitCode == null) {
           if (kill) { try { child.kill('SIGTERM'); } catch { /* ignore */ } }
           else {
             const guard = setTimeout(() => { try { child?.kill('SIGTERM'); } catch { /* ignore */ } }, CLAUDE_EXIT_LEAK_GUARD_MS);
-            if (typeof (guard as any).unref === 'function') (guard as any).unref();
+            unref(guard);
           }
         }
         resolve(r);
@@ -92,6 +98,20 @@ export class ClaudeDriver implements AgentDriver {
         ok: !state.error, text: state.text, reasoning: state.reasoning || undefined,
         error: state.error, stopReason: opts.stopReason ?? state.stopReason, sessionId: state.sessionId, usage: usageOf(),
       }, opts.kill ?? true);
+      // Absolute cap while holding for a still-running background task (stopReason marks it as
+      // "still running in the background" so the empty-text fallback reads right). Idempotent.
+      const armHoldCap = () => {
+        if (holdCapTimer) return;
+        holdCapTimer = setTimeout(() => { if (!settled) settleResult({ stopReason: 'background', kill: false }); }, claudeBgHoldCapMs());
+        unref(holdCapTimer);
+      };
+      // Grace close once all background work is done: settle gracefully (no kill) if Claude stays
+      // quiet for the window. Re-armed on every event, so a still-streaming wake-up keeps it open.
+      const armQuiet = () => {
+        clearQuiet();
+        quietTimer = setTimeout(() => { if (!settled) settleResult({ kill: false }); }, claudeBgSettleQuietMs());
+        unref(quietTimer);
+      };
 
       try {
         child = spawn(this.bin, args, { cwd: input.workdir, env: { ...process.env, ...(input.env || {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -124,21 +144,26 @@ export class ClaudeDriver implements AgentDriver {
           let ev: any;
           try { ev = JSON.parse(trimmed); } catch { continue; }
           handleClaudeEvent(ev, state, ctx.emit);
-          if (ev.type !== 'result') continue;
-          const hasError = !!ev.is_error || (Array.isArray(ev.errors) && ev.errors.length > 0) || !!state.error;
           const pending = pendingClaudeBackgroundTasks(state);
-          if (decideClaudeResultSettle({ hasError, pendingBackground: pending }) === 'hold') {
-            // Background work is still running: do NOT end the turn here. Keep stdin open so Claude
-            // wakes itself up and streams a follow-up turn reporting the finished work — we settle
-            // on THAT result (pending back to 0). A cap bounds the wait so a never-completing daemon
-            // (e.g. a dev server) eventually settles (graceful, no kill) instead of holding forever.
-            if (!holdCapTimer) {
-              holdCapTimer = setTimeout(() => { if (!settled) settleResult({ stopReason: 'background', kill: false }); }, claudeBgHoldCapMs());
-              if (typeof (holdCapTimer as any).unref === 'function') (holdCapTimer as any).unref();
-            }
+          if (ev.type === 'result') {
+            const hasError = !!ev.is_error || (Array.isArray(ev.errors) && ev.errors.length > 0) || !!state.error;
+            const decision = decideClaudeResultSettle({ hasError, pendingBackground: pending, sawBackground: state.bgStarted.size > 0 });
+            if (decision === 'settle') { settleResult(); return; }
+            if (decision === 'hold') { clearQuiet(); armHoldCap(); continue; }
+            // 'quiet-settle': every known background task finished, but Claude may still be delivering
+            // wake-up turns whose delivery trails the completion status (with parallel agents the last
+            // one's completion can land before an earlier one's wake-up result). Don't exit here — wait
+            // for Claude to go quiet, then close gracefully so no in-flight wake-up is torn down. Keep
+            // the hold cap armed as an absolute backstop.
+            armHoldCap(); armQuiet();
             continue;
           }
-          settleResult();
+          // Non-result activity: a still-streaming wake-up refreshes the quiet window; a newly-started
+          // background task pulls us back into the hold.
+          if (quietTimer) {
+            if (pending > 0) { clearQuiet(); armHoldCap(); }
+            else armQuiet();
+          }
         }
       });
       child.stderr!.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
@@ -348,10 +373,13 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     return;
   }
   if (t === 'user') {
+    // Background wake-up delivery: a `<task-notification>` tag (as a string or a text block) marks
+    // its background task terminal — an extra completion signal alongside the system task events.
+    markClaudeTaskNotificationTerminal(ev.message?.content, s);
     // Tool results: surface generated images as artifacts AND close out the tool call
     // (status done/failed + a result detail) so toolCalls is a faithful structured SSOT
     // and the runtime's activity projection can render the execution trail.
-    const contents = ev.message?.content || [];
+    const contents = Array.isArray(ev.message?.content) ? ev.message.content : [];
     for (const b of contents) {
       if (b?.type !== 'tool_result') continue;
       emitClaudeImages(b.content || [], s, emit);
@@ -416,6 +444,18 @@ export function claudeBgHoldCapMs(): number {
   const raw = Number(process.env.PIKILOOM_CLAUDE_BG_HOLD_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_HOLD_CAP_DEFAULT_MS;
 }
+// Once every KNOWN background task has finished, how long Claude must stay quiet (no further
+// output at all) before we close a background turn. A completed task's status races AHEAD of the
+// wake-up turn that reports it — with N parallel agents finishing together, the last agent's
+// completion can land before an earlier agent's wake-up result, so exiting at the first
+// pending==0 result would kill the still-undelivered wake-ups (the "background was running when
+// the process exited" failure). Refreshed on every event, so a still-streaming wake-up keeps it
+// alive. Override with PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS.
+const CLAUDE_BG_SETTLE_QUIET_DEFAULT_MS = 15_000;
+export function claudeBgSettleQuietMs(): number {
+  const raw = Number(process.env.PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_SETTLE_QUIET_DEFAULT_MS;
+}
 // After we settle a held turn gracefully (stdin closed, no kill), force-kill the lingering
 // process only if it hasn't exited on its own within this window. Backstop against leaks.
 const CLAUDE_EXIT_LEAK_GUARD_MS = 15_000;
@@ -434,6 +474,28 @@ export function trackClaudeBackgroundTask(ev: any, s: any): void {
   if (isTerminalTaskStatus(ev?.patch?.status ?? ev?.status)) (s.bgTerminal ||= new Set<string>()).add(id);
 }
 
+function claudeContentText(content: any): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n');
+  return '';
+}
+
+// Extra completion signal (mirrors the legacy driver): Claude delivers a background wake-up as a
+// `type:'user'` message carrying a `<task-notification>` tag (<task-id>/<tool-use-id>/<status>).
+// Mark that task terminal too, so a missed/absent system task_notification still lets pending
+// reach 0 (instead of the turn hanging to the hold cap).
+export function markClaudeTaskNotificationTerminal(content: any, s: any): void {
+  const text = claudeContentText(content);
+  if (!text || !text.includes('<task-notification>')) return;
+  const tag = (name: string): string => {
+    const m = text.match(new RegExp(`<${name}>\\s*([^<]*?)\\s*</${name}>`));
+    return m ? m[1].trim() : '';
+  };
+  const status = tag('status');
+  if (status && !isTerminalTaskStatus(status)) return;
+  for (const id of [tag('task-id'), tag('tool-use-id')]) if (id) (s.bgTerminal ||= new Set<string>()).add(id);
+}
+
 export function pendingClaudeBackgroundTasks(s: any): number {
   const started: Set<string> | undefined = s?.bgStarted;
   if (!started?.size) return 0;
@@ -443,12 +505,20 @@ export function pendingClaudeBackgroundTasks(s: any): number {
   return n;
 }
 
-export type ClaudeResultSettleDecision = 'settle' | 'hold';
-// At a `result` event: settle the turn normally, unless background work is still running
-// (then hold the process open for the wake-up). Errors always settle.
-export function decideClaudeResultSettle(input: { hasError: boolean; pendingBackground: number }): ClaudeResultSettleDecision {
+export type ClaudeResultSettleDecision = 'settle' | 'hold' | 'quiet-settle';
+// At a `result` event, decide how to end the turn:
+//  - error                               → 'settle' now (hard exit).
+//  - a background task is still running   → 'hold' the process open for its wake-up.
+//  - background done BUT this turn launched background work → 'quiet-settle': do NOT exit at this
+//    result. Claude may still be DELIVERING wake-up turns whose delivery trails their task's
+//    completion status (see claudeBgSettleQuietMs); wait for it to go quiet, then close gracefully.
+//  - a plain turn (no background)         → 'settle' now.
+export function decideClaudeResultSettle(input: {
+  hasError: boolean; pendingBackground: number; sawBackground: boolean;
+}): ClaudeResultSettleDecision {
   if (input.hasError) return 'settle';
-  return input.pendingBackground > 0 ? 'hold' : 'settle';
+  if (input.pendingBackground > 0) return 'hold';
+  return input.sawBackground ? 'quiet-settle' : 'settle';
 }
 
 // Claude vision input formats (matches the legacy driver / Anthropic API: png, jpeg, gif, webp).

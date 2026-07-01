@@ -42,7 +42,8 @@ export { EchoDriver } from './drivers/echo.js';
 export {
   ClaudeDriver,
   isTerminalTaskStatus, trackClaudeBackgroundTask, pendingClaudeBackgroundTasks,
-  decideClaudeResultSettle, claudeBgHoldCapMs, type ClaudeResultSettleDecision,
+  markClaudeTaskNotificationTerminal,
+  decideClaudeResultSettle, claudeBgHoldCapMs, claudeBgSettleQuietMs, type ClaudeResultSettleDecision,
 } from './drivers/claude.js';
 export { CodexDriver } from './drivers/codex.js';
 export { GeminiDriver } from './drivers/gemini.js';

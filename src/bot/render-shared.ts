@@ -1,5 +1,5 @@
 import type { Agent, StreamPreviewMeta, StreamPreviewPlan, StreamResult } from './bot.js';
-import type { UsageOverview } from './commands.js';
+import type { UsageOverview, AgentUsageEntry } from './commands.js';
 import type { MessageBlock, UsageResult } from '../agent/index.js';
 import { materializeImage } from '../agent/index.js';
 import { fmtUptime, formatThinkingForDisplay, thinkLabel } from './bot.js';
@@ -143,11 +143,25 @@ export function formatUsageWindowsSummary(usage: UsageResult | null): string {
   return usage.status ? `status=${usage.status}` : 'no data';
 }
 
+// Freshest capturedAt (ISO string) across the given agents' usage and their accounts' usage, or
+// null when none carry a timestamp. Mirrors the dashboard usage popover: every usage here is
+// probed in a single getUsageOverview pass, so one freshest stamp stands for the whole block
+// rather than repeating a near-identical timestamp per row. ISO-8601 UTC sorts lexically → max = latest.
+export function freshestUsageCapturedAt(agents: AgentUsageEntry[]): string | null {
+  let best: string | null = null;
+  const consider = (iso: string | null | undefined) => { if (iso && (!best || iso > best)) best = iso; };
+  for (const agent of agents) {
+    consider(agent.usage?.capturedAt);
+    for (const account of agent.accounts) consider(account.usage?.capturedAt);
+  }
+  return best;
+}
+
 // Multi-agent / multi-account usage block for `/status`, mirroring the dashboard's top-right
 // view: each installed agent that has usage, and for account-capable agents every account's own
 // quota with the active one marked (●). Returns [] when nothing has usage so callers can skip the
 // section entirely. Leading blank + bold header follow the same shape callers already render.
-export function buildUsageOverviewLines(overview: UsageOverview): ProviderUsageLine[] {
+export function buildUsageOverviewLines(overview: UsageOverview, now: number = Date.now()): ProviderUsageLine[] {
   const shown = overview.agents.filter(a => (a.usage?.ok && a.usage.windows.length) || a.accounts.length);
   if (!shown.length) return [];
 
@@ -155,6 +169,12 @@ export function buildUsageOverviewLines(overview: UsageOverview): ProviderUsageL
     { text: '', bold: false },
     { text: 'Provider Usage', bold: true },
   ];
+  // Data-freshness stamp (restored to match the old /status line and the dashboard usage popover):
+  // one "Updated: X ago" for the whole block, from the freshest capturedAt across everything shown.
+  const capturedMs = Date.parse(freshestUsageCapturedAt(shown) ?? '');
+  if (Number.isFinite(capturedMs)) {
+    lines.push({ text: `  Updated: ${fmtUptime(Math.max(0, now - capturedMs))} ago` });
+  }
   for (const agent of shown) {
     lines.push({ text: `${agent.label}${agent.isCurrent ? ' (current)' : ''}`, bold: true });
     if (agent.accounts.length) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildUsageOverviewLines, formatUsageWindowsSummary } from '../src/bot/render-shared.ts';
+import { buildUsageOverviewLines, formatUsageWindowsSummary, freshestUsageCapturedAt } from '../src/bot/render-shared.ts';
 import type { UsageOverview } from '../src/bot/commands.ts';
 import type { UsageResult } from '../src/agent/types.ts';
 
@@ -22,7 +22,9 @@ const unavailable: UsageResult = {
   ok: false, agent: 'claude', source: null, capturedAt: null, status: null, windows: [], error: 'boom',
 };
 
-const texts = (o: UsageOverview) => buildUsageOverviewLines(o).map(l => l.text);
+// Fixed "now" = 5 minutes after the usage() capturedAt, so the freshness stamp is deterministic.
+const NOW = Date.parse('2026-06-30T00:05:00.000Z');
+const texts = (o: UsageOverview) => buildUsageOverviewLines(o, NOW).map(l => l.text);
 
 describe('formatUsageWindowsSummary', () => {
   it('joins windows compactly and rounds percents', () => {
@@ -52,6 +54,7 @@ describe('buildUsageOverviewLines', () => {
     expect(texts(overview)).toEqual([
       '',
       'Provider Usage',
+      '  Updated: 5m 0s ago',
       'Claude Code (current)',
       '  ● Work: 5h 42% · 7d 18%',
       '  ○ Personal: 5h 90% · 7d 70%',
@@ -63,7 +66,7 @@ describe('buildUsageOverviewLines', () => {
     const overview: UsageOverview = {
       agents: [{ agent: 'codex', label: 'Codex', isCurrent: false, usage: usage([['5h', 30]]), accounts: [] }],
     };
-    expect(texts(overview)).toEqual(['', 'Provider Usage', 'Codex', '  5h 30%']);
+    expect(texts(overview)).toEqual(['', 'Provider Usage', '  Updated: 5m 0s ago', 'Codex', '  5h 30%']);
   });
 
   it('skips agents with neither usage nor accounts, and returns [] when nothing is left', () => {
@@ -74,7 +77,7 @@ describe('buildUsageOverviewLines', () => {
       ],
     };
     // gemini (no usage, no accounts) is dropped; codex remains.
-    expect(texts(overview)).toEqual(['', 'Provider Usage', 'Codex (current)', '  5h 7%']);
+    expect(texts(overview)).toEqual(['', 'Provider Usage', '  Updated: 5m 0s ago', 'Codex (current)', '  5h 7%']);
     expect(buildUsageOverviewLines({ agents: [
       { agent: 'gemini', label: 'Gemini CLI', isCurrent: false, usage: unavailable, accounts: [] },
     ] })).toEqual([]);
@@ -90,5 +93,39 @@ describe('buildUsageOverviewLines', () => {
     expect(texts(overview)).toEqual([
       '', 'Provider Usage', 'Claude Code (current)', '  ● Work: unavailable',
     ]);
+  });
+
+  it('omits the freshness stamp when no usage carries a capturedAt', () => {
+    const overview: UsageOverview = {
+      agents: [{ agent: 'codex', label: 'Codex', isCurrent: false, usage: { ...usage([['5h', 30]]), capturedAt: null }, accounts: [] }],
+    };
+    expect(texts(overview)).toEqual(['', 'Provider Usage', 'Codex', '  5h 30%']);
+  });
+});
+
+describe('freshestUsageCapturedAt', () => {
+  it('returns the latest capturedAt across agents and their accounts', () => {
+    const overview: UsageOverview = {
+      agents: [{
+        agent: 'claude', label: 'Claude Code', isCurrent: true,
+        usage: { ...usage([['5h', 1]]), capturedAt: '2026-06-30T00:00:00.000Z' },
+        accounts: [
+          { id: 'a1', label: 'Work', active: true, usage: { ...usage([['5h', 2]]), capturedAt: '2026-06-30T00:02:00.000Z' } },
+          { id: 'a2', label: 'Old', active: false, usage: { ...usage([['5h', 3]]), capturedAt: '2026-06-29T00:00:00.000Z' } },
+        ],
+      }],
+    };
+    expect(freshestUsageCapturedAt(overview.agents)).toBe('2026-06-30T00:02:00.000Z');
+  });
+
+  it('ignores null timestamps and returns null when none are present', () => {
+    expect(freshestUsageCapturedAt([])).toBeNull();
+    const overview: UsageOverview = {
+      agents: [{
+        agent: 'claude', label: 'Claude Code', isCurrent: true, usage: null,
+        accounts: [{ id: 'a1', label: 'Work', active: true, usage: null }],
+      }],
+    };
+    expect(freshestUsageCapturedAt(overview.agents)).toBeNull();
   });
 });

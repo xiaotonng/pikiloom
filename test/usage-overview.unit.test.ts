@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildUsageOverviewLines, formatUsageWindowsSummary, freshestUsageCapturedAt } from '../src/bot/render-shared.ts';
+import { buildUsageOverviewLines, formatUsageWindowsSummary, oldestUsageCapturedAt } from '../src/bot/render-shared.ts';
 import type { UsageOverview } from '../src/bot/commands.ts';
 import type { UsageResult } from '../src/agent/types.ts';
 
@@ -149,8 +149,8 @@ describe('buildUsageOverviewLines', () => {
   });
 });
 
-describe('freshestUsageCapturedAt', () => {
-  it('returns the latest capturedAt across agents and their accounts', () => {
+describe('oldestUsageCapturedAt', () => {
+  it('returns the oldest capturedAt across agents and their accounts, so a lagging row cannot hide', () => {
     const overview: UsageOverview = {
       agents: [{
         agent: 'claude', label: 'Claude Code', isCurrent: true,
@@ -161,17 +161,17 @@ describe('freshestUsageCapturedAt', () => {
         ],
       }],
     };
-    expect(freshestUsageCapturedAt(overview.agents)).toBe('2026-06-30T00:02:00.000Z');
+    expect(oldestUsageCapturedAt(overview.agents)).toBe('2026-06-29T00:00:00.000Z');
   });
 
   it('ignores null timestamps and returns null when none are present', () => {
-    expect(freshestUsageCapturedAt([])).toBeNull();
+    expect(oldestUsageCapturedAt([])).toBeNull();
     const overview: UsageOverview = {
       agents: [{
         agent: 'claude', label: 'Claude Code', isCurrent: true, usage: null,
         accounts: [{ id: 'a1', label: 'Work', active: true, usage: null }],
       }],
     };
-    expect(freshestUsageCapturedAt(overview.agents)).toBeNull();
+    expect(oldestUsageCapturedAt(overview.agents)).toBeNull();
   });
 });

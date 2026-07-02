@@ -184,13 +184,15 @@ export function formatUsageWindowsSummary(usage: UsageResult | null, now: number
   return usage.status ? `status=${usage.status}` : 'no data';
 }
 
-// Freshest capturedAt (ISO string) across the given agents' usage and their accounts' usage, or
+// OLDEST capturedAt (ISO string) across the given agents' usage and their accounts' usage, or
 // null when none carry a timestamp. Mirrors the dashboard usage popover: every usage here is
-// probed in a single getUsageOverview pass, so one freshest stamp stands for the whole block
-// rather than repeating a near-identical timestamp per row. ISO-8601 UTC sorts lexically → max = latest.
-export function freshestUsageCapturedAt(agents: AgentUsageEntry[]): string | null {
+// probed in a single getUsageOverview pass, so one stamp stands for the whole block — and it
+// must be the oldest row's time, not the freshest, so a row pinned at last-good by a failed /
+// rate-limited probe can't hide behind a sibling's fresh timestamp. ISO-8601 UTC sorts
+// lexically → min = oldest.
+export function oldestUsageCapturedAt(agents: AgentUsageEntry[]): string | null {
   let best: string | null = null;
-  const consider = (iso: string | null | undefined) => { if (iso && (!best || iso > best)) best = iso; };
+  const consider = (iso: string | null | undefined) => { if (iso && (!best || iso < best)) best = iso; };
   for (const agent of agents) {
     consider(agent.usage?.capturedAt);
     for (const account of agent.accounts) consider(account.usage?.capturedAt);
@@ -210,9 +212,10 @@ export function buildUsageOverviewLines(overview: UsageOverview, now: number = D
     { text: '', bold: false },
     { text: 'Provider Usage', bold: true },
   ];
-  // Data-freshness stamp (restored to match the old /status line and the dashboard usage popover):
-  // one "Updated: X ago" for the whole block, from the freshest capturedAt across everything shown.
-  const capturedMs = Date.parse(freshestUsageCapturedAt(shown) ?? '');
+  // Data-freshness stamp (matches the dashboard usage popover): one "Updated: X ago" for the
+  // whole block, from the OLDEST capturedAt across everything shown — owning up to the most
+  // lagging row instead of advertising the freshest one.
+  const capturedMs = Date.parse(oldestUsageCapturedAt(shown) ?? '');
   if (Number.isFinite(capturedMs)) {
     lines.push({ text: `  Updated: ${fmtUptime(Math.max(0, now - capturedMs))} ago` });
   }

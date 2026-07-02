@@ -2175,7 +2175,7 @@ exit 0`;
       expect(claudeModels.models.map(m => m.id)).toEqual([
         'claude-fable-5',
         'claude-opus-4-8',
-        'claude-sonnet-4-6',
+        'claude-sonnet-5',
         'claude-haiku-4-5-20251001',
       ]);
 

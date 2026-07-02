@@ -50,6 +50,8 @@ export interface AgentAccountsResponse {
   supported: boolean;
   accounts: AgentAccountInfo[];
   activeAccountId: string | null;
+  /** Default-login quota, read in the same pass as the account rows. */
+  nativeUsage: UsageResult | null;
   max: number;
   error?: string;
 }
@@ -120,8 +122,11 @@ export const api = {
   getState: () => json<AppState>('/api/state'),
   getHost: () => json<HostInfo>('/api/host'),
   getAgentStatus: () => json<AgentStatusResponse>('/api/agent-status'),
-  getAgentAccounts: (agent: string, opts?: ApiRequestOptions) =>
-    json<AgentAccountsResponse>(`/api/agents/${encodeURIComponent(agent)}/accounts`, { timeoutMs: 12_000, ...opts }),
+  getAgentAccounts: (agent: string, opts?: ApiRequestOptions & { fresh?: boolean }) =>
+    json<AgentAccountsResponse>(
+      `/api/agents/${encodeURIComponent(agent)}/accounts${opts?.fresh ? '?fresh=1' : ''}`,
+      { timeoutMs: 12_000, ...opts },
+    ),
   addAgentAccount: (agent: string, label: string, token: string) =>
     post<{ ok: boolean; account?: AgentAccountInfo; error?: string }>(
       `/api/agents/${encodeURIComponent(agent)}/accounts`, { label, token }),

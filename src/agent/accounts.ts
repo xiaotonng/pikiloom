@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { loadUserConfig, saveUserConfig } from '../core/config/user-config.js';
 import { persistSecret, forgetSecret, resolveCredential, isCredentialRef, type CredentialRef } from '../core/secrets/index.js';
 import { loadKernel } from './kernel-bridge.js';
-import { claudeUsageForToken } from './drivers/claude.js';
+import { claudeUsageForToken, claudeNativeUsage } from './drivers/claude.js';
 import type { UsageResult } from './types.js';
 import { agentWarn } from './utils.js';
 
@@ -159,7 +159,7 @@ const accountUsageById = new Map<string, UsageResult | null>();
 const usageKey = (agent: string, id: string) => `${agent}/${id}`;
 
 /** Best-effort per-account usage: read the account's quota from its token (see claudeUsageForToken). */
-export async function probeAccountUsage(agent: string, id: string, opts?: { force?: boolean }): Promise<UsageResult | null> {
+export async function probeAccountUsage(agent: string, id: string, opts?: { force?: boolean; fresh?: boolean }): Promise<UsageResult | null> {
   if (agent !== 'claude') return null;
   const rec = getAccount(agent, id);
   if (!rec) return null;
@@ -180,6 +180,55 @@ export function getCachedAccountUsage(agent: string, id: string): UsageResult | 
 export function warmAccountUsages(agent: string): void {
   if (!accountAgentSupported(agent)) return;
   for (const rec of listAccounts(agent)) void probeAccountUsage(agent, rec.id);
+}
+
+export interface AccountUsageSnapshotRow {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  active: boolean;
+  usage: UsageResult | null;
+}
+
+export interface AccountsUsageSnapshot {
+  supported: boolean;
+  activeAccountId: string | null;
+  accounts: AccountUsageSnapshotRow[];
+  /** Default-login quota, read in the same pass as the account rows. */
+  native: UsageResult | null;
+}
+
+/**
+ * THE query channel for "who can this agent run as, and how much quota does each identity have".
+ * Every consumer (dashboard header popover, accounts panel, IM /status) reads through here so all
+ * rows come from one pass and share one freshness policy. `fresh: true` is for surfaces the user
+ * is actively looking at: it re-probes past the short fresh window (20s tokens / 15s native)
+ * instead of the 5min background TTL — the debounce lives in the driver-level caches, so callers
+ * can request fresh on every view without stampeding probes.
+ */
+export async function getAccountsUsageSnapshot(agent: string, opts?: { fresh?: boolean }): Promise<AccountsUsageSnapshot> {
+  if (!accountAgentSupported(agent)) return { supported: false, activeAccountId: null, accounts: [], native: null };
+  const recs = listAccounts(agent);
+  const activeId = getActiveAccountId(agent);
+  const fresh = opts?.fresh === true;
+  const [native, ...usages] = await Promise.all([
+    claudeNativeUsage({ fresh }).catch(() => null),
+    ...recs.map(rec => probeAccountUsage(agent, rec.id, { fresh }).catch(() => getCachedAccountUsage(agent, rec.id))),
+  ]);
+  return {
+    supported: true,
+    activeAccountId: activeId,
+    accounts: recs.map((rec, i) => ({
+      id: rec.id,
+      label: rec.label,
+      createdAt: rec.createdAt,
+      lastUsedAt: rec.lastUsedAt ?? null,
+      active: rec.id === activeId,
+      usage: usages[i] ?? getCachedAccountUsage(agent, rec.id),
+    })),
+    native,
+  };
 }
 
 /** Compact "5h 100% · 7d 19%" summary from the cached usage, or null. */

@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { allDriverIds } from '../../agent/index.js';
 import {
-  accountAgentSupported, listAccounts, getAccount, addAccount, updateAccount, removeAccount,
-  getActiveAccountId, setActiveAccount, probeAccountUsage,
+  accountAgentSupported, getAccount, addAccount, updateAccount, removeAccount,
+  getActiveAccountId, setActiveAccount, probeAccountUsage, getAccountsUsageSnapshot,
   MAX_ACCOUNTS_PER_AGENT,
   type AgentAccountRecord,
 } from '../../agent/accounts.js';
@@ -32,11 +32,20 @@ app.get('/api/agents/:agent/accounts', async (c) => {
   const agent = c.req.param('agent');
   if (!allDriverIds().includes(agent)) return c.json({ ok: false, error: `Unknown agent: ${agent}` }, 400);
   if (!accountAgentSupported(agent)) {
-    return c.json({ ok: true, agent, supported: false, accounts: [], activeAccountId: null, max: MAX_ACCOUNTS_PER_AGENT });
+    return c.json({ ok: true, agent, supported: false, accounts: [], activeAccountId: null, nativeUsage: null, max: MAX_ACCOUNTS_PER_AGENT });
   }
-  const activeId = getActiveAccountId(agent);
-  const accounts = await Promise.all(listAccounts(agent).map(r => publicAccount(agent, r, activeId)));
-  return c.json({ ok: true, agent, supported: true, accounts, activeAccountId: activeId, max: MAX_ACCOUNTS_PER_AGENT });
+  // `fresh=1` = the user is actively looking (popover open / panel refresh): re-probe past the
+  // short fresh window. The min-interval debounce lives in the driver caches, so this is safe to
+  // send on every hover. Account rows and the default-login quota come from the same pass.
+  const fresh = c.req.query('fresh') === '1';
+  const snap = await getAccountsUsageSnapshot(agent, { fresh });
+  return c.json({
+    ok: true, agent, supported: true,
+    accounts: snap.accounts,
+    activeAccountId: snap.activeAccountId,
+    nativeUsage: snap.native,
+    max: MAX_ACCOUNTS_PER_AGENT,
+  });
 });
 
 app.post('/api/agents/:agent/accounts', async (c) => {

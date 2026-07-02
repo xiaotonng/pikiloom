@@ -173,6 +173,53 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(usage.contextPercent).toBe(7.5);
   });
 
+  // Regression: the prompt-side counts are known at message_start, so the context row must
+  // appear immediately — not minutes later at the first message_delta. Without this emit a
+  // long silent thinking phase (subscription accounts stream no plaintext) showed a dead
+  // spinner with zero feedback ("looks stuck") on IM + dashboard.
+  it('emits usage at message_start so the context row shows before any output', () => {
+    const events = run([
+      { type: 'system', session_id: 'sess-early', model: 'claude-opus-4-8' },
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 50_000, cache_read_input_tokens: 10_000 } } } },
+    ]);
+    const usage = (events.filter(e => e.type === 'usage').pop() as any)?.usage;
+    expect(usage).toBeTruthy();
+    expect(usage).toMatchObject({ inputTokens: 50_000, cachedInputTokens: 10_000, contextUsedTokens: 60_000 });
+    // 60000 / (1_000_000 - 33_000 reserve) -> 6.2%
+    expect(usage.contextPercent).toBe(6.2);
+  });
+
+  // Regression: during silent extended thinking the CLI's system/thinking_tokens estimates are
+  // the ONLY live output signal (no thinking_delta text, no usage until the message settles).
+  // Project them into ticking usage; the real per-message output_tokens then supersedes them.
+  it('projects system/thinking_tokens estimates while thinking streams silently', () => {
+    const events = run([
+      { type: 'system', session_id: 'sess-tt', model: 'claude-opus-4-8' },
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 50_000, cache_read_input_tokens: 10_000 } } } },
+      { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 50, estimated_tokens_delta: 50 },
+      { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 200, estimated_tokens_delta: 150 },
+    ]);
+    const live = (events.filter(e => e.type === 'usage').pop() as any).usage;
+    expect(live).toMatchObject({
+      outputTokens: 0,             // raw reported output stays untouched by the estimate
+      turnOutputTokens: 200,       // ...but the live turn tally ticks with the estimate
+      contextUsedTokens: 60_200,
+    });
+
+    // The settling message_delta reports real output (which already includes thinking tokens):
+    // the estimate must be superseded, not added on top.
+    const more = run([
+      { type: 'system', session_id: 'sess-tt2', model: 'claude-opus-4-8' },
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 50_000 } } } },
+      { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 500, estimated_tokens_delta: 500 },
+      { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 320 } } },
+      // next tool round: the carried turn base uses the REAL 320, not the 500 estimate
+      { type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 51_000 } } } },
+    ]);
+    const settled = (more.filter(e => e.type === 'usage').pop() as any).usage;
+    expect(settled).toMatchObject({ inputTokens: 51_000, outputTokens: 0, turnOutputTokens: 320 });
+  });
+
   it('creates a sub-agent on Task and routes child tool_uses into it (parent_tool_use_id)', () => {
     const events = run([
       { type: 'assistant', message: { content: [
@@ -205,6 +252,24 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(arts[0].artifact).toMatchObject({ mime: 'image/png', kind: 'photo' });
     expect(arts[0].artifact.url.startsWith('data:image/png;base64,AAAABBBB')).toBe(true);
     expect(arts[1].artifact.url).toContain('CCCCDDDD');
+  });
+
+  it('does NOT surface Read tool-result images (agent inspecting files), only generating tools', () => {
+    const img = (data: string) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } });
+    const events = run([
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'rd', name: 'Read', input: { file_path: '/tmp/frame.png' } },
+        { type: 'tool_use', id: 'gen', name: 'mcp__image__generate', input: {} },
+      ] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'rd', content: [img('READPNG1')] }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'gen', content: [img('GENPNG22')] }] } },
+    ]);
+    const arts = events.filter(e => e.type === 'artifact') as any[];
+    expect(arts.length).toBe(1);
+    expect(arts[0].artifact.url).toContain('GENPNG22');
+    // the Read call still closes out as done even though its image was suppressed
+    const readDone = events.find(e => e.type === 'tool' && (e as any).call.id === 'rd' && (e as any).call.status === 'done');
+    expect(readDone).toBeTruthy();
   });
 
   it('todoWriteToPlan returns null for empty/invalid input', () => {

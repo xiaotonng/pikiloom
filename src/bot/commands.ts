@@ -10,7 +10,7 @@ import { getDriver } from '../agent/driver.js';
 import type { UsageResult } from '../agent/index.js';
 import {
   accountAgentSupported, listAccounts, getActiveAccountId,
-  probeAccountUsage, getCachedAccountUsage,
+  getCachedAccountUsage, getAccountsUsageSnapshot,
 } from '../agent/accounts.js';
 import { withTimeoutFallback } from '../core/utils.js';
 import { effortOptionsFor } from '../core/config/runtime-config.js';
@@ -647,16 +647,22 @@ export async function getUsageOverview(bot: Bot, chatId: ChatId): Promise<UsageO
     if (accountAgentSupported(agent)) {
       const recs = listAccounts(agent);
       if (recs.length) {
-        const activeId = getActiveAccountId(agent);
-        const usages = await Promise.all(recs.map(rec => withTimeoutFallback(
-          probeAccountUsage(agent, rec.id).catch(() => getCachedAccountUsage(agent, rec.id)),
+        // Same unified pass as the dashboard popover (fresh tier, debounced in the driver
+        // caches); on timeout fall back to whatever each account last probed.
+        const snap = await withTimeoutFallback(
+          getAccountsUsageSnapshot(agent, { fresh: true }).catch(() => null),
           USAGE_PROBE_TIMEOUT_MS,
-          getCachedAccountUsage(agent, rec.id),
-        )));
-        recs.forEach((rec, i) => accounts.push({
-          id: rec.id, label: rec.label, active: rec.id === activeId, usage: usages[i],
-        }));
-        accounts.push({ id: null, label: 'Default login', active: activeId === null, usage });
+          null,
+        );
+        const activeId = snap?.activeAccountId ?? getActiveAccountId(agent);
+        for (const rec of recs) {
+          const row = snap?.accounts.find(a => a.id === rec.id);
+          accounts.push({
+            id: rec.id, label: rec.label, active: rec.id === activeId,
+            usage: row?.usage ?? getCachedAccountUsage(agent, rec.id),
+          });
+        }
+        accounts.push({ id: null, label: 'Default login', active: activeId === null, usage: snap?.native ?? usage });
       }
     }
 

@@ -18,6 +18,24 @@ vi.mock('../src/core/secrets/index.js', async (importOriginal) => {
   };
 });
 
+// Stub the driver-level usage reads so the snapshot tests never hit the network or the keychain.
+const usageMocks = vi.hoisted(() => {
+  const mkUsage = (tag: string) => ({
+    ok: true, agent: 'claude', source: 'ratelimit-headers', capturedAt: '2026-07-02T00:00:00.000Z',
+    status: 'allowed', windows: [{ label: '5h', usedPercent: 10, remainingPercent: 90, resetAt: null, resetAfterSeconds: null, status: 'allowed' }],
+    error: null, tag,
+  });
+  return {
+    mkUsage,
+    claudeUsageForToken: vi.fn(async (token: string) => mkUsage(`token:${token}`)),
+    claudeNativeUsage: vi.fn(async () => mkUsage('native')),
+  };
+});
+vi.mock('../src/agent/drivers/claude.js', () => ({
+  claudeUsageForToken: usageMocks.claudeUsageForToken,
+  claudeNativeUsage: usageMocks.claudeNativeUsage,
+}));
+
 import * as kernel from '../packages/kernel/dist/index.js';
 import * as accounts from '../src/agent/accounts.js';
 
@@ -85,5 +103,46 @@ describe('app token-account store', () => {
     cfg.accounts.byAgent.claude = [...(cfg.accounts.byAgent.claude || []), { id: 'legacy', label: 'old', createdAt: '2026-01-01T00:00:00Z' }];
     fs.writeFileSync(cfgPath, JSON.stringify(cfg));
     expect(accounts.listAccounts('claude').some(r => r.id === 'legacy')).toBe(false);
+  });
+});
+
+describe('getAccountsUsageSnapshot — unified usage channel', () => {
+  it('returns account rows + native usage from one pass, forwarding the fresh flag', async () => {
+    const a = await accounts.addAccount('claude', 'snap-a', 'sk-ant-oat01-SNAPA');
+    accounts.setActiveAccount('claude', a.id);
+    usageMocks.claudeUsageForToken.mockClear();
+    usageMocks.claudeNativeUsage.mockClear();
+
+    const snap = await accounts.getAccountsUsageSnapshot('claude', { fresh: true });
+    expect(snap.supported).toBe(true);
+    expect(snap.activeAccountId).toBe(a.id);
+    const row = snap.accounts.find(r => r.id === a.id);
+    expect(row?.active).toBe(true);
+    expect(row?.label).toBe('snap-a');
+    expect((row?.usage as any)?.tag).toBe('token:sk-ant-oat01-SNAPA');
+    expect((snap.native as any)?.tag).toBe('native');
+    expect(usageMocks.claudeNativeUsage).toHaveBeenCalledWith({ fresh: true });
+    expect(usageMocks.claudeUsageForToken).toHaveBeenCalledWith('sk-ant-oat01-SNAPA', { fresh: true });
+
+    await accounts.removeAccount('claude', a.id);
+  });
+
+  it('probe failures fall back to the last cached value instead of dropping the row', async () => {
+    const b = await accounts.addAccount('claude', 'snap-b', 'sk-ant-oat01-SNAPB');
+    await accounts.probeAccountUsage('claude', b.id);          // seeds the cached value
+    usageMocks.claudeUsageForToken.mockRejectedValueOnce(new Error('network down'));
+
+    const snap = await accounts.getAccountsUsageSnapshot('claude', { fresh: true });
+    const row = snap.accounts.find(r => r.id === b.id);
+    expect((row?.usage as any)?.tag).toBe('token:sk-ant-oat01-SNAPB');
+
+    await accounts.removeAccount('claude', b.id);
+  });
+
+  it('reports unsupported agents without probing', async () => {
+    usageMocks.claudeNativeUsage.mockClear();
+    const snap = await accounts.getAccountsUsageSnapshot('codex');
+    expect(snap).toEqual({ supported: false, activeAccountId: null, accounts: [], native: null });
+    expect(usageMocks.claudeNativeUsage).not.toHaveBeenCalled();
   });
 });

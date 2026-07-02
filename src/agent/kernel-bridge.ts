@@ -114,6 +114,24 @@ export function toPikiloomPlan(plan: any): StreamPreviewPlan | null {
   return steps.length ? { explanation: typeof plan.explanation === 'string' ? plan.explanation : null, steps } : null;
 }
 
+// Final-result token projection (kernel UniversalUsage -> StreamResult fields). contextPercent
+// must flow through: the IM final footer (feishu/telegram formatFinalFooter) reads
+// result.contextPercent, so nulling it here showed the % on the live footer (preview meta carries
+// it) but dropped it from the finished message. Pure + exported for regression testing.
+export function kernelUsageToResultFields(u: any): Pick<StreamResult,
+  'inputTokens' | 'outputTokens' | 'cachedInputTokens' | 'cacheCreationInputTokens' |
+  'contextWindow' | 'contextUsedTokens' | 'contextPercent'> {
+  return {
+    inputTokens: u?.inputTokens ?? null,
+    outputTokens: u?.outputTokens ?? null,
+    cachedInputTokens: u?.cachedInputTokens ?? null,
+    cacheCreationInputTokens: null,
+    contextWindow: null,
+    contextUsedTokens: u?.contextUsedTokens ?? null,
+    contextPercent: u?.contextPercent ?? null,
+  };
+}
+
 let _kernel: any = null;
 export async function loadKernel(): Promise<any> {
   if (_kernel) return _kernel;
@@ -201,7 +219,7 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
     ? (humanizeCodexError(result.error) ?? result.error)
     : (result.error ?? null);
 
-  const u = result.usage || snapshot.usage || {};
+  const usageFields = kernelUsageToResultFields(result.usage || snapshot.usage || {});
   return {
     ok: !!result.ok,
     // Empty-text fallback (mirrors the legacy driver): a clean turn with no prose reads
@@ -222,13 +240,7 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
     model: input.model ?? null,
     thinkingEffort: opts.thinkingEffort,
     elapsedS: (Date.now() - start) / 1000,
-    inputTokens: u.inputTokens ?? null,
-    outputTokens: u.outputTokens ?? null,
-    cachedInputTokens: u.cachedInputTokens ?? null,
-    cacheCreationInputTokens: null,
-    contextWindow: null,
-    contextUsedTokens: u.contextUsedTokens ?? null,
-    contextPercent: null,
+    ...usageFields,
     codexCumulative: null,
     error: finalError,
     stopReason: result.stopReason ?? null,

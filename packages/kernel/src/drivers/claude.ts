@@ -54,7 +54,7 @@ export class ClaudeDriver implements AgentDriver {
       stopReason: null as string | null, error: null as string | null,
       input: null as number | null, output: null as number | null, cached: null as number | null,
       cacheCreation: null as number | null,
-      contextWindow: null as number | null, turnOutputTokensBase: 0,
+      contextWindow: null as number | null, turnOutputTokensBase: 0, thinkingEstTokens: 0,
       subAgents: new Map<string, any>(),
       tools: new Map<string, { name: string; summary: string }>(),
       taskList: new Map<string, { subject: string; status: string }>(),
@@ -228,13 +228,20 @@ export class ClaudeDriver implements AgentDriver {
 export interface ClaudeUsageState {
   input: number | null; output: number | null; cached: number | null;
   cacheCreation?: number | null; contextWindow?: number | null; turnOutputTokensBase?: number | null;
+  thinkingEstTokens?: number | null;
 }
 
 export function claudeUsageOf(s: ClaudeUsageState): UniversalUsage {
-  const used = (s.input ?? 0) + (s.cached ?? 0) + (s.cacheCreation ?? 0) + (s.output ?? 0);
+  // While a message is still streaming, the CLI's live thinking estimate (system/thinking_tokens)
+  // is often the ONLY output signal — subscription accounts stream no plaintext thinking and no
+  // usage until the message settles. Fold it into the derived numbers (never into the raw
+  // outputTokens) so the row ticks during silent extended thinking; the real per-message
+  // output_tokens supersedes it at message_delta.
+  const effOutput = Math.max(s.output ?? 0, s.thinkingEstTokens ?? 0);
+  const used = (s.input ?? 0) + (s.cached ?? 0) + (s.cacheCreation ?? 0) + effOutput;
   const window = s.contextWindow ?? null;
   const contextPercent = window && used > 0 ? Math.min(99.9, Math.round((used / window) * 1000) / 10) : null;
-  const turnOutput = (s.turnOutputTokensBase ?? 0) + (s.output ?? 0);
+  const turnOutput = (s.turnOutputTokensBase ?? 0) + effOutput;
   return {
     inputTokens: s.input,
     outputTokens: s.output,
@@ -243,6 +250,18 @@ export function claudeUsageOf(s: ClaudeUsageState): UniversalUsage {
     contextPercent,
     turnOutputTokens: turnOutput > 0 ? turnOutput : null,
   };
+}
+
+// Accumulate the CLI's live thinking-token estimate onto driver state. Prefer the per-event
+// delta (correct whether the CLI's running total is per-message or per-turn); fall back to a
+// monotonic max of the running total. Returns true when the estimate advanced.
+export function applyClaudeThinkingEstimate(s: any, ev: any): boolean {
+  const prev = s.thinkingEstTokens ?? 0;
+  const delta = Number(ev?.estimated_tokens_delta);
+  const total = Number(ev?.estimated_tokens);
+  if (Number.isFinite(delta) && delta > 0) s.thinkingEstTokens = prev + delta;
+  else if (Number.isFinite(total)) s.thinkingEstTokens = Math.max(prev, total);
+  return (s.thinkingEstTokens ?? 0) > prev;
 }
 
 // Advertised context window by Claude model id (best-effort; unknown -> null so the
@@ -293,6 +312,13 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
     s.model = ev.model ?? s.model;
     s.contextWindow = claudeEffectiveContextWindow(claudeContextWindowFromModel(s.model)) ?? s.contextWindow;
+    // Live thinking progress (system/thinking_tokens, ~every 1.4s of sustained thinking): during
+    // extended thinking a subscription account streams no plaintext (signature_delta only) and no
+    // usage until the message settles, so without projecting these the terminal shows a dead
+    // spinner for the whole thinking phase.
+    if (ev.subtype === 'thinking_tokens' && applyClaudeThinkingEstimate(s, ev)) {
+      emit({ type: 'usage', usage: claudeUsageOf(s) });
+    }
     return;
   }
   if (t === 'stream_event') {
@@ -302,11 +328,17 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       // Claude emits one message per tool-use round within a single turn. Carry the prior
       // message's output into the per-turn base, then reset to the new message's prompt size
       // so contextUsedTokens tracks current occupancy while turnOutputTokens sums the turn.
-      s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + (s.output ?? 0);
+      // A message that never delivered real output_tokens keeps its thinking estimate as the carry.
+      s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + Math.max(s.output ?? 0, s.thinkingEstTokens ?? 0);
       s.input = u?.input_tokens ?? 0;
       s.cached = u?.cache_read_input_tokens ?? 0;
       s.cacheCreation = u?.cache_creation_input_tokens ?? 0;
       s.output = 0;
+      s.thinkingEstTokens = 0;
+      // The prompt-side counts are known the moment the model accepts the request — emit them so
+      // the context row appears right away instead of only after the first message settles
+      // (minutes into a long silent thinking phase, the "looks stuck" report).
+      emit({ type: 'usage', usage: claudeUsageOf(s) });
     } else if (inner.type === 'content_block_start') {
       // Claude emits multiple text/thinking blocks per turn (one set per tool-use round). Insert a
       // paragraph break before a NEW block when prior content exists, so the live preview shows
@@ -327,7 +359,8 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     } else if (inner.type === 'message_delta') {
       const u = inner.usage;
       if (u) {
-        if (u.output_tokens != null) s.output = u.output_tokens;
+        // Real reported output supersedes the live thinking estimate for this message.
+        if (u.output_tokens != null) { s.output = u.output_tokens; s.thinkingEstTokens = 0; }
         if (u.input_tokens != null) s.input = u.input_tokens;
         if (u.cache_read_input_tokens != null) s.cached = u.cache_read_input_tokens;
         if (u.cache_creation_input_tokens != null) s.cacheCreation = u.cache_creation_input_tokens;
@@ -412,8 +445,12 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     const contents = Array.isArray(ev.message?.content) ? ev.message.content : [];
     for (const b of contents) {
       if (b?.type !== 'tool_result') continue;
-      emitClaudeImages(b.content || [], s, emit);
       const id = String(b.tool_use_id || '').trim();
+      // A Read result is the agent inspecting a file, not a deliverable — surfacing those spammed
+      // the chat with every image the agent looked at (the legacy driver has the same exclusion).
+      // Images from generating tools (MCP image-gen, screenshots, …) still surface as photos.
+      const tool = id ? s.tools?.get(id) : undefined;
+      if (tool?.name !== 'Read') emitClaudeImages(b.content || [], s, emit);
       // TaskCreate result: the assigned task id arrives here; register the task and emit the plan.
       if (id && s.pendingTaskCreates?.has(id)) {
         const pending = s.pendingTaskCreates.get(id);
@@ -429,7 +466,6 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
         }
         continue;
       }
-      const tool = id ? s.tools?.get(id) : undefined;
       if (!tool) continue;
       const isError = !!b.is_error;
       // File-shaped tools have no useful result detail (mirrors pikiloom): just mark done.

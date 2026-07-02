@@ -63,6 +63,34 @@ describe('Claude -p driver — selected-model-unavailable surfaces as a non-retr
   });
 });
 
+describe('Claude -p driver — live thinking-token estimates (system/thinking_tokens)', () => {
+  it('ticks the preview turn output + context during silent thinking, superseded by real usage', async () => {
+    const { createClaudeStreamState, claudeParse } = await import('../src/agent/drivers/claude.ts');
+    const { buildStreamPreviewMeta } = await import('../src/agent/utils.ts');
+    const s = createClaudeStreamState({
+      agent: 'claude', prompt: 'hi', workdir: '/tmp', timeout: 60,
+      sessionId: null, model: 'claude-opus-4-8', thinkingEffort: 'high',
+      onText: () => {},
+    } as any);
+    claudeParse({ type: 'system', session_id: 'sess-tt', model: 'claude-opus-4-8' }, s);
+    claudeParse({ type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 50_000, cache_read_input_tokens: 10_000 } } } }, s);
+    // prompt-side counts are visible immediately, before any output
+    expect(buildStreamPreviewMeta(s).contextPercent).toBe(6.2);
+    // silent extended thinking: only the CLI's estimates arrive (no thinking_delta, no usage)
+    claudeParse({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 50, estimated_tokens_delta: 50 }, s);
+    claudeParse({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 200, estimated_tokens_delta: 150 }, s);
+    const live = buildStreamPreviewMeta(s);
+    expect(live.turnOutputTokens).toBe(200);
+    expect(live.contextUsedTokens).toBe(60_200);
+    expect(s.outputTokens).toBe(0); // the raw reported output stays untouched by the estimate
+    // the settling message_delta reports real output (already includes thinking): supersede, don't add
+    claudeParse({ type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 120 } } }, s);
+    const settled = buildStreamPreviewMeta(s);
+    expect(settled.turnOutputTokens).toBe(120);
+    expect(settled.contextUsedTokens).toBe(60_120);
+  });
+});
+
 describe('Claude usage resolution', () => {
   const originalHome = process.env.HOME;
   let homeDir = '';
@@ -364,5 +392,34 @@ describe('claudeUsageForToken — per-token cache + force bypass', () => {
 
     await claudeUsageForToken(token, { force: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Guards the freshness debounce: user-facing surfaces (fresh) re-probe after a short window so
+  // the popover shows current numbers, while background readers keep the long TTL — and repeated
+  // fresh reads inside the window coalesce into one probe instead of stampeding.
+  it('fresh tier re-probes after its short window while the default tier keeps the long TTL', async () => {
+    const { claudeUsageForToken } = await import('../src/agent/drivers/claude.ts');
+    vi.useFakeTimers();
+    try {
+      const base = Date.now();
+      vi.setSystemTime(base);
+      const token = 'sk-ant-oat01-fresh-tier-fixture';
+
+      await claudeUsageForToken(token, { fresh: true });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(base + 10_000);
+      await claudeUsageForToken(token, { fresh: true });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(base + 25_000);
+      await claudeUsageForToken(token);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await claudeUsageForToken(token, { fresh: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

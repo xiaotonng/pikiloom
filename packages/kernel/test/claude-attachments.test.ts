@@ -58,16 +58,23 @@ describe('claudeUserMessage (kernel)', () => {
 
 // A fake `claude` CLI: records argv + stdin to files, emits a tiny valid stream-json
 // sequence, exits 0 — so ClaudeDriver.run() is exercised end-to-end without the real binary.
+// The driver keeps stdin OPEN for the whole turn (background wake-up hold), so reply on the
+// first full stdin line rather than waiting for an 'end' that never comes.
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require('fs');
 fs.writeFileSync(process.env.PIKI_ARGV_OUT, JSON.stringify(process.argv.slice(2)));
 let buf = '';
-process.stdin.on('data', (d) => { buf += d; });
-process.stdin.on('end', () => {
+let replied = false;
+process.stdin.on('data', (d) => {
+  buf += d;
+  if (replied || !buf.includes('\\n')) return;
+  replied = true;
   fs.writeFileSync(process.env.PIKI_STDIN_OUT, buf);
-  process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-fake' }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', result: 'ok' }) + '\\n');
-  process.exit(0);
+  process.stdout.write(
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-fake' }) + '\\n'
+    + JSON.stringify({ type: 'result', subtype: 'success', result: 'ok' }) + '\\n',
+    () => process.exit(0),
+  );
 });
 `;
 
@@ -119,7 +126,9 @@ describe('ClaudeDriver.run attachments wiring', () => {
     expect(sent.message.content.some((b: any) => b.type === 'text' && b.text === 'describe')).toBe(true);
   }, 30_000);
 
-  it('stays plain-text stdin when there are no attachments and no steer', async () => {
+  // The driver ALWAYS drives Claude over stream-json stdin (kept open for the background
+  // wake-up hold): a plain prompt goes out as a single text content block.
+  it('uses stream-json input for a plain prompt too (no --replay-user-messages without steer)', async () => {
     const argvOut = path.join(tmp, 'argv2.json');
     const stdinOut = path.join(tmp, 'stdin2.txt');
     const driver = new ClaudeDriver(bin);
@@ -129,7 +138,11 @@ describe('ClaudeDriver.run attachments wiring', () => {
       ctx,
     );
     const argv: string[] = JSON.parse(fs.readFileSync(argvOut, 'utf8'));
-    expect(argv).not.toContain('--input-format');
-    expect(fs.readFileSync(stdinOut, 'utf8')).toBe('just text');
+    const fmtIdx = argv.indexOf('--input-format');
+    expect(fmtIdx).toBeGreaterThanOrEqual(0);
+    expect(argv[fmtIdx + 1]).toBe('stream-json');
+    expect(argv).not.toContain('--replay-user-messages');
+    const sent = JSON.parse(fs.readFileSync(stdinOut, 'utf8').trim());
+    expect(sent.message.content).toEqual([{ type: 'text', text: 'just text' }]);
   }, 30_000);
 });

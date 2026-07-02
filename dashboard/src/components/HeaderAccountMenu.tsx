@@ -30,23 +30,28 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
   const [busy, setBusy] = useState(false);
   const closeTimer = useRef<number | null>(null);
 
-  const load = async () => { try { const r = await api.getAgentAccounts(agent); if (r.ok) setData(r); } catch { /* ignore */ } };
+  // `fresh` = the user is actively looking (popover open / just switched): the backend re-probes
+  // past its short fresh window. Debounce lives server-side, so firing on every hover is safe.
+  const load = async (fresh = false) => { try { const r = await api.getAgentAccounts(agent, { fresh }); if (r.ok) setData(r); } catch { /* ignore */ } };
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [agent]);
   useEffect(() => () => { if (closeTimer.current) window.clearTimeout(closeTimer.current); }, []);
 
   const accounts = data?.accounts ?? [];
   const activeId = data?.activeAccountId ?? null;
   const active = accounts.find(a => a.id === activeId) || null;
-  // Data-freshness stamp (restored from the old read-only usage tooltip). Every usage here is
-  // fetched in the same pass, so the freshest capturedAt stands for the whole popover — one
-  // line beats repeating an identical timestamp under each account.
-  const capturedIso = [nativeUsage, ...accounts.map(a => a.usage)]
+  // Default-login quota from the same unified pass as the account rows; the agent-status prop is
+  // only the pre-load / non-account fallback.
+  const defaultLoginUsage = data?.nativeUsage ?? nativeUsage;
+  // Data-freshness stamp: all rows come from one pass now, so one line stands for the popover.
+  // Use the OLDEST capturedAt — if any row lagged (probe failure serving last-good), the stamp
+  // must own up to it instead of advertising the freshest row's time.
+  const capturedIso = [defaultLoginUsage, ...accounts.map(a => a.usage)]
     .map(u => u?.capturedAt)
     .filter((iso): iso is string => !!iso)
-    .reduce<string | null>((best, iso) => (best && best > iso ? best : iso), null);
+    .reduce<string | null>((oldest, iso) => (oldest && oldest < iso ? oldest : iso), null);
   const capturedLabel = capturedIso ? formatCapturedAt(capturedIso) : null;
   // The ring + hover detail track whichever identity is actually in effect.
-  const ringUsage = (active && active.usage?.ok) ? active.usage : nativeUsage;
+  const ringUsage = (active && active.usage?.ok) ? active.usage : defaultLoginUsage;
   const ringGauge = usageGauge(ringUsage) || nativeGauge;
   const meta = getAgentMeta(agent);
   const ring = ringGauge && (
@@ -74,7 +79,7 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
     );
   }
 
-  const openNow = () => { if (closeTimer.current) { window.clearTimeout(closeTimer.current); closeTimer.current = null; } setOpen(true); void load(); void refreshAgentStatus(); };
+  const openNow = () => { if (closeTimer.current) { window.clearTimeout(closeTimer.current); closeTimer.current = null; } setOpen(true); void load(true); void refreshAgentStatus(); };
   const closeSoon = () => { if (closeTimer.current) window.clearTimeout(closeTimer.current); closeTimer.current = window.setTimeout(() => setOpen(false), 160); };
 
   const switchTo = async (id: string | null) => {
@@ -82,7 +87,7 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
     try {
       const r = await api.setActiveAgentAccount(agent, id);
       if (!r.ok) throw new Error(r.error || 'switch failed');
-      await load();
+      await load(true);
       await refreshAgentStatus();
       toast(id ? L('已切换账号', 'Account switched') : L('已用默认登录', 'Using default login'));
     } catch (e: any) {
@@ -131,7 +136,7 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
           </div>
           {accounts.map(a => row(a.id, a.label, a.id === activeId, a.usage, () => void switchTo(a.id), L('用量查询中…', 'Usage pending…')))}
           <div className="my-1 border-t border-edge/60" />
-          {row('__default__', L('默认登录', 'Default login'), !activeId, nativeUsage, () => void switchTo(null), L('本机默认登录额度', 'Default-login quota'))}
+          {row('__default__', L('默认登录', 'Default login'), !activeId, defaultLoginUsage, () => void switchTo(null), L('本机默认登录额度', 'Default-login quota'))}
           {capturedLabel && (
             <div className="px-1.5 pb-0.5 pt-1.5 text-right text-[10px] text-fg-5">{t('usage.asOf')} {capturedLabel}</div>
           )}

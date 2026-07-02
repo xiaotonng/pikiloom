@@ -212,9 +212,23 @@ function recomputeClaudeContextUsed(s: any): void {
     input: s.inputTokens,
     cached: s.cachedInputTokens,
     cacheCreation: s.cacheCreationInputTokens,
-    output: s.outputTokens,
+    // While a message is still streaming, the CLI's live thinking estimate is often the only
+    // output signal (subscription accounts stream no plaintext thinking and no usage until the
+    // message settles); the real output_tokens supersedes it at message_delta.
+    output: Math.max(s.outputTokens ?? 0, s.thinkingEstTokens ?? 0),
   });
   s.contextUsedTokens = total > 0 ? total : null;
+}
+
+// Accumulate the CLI's live thinking-token estimate (system/thinking_tokens events). Prefer the
+// per-event delta (correct whether the CLI's running total is per-message or per-turn); fall back
+// to a monotonic max of the running total.
+function applyClaudeThinkingEstimate(s: any, ev: any): void {
+  const prev = s.thinkingEstTokens ?? 0;
+  const delta = Number(ev?.estimated_tokens_delta);
+  const total = Number(ev?.estimated_tokens);
+  if (Number.isFinite(delta) && delta > 0) s.thinkingEstTokens = prev + delta;
+  else if (Number.isFinite(total)) s.thinkingEstTokens = Math.max(prev, total);
 }
 
 const CLAUDE_FILE_READING_TOOLS = new Set(['Read']);
@@ -407,17 +421,26 @@ export function claudeParse(ev: any, s: any) {
       const advertised = claudeContextWindowFromModel(s.model);
       s.contextWindow = claudeEffectiveContextWindow(advertised) ?? s.contextWindow;
     }
+    // Live thinking progress: during extended thinking a subscription account streams no
+    // plaintext (signature_delta only) and no usage until the message settles — these estimates
+    // are the only sign the model is working.
+    if (ev.subtype === 'thinking_tokens') {
+      applyClaudeThinkingEstimate(s, ev);
+      recomputeClaudeContextUsed(s);
+    }
   }
 
   if (t === 'stream_event') {
     const inner = ev.event || {};
     if (inner.type === 'message_start') {
       const u = inner.message?.usage;
-      s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
+      // A message that never delivered real output_tokens keeps its thinking estimate as the carry.
+      s.turnOutputTokensBase = (s.turnOutputTokensBase ?? 0) + Math.max(s.outputTokens ?? 0, s.thinkingEstTokens ?? 0);
       s.inputTokens = u?.input_tokens ?? 0;
       s.cachedInputTokens = u?.cache_read_input_tokens ?? 0;
       s.cacheCreationInputTokens = u?.cache_creation_input_tokens ?? 0;
       s.outputTokens = 0;
+      s.thinkingEstTokens = 0;
       recomputeClaudeContextUsed(s);
     }
     if (inner.type === 'content_block_start') {
@@ -441,7 +464,8 @@ export function claudeParse(ev: any, s: any) {
         if (u.input_tokens != null) s.inputTokens = u.input_tokens;
         if (u.cache_read_input_tokens != null) s.cachedInputTokens = u.cache_read_input_tokens;
         if (u.cache_creation_input_tokens != null) s.cacheCreationInputTokens = u.cache_creation_input_tokens;
-        if (u.output_tokens != null) s.outputTokens = u.output_tokens;
+        // Real reported output supersedes the live thinking estimate for this message.
+        if (u.output_tokens != null) { s.outputTokens = u.output_tokens; s.thinkingEstTokens = 0; }
         recomputeClaudeContextUsed(s);
       }
     }
@@ -656,6 +680,7 @@ export function createClaudeStreamState(opts: StreamOpts) {
     cachedInputTokens: null as number | null,
     cacheCreationInputTokens: null as number | null,
     turnOutputTokensBase: 0 as number,
+    thinkingEstTokens: 0 as number,
     turnUsageMsgId: null as string | null,
     contextWindow: byokWindow as number | null,
     byokContextWindow: byokWindow as number | null,
@@ -692,6 +717,7 @@ function resetClaudeTurnState(s: ReturnType<typeof createClaudeStreamState>, not
   s.inputTokens = null;
   s.outputTokens = null;
   s.turnOutputTokensBase = 0;
+  s.thinkingEstTokens = 0;
   s.turnUsageMsgId = null;
   s.cachedInputTokens = null;
   s.cacheCreationInputTokens = null;
@@ -1763,6 +1789,42 @@ async function fetchClaudeUsageFromOAuth(tokenOverride?: string): Promise<UsageR
   }
 }
 
+// Single read channel for the native / default-login quota (`/api/oauth/usage` with the keychain
+// token). The read costs no inference tokens but the endpoint RATE-LIMITS aggressive polling
+// (observed: `rate_limit_error` payloads, which parse to null) — so `fresh` re-reads only after
+// 15s, and a failed read backs off 60s serving the last good result. Concurrent callers share
+// one request.
+const NATIVE_USAGE_FRESH_TTL_MS = 15_000;
+const NATIVE_USAGE_RETRY_TTL_MS = 60_000;
+const claudeNativeUsageLive: { at: number; failedAt: number; inflight: Promise<UsageResult | null> | null } = { at: 0, failedAt: 0, inflight: null };
+
+export function claudeNativeUsage(opts?: { fresh?: boolean }): Promise<UsageResult | null> {
+  const maxAge = opts?.fresh ? NATIVE_USAGE_FRESH_TTL_MS : CLAUDE_USAGE_QUERY_TTL_MS;
+  const now = Date.now();
+  if (claudeUsageCache.lastGood && now - claudeNativeUsageLive.at < maxAge) {
+    return Promise.resolve(claudeUsageCache.lastGood);
+  }
+  if (now - claudeNativeUsageLive.failedAt < NATIVE_USAGE_RETRY_TTL_MS) {
+    return Promise.resolve(claudeUsageCache.lastGood);
+  }
+  if (claudeNativeUsageLive.inflight) return claudeNativeUsageLive.inflight;
+  const p = fetchClaudeUsageFromOAuth()
+    .then(fresh => {
+      if (fresh) {
+        claudeUsageCache.lastGood = fresh;
+        claudeUsageCache.lastAttemptAt = Date.now();
+        claudeNativeUsageLive.at = Date.now();
+        claudeNativeUsageLive.failedAt = 0;
+      } else {
+        claudeNativeUsageLive.failedAt = Date.now();
+      }
+      return fresh ?? claudeUsageCache.lastGood;
+    })
+    .finally(() => { claudeNativeUsageLive.inflight = null; });
+  claudeNativeUsageLive.inflight = p;
+  return p;
+}
+
 // Per-account usage for a specific account's `claude setup-token`.
 //
 // IMPORTANT: setup-tokens are minted with the `user:inference` scope only — they do NOT carry
@@ -1771,10 +1833,15 @@ async function fetchClaudeUsageFromOAuth(tokenOverride?: string): Promise<UsageR
 // there because it's a full login. So for account tokens we read the limit state from the
 // `anthropic-ratelimit-unified-*` *response headers* of a tiny inference call instead — those
 // headers come back on every `/v1/messages` response regardless of scope, and are exactly what
-// Claude Code itself uses to learn 5h / 7d limits. Cost is ~1 output token per probe, cached
-// for 5min per token (60s back-off on failure), with in-flight de-dup so concurrent surfaces
-// (cards + header + IM) share one probe.
+// Claude Code itself uses to learn 5h / 7d limits. Cost is ~1 output token per probe, so reads
+// are tiered by how fresh the caller needs to be:
+//   default -> 5min TTL (background warmers, non-interactive surfaces)
+//   fresh   -> 20s min re-probe interval (user is actively looking at the numbers)
+//   force   -> bypass everything (identity just changed, e.g. account switch)
+// Failures back off 60s on the default/fresh tiers (force still retries), and in-flight de-dup
+// makes concurrent surfaces (cards + header + IM) share one probe.
 const TOKEN_USAGE_OK_TTL_MS = CLAUDE_USAGE_QUERY_TTL_MS;
+const TOKEN_USAGE_FRESH_TTL_MS = 20_000;
 const TOKEN_USAGE_RETRY_TTL_MS = 60_000;
 const CLAUDE_USAGE_PROBE_MODEL = 'claude-haiku-4-5-20251001';
 const claudeTokenUsageCache = new Map<string, { value: UsageResult | null; at: number; ok: boolean }>();
@@ -1836,13 +1903,15 @@ async function claudeUsageFromInferenceHeaders(token: string): Promise<UsageResu
   }
 }
 
-export function claudeUsageForToken(token: string, opts?: { force?: boolean }): Promise<UsageResult | null> {
+export function claudeUsageForToken(token: string, opts?: { force?: boolean; fresh?: boolean }): Promise<UsageResult | null> {
   const t = String(token || '');
   if (!t) return Promise.resolve(null);
   const now = Date.now();
   const cached = claudeTokenUsageCache.get(t);
   if (cached && !opts?.force) {
-    const ttl = cached.ok ? TOKEN_USAGE_OK_TTL_MS : TOKEN_USAGE_RETRY_TTL_MS;
+    const ttl = cached.ok
+      ? (opts?.fresh ? TOKEN_USAGE_FRESH_TTL_MS : TOKEN_USAGE_OK_TTL_MS)
+      : TOKEN_USAGE_RETRY_TTL_MS;
     if (now - cached.at < ttl) return Promise.resolve(cached.value);
   }
   const inflight = claudeTokenUsageInflight.get(t);
@@ -2135,20 +2204,15 @@ class ClaudeDriver implements AgentDriver {
     return claudeUsageCache.lastGood ?? telemetry();
   }
 
-  // Live usage for the agent-status surface. Unlike getUsage it ignores the 5-min query TTL and
-  // always re-probes, so a freshly-switched login (the keychain default-login token changed) is
-  // reflected promptly instead of serving the previous account's frozen `lastGood`. Bounded by
-  // the caller's usage timeout, with the cached value as fallback.
+  // Live usage for the agent-status surface. Unlike getUsage it ignores the 5-min query TTL
+  // (modulo the short fresh window that coalesces bursts), so a freshly-switched login (the
+  // keychain default-login token changed) is reflected promptly instead of serving the previous
+  // account's frozen `lastGood`. Bounded by the caller's usage timeout, cached value as fallback.
   async getUsageLive(opts: UsageOpts): Promise<UsageResult> {
     const home = getHome();
     if (!home) return emptyUsage('claude', 'HOME is not set.');
-    const fresh = await fetchClaudeUsageFromOAuth();
-    if (fresh) {
-      claudeUsageCache.lastGood = fresh;
-      claudeUsageCache.lastAttemptAt = Date.now();
-      return fresh;
-    }
-    return claudeUsageCache.lastGood
+    const fresh = await claudeNativeUsage({ fresh: true });
+    return fresh
       ?? getClaudeUsageFromTelemetry(home, opts.model)
       ?? emptyUsage('claude', 'No recent Claude usage data found.');
   }

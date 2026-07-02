@@ -226,6 +226,7 @@ export function buildStreamPreviewMeta(s: {
   cachedInputTokens: number | null; cacheCreationInputTokens: number | null;
   contextWindow: number | null; contextUsedTokens?: number | null;
   turnOutputTokensBase?: number | null;
+  thinkingEstTokens?: number | null;
   byokProviderName?: string | null;
   byokProfileName?: string | null;
   subAgents?: ReadonlyMap<string, StreamSubAgent> | null;
@@ -239,7 +240,9 @@ export function buildStreamPreviewMeta(s: {
     cachedInputTokens: s.cachedInputTokens,
     contextUsedTokens: ctx.contextUsedTokens, contextPercent: ctx.contextPercent,
   };
-  const turnOutput = (s.turnOutputTokensBase ?? 0) + (s.outputTokens ?? 0);
+  // The live thinking estimate stands in for output while a message is still streaming
+  // (silent extended thinking); the real output_tokens supersedes it once reported.
+  const turnOutput = (s.turnOutputTokensBase ?? 0) + Math.max(s.outputTokens ?? 0, s.thinkingEstTokens ?? 0);
   if (turnOutput > 0) meta.turnOutputTokens = turnOutput;
   if (s.byokProviderName) meta.providerName = s.byokProviderName;
   if (s.byokProfileName) meta.profileName = s.byokProfileName;

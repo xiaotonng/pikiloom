@@ -30,7 +30,7 @@ export function AccountsPanel({ agentId }: { agentId: string }) {
 
   const refresh = useCallback(async () => {
     try {
-      const r = await api.getAgentAccounts(agentId);
+      const r = await api.getAgentAccounts(agentId, { fresh: true });
       if (r.ok) { setAccounts(r.accounts); setActiveId(r.activeAccountId); setMax(r.max); }
     } catch (e: any) {
       toast(String(e?.message || e), false);

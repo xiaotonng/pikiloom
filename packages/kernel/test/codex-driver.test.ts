@@ -31,6 +31,7 @@ process.stdin.on('data', (d) => {
       notify('item/agentMessage/delta', { threadId: TID, itemId: 'msg1', delta: 'KERNEL-OK' });
       notify('item/started', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', command: 'ls' } });
       notify('item/completed', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', status: 'completed' } });
+      notify('item/completed', { threadId: TID, item: { type: 'webSearch', id: 'ws1', status: 'completed', query: 'pikiloom rename' } });
       notify('turn/plan/updated', { threadId: TID, plan: { steps: [{ step: 'do the thing', status: 'in_progress' }] } });
       notify('thread/tokenUsage/updated', { threadId: TID, tokenUsage: { input_tokens: 42, output_tokens: 7 } });
       notify('turn/completed', { threadId: TID, turn: { id: 'turn-1', status: 'completed' } });
@@ -76,6 +77,10 @@ describe('CodexDriver native (app-server JSON-RPC, hermetic via fake server)', (
     const toolStatuses = events.filter(e => e.type === 'tool').map(e => (e as any).call.status);
     expect(toolStatuses).toContain('running');
     expect(toolStatuses).toContain('done');
+    // webSearch arrives as a completed-only item (no item/started, query only at completion) —
+    // it must still surface as an Activity tool row with its query.
+    const ws = events.filter(e => e.type === 'tool').map(e => (e as any).call).find(c => c.id === 'ws1');
+    expect(ws).toMatchObject({ name: 'web_search', summary: 'Search web: pikiloom rename', status: 'done' });
     const plan = events.find(e => e.type === 'plan') as any;
     expect(plan.plan.steps).toEqual([{ text: 'do the thing', status: 'inProgress' }]);
   }, 20_000);
@@ -148,6 +153,15 @@ describe('codexToolSummary (content items must NOT become Activity tools)', () =
     expect(codexToolSummary({ id: 'f1', type: 'fileChange', changes: [{ path: 'a/b.ts' }] })).toMatchObject({ name: 'edit' });
     expect(codexToolSummary({ id: 't1', type: 'mcpToolCall', tool: 'sim.run_case' })).toMatchObject({ name: 'run_case' });
     expect(codexToolSummary({ id: 'd1', type: 'dynamicToolCall', name: 'web.search' })).toMatchObject({ name: 'search' });
+  });
+  it('summarizes webSearch items — the query lives at top level or under action', () => {
+    expect(codexToolSummary({ id: 'w1', type: 'webSearch', query: 'pikiloom naming' }))
+      .toMatchObject({ name: 'web_search', summary: 'Search web: pikiloom naming' });
+    expect(codexToolSummary({ id: 'w2', type: 'webSearch' })).toMatchObject({ summary: 'Search web' });
+    expect(codexToolSummary({ id: 'w3', type: 'webSearch', action: { type: 'openPage', url: 'https://example.com' } }))
+      .toMatchObject({ summary: 'Open https://example.com' });
+    expect(codexToolSummary({ id: 'w4', type: 'webSearch', action: { type: 'search', query: 'q2' } }))
+      .toMatchObject({ summary: 'Search web: q2' });
   });
   it('ignores unknown/content item types and id-less items', () => {
     expect(codexToolSummary({ id: 'x1', type: 'tokenCount' })).toBeNull();

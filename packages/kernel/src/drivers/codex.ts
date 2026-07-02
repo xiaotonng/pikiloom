@@ -110,11 +110,26 @@ function codexFileChangeSummary(item: any): string {
 // fallback to `item.type` wrongly turned every item (incl. agentMessage/reasoning) into a bogus
 // "tool" in the Activity card. Mirrors the legacy driver's isCodexToolCallItem whitelist.
 const CODEX_TOOL_CALL_TYPES = new Set(['dynamicToolCall', 'mcpToolCall', 'collabAgentToolCall']);
+// Field-less placeholder summaries — a completed item with only one of these never overrides
+// a more specific summary cached at item/started.
+const CODEX_GENERIC_TOOL_SUMMARIES = new Set(['Search web', 'Run shell command', 'Edit files', 'Use tool']);
 export function codexToolSummary(item: any): { id: string; name: string; summary: string } | null {
   const id = String(item?.id || '');
   if (!id) return null;
   if (item.type === 'commandExecution') { const c = codexCommandPreview(item.command); return { id, name: 'shell', summary: c ? `Run shell: ${c}` : 'Run shell command' }; }
   if (item.type === 'fileChange' || item.type === 'patch') return { id, name: 'edit', summary: codexFileChangeSummary(item) };
+  if (item.type === 'webSearch') {
+    // v2 webSearch items carry the query at top level and (on newer servers) an action
+    // (search / openPage / findInPage, snake_case on older ones). The query is often only
+    // known at item/completed — item/started may arrive query-less.
+    const action = item.action || {};
+    const kind = String(action.type || '');
+    const url = codexCommandPreview(action.url);
+    if ((kind === 'openPage' || kind === 'open_page') && url) return { id, name: 'web_search', summary: `Open ${url}` };
+    if ((kind === 'findInPage' || kind === 'find_in_page') && url) return { id, name: 'web_search', summary: `Find in ${url}` };
+    const query = codexCommandPreview(typeof item.query === 'string' && item.query.trim() ? item.query : action.query);
+    return { id, name: 'web_search', summary: query ? `Search web: ${query}` : 'Search web' };
+  }
   if (CODEX_TOOL_CALL_TYPES.has(item.type)) {
     const raw = typeof item.tool === 'string' && item.tool.trim() ? item.tool.trim()
       : typeof item.name === 'string' && item.name.trim() ? item.name.trim() : '';
@@ -304,7 +319,14 @@ export class CodexDriver implements AgentDriver {
             if (item.type === 'agentMessage') captureCodexAgentMessage(item, state, deltaItems, phases, ctx.emit);
             else if (item.type === 'reasoning') captureCodexReasoning(codexReasoningItemText(item), state, ctx.emit);
             const t = codexToolSummary(item);
-            if (t && toolSummaries.has(t.id)) ctx.emit({ type: 'tool', call: { id: t.id, name: t.name, summary: toolSummaries.get(t.id) || t.summary, status: item.status === 'failed' ? 'failed' : 'done' } });
+            if (t) {
+              // Prefer the completed item's summary when it is specific — webSearch carries its
+              // query only at completion (item/started may be query-less or absent entirely,
+              // so no `toolSummaries.has` gate: a completed-only tool still gets its row).
+              const summary = !CODEX_GENERIC_TOOL_SUMMARIES.has(t.summary) ? t.summary : (toolSummaries.get(t.id) || t.summary);
+              toolSummaries.set(t.id, summary);
+              ctx.emit({ type: 'tool', call: { id: t.id, name: t.name, summary, status: item.status === 'failed' ? 'failed' : 'done' } });
+            }
             break;
           }
           case 'rawResponseItem/completed': {

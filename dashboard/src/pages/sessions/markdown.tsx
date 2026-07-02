@@ -158,7 +158,9 @@ export function createMarkdownComponents(options: MarkdownRenderOptions = {}): R
     h1: ({ children }: any) => <h2 className="text-[16px] font-bold text-fg mt-4 mb-2">{children}</h2>,
     h2: ({ children }: any) => <h3 className="text-[14.5px] font-semibold text-fg mt-4 mb-1.5">{children}</h3>,
     h3: ({ children }: any) => <h4 className="text-[13.5px] font-semibold text-fg mt-3 mb-1">{children}</h4>,
-    p: ({ children }: any) => <p className="my-1.5 whitespace-pre-wrap break-words">{children}</p>,
+    // No whitespace-pre-wrap: remark-breaks already emits a <br/> per soft newline, and pre-wrap
+    // would also preserve the residual "\n" it leaves behind — doubling every break on copy.
+    p: ({ children }: any) => <p className="my-1.5 break-words">{children}</p>,
     strong: ({ children }: any) => <strong className="font-semibold text-fg">{children}</strong>,
     em: ({ children }: any) => <em className="italic text-fg-3">{children}</em>,
     a: ({ href, children }: any) => {

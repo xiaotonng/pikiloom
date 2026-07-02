@@ -28,6 +28,7 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<AgentAccountsResponse | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const closeTimer = useRef<number | null>(null);
 
   // `fresh` = the user is actively looking (popover open / just switched): the backend re-probes
@@ -35,6 +36,18 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
   const load = async (fresh = false) => { try { const r = await api.getAgentAccounts(agent, { fresh }); if (r.ok) setData(r); } catch { /* ignore */ } };
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [agent]);
   useEffect(() => () => { if (closeTimer.current) window.clearTimeout(closeTimer.current); }, []);
+
+  // Explicit refresh (the ↻ button): `force` bypasses the backend failure backoff, so rows a
+  // rate-limited probe pinned at last-good get a real retry. Click-only — hover keeps `fresh`.
+  const forceRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const r = await api.getAgentAccounts(agent, { force: true });
+      if (r.ok) setData(r);
+      void refreshAgentStatus();
+    } catch { /* ignore */ } finally { setRefreshing(false); }
+  };
 
   const accounts = data?.accounts ?? [];
   const activeId = data?.activeAccountId ?? null;
@@ -132,7 +145,25 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
         <div className="absolute right-0 top-full z-[240] mt-1 w-[248px] animate-in rounded-lg border border-edge/40 bg-[var(--th-dropdown)] p-1.5 text-fg-3 shadow-lg backdrop-blur-xl">
           <div className="flex items-center justify-between px-1.5 pb-1 pt-0.5">
             <span className="text-[10px] uppercase tracking-wide text-fg-5">{meta.label} · {L('账号', 'Accounts')}</span>
-            {busy && <span className="text-[10px] text-fg-5">{L('切换中…', 'Switching…')}</span>}
+            <span className="flex items-center gap-1">
+              {busy && <span className="text-[10px] text-fg-5">{L('切换中…', 'Switching…')}</span>}
+              <button
+                type="button"
+                disabled={refreshing}
+                onClick={() => void forceRefresh()}
+                title={t('usage.refresh')}
+                className={`rounded p-0.5 text-fg-5 transition-colors hover:bg-white/5 hover:text-fg-3 ${refreshing ? 'pointer-events-none opacity-70' : ''}`}
+              >
+                <svg
+                  width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                  className={refreshing ? 'animate-spin' : ''}
+                  style={refreshing ? { animationDuration: '1s' } : undefined}
+                >
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+              </button>
+            </span>
           </div>
           {accounts.map(a => row(a.id, a.label, a.id === activeId, a.usage, () => void switchTo(a.id), L('用量查询中…', 'Usage pending…')))}
           <div className="my-1 border-t border-edge/60" />

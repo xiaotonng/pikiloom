@@ -376,22 +376,71 @@ describe('claudeUsageForToken — per-token cache + force bypass', () => {
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  // Guards the freshness fix: a freshly-switched account must re-probe instead of serving the
-  // previous (cached) account's usage. Without force the per-token cache is reused.
-  it('reuses the cache within TTL but re-probes when force is set', async () => {
+  // Guards the freshness fix: a freshly-switched account (or an explicit refresh click) must
+  // re-probe instead of serving the cached usage — modulo a short floor absorbing double-clicks.
+  it('reuses the cache within TTL but re-probes when force is set, past the double-click floor', async () => {
     const { claudeUsageForToken } = await import('../src/agent/drivers/claude.ts');
-    const token = 'sk-ant-oat01-force-bypass-fixture';
+    vi.useFakeTimers();
+    try {
+      const base = Date.now();
+      vi.setSystemTime(base);
+      const token = 'sk-ant-oat01-force-bypass-fixture';
 
-    const first = await claudeUsageForToken(token);
-    expect(first?.ok).toBe(true);
-    expect(first?.windows.find(w => w.label === '5h')?.usedPercent).toBe(42);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+      const first = await claudeUsageForToken(token);
+      expect(first?.ok).toBe(true);
+      expect(first?.windows.find(w => w.label === '5h')?.usedPercent).toBe(42);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    await claudeUsageForToken(token);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+      await claudeUsageForToken(token);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    await claudeUsageForToken(token, { force: true });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+      // Inside the double-click floor even force serves the cache…
+      vi.setSystemTime(base + 1_000);
+      await claudeUsageForToken(token, { force: true });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // …past the floor (still deep inside the 5min TTL) force re-probes.
+      vi.setSystemTime(base + 5_000);
+      await claudeUsageForToken(token, { force: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Guards the explicit-refresh escape hatch: a failed probe pins default/fresh readers at
+  // last-good for 60s, and only force may retry inside that backoff window.
+  it('force retries past the failure backoff that pins fresh reads at last-good', async () => {
+    const { claudeUsageForToken } = await import('../src/agent/drivers/claude.ts');
+    vi.useFakeTimers();
+    try {
+      const base = Date.now();
+      vi.setSystemTime(base);
+      const token = 'sk-ant-oat01-force-backoff-fixture';
+
+      const first = await claudeUsageForToken(token);
+      expect(first?.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // Past the fresh window the probe runs again but fails → last-good is served.
+      fetchMock.mockRejectedValueOnce(new Error('rate limited'));
+      vi.setSystemTime(base + 30_000);
+      const pinned = await claudeUsageForToken(token, { fresh: true });
+      expect(pinned?.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // Inside the 60s failure backoff, fresh keeps serving last-good without probing…
+      vi.setSystemTime(base + 40_000);
+      await claudeUsageForToken(token, { fresh: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // …but force gets a real retry.
+      const retried = await claudeUsageForToken(token, { force: true });
+      expect(retried?.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Guards the freshness debounce: user-facing surfaces (fresh) re-probe after a short window so

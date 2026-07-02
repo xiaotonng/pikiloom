@@ -1793,18 +1793,23 @@ async function fetchClaudeUsageFromOAuth(tokenOverride?: string): Promise<UsageR
 // token). The read costs no inference tokens but the endpoint RATE-LIMITS aggressive polling
 // (observed: `rate_limit_error` payloads, which parse to null) — so `fresh` re-reads only after
 // 15s, and a failed read backs off 60s serving the last good result. Concurrent callers share
-// one request.
+// one request. `force` is for explicit user-clicked refreshes only: it bypasses both the TTL and
+// the failure backoff (human-paced clicks cannot stampede the endpoint), with a short floor to
+// absorb double-clicks.
 const NATIVE_USAGE_FRESH_TTL_MS = 15_000;
 const NATIVE_USAGE_RETRY_TTL_MS = 60_000;
+const NATIVE_USAGE_FORCE_FLOOR_MS = 3_000;
 const claudeNativeUsageLive: { at: number; failedAt: number; inflight: Promise<UsageResult | null> | null } = { at: 0, failedAt: 0, inflight: null };
 
-export function claudeNativeUsage(opts?: { fresh?: boolean }): Promise<UsageResult | null> {
-  const maxAge = opts?.fresh ? NATIVE_USAGE_FRESH_TTL_MS : CLAUDE_USAGE_QUERY_TTL_MS;
+export function claudeNativeUsage(opts?: { fresh?: boolean; force?: boolean }): Promise<UsageResult | null> {
+  const maxAge = opts?.force ? NATIVE_USAGE_FORCE_FLOOR_MS
+    : opts?.fresh ? NATIVE_USAGE_FRESH_TTL_MS : CLAUDE_USAGE_QUERY_TTL_MS;
   const now = Date.now();
   if (claudeUsageCache.lastGood && now - claudeNativeUsageLive.at < maxAge) {
     return Promise.resolve(claudeUsageCache.lastGood);
   }
-  if (now - claudeNativeUsageLive.failedAt < NATIVE_USAGE_RETRY_TTL_MS) {
+  const failureFloor = opts?.force ? NATIVE_USAGE_FORCE_FLOOR_MS : NATIVE_USAGE_RETRY_TTL_MS;
+  if (now - claudeNativeUsageLive.failedAt < failureFloor) {
     return Promise.resolve(claudeUsageCache.lastGood);
   }
   if (claudeNativeUsageLive.inflight) return claudeNativeUsageLive.inflight;
@@ -1837,12 +1842,14 @@ export function claudeNativeUsage(opts?: { fresh?: boolean }): Promise<UsageResu
 // are tiered by how fresh the caller needs to be:
 //   default -> 5min TTL (background warmers, non-interactive surfaces)
 //   fresh   -> 20s min re-probe interval (user is actively looking at the numbers)
-//   force   -> bypass everything (identity just changed, e.g. account switch)
+//   force   -> bypass the TTL and the failure backoff (account switch, explicit refresh click),
+//              modulo a short double-click floor
 // Failures back off 60s on the default/fresh tiers (force still retries), and in-flight de-dup
 // makes concurrent surfaces (cards + header + IM) share one probe.
 const TOKEN_USAGE_OK_TTL_MS = CLAUDE_USAGE_QUERY_TTL_MS;
 const TOKEN_USAGE_FRESH_TTL_MS = 20_000;
 const TOKEN_USAGE_RETRY_TTL_MS = 60_000;
+const TOKEN_USAGE_FORCE_FLOOR_MS = 3_000;
 const CLAUDE_USAGE_PROBE_MODEL = 'claude-haiku-4-5-20251001';
 const claudeTokenUsageCache = new Map<string, { value: UsageResult | null; at: number; ok: boolean }>();
 const claudeTokenUsageInflight = new Map<string, Promise<UsageResult | null>>();
@@ -1908,10 +1915,11 @@ export function claudeUsageForToken(token: string, opts?: { force?: boolean; fre
   if (!t) return Promise.resolve(null);
   const now = Date.now();
   const cached = claudeTokenUsageCache.get(t);
-  if (cached && !opts?.force) {
-    const ttl = cached.ok
-      ? (opts?.fresh ? TOKEN_USAGE_FRESH_TTL_MS : TOKEN_USAGE_OK_TTL_MS)
-      : TOKEN_USAGE_RETRY_TTL_MS;
+  if (cached) {
+    const ttl = opts?.force ? TOKEN_USAGE_FORCE_FLOOR_MS
+      : cached.ok
+        ? (opts?.fresh ? TOKEN_USAGE_FRESH_TTL_MS : TOKEN_USAGE_OK_TTL_MS)
+        : TOKEN_USAGE_RETRY_TTL_MS;
     if (now - cached.at < ttl) return Promise.resolve(cached.value);
   }
   const inflight = claudeTokenUsageInflight.get(t);

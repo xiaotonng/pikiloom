@@ -37,8 +37,12 @@ app.get('/api/agents/:agent/accounts', async (c) => {
   // `fresh=1` = the user is actively looking (popover open / panel refresh): re-probe past the
   // short fresh window. The min-interval debounce lives in the driver caches, so this is safe to
   // send on every hover. Account rows and the default-login quota come from the same pass.
+  // `force=1` = the user clicked the explicit refresh button: also bypass the failure backoff.
+  // Must only ever come from a deliberate click, never a hover — the endpoints behind it
+  // rate-limit aggressive polling.
   const fresh = c.req.query('fresh') === '1';
-  const snap = await getAccountsUsageSnapshot(agent, { fresh });
+  const force = c.req.query('force') === '1';
+  const snap = await getAccountsUsageSnapshot(agent, { fresh, force });
   return c.json({
     ok: true, agent, supported: true,
     accounts: snap.accounts,

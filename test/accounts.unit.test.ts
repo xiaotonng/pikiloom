@@ -121,10 +121,22 @@ describe('getAccountsUsageSnapshot — unified usage channel', () => {
     expect(row?.label).toBe('snap-a');
     expect((row?.usage as any)?.tag).toBe('token:sk-ant-oat01-SNAPA');
     expect((snap.native as any)?.tag).toBe('native');
-    expect(usageMocks.claudeNativeUsage).toHaveBeenCalledWith({ fresh: true });
-    expect(usageMocks.claudeUsageForToken).toHaveBeenCalledWith('sk-ant-oat01-SNAPA', { fresh: true });
+    expect(usageMocks.claudeNativeUsage).toHaveBeenCalledWith({ fresh: true, force: false });
+    expect(usageMocks.claudeUsageForToken).toHaveBeenCalledWith('sk-ant-oat01-SNAPA', { fresh: true, force: false });
 
     await accounts.removeAccount('claude', a.id);
+  });
+
+  it('forwards the force flag (explicit refresh) to both the native and token probes', async () => {
+    const c = await accounts.addAccount('claude', 'snap-c', 'sk-ant-oat01-SNAPC');
+    usageMocks.claudeUsageForToken.mockClear();
+    usageMocks.claudeNativeUsage.mockClear();
+
+    await accounts.getAccountsUsageSnapshot('claude', { fresh: true, force: true });
+    expect(usageMocks.claudeNativeUsage).toHaveBeenCalledWith({ fresh: true, force: true });
+    expect(usageMocks.claudeUsageForToken).toHaveBeenCalledWith('sk-ant-oat01-SNAPC', { fresh: true, force: true });
+
+    await accounts.removeAccount('claude', c.id);
   });
 
   it('probe failures fall back to the last cached value instead of dropping the row', async () => {

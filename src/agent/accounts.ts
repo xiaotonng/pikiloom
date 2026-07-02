@@ -205,16 +205,19 @@ export interface AccountsUsageSnapshot {
  * rows come from one pass and share one freshness policy. `fresh: true` is for surfaces the user
  * is actively looking at: it re-probes past the short fresh window (20s tokens / 15s native)
  * instead of the 5min background TTL — the debounce lives in the driver-level caches, so callers
- * can request fresh on every view without stampeding probes.
+ * can request fresh on every view without stampeding probes. `force: true` is for an explicit
+ * user-clicked refresh only: it additionally bypasses the failure backoff so rows pinned at
+ * last-good by a rate-limited / failed probe get a real retry.
  */
-export async function getAccountsUsageSnapshot(agent: string, opts?: { fresh?: boolean }): Promise<AccountsUsageSnapshot> {
+export async function getAccountsUsageSnapshot(agent: string, opts?: { fresh?: boolean; force?: boolean }): Promise<AccountsUsageSnapshot> {
   if (!accountAgentSupported(agent)) return { supported: false, activeAccountId: null, accounts: [], native: null };
   const recs = listAccounts(agent);
   const activeId = getActiveAccountId(agent);
   const fresh = opts?.fresh === true;
+  const force = opts?.force === true;
   const [native, ...usages] = await Promise.all([
-    claudeNativeUsage({ fresh }).catch(() => null),
-    ...recs.map(rec => probeAccountUsage(agent, rec.id, { fresh }).catch(() => getCachedAccountUsage(agent, rec.id))),
+    claudeNativeUsage({ fresh, force }).catch(() => null),
+    ...recs.map(rec => probeAccountUsage(agent, rec.id, { fresh, force }).catch(() => getCachedAccountUsage(agent, rec.id))),
   ]);
   return {
     supported: true,

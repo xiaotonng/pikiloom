@@ -122,9 +122,11 @@ export const api = {
   getState: () => json<AppState>('/api/state'),
   getHost: () => json<HostInfo>('/api/host'),
   getAgentStatus: () => json<AgentStatusResponse>('/api/agent-status'),
-  getAgentAccounts: (agent: string, opts?: ApiRequestOptions & { fresh?: boolean }) =>
+  // `force` = the explicit refresh button: bypasses the backend failure backoff. Only ever pass
+  // it from a deliberate click, never a hover/poll — the probe endpoints rate-limit.
+  getAgentAccounts: (agent: string, opts?: ApiRequestOptions & { fresh?: boolean; force?: boolean }) =>
     json<AgentAccountsResponse>(
-      `/api/agents/${encodeURIComponent(agent)}/accounts${opts?.fresh ? '?fresh=1' : ''}`,
+      `/api/agents/${encodeURIComponent(agent)}/accounts${opts?.force ? '?fresh=1&force=1' : opts?.fresh ? '?fresh=1' : ''}`,
       { timeoutMs: 12_000, ...opts },
     ),
   addAgentAccount: (agent: string, label: string, token: string) =>

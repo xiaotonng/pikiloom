@@ -3,6 +3,7 @@ import { api, type AgentAccountInfo } from '../../api';
 import { Button, Input, Label, Spinner } from '../../components/ui';
 import { UsageBars } from '../../components/UsageBars';
 import { useStore } from '../../store';
+import type { UsageResult } from '../../types';
 
 // Per-agent local subscription accounts. Each account is a named `claude setup-token` token;
 // switching the active account injects it as CLAUDE_CODE_OAUTH_TOKEN for new turns (the agent
@@ -16,22 +17,27 @@ export function AccountsPanel({ agentId }: { agentId: string }) {
   const toast = useStore(s => s.toast);
   const agentStatus = useStore(s => s.agentStatus);
   const L: L = (zh, en) => (locale === 'en' ? en : zh);
-  // The default-login card shows the machine's native (non-token) usage, sourced from the same
-  // agent-status feed the header/agent list use.
-  const nativeUsage = agentStatus?.agents?.find(a => a.agent === agentId)?.usage ?? null;
 
   const [accounts, setAccounts] = useState<AgentAccountInfo[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [max, setMax] = useState(5);
   const [loading, setLoading] = useState(true);
+  const [refreshingUsage, setRefreshingUsage] = useState(false);
+  const [nativeFromApi, setNativeFromApi] = useState<UsageResult | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; label: string } | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
 
-  const refresh = useCallback(async () => {
+  // The default-login card prefers the quota from the same unified accounts pass; the
+  // agent-status feed is only the pre-load fallback.
+  const nativeUsage = nativeFromApi ?? agentStatus?.agents?.find(a => a.agent === agentId)?.usage ?? null;
+
+  // `force` = the explicit refresh button: bypasses the backend failure backoff so rows a
+  // rate-limited probe pinned at last-good get a real retry. Click-only.
+  const refresh = useCallback(async (force = false) => {
     try {
-      const r = await api.getAgentAccounts(agentId, { fresh: true });
-      if (r.ok) { setAccounts(r.accounts); setActiveId(r.activeAccountId); setMax(r.max); }
+      const r = await api.getAgentAccounts(agentId, force ? { force: true } : { fresh: true });
+      if (r.ok) { setAccounts(r.accounts); setActiveId(r.activeAccountId); setMax(r.max); setNativeFromApi(r.nativeUsage ?? null); }
     } catch (e: any) {
       toast(String(e?.message || e), false);
     } finally {
@@ -40,6 +46,12 @@ export function AccountsPanel({ agentId }: { agentId: string }) {
   }, [agentId, toast]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const refreshUsage = useCallback(async () => {
+    if (refreshingUsage) return;
+    setRefreshingUsage(true);
+    try { await refresh(true); } finally { setRefreshingUsage(false); }
+  }, [refresh, refreshingUsage]);
 
   const submitForm = useCallback(async () => {
     if (!form) return;
@@ -136,14 +148,33 @@ export function AccountsPanel({ agentId }: { agentId: string }) {
                'Use an account’s “Use this account” button to make it active; new sessions/turns run under it (applies when no BYOK profile is bound).')}
           </div>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setForm({ mode: 'add', label: '', token: '', saving: false })}
-          disabled={!!form || accounts.length >= max}
-        >
-          {L('添加账号', 'Add account')}
-        </Button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void refreshUsage()}
+            disabled={refreshingUsage}
+            title={L('刷新用量', 'Refresh usage')}
+          >
+            <svg
+              width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              className={refreshingUsage ? 'animate-spin' : ''}
+              style={refreshingUsage ? { animationDuration: '1s' } : undefined}
+            >
+              <polyline points="23 4 23 10 17 10" />
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+            </svg>
+            {L('刷新用量', 'Refresh usage')}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setForm({ mode: 'add', label: '', token: '', saving: false })}
+            disabled={!!form || accounts.length >= max}
+          >
+            {L('添加账号', 'Add account')}
+          </Button>
+        </div>
       </div>
 
       {form?.mode === 'add' && (

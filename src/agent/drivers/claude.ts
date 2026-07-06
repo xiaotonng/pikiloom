@@ -1910,6 +1910,13 @@ async function fetchClaudeUsageFromOAuth(tokenOverride?: string): Promise<UsageR
 // one request. `force` is for explicit user-clicked refreshes only: it bypasses both the TTL and
 // the failure backoff (human-paced clicks cannot stampede the endpoint), with a short floor to
 // absorb double-clicks.
+//
+// The 429 budget is PER ACCOUNT and shared with every other Claude Code process on the machine,
+// so the endpoint can stay rate-limited for long stretches through no fault of our cadence. When
+// it fails and there is no last-good to serve, degrade to the inference-header probe (the same
+// channel setup-token accounts use): coarser — 5h/7d only, no Extra spend or per-model weekly —
+// but reliably available, so the native row never goes blank. A later successful oauth read
+// replaces it with the full-fidelity snapshot.
 const NATIVE_USAGE_FRESH_TTL_MS = 15_000;
 const NATIVE_USAGE_RETRY_TTL_MS = 60_000;
 const NATIVE_USAGE_FORCE_FLOOR_MS = 3_000;
@@ -1927,19 +1934,29 @@ export function claudeNativeUsage(opts?: { fresh?: boolean; force?: boolean }): 
     return Promise.resolve(claudeUsageCache.lastGood);
   }
   if (claudeNativeUsageLive.inflight) return claudeNativeUsageLive.inflight;
-  const p = fetchClaudeUsageFromOAuth()
-    .then(fresh => {
-      if (fresh) {
-        claudeUsageCache.lastGood = fresh;
-        claudeUsageCache.lastAttemptAt = Date.now();
-        claudeNativeUsageLive.at = Date.now();
-        claudeNativeUsageLive.failedAt = 0;
-      } else {
-        claudeNativeUsageLive.failedAt = Date.now();
-      }
-      return fresh ?? claudeUsageCache.lastGood;
-    })
-    .finally(() => { claudeNativeUsageLive.inflight = null; });
+  const p = (async () => {
+    let result = await fetchClaudeUsageFromOAuth();
+    const oauthOk = !!result;
+    // Degrade to the header probe when oauth fails and there is no full-fidelity snapshot to
+    // serve — including when last-good is itself a header-probe result (keep it refreshing
+    // through a long 429 stretch instead of freezing on the first degraded read).
+    if (!result && (!claudeUsageCache.lastGood || claudeUsageCache.lastGood.source === 'ratelimit-headers')) {
+      const token = getClaudeOAuthToken();
+      if (token) result = await claudeUsageForToken(token, opts);
+      agentLog(`[usage] native oauth usage read failed; header-probe fallback -> ${result ? result.source : 'null'}`);
+    }
+    if (result) {
+      claudeUsageCache.lastGood = result;
+      claudeUsageCache.lastAttemptAt = Date.now();
+      claudeNativeUsageLive.at = Date.now();
+      // A header-probe fallback is a degraded read: keep failedAt so the oauth endpoint is
+      // retried on the normal backoff cadence instead of idling out the full ok-TTL.
+      claudeNativeUsageLive.failedAt = oauthOk ? 0 : Date.now();
+    } else {
+      claudeNativeUsageLive.failedAt = Date.now();
+    }
+    return result ?? claudeUsageCache.lastGood;
+  })().finally(() => { claudeNativeUsageLive.inflight = null; });
   claudeNativeUsageLive.inflight = p;
   return p;
 }

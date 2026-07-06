@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sendWillQueue, optimisticSendWasQueued, visibleQueuedIds, doneAppliesToLivePreview } from '../dashboard/src/pages/sessions/queue-logic';
+import { sendWillQueue, optimisticSendWasQueued, visibleQueuedIds, doneAppliesToLivePreview, shouldShowTrailingLoader } from '../dashboard/src/pages/sessions/queue-logic';
 
 const base = {
   streaming: false,
@@ -106,5 +106,49 @@ describe('doneAppliesToLivePreview', () => {
 
   it('ignores a stale done for an older task while a newer task streams', () => {
     expect(doneAppliesToLivePreview('b', 'a')).toBe(false);
+  });
+});
+
+describe('shouldShowTrailingLoader', () => {
+  const base = {
+    sessionRunning: false,
+    streaming: false,
+    streamPhase: null as string | null,
+    queuedTaskCount: 0,
+    pendingQueuedCount: 0,
+    liveTurnStreaming: false,
+    pendingBubbleDots: false,
+  };
+
+  it('stays hidden on a fully idle / completed session', () => {
+    expect(shouldShowTrailingLoader({ ...base })).toBe(false);
+  });
+
+  it('shows when the server reports the session is still running but no loader is on screen', () => {
+    // e.g. a turn reconciled into history / a follow-up turn whose snapshot has not arrived yet.
+    expect(shouldShowTrailingLoader({ ...base, sessionRunning: true })).toBe(true);
+  });
+
+  it('shows during the queued gap between turns', () => {
+    expect(shouldShowTrailingLoader({ ...base, streamPhase: 'queued' })).toBe(true);
+    expect(shouldShowTrailingLoader({ ...base, queuedTaskCount: 1 })).toBe(true);
+    expect(shouldShowTrailingLoader({ ...base, pendingQueuedCount: 1 })).toBe(true);
+  });
+
+  it('shows when streaming is believed active but the live preview is not yet painted', () => {
+    expect(shouldShowTrailingLoader({ ...base, streaming: true })).toBe(true);
+    expect(shouldShowTrailingLoader({ ...base, streamPhase: 'streaming' })).toBe(true);
+  });
+
+  it('never stacks a second loader when the live preview is already streaming', () => {
+    expect(shouldShowTrailingLoader({ ...base, sessionRunning: true, streaming: true, liveTurnStreaming: true })).toBe(false);
+  });
+
+  it('never stacks a second loader when the optimistic pending bubble shows its own dots', () => {
+    expect(shouldShowTrailingLoader({ ...base, sessionRunning: true, pendingBubbleDots: true })).toBe(false);
+  });
+
+  it('stays hidden for a frozen incomplete turn (done, not running, nothing queued)', () => {
+    expect(shouldShowTrailingLoader({ ...base, streamPhase: 'done' })).toBe(false);
   });
 });

@@ -57,3 +57,30 @@ export function doneAppliesToLivePreview(
   if (doneTaskId == null) return true;
   return currentLiveTaskId === doneTaskId;
 }
+
+export interface TrailingLoaderInput {
+  // Server-hydrated running state for this session (sessionDisplayState === 'running').
+  sessionRunning: boolean;
+  streaming: boolean;
+  streamPhase: string | null | undefined;
+  queuedTaskCount: number;
+  pendingQueuedCount: number;
+  // A loading affordance is already on screen: the live preview is actively streaming,
+  // or the optimistic pending bubble is showing its own dots. Don't stack a second one.
+  liveTurnStreaming: boolean;
+  pendingBubbleDots: boolean;
+}
+
+// Whether to render a trailing "still working" loader at the tail of the transcript.
+// This closes the gaps where a turn has reconciled into history (or a next task is only
+// queued) yet the session is still in progress — without it the transcript looks frozen
+// even though work continues. Suppressed whenever another loader is already visible.
+export function shouldShowTrailingLoader(input: TrailingLoaderInput): boolean {
+  if (input.liveTurnStreaming || input.pendingBubbleDots) return false;
+  return input.sessionRunning
+    || input.streaming
+    || input.streamPhase === 'streaming'
+    || input.streamPhase === 'queued'
+    || input.queuedTaskCount > 0
+    || input.pendingQueuedCount > 0;
+}

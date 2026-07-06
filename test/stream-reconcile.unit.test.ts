@@ -49,6 +49,30 @@ describe('snapshotGate — null is "no info"', () => {
   });
 });
 
+describe('snapshotGate — expired hold escape hatch (worker replaced under the tab)', () => {
+  // Regression 2026-07-06: the worker was restarted while a tab held a pending send / live
+  // stream view. The new worker's stream-state is null forever, but the null was rejected
+  // because of that very hold — the panel wedged (no bubble, no spinner, stale view) until a
+  // manual page refresh. Once the hold has gone unconfirmed past its TTL the null must win so
+  // the panel reconciles from disk.
+  it('lets a null through when a pending send outlived the hold TTL', () => {
+    expect(snapshotGate({ ...base, isNull: true, localStreamPending: true, holdExpired: true })).toBe('apply');
+  });
+
+  it('lets a null through when active stream state outlived the hold TTL', () => {
+    expect(snapshotGate({ ...base, isNull: true, holdsActiveState: true, holdExpired: true })).toBe('apply');
+  });
+
+  it('still rejects a null within the TTL (the original guards stay intact)', () => {
+    expect(snapshotGate({ ...base, isNull: true, localStreamPending: true, holdExpired: false })).toBe('reject-null');
+    expect(snapshotGate({ ...base, isNull: true, holdsActiveState: true })).toBe('reject-null');
+  });
+
+  it('holdExpired never bypasses the stale guard for non-null snapshots', () => {
+    expect(snapshotGate({ ...base, updatedAt: 90, lastAppliedUpdatedAt: 100, holdExpired: true })).toBe('reject-stale');
+  });
+});
+
 describe('nextAppliedUpdatedAt', () => {
   it('advances to a newer value', () => {
     expect(nextAppliedUpdatedAt(100, 200)).toBe(200);

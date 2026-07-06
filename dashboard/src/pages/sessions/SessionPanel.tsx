@@ -12,7 +12,7 @@ import { TurnView, UserBubble, TurnDivider } from './TurnView';
 import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
-import { sendWillQueue, optimisticSendWasQueued, doneAppliesToLivePreview } from './queue-logic';
+import { sendWillQueue, optimisticSendWasQueued, doneAppliesToLivePreview, shouldShowTrailingLoader } from './queue-logic';
 import {
   snapshotGate,
   nextAppliedUpdatedAt,
@@ -42,6 +42,15 @@ const EMPTY_INTERACTIONS: InteractionSnapshot[] = [];
 
 const MAX_HISTORY_SNAPSHOTS = 20;
 const RECALL_TOMBSTONE_TTL_MS = 60_000;
+// How long a local hold (pending send / active stream view) may go without any non-null
+// snapshot before a null seed is allowed through to reconcile the panel from disk. Long
+// enough that a slow first token or a tool-quiet stretch never trips it (live turns keep
+// refreshing the anchor via WS/poll snapshots), short enough that a worker replaced under
+// the tab self-heals instead of requiring a manual refresh.
+const STREAM_HOLD_TTL_MS = 15_000;
+// WS-independent safety net: while the panel believes a task is live, re-seed stream-state
+// on this cadence so a silently dead socket still converges (see holdExpired above).
+const STREAM_POLL_INTERVAL_MS = 7_000;
 const historySnapshots = new Map<string, TurnHistoryWindow>();
 function snapshotKey(agent: string, sessionId: string) { return `${agent}:${sessionId}`; }
 
@@ -160,6 +169,10 @@ export const SessionPanel = memo(function SessionPanel({
   const promotingRef = useRef(false);
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAppliedUpdatedAtRef = useRef(0);
+  // Last proof-of-life for the local hold: refreshed by every applied non-null snapshot and by
+  // each local send. When a null seed arrives and this is older than the TTL, the task the hold
+  // was waiting for no longer exists anywhere (worker replaced under the tab) — see holdExpired.
+  const holdAnchorRef = useRef(Date.now());
   const recalledTombstonesRef = useRef<Map<string, number>>(new Map());
   const composerSelectionRef = useRef<{ model: string | null; effort: string | null }>({ model: null, effort: null });
   const handleComposerSelectionChange = useCallback((sel: { model: string | null; effort: string | null }) => {
@@ -197,6 +210,7 @@ export const SessionPanel = memo(function SessionPanel({
   }, []);
 
   const handleSendStart = useCallback((prompt: string, imageUrls?: string[]) => {
+    holdAnchorRef.current = Date.now();
     const willBeQueued = sendWillQueue({
       streaming: streamingRef.current,
       liveStreamPhase: liveStreamRef.current?.phase ?? null,
@@ -341,16 +355,27 @@ export const SessionPanel = memo(function SessionPanel({
   const prevPhaseRef = useRef<'queued' | 'streaming' | 'done' | null>(null);
 
   const applyStreamSnapshot = useCallback((state: any | null, source: SnapshotSource = 'ws') => {
+    const holdsActiveState = streamingRef.current || queuedTaskIdsRef.current.length > 0;
+    const holdExpired = Date.now() - holdAnchorRef.current > STREAM_HOLD_TTL_MS;
     const decision = snapshotGate({
       updatedAt: state?.updatedAt,
       isNull: !state,
       source,
       lastAppliedUpdatedAt: lastAppliedUpdatedAtRef.current,
       localStreamPending: localStreamPendingRef.current,
-      holdsActiveState: streamingRef.current || queuedTaskIdsRef.current.length > 0,
+      holdsActiveState,
+      holdExpired,
     });
     if (decision !== 'apply') return;
-    if (state) lastAppliedUpdatedAtRef.current = nextAppliedUpdatedAt(lastAppliedUpdatedAtRef.current, state.updatedAt);
+    // An applied null that only got through because the hold expired = the worker serving this
+    // tab was replaced (or the send's task died with it). Reconcile from disk instead of
+    // wedging: drop the local echo and reload the transcript — the self-service version of the
+    // manual refresh users had to do.
+    const expiredHoldReconcile = !state && holdExpired && (localStreamPendingRef.current || holdsActiveState);
+    if (state) {
+      holdAnchorRef.current = Date.now();
+      lastAppliedUpdatedAtRef.current = nextAppliedUpdatedAt(lastAppliedUpdatedAtRef.current, state.updatedAt);
+    }
     if (state?.sessionId && state.sessionId !== session.sessionId) {
       promotingRef.current = true;
       sessionKeyRef.current = `${session.agent}:${state.sessionId}`;
@@ -359,14 +384,22 @@ export const SessionPanel = memo(function SessionPanel({
     if (!state) {
       const prev = prevPhaseRef.current;
       setStreaming(false);
-      if (prev === 'streaming') {
+      if (expiredHoldReconcile) {
+        localStreamPendingRef.current = false;
+        clearPendingOnLoadRef.current = true;
+        clearLiveStreamOnLoadRef.current = true;
+        clearPendingQueuedSends();
+        void loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
+      } else if (prev === 'streaming') {
         clearPendingOnLoadRef.current = true;
         clearLiveStreamOnLoadRef.current = true;
         void loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
       } else {
         setLiveStream(null);
       }
-      if (localStreamPendingRef.current && prev !== 'streaming') {
+      if (expiredHoldReconcile) {
+        // handled above — echo dropped, transcript reload in flight
+      } else if (localStreamPendingRef.current && prev !== 'streaming') {
         void loadLatestTurns({ keepOlder: true, force: true });
       } else {
         if (prev === 'done') {
@@ -521,6 +554,7 @@ export const SessionPanel = memo(function SessionPanel({
 
   const requestStreamPolling = useCallback(() => {
     localStreamPendingRef.current = true;
+    holdAnchorRef.current = Date.now();
     setStreamPollNonce(current => current + 1);
   }, []);
 
@@ -609,6 +643,7 @@ export const SessionPanel = memo(function SessionPanel({
     setQueuedTasks([]);
     setInteractions([]);
     lastAppliedUpdatedAtRef.current = 0;
+    holdAnchorRef.current = Date.now();
     recalledTombstonesRef.current = new Map();
     if (!isNewSession) {
       clearPending();
@@ -660,6 +695,24 @@ export const SessionPanel = memo(function SessionPanel({
     }).catch(() => {});
     void loadLatestTurns({ keepOlder: true, force: true });
   }, [applyStreamSnapshot, session.agent, session.sessionId, loadLatestTurns]));
+
+  // WS-independent safety net: while this panel believes a task is live (streaming, queued, or
+  // a just-sent local echo), re-seed stream-state on an interval. If the worker was replaced
+  // under the tab (socket silently dead, task gone with the old worker), the polls return null
+  // and the hold-TTL path in applyStreamSnapshot reconciles the panel from disk — instead of a
+  // send that shows nothing and a view that only recovers on manual refresh.
+  const pollHoldActive = streaming || !!streamPhase || queuedTaskIds.length > 0
+    || !!pendingPrompt || pendingQueuedSends.length > 0;
+  useEffect(() => {
+    if (!active || !pollHoldActive) return;
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      void api.getSessionStreamState(session.agent || '', session.sessionId)
+        .then(res => applyStreamSnapshotRef.current(res.state, 'seed'))
+        .catch(() => {});
+    }, STREAM_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [active, pollHoldActive, session.agent, session.sessionId]);
 
   useEffect(() => {
     if (!localStreamPendingRef.current
@@ -786,6 +839,26 @@ export const SessionPanel = memo(function SessionPanel({
     return [...result.slice(0, -1), { ...last, user, assistant: null }];
   }, [rawTurns, liveStream, effectiveStreamPrompt, optimisticBridgesImages]);
 
+  // A loading affordance is already on screen when the optimistic pending bubble shows its own
+  // dots, or when the live preview is actively streaming (it renders its own live-status row).
+  const pendingBubbleShown = (!!pendingPrompt || pendingBubbleBlocks.length > 0)
+    && !liveQuestionCoversPending
+    && (optimisticBridgesImages || !pendingAlreadyInHistory);
+  const pendingBubbleDots = pendingBubbleShown && !liveStream;
+  const liveTurnStreaming = !!liveStream && liveStreamShouldRender(liveStream) && liveStream.phase === 'streaming';
+  // Keep the "still working" affordance alive whenever the session is in progress but nothing
+  // above is already showing it — e.g. a turn has reconciled into history while the next task
+  // is only queued, or a follow-up turn is running but its snapshot hasn't reached us yet.
+  const showTrailingLoader = shouldShowTrailingLoader({
+    sessionRunning: displayState === 'running',
+    streaming,
+    streamPhase,
+    queuedTaskCount: queuedTaskIds.length,
+    pendingQueuedCount: pendingQueuedSends.length,
+    liveTurnStreaming,
+    pendingBubbleDots,
+  });
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overscroll-contain">
@@ -872,6 +945,11 @@ export const SessionPanel = memo(function SessionPanel({
               <div className="mb-6">
                 <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} hideContextUsage />
                 <LivePreview stream={liveStream} t={t} workdir={workdir} />
+              </div>
+            )}
+            {showTrailingLoader && (
+              <div className="mt-3 mb-5 animate-in">
+                <ThinkingDots className="text-fg-5" />
               </div>
             )}
             <div className="h-4" />

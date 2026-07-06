@@ -50,6 +50,9 @@ export class ClaudeDriver implements AgentDriver {
 
     const state = {
       text: '', reasoning: '', streamedText: false, streamedReasoning: false,
+      // Dangling-tool-loop tracking: sawToolResult flips on the first tool_result; textSinceToolResult
+      // goes false at every tool_result and true again once the model streams visible text.
+      sawToolResult: false, textSinceToolResult: false,
       sessionId: null as string | null, model: null as string | null,
       stopReason: null as string | null, error: null as string | null,
       input: null as number | null, output: null as number | null, cached: null as number | null,
@@ -67,6 +70,8 @@ export class ClaudeDriver implements AgentDriver {
     return new Promise<DriverResult>((resolve) => {
       let child: ChildProcess;
       let settled = false;
+      // One-shot guard for the truncated-turn recovery injection (see the result handler).
+      let truncatedRecoveryAttempted = false;
       // holdCap: hard backstop while a background task is still running (never-completing daemon).
       // quiet: fires once all known background tasks finished AND Claude has gone quiet, so trailing
       // wake-up turns can still land before we close (see claudeBgSettleQuietMs).
@@ -175,7 +180,33 @@ export class ClaudeDriver implements AgentDriver {
             clearModelStall();
             const hasError = !!ev.is_error || (Array.isArray(ev.errors) && ev.errors.length > 0) || !!state.error;
             const decision = decideClaudeResultSettle({ hasError, pendingBackground: pending, sawBackground: state.bgStarted.size > 0 });
-            if (decision === 'settle') { settleResult(); return; }
+            if (decision === 'settle') {
+              // A clean result that lands while the tool loop is still dangling means the model's
+              // closing round came back empty — the turn "completed" but the reply was never
+              // generated. First try to self-heal in-process (stdin is still open): inject one
+              // recovery prompt and keep reading; the follow-up round delivers the closing reply
+              // and its own result settles the turn normally. If recovery is disabled, already
+              // attempted, or the write fails, stamp the turn 'truncated' so the terminal can say
+              // so instead of showing a narration that stops mid-sentence as the full answer.
+              if (!hasError && claudeTurnEndedDangling(state)) {
+                if (claudeTruncatedRecoveryEnabled() && !truncatedRecoveryAttempted) {
+                  truncatedRecoveryAttempted = true;
+                  let injected = false;
+                  try { child.stdin!.write(claudeUserMessage(CLAUDE_TRUNCATED_RECOVERY_PROMPT) + '\n'); injected = true; } catch { /* fall through to settle */ }
+                  if (injected) { armModelStall(); continue; }
+                }
+                settleResult({ stopReason: 'truncated', kill: false });
+                return;
+              }
+              // kill=false: the CLI persists the turn into the session jsonl AFTER emitting
+              // `result`, and on a large session that flush (a whole-file rewrite) takes long
+              // enough that an immediate SIGTERM kills the process mid-write — the reply was
+              // DELIVERED live but never lands in the transcript, so the next re-render erases
+              // it (the "对话结束之后就被吞了" shape, caught by the turn audit). Ending stdin
+              // lets the CLI finish writing and exit on its own; the leak-guard SIGTERM is the
+              // backstop.
+              settleResult({ kill: false }); return;
+            }
             if (decision === 'hold') { clearQuiet(); armHoldCap(); continue; }
             // 'quiet-settle': every known background task finished, but Claude may still be delivering
             // wake-up turns whose delivery trails the completion status (with parallel agents the last
@@ -202,7 +233,12 @@ export class ClaudeDriver implements AgentDriver {
         if (settled) return;
         if (ctx.signal.aborted) { finish({ ok: false, text: state.text, reasoning: state.reasoning, error: 'Interrupted by user.', stopReason: 'interrupted', sessionId: state.sessionId, usage: usageOf() }, false); return; }
         const ok = !state.error && code === 0;
-        finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason: state.stopReason, sessionId: state.sessionId, usage: usageOf() }, false);
+        // A clean exit with no result while the tool loop dangles is the same swallowed-reply
+        // shape as the result-event case above — stamp it so it can't pass as a full answer.
+        // (state.stopReason is typically the tool round's leftover 'tool_use' here, so the
+        // dangling check must win over it.)
+        const stopReason = (ok && claudeTurnEndedDangling(state)) ? 'truncated' : state.stopReason;
+        finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason, sessionId: state.sessionId, usage: usageOf() }, false);
       });
 
       try {
@@ -354,7 +390,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       }
     } else if (inner.type === 'content_block_delta') {
       const d = inner.delta || {};
-      if (d.type === 'text_delta' && d.text) { s.text += d.text; s.streamedText = true; emit({ type: 'text', delta: d.text }); }
+      if (d.type === 'text_delta' && d.text) { s.text += d.text; s.streamedText = true; s.textSinceToolResult = true; emit({ type: 'text', delta: d.text }); }
       else if (d.type === 'thinking_delta' && d.thinking) { s.reasoning += d.thinking; s.streamedReasoning = true; emit({ type: 'reasoning', delta: d.thinking }); }
     } else if (inner.type === 'message_delta') {
       const u = inner.usage;
@@ -431,7 +467,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     }
     if (!s.streamedText) {
       const tx = contents.filter((b: any) => b?.type === 'text').map((b: any) => b.text || '').join('\n\n');
-      if (tx) { s.text = tx; emit({ type: 'text', delta: tx }); }
+      if (tx) { s.text = tx; s.textSinceToolResult = true; emit({ type: 'text', delta: tx }); }
     }
     return;
   }
@@ -443,6 +479,13 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     // (status done/failed + a result detail) so toolCalls is a faithful structured SSOT
     // and the runtime's activity projection can render the execution trail.
     const contents = Array.isArray(ev.message?.content) ? ev.message.content : [];
+    // A tool_result hands control back to the model; until the model produces visible text
+    // again the turn is "dangling" — a result/exit in that window means the closing reply
+    // was never generated (see claudeTurnEndedDangling).
+    if (contents.some((b: any) => b?.type === 'tool_result')) {
+      s.sawToolResult = true;
+      s.textSinceToolResult = false;
+    }
     for (const b of contents) {
       if (b?.type !== 'tool_result') continue;
       const id = String(b.tool_use_id || '').trim();
@@ -477,8 +520,23 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
   }
   if (t === 'result') {
     if (ev.session_id) s.sessionId = ev.session_id;
-    if (ev.is_error && Array.isArray(ev.errors) && ev.errors.length) s.error = ev.errors.join('; ');
-    if (ev.result && !s.text.trim()) { s.text = ev.result; }
+    // An error result may arrive with an EMPTY errors[] (e.g. subtype error_during_execution).
+    // Deriving a message anyway is what keeps the turn from settling as a silent "success" —
+    // the exact swallow where a mid-turn narration ends on a hanging colon and nothing follows.
+    const subtype = typeof ev.subtype === 'string' ? ev.subtype : '';
+    const isErrorResult = !!ev.is_error || subtype.startsWith('error');
+    if (isErrorResult && !s.error) {
+      const errs = (Array.isArray(ev.errors) ? ev.errors : [])
+        .map((x: any) => typeof x === 'string' ? x : (x?.message || (x ? JSON.stringify(x) : '')))
+        .filter((x: string) => x && x.trim());
+      s.error = errs.length ? errs.join('; ')
+        : (typeof ev.result === 'string' && ev.result.trim() ? ev.result.trim()
+        : `claude ended the turn with an error result${subtype ? ` (${subtype})` : ''}`);
+    }
+    if (!isErrorResult && typeof ev.result === 'string' && ev.result.trim()) {
+      if (!s.text.trim()) s.text = ev.result;
+      s.textSinceToolResult = true; // the closing reply arrived via the result payload
+    }
     if (ev.stop_reason && !s.stopReason) s.stopReason = ev.stop_reason;
     const u = ev.usage;
     if (u) {
@@ -533,6 +591,21 @@ export function claudeModelStallMs(): number {
   const raw = Number(process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_MODEL_STALL_DEFAULT_MS;
 }
+// In-process self-heal for a truncated turn: when a clean result lands while the tool loop is
+// still dangling (the model's closing round came back empty), the stdin is still open — inject
+// ONE recovery user message and let the CLI run a follow-up round in the same process, so the
+// closing reply the user is waiting for actually gets delivered instead of just being flagged.
+// Once per turn; the post-tool stall watchdog is the safety net if the CLI never responds.
+// The <pikiloom-recover> tag keeps the injected message out of pikiloom's transcript rendering.
+// Disable with PIKILOOM_CLAUDE_TRUNCATED_RECOVERY=0.
+export const CLAUDE_TRUNCATED_RECOVERY_PROMPT =
+  '<pikiloom-recover>Your previous response ended after a tool call without a closing message. '
+  + 'Finish the reply now: state the outcome and anything the user still needs to know. '
+  + 'Do not re-run tools unless strictly necessary.</pikiloom-recover>';
+export function claudeTruncatedRecoveryEnabled(): boolean {
+  const v = String(process.env.PIKILOOM_CLAUDE_TRUNCATED_RECOVERY ?? '').trim().toLowerCase();
+  return v !== '0' && v !== 'false' && v !== 'off';
+}
 // True when a claude `type:'user'` stream event carries at least one tool_result block — i.e. the
 // tool loop just handed control back to the model. Pure + exported for hermetic testing.
 export function claudeUserEventHasToolResult(ev: any): boolean {
@@ -586,6 +659,14 @@ export function pendingClaudeBackgroundTasks(s: any): number {
   let n = 0;
   for (const id of started) if (!terminal?.has(id)) n++;
   return n;
+}
+
+// A turn "ended dangling" when it used tools and no visible text arrived after the last
+// tool_result — the model's closing round produced nothing (empty final response, a broken
+// stream, or the CLI ending the turn early). The reply the user is waiting for never existed,
+// so the settle must say so instead of reading as a normal completion.
+export function claudeTurnEndedDangling(s: any): boolean {
+  return !!s?.sawToolResult && !s?.textSinceToolResult;
 }
 
 export type ClaudeResultSettleDecision = 'settle' | 'hold' | 'quiet-settle';

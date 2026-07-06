@@ -45,6 +45,8 @@ export {
   markClaudeTaskNotificationTerminal,
   decideClaudeResultSettle, claudeBgHoldCapMs, claudeBgSettleQuietMs, type ClaudeResultSettleDecision,
   claudeModelStallMs, claudeUserEventHasToolResult,
+  handleClaudeEvent, claudeTurnEndedDangling,
+  claudeTruncatedRecoveryEnabled, CLAUDE_TRUNCATED_RECOVERY_PROMPT,
 } from './drivers/claude.js';
 export { CodexDriver } from './drivers/codex.js';
 export { GeminiDriver } from './drivers/gemini.js';

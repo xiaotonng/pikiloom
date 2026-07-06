@@ -132,6 +132,33 @@ export function kernelUsageToResultFields(u: any): Pick<StreamResult,
   };
 }
 
+// How a kernel DriverResult presents as the finished message + incomplete flag. Pure +
+// exported for regression testing. The load-bearing rule: a turn whose closing reply never
+// arrived (stopReason 'stalled'/'truncated') must SAY so even when mid-turn narration exists —
+// substituting a note only for empty text is exactly what let those endings read as normal
+// answers that stop mid-sentence, with nothing marking the swallow.
+export function composeKernelFinalPresentation(input: {
+  bodyText: string; finalError: string | null; ok: boolean; stopReason: string | null;
+}): { message: string; incomplete: boolean } {
+  const endNote = input.stopReason === 'stalled'
+    ? 'The turn stopped responding after tool use without producing a reply (the model or provider may have stalled). Send any message to continue.'
+    : input.stopReason === 'truncated'
+    ? 'The reply ended after the last tool call without a closing message (the model returned an empty final response). Send any message to continue.'
+    : null;
+  // Empty-text fallback (mirrors the legacy driver): a clean turn with no prose reads
+  // "(no textual response)", not "(no output)" (which the kernel path used to show for every
+  // textless turn — including a background-launch turn that intentionally ends without prose).
+  // A turn that settled while work keeps running in the background gets an explicit note.
+  const message = input.bodyText
+    ? (endNote ? `${input.bodyText}\n\n⚠️ ${endNote}` : input.bodyText)
+    : input.finalError
+    || endNote
+    || (input.stopReason === 'background'
+      ? 'Work is now running in the background — I’ll report back here once it finishes. (Send any message to check on it.)'
+      : input.ok ? '(no textual response)' : '(no output)');
+  return { message, incomplete: !input.ok || !!endNote };
+}
+
 let _kernel: any = null;
 export async function loadKernel(): Promise<any> {
   if (_kernel) return _kernel;
@@ -220,19 +247,15 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
     : (result.error ?? null);
 
   const usageFields = kernelUsageToResultFields(result.usage || snapshot.usage || {});
+  const presentation = composeKernelFinalPresentation({
+    bodyText: (result.text || snapshot.text || '').trim(),
+    finalError,
+    ok: !!result.ok,
+    stopReason: result.stopReason ?? null,
+  });
   return {
     ok: !!result.ok,
-    // Empty-text fallback (mirrors the legacy driver): a clean turn with no prose reads
-    // "(no textual response)", not "(no output)" (which the kernel path used to show for every
-    // textless turn — including a background-launch turn that intentionally ends without prose).
-    // A turn that settled while work keeps running in the background gets an explicit note.
-    message: (result.text || snapshot.text || '').trim()
-      || finalError
-      || (result.stopReason === 'background'
-        ? 'Work is now running in the background — I’ll report back here once it finishes. (Send any message to check on it.)'
-        : result.stopReason === 'stalled'
-        ? 'The turn stopped responding after tool use without producing a reply (the model or provider may have stalled). Send any message to continue.'
-        : result.ok ? '(no textual response)' : '(no output)'),
+    message: presentation.message,
     thinking: (result.reasoning || snapshot.reasoning || '').trim() || null,
     plan: toPikiloomPlan(snapshot.plan),
     sessionId: finalSessionId,
@@ -244,7 +267,7 @@ export async function kernelStream(opts: StreamOpts): Promise<StreamResult> {
     codexCumulative: null,
     error: finalError,
     stopReason: result.stopReason ?? null,
-    incomplete: !result.ok,
+    incomplete: presentation.incomplete,
     activity: snapshot.activity || null,
   };
 }

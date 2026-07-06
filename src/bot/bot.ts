@@ -28,6 +28,7 @@ import { getDriver, hasDriver, allDriverIds, getDriverCapabilities } from '../ag
 import { resolveGuiIntegrationConfig, type McpSendFileCallback, type McpSendFileResult } from '../agent/mcp/bridge.js';
 import { composeSessionToolPrompt } from '../agent/mcp/capabilities.js';
 import { terminateProcessTree } from '../core/process-control.js';
+import { appendTurnAudit } from '../core/turn-audit.js';
 import { expandTilde } from '../core/platform.js';
 import { VERSION } from '../core/version.js';
 import {
@@ -2407,7 +2408,22 @@ export class Bot {
       onCodexTurnReady,
       forkOf: extras?.forkOf,
     };
-    const result = await doStream(opts);
+    let result: StreamResult;
+    try {
+      result = await doStream(opts);
+    } catch (e: any) {
+      appendTurnAudit({
+        agent: cs.agent, sessionId: cs.sessionId || null, ok: false, stopReason: 'exception',
+        incomplete: true, error: String(e?.message || e).slice(0, 500), promptPreview: prompt.slice(0, 120),
+      });
+      throw e;
+    }
+    appendTurnAudit({
+      agent: cs.agent, sessionId: result.sessionId || cs.sessionId || null,
+      ok: result.ok, stopReason: result.stopReason ?? null, incomplete: !!result.incomplete,
+      error: result.error ? String(result.error).slice(0, 500) : null,
+      elapsedS: result.elapsedS, model: result.model ?? resolvedModel, promptPreview: prompt.slice(0, 120),
+    });
     if (cs.agent === 'claude' && workflowEnabled && result.thinkingEffort) {
       result.thinkingEffort = 'ultra';
     }

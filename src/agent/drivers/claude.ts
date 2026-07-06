@@ -1383,13 +1383,23 @@ const SYSTEM_INJECTED_USER_TAGS = new Set([
   'case_id',
   'tool-use-id',
   'output-file',
+  // Kernel claude driver's in-process truncated-turn recovery prompt (see packages/kernel
+  // drivers/claude.ts): injected on the CLI's stdin, so it lands in the jsonl as a real user
+  // message — hide it from the transcript like other system-injected turns.
+  'pikiloom-recover',
 ]);
 
+// The CLI's resume-time repair placeholder for a turn that never concluded (paired with an
+// isMeta "Continue from where you left off." user record). It is not model output — but it IS
+// the only durable marker that the previous reply was cut off before its closing message.
 function isClaudeSyntheticResumeNoise(text: string): boolean {
   const t = (text || '').trim().toLowerCase();
   if (!t) return true;
   return t === 'no response requested.' || t === 'no response requested';
 }
+
+const CLAUDE_INCOMPLETE_TURN_NOTICE =
+  '⚠️ This reply ended before a closing message was delivered (interrupted, or the model returned an empty final response).';
 
 function isSystemInjectedUserEvent(text: string): boolean {
   const trimmed = (text || '').trim();
@@ -1572,10 +1582,16 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
         } else if (ev.type === 'assistant') {
           if (ev.message?.model === '<synthetic>') {
             const noticeText = extractClaudeText(ev.message?.content, true).trim();
-            if (isClaudeSyntheticResumeNoise(noticeText)) continue;
+            // "No response requested." is the CLI's resume repair for a turn that never
+            // concluded. Dropping it hid the cut-off entirely — the dangling turn read as a
+            // normal answer that stops mid-sentence. Show a notice on that turn instead.
+            const displayText = !noticeText
+              ? ''
+              : isClaudeSyntheticResumeNoise(noticeText) ? CLAUDE_INCOMPLETE_TURN_NOTICE : noticeText;
+            if (!displayText) continue;
             if (pendingRole === 'user') flush();
             pendingRole = 'assistant';
-            if (noticeText) pendingBlocks.push({ type: 'system_notice', content: noticeText });
+            pendingBlocks.push({ type: 'system_notice', content: displayText });
             continue;
           }
           if (pendingRole === 'user') flush();

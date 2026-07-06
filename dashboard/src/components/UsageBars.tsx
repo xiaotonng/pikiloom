@@ -2,7 +2,7 @@ import { Fragment } from 'react';
 import type { UsageResult } from '../types';
 import { createT } from '../i18n';
 import { useStore } from '../store';
-import { resetDisplay, usageWindowTone } from '../usage';
+import { resetDisplay, usageMetaLine, usageWindowTone } from '../usage';
 import { USAGE_TONE_COLOR } from './UsageRing';
 
 // Compact per-account usage: every resource window (5h / 7d / …) as a labelled bar + reset
@@ -42,9 +42,13 @@ export function UsageBars({ usage, emptyText, className = '' }: {
             >
               {rd.kind === 'countdown' ? `↻${rd.text}` : rd.kind === 'elapsed' ? t('usage.resetElapsedShort') : ''}
             </span>
+            {w.detail && <span className="col-span-4 -mt-0.5 text-[10px] text-fg-5">{w.detail}</span>}
           </Fragment>
         );
       })}
+      {usageMetaLine(usage, t) && (
+        <span className="col-span-4 text-[10px] text-fg-5">{usageMetaLine(usage, t)}</span>
+      )}
     </div>
   );
 }

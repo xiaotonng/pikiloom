@@ -62,6 +62,17 @@ describe('formatUsageWindowsSummary', () => {
   it('falls back to status when ok but no windows have a percent', () => {
     expect(formatUsageWindowsSummary({ ...usage([]), status: 'allowed' })).toBe('status=allowed');
   });
+  it('shows the window detail (Extra credit spend) inline', () => {
+    const u = usage([['5h', 42.4], ['Extra', 20.3]]);
+    u.windows[1].detail = '$101.61 / $500.00';
+    expect(formatUsageWindowsSummary(u, NOW)).toBe('5h 42% · Extra 20% ($101.61 / $500.00)');
+  });
+  it('appends plan type, credits and limit-reset coupons after the windows', () => {
+    const u = { ...usage([['1mo', 37]]), planType: 'team', resetCreditsAvailable: 1 };
+    expect(formatUsageWindowsSummary(u, NOW)).toBe('1mo 37% · plan team · limit resets ×1');
+    const c = { ...usage([['5h', 1]]), creditsSummary: 'unlimited' };
+    expect(formatUsageWindowsSummary(c, NOW)).toBe('5h 1% · credits unlimited');
+  });
 });
 
 describe('buildUsageOverviewLines', () => {

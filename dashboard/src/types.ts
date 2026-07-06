@@ -21,6 +21,7 @@ export interface UsageWindowInfo {
   resetAt: string | null;
   resetAfterSeconds: number | null;
   status: string | null;
+  detail?: string | null;
 }
 
 export interface UsageResult {
@@ -31,6 +32,9 @@ export interface UsageResult {
   status: string | null;
   windows: UsageWindowInfo[];
   error: string | null;
+  planType?: string | null;
+  creditsSummary?: string | null;
+  resetCreditsAvailable?: number | null;
 }
 
 export interface AgentNativeConfig {

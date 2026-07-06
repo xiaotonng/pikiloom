@@ -1732,34 +1732,132 @@ function getClaudeOAuthToken(): string | null {
   } catch { return null; }
 }
 
+function claudeResetInfo(resetsAt: unknown): { resetAt: string | null; resetAfterSeconds: number | null } {
+  const resetAt = typeof resetsAt === 'string' ? resetsAt : null;
+  let resetAfterSeconds: number | null = null;
+  if (resetAt) {
+    const resetAtMs = Date.parse(resetAt);
+    if (Number.isFinite(resetAtMs)) resetAfterSeconds = Math.max(0, Math.round((resetAtMs - Date.now()) / 1000));
+  }
+  return { resetAt, resetAfterSeconds };
+}
+
+// Window status from the upstream severity when it maps to one of ours, else from the percent.
+function claudeWindowStatus(usedPercent: number, severity?: unknown): string {
+  const fromSeverity = normalizeUsageStatus(severity);
+  if (fromSeverity === 'limit_reached' || fromSeverity === 'warning' || fromSeverity === 'allowed') return fromSeverity;
+  return usedPercent >= 100 ? 'limit_reached' : usedPercent >= 80 ? 'warning' : 'allowed';
+}
+
+// "$101.61" from a minor-unit amount (10161 with exponent 2). Non-USD keeps the currency code.
+function claudeCreditAmount(amountMinor: unknown, exponent: unknown, currency: unknown): string | null {
+  const minor = Number(amountMinor);
+  if (!Number.isFinite(minor)) return null;
+  const expRaw = Number(exponent);
+  const exp = Number.isFinite(expRaw) ? Math.max(0, Math.min(4, Math.round(expRaw))) : 2;
+  const value = (minor / Math.pow(10, exp)).toFixed(exp);
+  const cur = typeof currency === 'string' && currency ? currency.toUpperCase() : 'USD';
+  return cur === 'USD' ? `$${value}` : `${value} ${cur}`;
+}
+
+const CLAUDE_LIMIT_KIND_LABELS: Record<string, string> = {
+  session: '5h',
+  weekly_all: '7d',
+};
+
+// One window per `limits[]` entry. `weekly_scoped` is the per-model weekly quota (the successor
+// of the legacy seven_day_opus / seven_day_sonnet keys) — label it by the scoped model name.
+function claudeWindowFromLimitEntry(entry: any): UsageWindowInfo | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const usedPercent = roundPercent(entry.percent);
+  if (usedPercent == null) return null;
+  const kind = typeof entry.kind === 'string' ? entry.kind : '';
+  let label = CLAUDE_LIMIT_KIND_LABELS[kind] ?? null;
+  if (!label && kind === 'weekly_scoped') {
+    const scopeName = entry.scope?.model?.display_name || entry.scope?.model?.id || entry.scope?.surface;
+    label = typeof scopeName === 'string' && scopeName ? `7d ${scopeName}` : '7d scoped';
+  }
+  if (!label) label = kind ? kind.replace(/_/g, ' ') : 'limit';
+  const { resetAt, resetAfterSeconds } = claudeResetInfo(entry.resets_at);
+  return {
+    label, usedPercent,
+    remainingPercent: Math.max(0, Math.round((100 - usedPercent) * 10) / 10),
+    resetAt, resetAfterSeconds,
+    status: claudeWindowStatus(usedPercent, entry.severity),
+  };
+}
+
+// The Extra (credit-metered overage) window. Percent comes from extra_usage.utilization (finer
+// grained) or spend.percent; the actual spend money rides along as `detail` so surfaces can show
+// "$101.61 / $500.00" instead of a bare percent. Skipped when the account has Extra disabled.
+function claudeExtraUsageWindow(data: any): UsageWindowInfo | null {
+  const extra = data?.extra_usage && typeof data.extra_usage === 'object' ? data.extra_usage : null;
+  const spend = data?.spend && typeof data.spend === 'object' ? data.spend : null;
+  if (extra?.is_enabled === false || (!extra && spend?.enabled === false)) return null;
+  let usedPercent = extra ? roundPercent(extra.utilization) : null;
+  if (usedPercent == null && spend) usedPercent = roundPercent(spend.percent);
+  if (usedPercent == null) return null;
+
+  let detail: string | null = null;
+  const used = claudeCreditAmount(spend?.used?.amount_minor, spend?.used?.exponent, spend?.used?.currency)
+    ?? claudeCreditAmount(extra?.used_credits, extra?.decimal_places, extra?.currency);
+  const limit = claudeCreditAmount(spend?.limit?.amount_minor, spend?.limit?.exponent, spend?.limit?.currency)
+    ?? claudeCreditAmount(extra?.monthly_limit, extra?.decimal_places, extra?.currency);
+  if (used) detail = limit ? `${used} / ${limit}` : used;
+
+  const { resetAt, resetAfterSeconds } = claudeResetInfo(extra?.resets_at);
+  return {
+    label: 'Extra', usedPercent,
+    remainingPercent: Math.max(0, Math.round((100 - usedPercent) * 10) / 10),
+    resetAt, resetAfterSeconds,
+    status: claudeWindowStatus(usedPercent, spend?.severity),
+    detail,
+  };
+}
+
 // Shape the `/api/oauth/usage` JSON into a UsageResult (shared by the sync curl probe and the
 // async fetch probe). Returns null on an API error payload or when no usable window is present.
-function buildClaudeOAuthUsage(data: any): UsageResult | null {
+//
+// The payload carries two generations of quota shapes and we prefer the newer one:
+//   - `limits[]` (2026+): one entry per window — kind "session" (5h), "weekly_all" (7d) and
+//     "weekly_scoped" (per-model weekly, scope.model.display_name) — each with its own percent /
+//     severity / resets_at. On these payloads the legacy `seven_day_opus` / `seven_day_sonnet`
+//     top-level keys are null, so parsing only those silently drops the scoped model window.
+//   - legacy fixed top-level keys: five_hour / seven_day / seven_day_opus / seven_day_sonnet.
+// `extra_usage` + `spend` (credit-metered overage) ride on both shapes, handled separately so
+// the actual dollar spend is preserved.
+export function buildClaudeOAuthUsage(data: any): UsageResult | null {
   const apiError = data?.error;
   if (apiError && typeof apiError === 'object') return null;
 
-  const makeWindow = (label: string, entry: any): UsageWindowInfo | null => {
-    if (!entry || typeof entry !== 'object') return null;
-    const usedPercent = roundPercent(entry.utilization);
-    if (usedPercent == null) return null;
-    const remainingPercent = Math.max(0, Math.round((100 - usedPercent) * 10) / 10);
-    const resetAt = typeof entry.resets_at === 'string' ? entry.resets_at : null;
-    let resetAfterSeconds: number | null = null;
-    if (resetAt) {
-      const resetAtMs = Date.parse(resetAt);
-      if (Number.isFinite(resetAtMs)) resetAfterSeconds = Math.max(0, Math.round((resetAtMs - Date.now()) / 1000));
-    }
-    return {
-      label, usedPercent, remainingPercent, resetAt, resetAfterSeconds,
-      status: usedPercent >= 100 ? 'limit_reached' : usedPercent >= 80 ? 'warning' : 'allowed',
-    };
-  };
-
   const windows: UsageWindowInfo[] = [];
-  for (const [label, key] of [['5h', 'five_hour'], ['7d', 'seven_day'], ['7d Opus', 'seven_day_opus'], ['7d Sonnet', 'seven_day_sonnet'], ['Extra', 'extra_usage']] as const) {
-    const w = makeWindow(label, (data as any)[key]);
+  const limitEntries: any[] = Array.isArray(data?.limits) ? data.limits : [];
+  for (const entry of limitEntries) {
+    const w = claudeWindowFromLimitEntry(entry);
     if (w) windows.push(w);
   }
+
+  if (!windows.length) {
+    const makeWindow = (label: string, entry: any): UsageWindowInfo | null => {
+      if (!entry || typeof entry !== 'object') return null;
+      const usedPercent = roundPercent(entry.utilization);
+      if (usedPercent == null) return null;
+      const { resetAt, resetAfterSeconds } = claudeResetInfo(entry.resets_at);
+      return {
+        label, usedPercent,
+        remainingPercent: Math.max(0, Math.round((100 - usedPercent) * 10) / 10),
+        resetAt, resetAfterSeconds,
+        status: claudeWindowStatus(usedPercent),
+      };
+    };
+    for (const [label, key] of [['5h', 'five_hour'], ['7d', 'seven_day'], ['7d Opus', 'seven_day_opus'], ['7d Sonnet', 'seven_day_sonnet']] as const) {
+      const w = makeWindow(label, (data as any)[key]);
+      if (w) windows.push(w);
+    }
+  }
+
+  const extra = claudeExtraUsageWindow(data);
+  if (extra) windows.push(extra);
   if (!windows.length) return null;
 
   const overallStatus = windows.some(w => w.status === 'limit_reached') ? 'limit_reached'

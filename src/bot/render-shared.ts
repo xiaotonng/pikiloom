@@ -163,8 +163,18 @@ function formatUsageResetDuration(seconds: number): string {
 function formatUsageWindowSummary(window: UsageWindowInfo, now: number): string {
   const percent = window.usedPercent != null ? `${Math.round(window.usedPercent)}%` : null;
   const reset = formatUsageWindowReset(window, now);
-  const main = percent ? `${window.label} ${percent}` : window.label;
+  let main = percent ? `${window.label} ${percent}` : window.label;
+  if (window.detail) main += ` (${window.detail})`;
   return reset ? `${main} (${reset})` : main;
+}
+
+// "plan team · limit resets ×1" — account-level metadata riding on the usage snapshot.
+function usageResultMetaParts(usage: UsageResult): string[] {
+  const parts: string[] = [];
+  if (usage.planType) parts.push(`plan ${usage.planType}`);
+  if (usage.creditsSummary) parts.push(`credits ${usage.creditsSummary}`);
+  if (usage.resetCreditsAvailable) parts.push(`limit resets ×${usage.resetCreditsAvailable}`);
+  return parts;
 }
 
 // Compact "5h 42% (reset 3h12m) · 7d 18% (reset 4d6h)" summary of a usage
@@ -174,7 +184,7 @@ export function formatUsageWindowsSummary(usage: UsageResult | null, now: number
   const parts = usage.windows
     .filter(w => w.usedPercent != null)
     .map(w => formatUsageWindowSummary(w, now));
-  if (parts.length) return parts.join(' · ');
+  if (parts.length) return [...parts, ...usageResultMetaParts(usage)].join(' · ');
   const resetWindow = usage.windows.find(w => usageWindowResetSeconds(w, now) != null);
   if (resetWindow) {
     const reset = formatUsageWindowReset(resetWindow, now);

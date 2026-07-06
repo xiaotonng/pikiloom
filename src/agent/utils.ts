@@ -391,7 +391,7 @@ export function normalizeUsageStatus(value: unknown): string | null {
   if (normalized === 'limit_reached' || normalized === 'warning' || normalized === 'allowed') return normalized;
   if (normalized.includes('limit') || normalized.includes('exceeded') || normalized.includes('denied')) return 'limit_reached';
   if (normalized.includes('warning') || normalized.includes('warn')) return 'warning';
-  if (normalized.includes('allowed') || normalized === 'ok' || normalized === 'healthy' || normalized === 'ready') return 'allowed';
+  if (normalized.includes('allowed') || normalized === 'ok' || normalized === 'healthy' || normalized === 'ready' || normalized === 'normal') return 'allowed';
   return normalized;
 }
 
@@ -401,6 +401,9 @@ export function labelFromWindowMinutes(value: unknown, fallback: string): string
   const roundedMinutes = Math.round(minutes);
   if (Math.abs(roundedMinutes - 300) <= 2) return '5h';
   if (Math.abs(roundedMinutes - 10080) <= 5) return '7d';
+  // Codex team/enterprise plans meter on a monthly window reported as the average month
+  // length (365d/12 = 43800min = 730h) — without this branch it renders as "730h".
+  if (Math.abs(roundedMinutes - 43800) <= 60) return '1mo';
 
   const roundedDays = Math.round(roundedMinutes / 1440);
   if (roundedDays >= 1 && Math.abs(roundedMinutes - roundedDays * 1440) <= 5) return `${roundedDays}d`;

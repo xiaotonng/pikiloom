@@ -449,6 +449,8 @@ export interface UsageWindowInfo {
   resetAt: string | null;
   resetAfterSeconds: number | null;
   status: string | null;
+  // Human-readable supplement beyond the percent, e.g. Extra-usage spend "$101.61 / $500.00".
+  detail?: string | null;
 }
 
 export interface UsageResult {
@@ -459,6 +461,11 @@ export interface UsageResult {
   status: string | null;
   windows: UsageWindowInfo[];
   error: string | null;
+  // Account-level metadata from newer upstream payloads (codex: plan_type / credits /
+  // rate-limit reset credits). Absent for sources that don't report them.
+  planType?: string | null;
+  creditsSummary?: string | null;
+  resetCreditsAvailable?: number | null;
 }
 
 export interface UsageOpts {

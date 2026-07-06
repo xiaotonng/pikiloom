@@ -1903,19 +1903,53 @@ function getCodexStateDbPath(home: string): string | null {
   } catch { return null; }
 }
 
-function codexUsageFromRateLimits(rateLimits: any, capturedAt: string | null, source: string): UsageResult | null {
+// Account status across both codex rate-limit generations: newer payloads report
+// `rate_limit_reached_type` (a string names the tripped window, null means not limited); older
+// ones used `limit_reached` / `allowed` booleans, which no longer exist on current codex.
+function codexRateLimitStatus(rateLimits: any): string | null {
+  const reachedType = rateLimits.rate_limit_reached_type ?? rateLimits.rateLimitReachedType;
+  if (typeof reachedType === 'string' && reachedType) return 'limit_reached';
+  if (rateLimits.limit_reached === true) return 'limit_reached';
+  if (rateLimits.allowed === true) return 'allowed';
+  if ('rate_limit_reached_type' in rateLimits || 'rateLimitReachedType' in rateLimits) return 'allowed';
+  return null;
+}
+
+// Compact credits description ("unlimited" or a balance figure); null when the credits block
+// carries no user-meaningful number (hasCredits alone says nothing about remaining spend).
+function codexCreditsSummary(credits: any): string | null {
+  if (!credits || typeof credits !== 'object') return null;
+  if (credits.unlimited === true) return 'unlimited';
+  const balance = credits.balance;
+  if (typeof balance === 'number' && Number.isFinite(balance)) return String(balance);
+  if (typeof balance === 'string' && balance) return balance;
+  return null;
+}
+
+export function codexUsageFromRateLimits(rateLimits: any, capturedAt: string | null, source: string): UsageResult | null {
   if (!rateLimits || typeof rateLimits !== 'object') return null;
   const windows = [
     usageWindowFromRateLimit('Primary', rateLimits.primary),
     usageWindowFromRateLimit('Secondary', rateLimits.secondary),
   ].filter((v): v is UsageWindowInfo => !!v);
+  // Team plans may carry a per-member limit alongside the shared one.
+  const individual = rateLimits.individual_limit;
+  if (individual && typeof individual === 'object') {
+    for (const [fallback, entry] of [['Primary', individual.primary], ['Secondary', individual.secondary]] as const) {
+      const w = usageWindowFromRateLimit(fallback, entry);
+      if (w) windows.push({ ...w, label: `${w.label} (individual)` });
+    }
+  }
   if (!windows.length) return null;
-  let status: string | null = null;
-  if (rateLimits.limit_reached === true) status = 'limit_reached';
-  else if (rateLimits.allowed === true) status = 'allowed';
-  return { ok: true, agent: 'codex', source, capturedAt, status, windows, error: null };
+  return {
+    ok: true, agent: 'codex', source, capturedAt, status: codexRateLimitStatus(rateLimits), windows, error: null,
+    planType: typeof rateLimits.plan_type === 'string' && rateLimits.plan_type ? rateLimits.plan_type : null,
+    creditsSummary: codexCreditsSummary(rateLimits.credits),
+  };
 }
 
+// Legacy source: codex >= 0.142 dropped the `logs` table from the state db entirely, so this
+// returns null there (sqlite3 errors out) and callers fall through to the session-history scan.
 function getCodexUsageFromStateDb(home: string): UsageResult | null {
   const dbPath = getCodexStateDbPath(home);
   if (!dbPath) return null;
@@ -1986,30 +2020,73 @@ function parseRateLimitWindow(label: string, rl: any): UsageWindowInfo | null {
   };
 }
 
-export async function getCodexUsageLive(): Promise<UsageResult> {
-  const home = getHome();
-  const srv = getSharedServer();
-  if (!(await srv.ensureRunning())) {
-    return getCodexUsageFromStateDb(home) || emptyUsage('codex', 'Failed to start codex app-server.');
+// Windows for one camelCase rate-limit block from the app-server: primary / secondary plus the
+// per-member individualLimit team plans may carry. `prefix` disambiguates window labels when an
+// account reports multiple limit ids.
+function codexLiveWindows(rl: any, prefix: string): UsageWindowInfo[] {
+  const windows: UsageWindowInfo[] = [];
+  const push = (w: UsageWindowInfo | null, suffix = '') => {
+    if (w) windows.push({ ...w, label: `${prefix}${w.label}${suffix}` });
+  };
+  push(parseRateLimitWindow('Primary', rl.primary));
+  push(parseRateLimitWindow('Secondary', rl.secondary));
+  const individual = rl.individualLimit;
+  if (individual && typeof individual === 'object') {
+    push(parseRateLimitWindow('Primary', individual.primary), ' (individual)');
+    push(parseRateLimitWindow('Secondary', individual.secondary), ' (individual)');
+  }
+  return windows;
+}
+
+// Pure parse of an `account/rateLimits/read` result. Prefers `rateLimitsByLimitId` (accounts can
+// carry several limits) over the flat `rateLimits`; also lifts planType, credits and
+// `rateLimitResetCredits` (limit-reset coupons) which the previous parse dropped entirely.
+export function codexUsageFromLiveRateLimitsResult(result: any, capturedAt: string): UsageResult | null {
+  const byId = result?.rateLimitsByLimitId && typeof result.rateLimitsByLimitId === 'object'
+    ? Object.entries(result.rateLimitsByLimitId).filter(([, v]) => v && typeof v === 'object') as [string, any][]
+    : [];
+  const blocks: [string, any][] = byId.length ? byId
+    : result?.rateLimits && typeof result.rateLimits === 'object' ? [['', result.rateLimits]] : [];
+  if (!blocks.length) return null;
+
+  const windows: UsageWindowInfo[] = [];
+  let status: string | null = null;
+  let planType: string | null = null;
+  let creditsSummary: string | null = null;
+  const multi = blocks.length > 1;
+  for (const [limitId, rl] of blocks) {
+    const name = typeof rl.limitName === 'string' && rl.limitName ? rl.limitName : limitId;
+    windows.push(...codexLiveWindows(rl, multi && name ? `${name} ` : ''));
+    const blockStatus = codexRateLimitStatus(rl);
+    if (blockStatus === 'limit_reached') status = 'limit_reached';
+    else if (blockStatus && status == null) status = blockStatus;
+    if (!planType && typeof rl.planType === 'string' && rl.planType) planType = rl.planType;
+    if (!creditsSummary) creditsSummary = codexCreditsSummary(rl.credits);
   }
 
-  const resp = await srv.call('account/rateLimits/read');
-  if (resp.error) return getCodexUsageFromStateDb(home) || emptyUsage('codex', resp.error.message || 'account/rateLimits/read failed');
-
-  const rl = resp.result?.rateLimits;
-  if (!rl) return getCodexUsageFromStateDb(home) || emptyUsage('codex', 'No rate limits in response.');
-
-  const capturedAt = new Date().toISOString();
-  const windows: UsageWindowInfo[] = [];
-  const w1 = parseRateLimitWindow('Primary', rl.primary);
-  if (w1) windows.push(w1);
-  const w2 = parseRateLimitWindow('Secondary', rl.secondary);
-  if (w2) windows.push(w2);
-
+  const resetCreditsRaw = Number(result?.rateLimitResetCredits?.availableCount);
   return {
-    ok: windows.length > 0, agent: 'codex', source: 'app-server-live', capturedAt, status: null,
+    ok: windows.length > 0, agent: 'codex', source: 'app-server-live', capturedAt, status,
     windows, error: windows.length > 0 ? null : 'No rate limit windows.',
+    planType, creditsSummary,
+    resetCreditsAvailable: Number.isFinite(resetCreditsRaw) ? resetCreditsRaw : null,
   };
+}
+
+export async function getCodexUsageLive(): Promise<UsageResult> {
+  const home = getHome();
+  // The state-db `logs` table no longer exists on codex >= 0.142, so the offline fallback must
+  // also try the session-history scan.
+  const fallback = (reason: string) =>
+    getCodexUsageFromStateDb(home) || getCodexUsageFromSessions(home) || emptyUsage('codex', reason);
+  const srv = getSharedServer();
+  if (!(await srv.ensureRunning())) return fallback('Failed to start codex app-server.');
+
+  const resp = await srv.call('account/rateLimits/read');
+  if (resp.error) return fallback(resp.error.message || 'account/rateLimits/read failed');
+
+  const parsed = codexUsageFromLiveRateLimitsResult(resp.result, new Date().toISOString());
+  return parsed ?? fallback('No rate limits in response.');
 }
 
 class CodexDriver implements AgentDriver {

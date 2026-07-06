@@ -106,6 +106,16 @@ export function resetDisplay(window: UsageWindowInfo): ResetDisplay {
   return text ? { kind: 'countdown', text } : { kind: 'none' };
 }
 
+// "plan: team · limit resets: 1" — account-level metadata line shown under the usage windows.
+export function usageMetaLine(usage: UsageResult | null, t: (key: string) => string): string | null {
+  if (!usage?.ok) return null;
+  const parts: string[] = [];
+  if (usage.planType) parts.push(`${t('usage.plan')}: ${usage.planType}`);
+  if (usage.creditsSummary) parts.push(`${t('usage.credits')}: ${usage.creditsSummary}`);
+  if (usage.resetCreditsAvailable) parts.push(`${t('usage.limitResets')}: ${usage.resetCreditsAvailable}`);
+  return parts.length ? parts.join(' · ') : null;
+}
+
 export function formatCapturedAt(iso: string): string | null {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return null;

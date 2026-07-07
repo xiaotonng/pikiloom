@@ -318,6 +318,12 @@ export function summarizeToolUse(block: MessageBlock): string {
     case 'WebFetch': { const u = shortValue(input.url, 120); return u ? `WebFetch ${u}` : 'WebFetch'; }
     case 'WebSearch': { const q = shortValue(input.query, 120); return q ? `WebSearch ${q}` : 'WebSearch'; }
     case 'TodoWrite': return 'Update plan';
+    case 'TaskCreate': { const subject = shortValue(input.subject, 120); return subject ? `Create task: ${subject}` : 'Create task'; }
+    case 'TaskUpdate': {
+      const taskId = shortValue(input.taskId, 24);
+      const status = shortValue(input.status, 24);
+      return taskId ? `Update task ${taskId}${status ? ` → ${status}` : ''}` : 'Update task';
+    }
     case 'AskUserQuestion': {
       const qs = Array.isArray(input.questions) ? (input.questions as any[]) : [];
       const first = qs[0];

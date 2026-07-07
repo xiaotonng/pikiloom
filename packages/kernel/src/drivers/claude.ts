@@ -435,13 +435,26 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       if (name === 'TodoWrite') {
         const plan = todoWriteToPlan(b.input);
         if (plan) emit({ type: 'plan', plan });
+        // Latest wins across mechanisms: a TodoWrite replaces the TaskCreate/TaskUpdate list
+        // wholesale, so a later TaskUpdate against the abandoned list can't resurrect a stale
+        // plan over this snapshot.
+        s.pendingTaskCreates?.clear();
+        s.taskList?.clear();
+        if (Array.isArray(s.taskOrder)) s.taskOrder = [];
+        const summary = 'Update plan';
+        (s.tools ||= new Map()).set(id, { name, summary });
+        emit({ type: 'tool', call: { id, name, summary, input: null, status: 'running' } });
         continue;
       }
       // Task list (current Claude mechanism): stash the subject; the tool_result assigns the id.
-      // Plan-only — like the legacy driver these never surface as Activity rows.
+      // The command surfaces as an Activity row (matching the CLI's own transcript); the
+      // structured task state still flows through plan events.
       if (name === 'TaskCreate') {
         const subject = typeof b.input?.subject === 'string' ? b.input.subject.trim() : '';
         if (subject) (s.pendingTaskCreates ||= new Map()).set(id, { subject });
+        const summary = subject ? `Create task: ${subject}` : 'Create task';
+        (s.tools ||= new Map()).set(id, { name, summary });
+        emit({ type: 'tool', call: { id, name, summary, input: null, status: 'running' } });
         continue;
       }
       if (name === 'TaskUpdate') {
@@ -458,6 +471,9 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
           const plan = rebuildClaudeTaskPlan(s);
           if (plan) emit({ type: 'plan', plan });
         }
+        const summary = `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}`;
+        (s.tools ||= new Map()).set(id, { name, summary });
+        emit({ type: 'tool', call: { id, name, summary, input: null, status: 'running' } });
         continue;
       }
       if (name === 'Task' || name === 'Agent') {
@@ -526,12 +542,14 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
           const plan = rebuildClaudeTaskPlan(s);
           if (plan) emit({ type: 'plan', plan });
         }
+        if (tool) emit({ type: 'tool', call: { id, name: tool.name, summary: tool.summary, status: b.is_error ? 'failed' : 'done', result: null } });
         continue;
       }
       if (!tool) continue;
       const isError = !!b.is_error;
-      // File-shaped tools have no useful result detail (mirrors pikiloom): just mark done.
-      const fileTool = tool.name === 'Read' || tool.name === 'Edit' || tool.name === 'Write' || tool.name === 'TodoWrite';
+      // File-shaped and task-list tools have no useful result detail (mirrors pikiloom): just mark done.
+      const fileTool = tool.name === 'Read' || tool.name === 'Edit' || tool.name === 'Write'
+        || tool.name === 'TodoWrite' || tool.name === 'TaskCreate' || tool.name === 'TaskUpdate';
       const detail = (isError || !fileTool) ? firstResultLine(b.content) : null;
       emit({ type: 'tool', call: { id, name: tool.name, summary: tool.summary, status: isError ? 'failed' : 'done', result: detail || null } });
     }

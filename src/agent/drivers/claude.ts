@@ -504,15 +504,23 @@ export function claudeParse(ev: any, s: any) {
       if (toolName === 'TodoWrite') {
         const plan = parseTodoWriteAsPlan(block?.input);
         if (plan) s.plan = plan;
+        // Latest wins: a TodoWrite replaces the TaskCreate/TaskUpdate list wholesale, so a
+        // later TaskUpdate against the abandoned list can't resurrect a stale plan.
+        s.pendingClaudeTaskCreates.clear();
+        s.claudeTaskList.clear();
+        s.claudeTaskOrder = [];
         s.seenClaudeToolIds.add(toolId);
         s.claudeToolsById.set(toolId, { name: toolName, summary: 'Update plan' });
+        pushRecentActivity(s.recentActivity, 'Update plan');
         continue;
       }
       if (toolName === 'TaskCreate') {
         const subject = typeof block?.input?.subject === 'string' ? block.input.subject.trim() : '';
         if (subject) s.pendingClaudeTaskCreates.set(toolId, { subject });
         s.seenClaudeToolIds.add(toolId);
-        s.claudeToolsById.set(toolId, { name: toolName, summary: subject ? `Create task: ${subject}` : 'Create task' });
+        const createSummary = subject ? `Create task: ${subject}` : 'Create task';
+        s.claudeToolsById.set(toolId, { name: toolName, summary: createSummary });
+        pushRecentActivity(s.recentActivity, createSummary);
         continue;
       }
       if (toolName === 'TaskUpdate') {
@@ -529,7 +537,9 @@ export function claudeParse(ev: any, s: any) {
           rebuildClaudePlanFromTasks(s);
         }
         s.seenClaudeToolIds.add(toolId);
-        s.claudeToolsById.set(toolId, { name: toolName, summary: `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}` });
+        const updateSummary = `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}`;
+        s.claudeToolsById.set(toolId, { name: toolName, summary: updateSummary });
+        pushRecentActivity(s.recentActivity, updateSummary);
         continue;
       }
       if (toolName === 'Task' || toolName === 'Agent') {
@@ -1321,10 +1331,41 @@ function claudeImageBlockFromEntry(entry: any): MessageBlock | null {
   return { type: 'image', content: `data:${mime};base64,${source.data}`, imageMime: mime };
 }
 
+// Session-scoped task-list state for history parsing. TaskCreate/TaskUpdate maintain a task
+// list ACROSS turns (a later turn's TaskUpdate mutates tasks created earlier), while a
+// TodoWrite carries a full snapshot. Whichever mechanism wrote LAST owns the displayed plan:
+// the CLI swaps its todo panel wholesale, so a TaskUpdate against an abandoned list must not
+// resurrect a stale plan over a newer TodoWrite (and vice versa).
+interface ClaudeHistoryTaskCtx {
+  planToolIds: Set<string>;
+  pendingTaskCreates: Map<string, { subject: string }>;
+  taskList: Map<string, { subject: string; status: string }>;
+  taskOrder: string[];
+}
+
+function createClaudeHistoryTaskCtx(): ClaudeHistoryTaskCtx {
+  return { planToolIds: new Set(), pendingTaskCreates: new Map(), taskList: new Map(), taskOrder: [] };
+}
+
+function claudeTaskPlanFromCtx(ctx: ClaudeHistoryTaskCtx): StreamPreviewPlan | null {
+  if (!ctx.taskOrder.length) return null;
+  const steps: StreamPreviewPlanStep[] = [];
+  for (const id of ctx.taskOrder) {
+    const task = ctx.taskList.get(id);
+    if (!task) continue;
+    const lowered = String(task.status || '').toLowerCase();
+    const status = lowered === 'completed' ? 'completed'
+      : lowered === 'in_progress' || lowered === 'inprogress' ? 'inProgress'
+        : 'pending';
+    steps.push({ step: task.subject, status });
+  }
+  return steps.length ? { explanation: null, steps } : null;
+}
+
 function extractClaudeBlocks(
   content: any,
   skipSystemBlocks = false,
-  todoWriteToolIds?: Set<string>,
+  taskCtx?: ClaudeHistoryTaskCtx,
   toolNamesByUseId?: ReadonlyMap<string, string>,
 ): MessageBlock[] {
   if (typeof content === 'string') return [{ type: 'text', content }];
@@ -1338,15 +1379,39 @@ function extractClaudeBlocks(
     } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
       blocks.push({ type: 'thinking', content: block.thinking });
     } else if (block.type === 'tool_use') {
-      if (block.name === 'TodoWrite' && todoWriteToolIds) {
-        const plan = parseTodoWriteAsPlan(block.input);
-        if (plan) {
-          todoWriteToolIds.add(block.id);
-          blocks.push({ type: 'plan', content: '', plan, toolId: block.id });
-          continue;
-        }
-      }
       const inputStr = block.input ? JSON.stringify(block.input, null, 2) : '';
+      if (taskCtx && (block.name === 'TodoWrite' || block.name === 'TaskCreate' || block.name === 'TaskUpdate')) {
+        // The command itself stays visible as an Activity row (matching the CLI's own
+        // transcript); the structured task state additionally surfaces as a plan block.
+        taskCtx.planToolIds.add(block.id);
+        blocks.push({ type: 'tool_use', content: inputStr, toolName: block.name, toolId: block.id });
+        if (block.name === 'TodoWrite') {
+          const plan = parseTodoWriteAsPlan(block.input);
+          taskCtx.pendingTaskCreates.clear();
+          taskCtx.taskList.clear();
+          taskCtx.taskOrder.length = 0;
+          if (plan) blocks.push({ type: 'plan', content: '', plan, toolId: block.id });
+        } else if (block.name === 'TaskCreate') {
+          const subject = typeof block.input?.subject === 'string' ? block.input.subject.trim() : '';
+          if (subject) taskCtx.pendingTaskCreates.set(block.id, { subject });
+        } else {
+          const taskId = String(block.input?.taskId ?? '').trim();
+          const rawStatus = String(block.input?.status ?? '').trim().toLowerCase();
+          if (taskId) {
+            if (rawStatus === 'deleted') {
+              taskCtx.taskList.delete(taskId);
+              const idx = taskCtx.taskOrder.indexOf(taskId);
+              if (idx >= 0) taskCtx.taskOrder.splice(idx, 1);
+            } else if (rawStatus) {
+              const existing = taskCtx.taskList.get(taskId);
+              if (existing) existing.status = rawStatus;
+            }
+            const plan = claudeTaskPlanFromCtx(taskCtx);
+            if (plan) blocks.push({ type: 'plan', content: '', plan, toolId: block.id });
+          }
+        }
+        continue;
+      }
       blocks.push({ type: 'tool_use', content: inputStr, toolName: block.name || 'unknown', toolId: block.id });
     } else if (block.type === 'tool_result') {
       const resultText = typeof block.content === 'string'
@@ -1402,7 +1467,7 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
     let pendingBlocks: MessageBlock[] = [];
     let pendingUsage: { input: number | null; output: number | null; cacheRead: number | null; cacheCreation: number | null; model: string | null } | null = null;
     let pendingCallOutputs = new Map<string, number>();
-    const todoWriteToolIds = new Set<string>();
+    const taskCtx = createClaudeHistoryTaskCtx();
     const subAgentBlocksById = new Map<string, MessageBlock>();
     const subAgentToolIds = new Set<string>();
     const toolNamesByUseId = new Map<string, string>();
@@ -1462,7 +1527,7 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
           if (ev.isMeta === true) {
             if (pendingRole === 'assistant') {
               const toolUseId = typeof ev.sourceToolUseID === 'string' ? ev.sourceToolUseID : '';
-              if (toolUseId && !todoWriteToolIds.has(toolUseId) && !subAgentToolIds.has(toolUseId)) {
+              if (toolUseId && !taskCtx.planToolIds.has(toolUseId) && !subAgentToolIds.has(toolUseId)) {
                 const text = extractClaudeText(ev.message?.content, false);
                 if (text) {
                   pendingBlocks.push({ type: 'tool_result', content: text, toolId: toolUseId });
@@ -1481,7 +1546,21 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
             if (pendingRole === 'assistant') {
               for (const block of contentArr) {
                 const toolUseId = block.tool_use_id;
-                if (todoWriteToolIds.has(toolUseId)) continue;
+                // TaskCreate result: the assigned task id arrives here — register the task
+                // and surface the refreshed list as a plan block on this turn.
+                const pendingCreate = toolUseId ? taskCtx.pendingTaskCreates.get(toolUseId) : undefined;
+                if (pendingCreate) {
+                  taskCtx.pendingTaskCreates.delete(toolUseId);
+                  const assignedId = readClaudeTaskCreateId(ev, block);
+                  if (assignedId) {
+                    if (!taskCtx.taskList.has(assignedId)) taskCtx.taskOrder.push(assignedId);
+                    taskCtx.taskList.set(assignedId, { subject: pendingCreate.subject, status: 'pending' });
+                    const plan = claudeTaskPlanFromCtx(taskCtx);
+                    if (plan) pendingBlocks.push({ type: 'plan', content: '', plan, toolId: toolUseId });
+                  }
+                  continue;
+                }
+                if (taskCtx.planToolIds.has(toolUseId)) continue;
                 if (subAgentToolIds.has(toolUseId)) continue;
                 const subBlock = subAgentBlocksById.get(toolUseId);
                 if (subBlock?.subAgent) {
@@ -1593,7 +1672,7 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
               toolNamesByUseId.set(inner.id, inner.name);
             }
           }
-          const blocks = extractClaudeBlocks(ev.message?.content, true, todoWriteToolIds, toolNamesByUseId);
+          const blocks = extractClaudeBlocks(ev.message?.content, true, taskCtx, toolNamesByUseId);
           const contents = Array.isArray(ev.message?.content) ? ev.message.content : [];
           for (let i = 0; i < blocks.length; i++) {
             const block = blocks[i];

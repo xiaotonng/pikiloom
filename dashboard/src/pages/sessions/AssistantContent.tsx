@@ -8,12 +8,18 @@ import { lastNLines, summarizeToolResult, summarizeToolUse } from './utils';
 import { ImageLightbox } from './TurnView';
 import { SubAgentCard } from './LivePreview';
 import { FileChip } from './FileChip';
-import type { RichMessage, MessageBlock } from '../../types';
+import type { RichMessage, MessageBlock, StreamPlan } from '../../types';
 
-export function AssistantMsg({ message, t, workdir }: { message: RichMessage; t: (k: string) => string; workdir?: string | null }) {
+export function AssistantMsg({ message, t, workdir, fallbackPlan }: {
+  message: RichMessage; t: (k: string) => string; workdir?: string | null;
+  // The session's latest known task list from earlier turns. A turn without its own todo
+  // update (e.g. a resumed continuation) still shows the current plan — latest wins.
+  fallbackPlan?: StreamPlan | null;
+}) {
   const { activityBlocks, thinkingBlocks, planBlocks, subAgentBlocks, outputBlocks, noticeBlocks } = categorizeAssistantBlocks(message.blocks);
   const latestPlan = [...planBlocks].reverse().find(block => hasPlan(block.plan));
-  const hasContent = activityBlocks.length > 0 || subAgentBlocks.length > 0 || !!latestPlan?.plan || thinkingBlocks.length > 0 || outputBlocks.length > 0 || noticeBlocks.length > 0;
+  const planToShow = latestPlan?.plan ?? (hasPlan(fallbackPlan) ? fallbackPlan : null);
+  const hasContent = activityBlocks.length > 0 || subAgentBlocks.length > 0 || !!planToShow || thinkingBlocks.length > 0 || outputBlocks.length > 0 || noticeBlocks.length > 0;
   if (!hasContent) return null;
   return (
     <div className="space-y-3">
@@ -21,7 +27,7 @@ export function AssistantMsg({ message, t, workdir }: { message: RichMessage; t:
       {subAgentBlocks.map(block => block.subAgent ? (
         <SubAgentCard key={block.toolId || block.subAgent.id} sub={block.subAgent} t={t} />
       ) : null)}
-      {latestPlan?.plan && <PlanProgressCard plan={latestPlan.plan} t={t} className="max-w-[760px]" />}
+      {planToShow && <PlanProgressCard plan={planToShow} t={t} className="max-w-[760px]" />}
       {thinkingBlocks.length > 0 && <ThinkingSection blocks={thinkingBlocks} t={t} />}
       {outputBlocks.length > 0 && <OutputBlock blocks={outputBlocks} t={t} workdir={workdir} />}
       {noticeBlocks.length > 0 && <SystemNoticeSection blocks={noticeBlocks} t={t} />}

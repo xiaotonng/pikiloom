@@ -789,6 +789,20 @@ export const SessionPanel = memo(function SessionPanel({
   });
 
   const rawTurns = history?.turns || [];
+  // The session's current task list = the LAST plan snapshot anywhere in history (TodoWrite or
+  // TaskCreate/TaskUpdate — latest wins). Carried into the trailing turn / live stream so a
+  // continuation that hasn't rewritten its todos yet still shows the up-to-date plan.
+  const latestSessionPlan = useMemo<StreamPlan | null>(() => {
+    for (let i = rawTurns.length - 1; i >= 0; i--) {
+      const blocks = rawTurns[i].assistant?.blocks;
+      if (!blocks) continue;
+      for (let j = blocks.length - 1; j >= 0; j--) {
+        const b = blocks[j];
+        if (b.type === 'plan' && hasPlan(b.plan)) return b.plan;
+      }
+    }
+    return null;
+  }, [rawTurns]);
   const optimisticBridgesImages = useMemo(() => {
     if (!pendingImageUrls.length || !rawTurns.length) return false;
     const last = rawTurns[rawTurns.length - 1];
@@ -929,6 +943,7 @@ export const SessionPanel = memo(function SessionPanel({
                   turn={turn}
                   turnIndex={absoluteTurnIndex}
                   hideHeaderUsage={trailingContinuesLastTurn && i === turns.length - 1}
+                  fallbackPlan={i === turns.length - 1 && !(liveStream && liveStreamShouldRender(liveStream)) ? latestSessionPlan : undefined}
                   agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} t={t}
                   workdir={workdir}
                   onResend={(txt) => {
@@ -971,7 +986,7 @@ export const SessionPanel = memo(function SessionPanel({
             {liveStream && liveStreamShouldRender(liveStream) && (
               <div className="mb-6">
                 <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} hideContextUsage />
-                <LivePreview stream={liveStream} t={t} workdir={workdir} />
+                <LivePreview stream={hasPlan(liveStream.plan) ? liveStream : { ...liveStream, plan: latestSessionPlan }} t={t} workdir={workdir} />
               </div>
             )}
             {showTrailingLoader && (

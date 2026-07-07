@@ -29,8 +29,10 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
       { text: 'implement', status: 'inProgress' },
       { text: 'verify', status: 'pending' },
     ]);
-    // TodoWrite must NOT also surface as a generic tool call
-    expect(events.some(e => e.type === 'tool' && (e as any).call.name === 'TodoWrite')).toBe(false);
+    // The command itself surfaces as an Activity row (matching the CLI's own transcript).
+    const toolEv = events.find(e => e.type === 'tool' && (e as any).call.name === 'TodoWrite') as any;
+    expect(toolEv, 'TodoWrite should surface as an Activity tool row').toBeTruthy();
+    expect(toolEv.call.summary).toBe('Update plan');
   });
 
   it('emits tool events for non-TodoWrite tool_use', () => {
@@ -61,8 +63,30 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
       { text: 'design API', status: 'completed' },
       { text: 'write tests', status: 'pending' },
     ]);
-    // TaskCreate/TaskUpdate are plan-only — they must NOT surface as generic Activity tool calls.
-    expect(events.some(e => e.type === 'tool' && ['TaskCreate', 'TaskUpdate'].includes((e as any).call.name))).toBe(false);
+    // The commands surface as Activity rows too (matching the CLI's own transcript).
+    const createRow = events.find(e => e.type === 'tool' && (e as any).call.name === 'TaskCreate') as any;
+    expect(createRow.call.summary).toBe('Create task: design API');
+    const updateRow = events.find(e => e.type === 'tool' && (e as any).call.name === 'TaskUpdate') as any;
+    expect(updateRow.call.summary).toBe('Update task 1 → in_progress');
+    // TaskCreate results close their Activity row.
+    expect(events.some(e => e.type === 'tool' && (e as any).call.id === 'tc1' && (e as any).call.status === 'done')).toBe(true);
+  });
+
+  it('latest wins: a TodoWrite supersedes the task list — a later TaskUpdate cannot resurrect it', () => {
+    const events = run([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'old mechanism task' } }] } },
+      { type: 'user', toolUseResult: { task: { id: '1' } }, message: { content: [{ type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1' }] } },
+      // The agent switches panels: TodoWrite rebuilds tracking from scratch.
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tw1', name: 'TodoWrite', input: { todos: [
+        { content: 'fresh todo', status: 'in_progress' },
+      ] } }] } },
+      // A stray update against the abandoned task list must not emit a stale plan.
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } }] } },
+    ]);
+    const planEvents = events.filter(e => e.type === 'plan') as any[];
+    expect(planEvents[planEvents.length - 1].plan.steps).toEqual([
+      { text: 'fresh todo', status: 'inProgress' },
+    ]);
   });
 
   it('drops a TaskUpdate status=deleted task from the plan', () => {

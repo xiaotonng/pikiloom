@@ -64,7 +64,7 @@ export {
   roundPercent, toIsoFromEpochSeconds, normalizeUsageStatus,
   labelFromWindowMinutes, usageWindowFromRateLimit,
   parseJsonTail, modelFamily, normalizeClaudeModelId, emptyUsage,
-  readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText,
+  readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, isSystemInjectedUserText,
   SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
   CLAUDE_AT_MENTION_IMAGE_RE, extractClaudeAtMentionImagePaths, stripClaudeAtMentionImages,
   isPendingSessionId, emitSessionIdUpdate,

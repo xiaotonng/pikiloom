@@ -4,7 +4,7 @@ import type { Bot, ChatId, Agent, SessionInfo, SessionRuntime, ChatState, Stream
 import { fmtTokens, fmtUptime, fmtBytes } from './bot.js';
 import {
   getProjectSkillPaths, normalizeClaudeModelId, sessionListDisplayTitle,
-  listAllMcpExtensions, listSkills as listAllSkills,
+  listAllMcpExtensions, listSkills as listAllSkills, isSystemInjectedUserText,
 } from '../agent/index.js';
 import { getDriver } from '../agent/driver.js';
 import type { UsageResult } from '../agent/index.js';
@@ -368,9 +368,11 @@ export function extractLastSessionTurn(
 ): SessionTurnPreviewData | null {
   if (!messages.length) return null;
 
+  // Harness-injected user records (<task-notification>, <system-reminder>, …) can trail the
+  // real question in the session file — the preview must anchor on what the user actually asked.
   let lastUserIndex = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
+    if (messages[i].role === 'user' && !isSystemInjectedUserText(messages[i].text)) {
       lastUserIndex = i;
       break;
     }

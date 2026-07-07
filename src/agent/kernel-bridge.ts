@@ -144,6 +144,11 @@ export function composeKernelFinalPresentation(input: {
     ? 'The turn stopped responding after tool use without producing a reply (the model or provider may have stalled). Send any message to continue.'
     : input.stopReason === 'truncated'
     ? 'The reply ended after the last tool call without a closing message (the model returned an empty final response). Send any message to continue.'
+    // 'background' with narration = the hold cap closed the turn while background work was
+    // still running (a silent stop from the user's view). With NO narration it is the
+    // intentional detached-launch shape, which keeps the friendlier substitution below.
+    : (input.stopReason === 'background' && input.bodyText)
+    ? 'Background work was still running when this turn closed (hold limit reached). Send any message to check on it or continue.'
     : null;
   // Empty-text fallback (mirrors the legacy driver): a clean turn with no prose reads
   // "(no textual response)", not "(no output)" (which the kernel path used to show for every

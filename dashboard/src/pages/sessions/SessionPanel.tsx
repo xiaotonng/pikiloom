@@ -9,7 +9,7 @@ import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
 import type { InteractionSnapshot, MessageBlock, QueuedTaskPreview, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent, SnapshotArtifact } from '../../types';
 import { TurnView, UserBubble, TurnDivider } from './TurnView';
-import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice } from './LivePreview';
+import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice, type LiveStreamView } from './LivePreview';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
 import { sendWillQueue, optimisticSendWasQueued, doneAppliesToLivePreview, shouldShowTrailingLoader } from './queue-logic';
@@ -39,6 +39,12 @@ const BOTTOM_STICK_THRESHOLD_PX = 96;
 const EMPTY_TASK_IDS: string[] = [];
 const EMPTY_QUEUED_TASKS: QueuedTaskPreview[] = [];
 const EMPTY_INTERACTIONS: InteractionSnapshot[] = [];
+
+// Synthetic empty streaming view for the trailing "still working" tail. Rendering it through
+// the real TurnDivider + LivePreview pair gives the exact same scaffold a normally-sent task
+// shows at turn start (agent identity header + live-status dots), instead of bare dots that
+// read as a broken tail when the session is in progress but no stream snapshot is available.
+const TRAILING_LOADER_STREAM: LiveStreamView = { phase: 'streaming', text: '', thinking: '' };
 
 const MAX_HISTORY_SNAPSHOTS = 20;
 const RECALL_TOMBSTONE_TTL_MS = 60_000;
@@ -948,8 +954,9 @@ export const SessionPanel = memo(function SessionPanel({
               </div>
             )}
             {showTrailingLoader && (
-              <div className="mt-3 mb-5 animate-in">
-                <ThinkingDots className="text-fg-5" />
+              <div className="mb-6">
+                <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} hideContextUsage />
+                <LivePreview stream={TRAILING_LOADER_STREAM} t={t} workdir={workdir} />
               </div>
             )}
             <div className="h-4" />

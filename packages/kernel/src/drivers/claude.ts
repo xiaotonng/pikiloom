@@ -53,6 +53,8 @@ export class ClaudeDriver implements AgentDriver {
       // Dangling-tool-loop tracking: sawToolResult flips on the first tool_result; textSinceToolResult
       // goes false at every tool_result and true again once the model streams visible text.
       sawToolResult: false, textSinceToolResult: false,
+      // Wall-clock of the last parsed stream event — the hold cap defers while this is fresh.
+      lastEventAt: Date.now(),
       sessionId: null as string | null, model: null as string | null,
       stopReason: null as string | null, error: null as string | null,
       input: null as number | null, output: null as number | null, cached: null as number | null,
@@ -108,11 +110,27 @@ export class ClaudeDriver implements AgentDriver {
         ok: opts.ok ?? !state.error, text: state.text, reasoning: state.reasoning || undefined,
         error: state.error, stopReason: opts.stopReason ?? state.stopReason, sessionId: state.sessionId, usage: usageOf(),
       }, opts.kill ?? true);
-      // Absolute cap while holding for a still-running background task (stopReason marks it as
-      // "still running in the background" so the empty-text fallback reads right). Idempotent.
+      // Cap while holding for a still-running background task (stopReason marks it as
+      // "still running in the background" so the terminal presentation reads right). Idempotent —
+      // the countdown is absolute from the first arm. Sub-agent-backed holds use the longer
+      // agent cap, and a cap that fires while events are still flowing defers instead of
+      // cutting an actively-working turn mid-generation (the 2026-07-06 "停止不再继续生成":
+      // the 10-min cap yanked a live research turn 22s after its last tool_result and the
+      // graceful-close leak guard then killed the 4 still-running Explore agents).
       const armHoldCap = () => {
         if (holdCapTimer) return;
-        holdCapTimer = setTimeout(() => { if (!settled) settleResult({ stopReason: 'background', kill: false }); }, claudeBgHoldCapMs());
+        const capMs = claudeTurnHasAgentBackground(state) ? claudeBgAgentHoldCapMs() : claudeBgHoldCapMs();
+        const fire = () => {
+          holdCapTimer = null;
+          if (settled) return;
+          if (Date.now() - (state.lastEventAt ?? 0) < claudeBgSettleQuietMs()) {
+            holdCapTimer = setTimeout(fire, claudeBgHoldRecheckMs());
+            unref(holdCapTimer);
+            return;
+          }
+          settleResult({ stopReason: 'background', kill: false });
+        };
+        holdCapTimer = setTimeout(fire, capMs);
         unref(holdCapTimer);
       };
       // Grace close once all background work is done: settle gracefully (no kill) if Claude stays
@@ -172,6 +190,7 @@ export class ClaudeDriver implements AgentDriver {
           if (!trimmed) continue;
           let ev: any;
           try { ev = JSON.parse(trimmed); } catch { continue; }
+          state.lastEventAt = Date.now();
           handleClaudeEvent(ev, state, ctx.emit);
           const pending = pendingClaudeBackgroundTasks(state);
           // Any model output means the model is alive and streaming — cancel the post-tool stall watchdog.
@@ -568,6 +587,27 @@ export function claudeBgHoldCapMs(): number {
   const raw = Number(process.env.PIKILOOM_CLAUDE_BG_HOLD_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_HOLD_CAP_DEFAULT_MS;
 }
+// Sub-agent-backed background work (Task/Agent tool launches) gets a much longer hold: these
+// are finite model-driven jobs whose results the turn is genuinely waiting on — a research
+// fleet mapping two repos legitimately runs past the 10-minute daemon cap, and capping it
+// there discarded the agents' work and cut the turn mid-flight ("停止不再继续生成").
+// Override with PIKILOOM_CLAUDE_BG_AGENT_HOLD_MS.
+const CLAUDE_BG_AGENT_HOLD_CAP_DEFAULT_MS = 45 * 60_000;
+export function claudeBgAgentHoldCapMs(): number {
+  const raw = Number(process.env.PIKILOOM_CLAUDE_BG_AGENT_HOLD_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_AGENT_HOLD_CAP_DEFAULT_MS;
+}
+export function claudeTurnHasAgentBackground(s: any): boolean {
+  return !!s?.bgAgentTasks?.size;
+}
+// When the hold cap fires while events are still flowing, defer and re-check on this cadence
+// instead of yanking an actively-working turn (the cap bounds SILENT stuck holds, nothing else).
+// Override with PIKILOOM_CLAUDE_BG_HOLD_RECHECK_MS (tests need sub-second rechecks).
+const CLAUDE_BG_HOLD_RECHECK_DEFAULT_MS = 30_000;
+export function claudeBgHoldRecheckMs(): number {
+  const raw = Number(process.env.PIKILOOM_CLAUDE_BG_HOLD_RECHECK_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_HOLD_RECHECK_DEFAULT_MS;
+}
 // Once every KNOWN background task has finished, how long Claude must stay quiet (no further
 // output at all) before we close a background turn. A completed task's status races AHEAD of the
 // wake-up turn that reports it — with N parallel agents finishing together, the last agent's
@@ -624,6 +664,14 @@ export function isTerminalTaskStatus(status: unknown): boolean {
 export function trackClaudeBackgroundTask(ev: any, s: any): void {
   const subtype = ev?.subtype;
   if (subtype !== 'task_started' && subtype !== 'task_updated' && subtype !== 'task_notification') return;
+  // Sub-agent-backed background tasks (Task/Agent tool launches) are FINITE model-driven jobs,
+  // unlike a detached shell that may daemonize forever — they earn a much longer hold cap
+  // (see armHoldCap). The task_started's tool_use_id points at the launching tool call, which
+  // for sub-agents lives in s.subAgents.
+  if (subtype === 'task_started') {
+    const tui = String(ev?.tool_use_id ?? '').trim();
+    if (tui && s?.subAgents?.has?.(tui)) (s.bgAgentTasks ||= new Set<string>()).add(String(ev?.task_id ?? ev?.id ?? tui));
+  }
   const id = String(ev?.task_id ?? ev?.tool_use_id ?? '').trim();
   if (!id) return;
   if (subtype === 'task_started') { (s.bgStarted ||= new Set<string>()).add(id); return; }

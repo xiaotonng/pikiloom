@@ -21,7 +21,7 @@ import {
   IMAGE_EXTS, mimeForExt,
   listPikiloomSessions, findPikiloomSession, isPendingSessionId,
   mergeManagedAndNativeSessions, managedRecordToSessionInfo,
-  readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
+  readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, isSystemInjectedUserText, SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
   CLAUDE_AT_MENTION_IMAGE_RE, extractClaudeAtMentionImagePaths, stripClaudeAtMentionImages,
   attachAgentImage,
   applyTurnWindow, shortValue,
@@ -1296,10 +1296,12 @@ function getClaudeSessionTail(opts: SessionTailOpts): SessionTailResult {
       try {
         const ev = JSON.parse(raw);
         if (ev.type === 'user') {
+          if (ev.isMeta === true) continue;
           const text = stripInjectedPrompts(extractClaudeText(ev.message?.content, true));
-          if (text) allMsgs.push({ role: 'user', text });
+          if (text && !isSystemInjectedUserText(text)) allMsgs.push({ role: 'user', text });
         } else if (ev.type === 'assistant') {
           const text = extractClaudeText(ev.message?.content, true);
+          if (ev.message?.model === '<synthetic>' && isClaudeSyntheticResumeNoise(text)) continue;
           if (text) allMsgs.push({ role: 'assistant', text });
         }
       } catch {  }
@@ -1368,27 +1370,6 @@ function extractClaudeBlocks(
   return blocks;
 }
 
-const SYSTEM_INJECTED_USER_TAGS = new Set([
-  'task-notification',
-  'system-reminder',
-  'persisted-output',
-  'local-command-stdout',
-  'local-command-caveat',
-  'local-command-stderr',
-  'ide_opened_file',
-  'ide_diagnostics',
-  'ide_selection',
-  'event',
-  'analysis',
-  'case_id',
-  'tool-use-id',
-  'output-file',
-  // Kernel claude driver's in-process truncated-turn recovery prompt (see packages/kernel
-  // drivers/claude.ts): injected on the CLI's stdin, so it lands in the jsonl as a real user
-  // message — hide it from the transcript like other system-injected turns.
-  'pikiloom-recover',
-]);
-
 // The CLI's resume-time repair placeholder for a turn that never concluded (paired with an
 // isMeta "Continue from where you left off." user record). It is not model output — but it IS
 // the only durable marker that the previous reply was cut off before its closing message.
@@ -1400,17 +1381,6 @@ function isClaudeSyntheticResumeNoise(text: string): boolean {
 
 const CLAUDE_INCOMPLETE_TURN_NOTICE =
   '⚠️ This reply ended before a closing message was delivered (interrupted, or the model returned an empty final response).';
-
-function isSystemInjectedUserEvent(text: string): boolean {
-  const trimmed = (text || '').trim();
-  if (!trimmed) return true;
-  if (/^\[Request interrupted by user(?: for tool use)?\]$/i.test(trimmed)) return true;
-  const leading = trimmed.match(/^<([a-z][a-z0-9_-]*)\b/i);
-  if (leading && SYSTEM_INJECTED_USER_TAGS.has(leading[1].toLowerCase())) return true;
-  const lower = trimmed.toLowerCase();
-  const markers = ['continued from a previous', 'summary below covers', 'earlier portion of the conversation', 'here is a summary of', 'conversation summary'];
-  return markers.some(m => lower.includes(m));
-}
 
 function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesResult {
   const projectDir = path.join(getHome(), '.claude', 'projects', claudeProjectDirName(opts.workdir));
@@ -1544,9 +1514,11 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
             continue;
           }
 
+          const probe = extractClaudeText(ev.message?.content, true);
           if (pendingRole === 'assistant') {
-            const probe = extractClaudeText(ev.message?.content, true);
-            if (isSystemInjectedUserEvent(probe)) continue;
+            if (isSystemInjectedUserText(probe)) continue;
+          } else if (probe.trim() && isSystemInjectedUserText(probe)) {
+            continue;
           }
 
           flush();

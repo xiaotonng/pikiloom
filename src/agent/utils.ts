@@ -487,6 +487,38 @@ export const SESSION_PREVIEW_IGNORED_USER_PATTERNS = [
   /^\[Request interrupted by user(?: for tool use)?\]$/i,
 ];
 
+const SYSTEM_INJECTED_USER_TAGS = new Set([
+  'task-notification',
+  'system-reminder',
+  'persisted-output',
+  'local-command-stdout',
+  'local-command-caveat',
+  'local-command-stderr',
+  'ide_opened_file',
+  'ide_diagnostics',
+  'ide_selection',
+  'event',
+  'analysis',
+  'case_id',
+  'tool-use-id',
+  'output-file',
+  // Kernel claude driver's in-process truncated-turn recovery prompt (see packages/kernel
+  // drivers/claude.ts): injected on the CLI's stdin, so it lands in the jsonl as a real user
+  // message — hide it from the transcript like other system-injected turns.
+  'pikiloom-recover',
+]);
+
+export function isSystemInjectedUserText(text: string): boolean {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return true;
+  if (/^\[Request interrupted by user(?: for tool use)?\]$/i.test(trimmed)) return true;
+  const leading = trimmed.match(/^<([a-z][a-z0-9_-]*)\b/i);
+  if (leading && SYSTEM_INJECTED_USER_TAGS.has(leading[1].toLowerCase())) return true;
+  const lower = trimmed.toLowerCase();
+  const markers = ['continued from a previous', 'summary below covers', 'earlier portion of the conversation', 'here is a summary of', 'conversation summary'];
+  return markers.some(m => lower.includes(m));
+}
+
 export const SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE = /\[Image:[^\]]+\]/gi;
 export const SESSION_PREVIEW_FILE_PLACEHOLDER_RE = /\[Attached file:[^\]]+\]/gi;
 

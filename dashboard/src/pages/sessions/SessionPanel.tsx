@@ -27,6 +27,7 @@ import {
   mergeLatestHistory,
   sameUserText,
   displayPromptForPending,
+  shouldCarryLatestPlanIntoLiveStream,
   promptEndsWithUserPrompt,
   streamPromptMatchesTurnText,
   type Turn,
@@ -821,6 +822,9 @@ export const SessionPanel = memo(function SessionPanel({
   }, [pendingImageUrls, pendingPrompt, liveStream]);
   const liveQuestion = liveStream?.question || null;
   const effectiveStreamPrompt = displayPromptForPending(pendingPrompt, liveQuestion);
+  const livePlanToShow = liveStream && hasPlan(liveStream.plan)
+    ? liveStream.plan
+    : (liveStream && shouldCarryLatestPlanIntoLiveStream(pendingPrompt, liveQuestion) ? latestSessionPlan : null);
   const liveQuestionCoversPending = promptEndsWithUserPrompt(liveQuestion, pendingPrompt);
   const rawLastUserText = rawTurns.length > 0 ? rawTurns[rawTurns.length - 1]?.user?.text : null;
   const pendingAlreadyInHistory = !!effectiveStreamPrompt
@@ -987,7 +991,7 @@ export const SessionPanel = memo(function SessionPanel({
             {liveStream && liveStreamShouldRender(liveStream) && (
               <div className="mb-6">
                 <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} previewMeta={liveStream.previewMeta} hideContextUsage />
-                <LivePreview stream={hasPlan(liveStream.plan) ? liveStream : { ...liveStream, plan: latestSessionPlan }} t={t} workdir={workdir} />
+                <LivePreview stream={livePlanToShow === liveStream.plan ? liveStream : { ...liveStream, plan: livePlanToShow }} t={t} workdir={workdir} />
               </div>
             )}
             {showTrailingLoader && (

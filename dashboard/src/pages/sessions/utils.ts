@@ -40,6 +40,13 @@ export function displayPromptForPending(
   return pendingPrompt || liveQuestion || null;
 }
 
+export function shouldCarryLatestPlanIntoLiveStream(
+  pendingPrompt: string | null | undefined,
+  liveQuestion: string | null | undefined,
+): boolean {
+  return !displayPromptForPending(pendingPrompt, liveQuestion);
+}
+
 // While a turn streams (before its native transcript is parseable) the history turn can
 // carry a managed-fallback preview of the prompt truncated by shortValue ("<prefix>...").
 // That truncated text never equals the full live prompt, so a plain sameUserText dedup

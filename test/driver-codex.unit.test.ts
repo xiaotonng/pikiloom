@@ -187,6 +187,79 @@ describe('Codex session history', () => {
     });
 
     await withTempHome(async homeDir => {
+      const workdir = path.join(homeDir, 'project');
+      const workspacePath = path.join(workdir, '.pikiloom', 'sessions', 'codex', 'sess-overlay', 'workspace');
+      const rolloutDir = path.join(homeDir, '.codex', 'sessions', '2026', '04', '02');
+      fs.mkdirSync(workdir, { recursive: true });
+      fs.mkdirSync(workspacePath, { recursive: true });
+      fs.mkdirSync(rolloutDir, { recursive: true });
+
+      fs.writeFileSync(path.join(rolloutDir, 'rollout-2026-04-02T09-00-00-overlay.jsonl'), [
+        JSON.stringify({ timestamp: '2026-04-02T09:00:00.000Z', type: 'session_meta', payload: { id: 'sess-overlay', cwd: workdir } }),
+        JSON.stringify({ timestamp: '2026-04-02T09:00:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'First request' } }),
+        JSON.stringify({ timestamp: '2026-04-02T09:00:02.000Z', type: 'response_item', payload: {
+          type: 'message',
+          role: 'assistant',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: 'First answer.' }],
+        } }),
+        JSON.stringify({ timestamp: '2026-04-02T09:00:03.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'Second request' } }),
+        JSON.stringify({ timestamp: '2026-04-02T09:00:04.000Z', type: 'response_item', payload: {
+          type: 'message',
+          role: 'assistant',
+          phase: 'commentary',
+          content: [{ type: 'output_text', text: 'Working on second request.' }],
+        } }),
+      ].join('\n'));
+
+      const sessionIndexPath = path.join(workdir, '.pikiloom', 'sessions', 'index.json');
+      fs.mkdirSync(path.dirname(sessionIndexPath), { recursive: true });
+      fs.writeFileSync(sessionIndexPath, JSON.stringify({
+        version: 1,
+        sessions: [
+          {
+            sessionId: 'sess-overlay',
+            agent: 'codex',
+            workdir,
+            workspacePath,
+            threadId: 'legacy:codex:sess-overlay',
+            createdAt: '2026-04-02T09:00:00.000Z',
+            updatedAt: '2026-04-02T09:00:03.000Z',
+            title: 'First request',
+            model: 'gpt-5.4',
+            stagedFiles: [],
+            runState: 'running',
+            runDetail: null,
+            runUpdatedAt: '2026-04-02T09:00:03.000Z',
+            classification: null,
+            userStatus: null,
+            userNote: null,
+            lastQuestion: 'First request',
+            lastAnswer: 'First answer.',
+            lastMessageText: 'First answer.',
+            lastThinking: 'Recovered prior thinking.',
+            lastPlan: {
+              explanation: null,
+              steps: [{ step: 'Finish first request', status: 'completed' }],
+            },
+            migratedFrom: null,
+            migratedTo: null,
+            linkedSessions: [],
+          },
+        ],
+      }, null, 2));
+
+      const result = await getSessionMessages({ agent: 'codex', sessionId: 'sess-overlay', workdir, rich: true });
+      expect(result.ok).toBe(true);
+      const assistants = result.richMessages?.filter(message => message.role === 'assistant') || [];
+      expect(assistants).toHaveLength(2);
+      expect(assistants[0].blocks.some(block => block.type === 'plan')).toBe(true);
+      expect(assistants[0].blocks.some(block => block.type === 'thinking')).toBe(true);
+      expect(assistants[1].blocks.some(block => block.type === 'plan')).toBe(false);
+      expect(assistants[1].blocks.some(block => block.type === 'thinking')).toBe(false);
+    });
+
+    await withTempHome(async homeDir => {
       const sessionId = 'sess-img';
       const workdir = path.join(homeDir, 'project');
       const workspacePath = path.join(workdir, '.pikiloom', 'sessions', 'codex', sessionId, 'workspace');

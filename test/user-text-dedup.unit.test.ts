@@ -4,6 +4,7 @@ import {
   normalizeUserText,
   promptEndsWithUserPrompt,
   sameUserText,
+  shouldCarryLatestPlanIntoLiveStream,
   streamPromptMatchesTurnText,
 } from '../dashboard/src/pages/sessions/utils';
 
@@ -109,5 +110,23 @@ describe('handover prompt pending dedup', () => {
   it('does not merge unrelated live questions with the pending prompt', () => {
     expect(promptEndsWithUserPrompt('Please fix auth', 'Please fix usage')).toBe(false);
     expect(displayPromptForPending('Please fix usage', 'Please fix auth')).toBe('Please fix usage');
+  });
+});
+
+describe('live plan fallback isolation', () => {
+  it('does not carry the previous plan into a new live user turn', () => {
+    expect(shouldCarryLatestPlanIntoLiveStream('fix the dashboard', null)).toBe(false);
+    expect(shouldCarryLatestPlanIntoLiveStream(null, 'fix the dashboard')).toBe(false);
+  });
+
+  it('does not carry the previous plan into a handover live question', () => {
+    const prompt = 'continue fixing layout';
+    const handover = `<handover>prior transcript</handover>\n${prompt}`;
+    expect(shouldCarryLatestPlanIntoLiveStream(prompt, handover)).toBe(false);
+  });
+
+  it('allows the fallback only when there is no current live question', () => {
+    expect(shouldCarryLatestPlanIntoLiveStream(null, null)).toBe(true);
+    expect(shouldCarryLatestPlanIntoLiveStream('', '')).toBe(true);
   });
 });

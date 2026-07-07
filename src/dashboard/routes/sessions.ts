@@ -57,6 +57,45 @@ function parsePageSize(value: string | null | undefined, fallback = DEFAULT_SESS
 }
 
 type DashboardSessionInfo = SessionInfo & { isCurrent?: boolean; workspaceName?: string };
+type DashboardWorkspaceInfo = ReturnType<typeof loadWorkspaces>[number] & {
+  isDefault?: boolean;
+  removable?: boolean;
+};
+
+function sameWorkspacePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return path.resolve(a) === path.resolve(b);
+}
+
+export function isRemovableWorkspacePath(
+  workspacePath: string | null | undefined,
+  runtimeWorkdir: string | null | undefined,
+): boolean {
+  return !!workspacePath && !sameWorkspacePath(workspacePath, runtimeWorkdir);
+}
+
+export function projectWorkspacesForDashboard(
+  workspaces: ReturnType<typeof loadWorkspaces>,
+  runtimeWorkdir: string | null | undefined,
+  nowIso = new Date().toISOString(),
+): DashboardWorkspaceInfo[] {
+  const runtimePath = runtimeWorkdir ? path.resolve(runtimeWorkdir) : '';
+  const projected = workspaces.map(workspace => sameWorkspacePath(workspace.path, runtimePath)
+    ? { ...workspace, isDefault: true, removable: false }
+    : { ...workspace, removable: true });
+
+  if (runtimePath && !projected.some(workspace => sameWorkspacePath(workspace.path, runtimePath))) {
+    projected.unshift({
+      path: runtimePath,
+      name: path.basename(runtimePath),
+      order: -1,
+      addedAt: nowIso,
+      isDefault: true,
+      removable: false,
+    });
+  }
+  return projected;
+}
 
 function paginateSessionResult<T>(items: T[], page: number, limit: number) {
   const total = items.length;
@@ -334,15 +373,7 @@ app.get('/api/workspaces', (c) => {
   const workspaces = loadWorkspaces();
   const config = loadUserConfig();
   const rwd = runtime.getRuntimeWorkdir(config);
-  if (rwd && !workspaces.some(w => w.path === rwd)) {
-    workspaces.unshift({
-      path: rwd,
-      name: path.basename(rwd),
-      order: -1,
-      addedAt: new Date().toISOString(),
-    });
-  }
-  return c.json({ ok: true, workspaces });
+  return c.json({ ok: true, workspaces: projectWorkspacesForDashboard(workspaces, rwd) });
 });
 
 app.post('/api/workspaces', async (c) => {
@@ -362,6 +393,10 @@ app.delete('/api/workspaces', async (c) => {
     const body = await c.req.json();
     const wsPath = typeof body?.path === 'string' ? body.path.trim() : '';
     if (!wsPath) return c.json({ ok: false, error: 'path is required' }, 400);
+    const runtimeWorkdir = runtime.getRuntimeWorkdir(loadUserConfig());
+    if (!isRemovableWorkspacePath(wsPath, runtimeWorkdir)) {
+      return c.json({ ok: false, error: 'default workspace cannot be removed' }, 400);
+    }
     const removed = removeWorkspace(wsPath);
     return c.json({ ok: true, removed });
   } catch (e: any) {

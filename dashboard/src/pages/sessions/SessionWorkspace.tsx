@@ -757,7 +757,19 @@ export const SessionWorkspace = memo(function SessionWorkspace({
         setOpenSessions(prev => {
           if (fromSlotIdx >= prev.length) return prev;
           const updated = [...prev];
-          updated[fromSlotIdx] = { ...prev[fromSlotIdx], agent: next.agent, sessionId: next.sessionId, workdir: next.workdir };
+          const prevSlot = prev[fromSlotIdx];
+          const isPromotion = prevSlot.agent === next.agent
+            && isPendingSessionId(prevSlot.sessionId)
+            && !isPendingSessionId(next.sessionId);
+          updated[fromSlotIdx] = {
+            ...prevSlot,
+            agent: next.agent,
+            sessionId: next.sessionId,
+            workdir: next.workdir,
+            mountKey: isPromotion ? prevSlot.mountKey : nextMountKey(),
+            pendingPrompt: isPromotion ? prevSlot.pendingPrompt : null,
+            pendingImageUrls: isPromotion ? prevSlot.pendingImageUrls : undefined,
+          };
           return updated;
         });
         setActiveSlotIndex(fromSlotIdx);
@@ -897,6 +909,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({
                 sessions={filteredByWs[ws.path] || []}
                 loading={!!loadingMap[ws.path] || !(ws.path in sessionsMap)}
                 isActive={ws.path === runtimeWorkdir}
+                removable={ws.removable !== false}
                 selectedKey={selectedKey}
                 openSessionKeys={openSessionKeys}
                 onSelectSession={handleSelectSession}
@@ -1402,6 +1415,7 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
   onRefresh,
   onRemove,
   onExtensions,
+  removable,
   onWarmSession,
   onCancelWarmSession,
   onSessionMenuOpen,
@@ -1418,6 +1432,7 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
   onRefresh: (wsPath: string) => void;
   onRemove: (wsPath: string) => void;
   onExtensions: (wsPath: string) => void;
+  removable?: boolean;
   onWarmSession: (s: SessionInfo, wsPath: string) => void;
   onCancelWarmSession: (s: SessionInfo, wsPath: string) => void;
   onSessionMenuOpen: (anchor: DOMRect, s: SessionInfo, wsPath: string) => void;
@@ -1485,10 +1500,11 @@ const WorkspaceGroup = memo(function WorkspaceGroup({
               <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
           </button>
-          {!isActive && (
+          {removable && !isActive && (
             <button
               onClick={e => { e.stopPropagation(); onRemove(wsPath); }}
               className="p-1 rounded text-fg-5 hover:text-red-400 hover:bg-panel-h/60 transition-colors"
+              title={t('hub.removeWorkspace')}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />

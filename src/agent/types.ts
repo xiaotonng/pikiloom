@@ -461,6 +461,11 @@ export interface UsageResult {
   status: string | null;
   windows: UsageWindowInfo[];
   error: string | null;
+  // True when this is a lower-fidelity fallback standing in for the real reading — e.g. the
+  // native/default-login row served from the coarse inference-header probe because the full
+  // `/api/oauth/usage` endpoint is rate-limited, so per-model weekly (Fable) and Extra spend
+  // are missing. Surfaces flag it so a degraded read isn't mistaken for a complete one.
+  degraded?: boolean;
   // Account-level metadata from newer upstream payloads (codex: plan_type / credits /
   // rate-limit reset credits). Absent for sources that don't report them.
   planType?: string | null;

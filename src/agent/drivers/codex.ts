@@ -539,13 +539,35 @@ function buildCodexAssistantText(blocks: MessageBlock[]): string {
   return blocks.find(block => block.type === 'tool_result' && block.content.trim())?.content.trim() || '';
 }
 
+function normalizeCodexOverlayQuestion(value: string | null | undefined): string {
+  return stripInjectedPrompts(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function previousUserQuestionForAssistant(richMessages: RichMessage[], assistantIndex: number): string {
+  for (let i = assistantIndex - 1; i >= 0; i--) {
+    const message = richMessages[i];
+    if (message.role === 'user') return normalizeCodexOverlayQuestion(message.text);
+  }
+  return '';
+}
+
+function findCodexManagedPreviewAssistantIndex(
+  richMessages: RichMessage[],
+  managedLastQuestion: string | null | undefined,
+): number {
+  const expectedQuestion = normalizeCodexOverlayQuestion(managedLastQuestion);
+  if (!expectedQuestion) return -1;
+  for (let i = richMessages.length - 1; i >= 0; i--) {
+    if (richMessages[i].role !== 'assistant') continue;
+    if (previousUserQuestionForAssistant(richMessages, i) === expectedQuestion) return i;
+  }
+  return -1;
+}
+
 function overlayCodexManagedPreview(workdir: string, sessionId: string, richMessages: RichMessage[]): RichMessage[] {
   const managed = findPikiloomSession(workdir, 'codex', sessionId);
   if (!managed) return richMessages;
-  const assistantIndex = [...richMessages]
-    .map((message, index) => ({ message, index }))
-    .reverse()
-    .find(entry => entry.message.role === 'assistant')?.index ?? -1;
+  const assistantIndex = findCodexManagedPreviewAssistantIndex(richMessages, managed.lastQuestion);
   if (assistantIndex < 0) return richMessages;
 
   const current = richMessages[assistantIndex];

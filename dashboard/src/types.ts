@@ -32,6 +32,9 @@ export interface UsageResult {
   status: string | null;
   windows: UsageWindowInfo[];
   error: string | null;
+  // Coarse stand-in served while the full quota endpoint is rate-limited: only 5h/7d, no
+  // per-model weekly (Fable) or Extra spend. Surfaces show a "limited" hint when set.
+  degraded?: boolean;
   planType?: string | null;
   creditsSummary?: string | null;
   resetCreditsAvailable?: number | null;
@@ -375,6 +378,8 @@ export interface SessionLineageRef {
 export interface WorkspaceEntry {
   path: string;
   name: string;
+  isDefault?: boolean;
+  removable?: boolean;
 }
 
 export interface GitStatus {

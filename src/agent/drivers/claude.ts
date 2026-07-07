@@ -2005,7 +2005,12 @@ export function claudeNativeUsage(opts?: { fresh?: boolean; force?: boolean }): 
     // through a long 429 stretch instead of freezing on the first degraded read).
     if (!result && (!claudeUsageCache.lastGood || claudeUsageCache.lastGood.source === 'ratelimit-headers')) {
       const token = getClaudeOAuthToken();
-      if (token) result = await claudeUsageForToken(token, opts);
+      // Flag the header-probe stand-in as degraded so surfaces can say "only 5h/7d, Fable/Extra
+      // pending" instead of silently presenting a coarse read as the full picture.
+      if (token) {
+        const probe = await claudeUsageForToken(token, opts);
+        result = probe ? { ...probe, degraded: true } : probe;
+      }
       agentLog(`[usage] native oauth usage read failed; header-probe fallback -> ${result ? result.source : 'null'}`);
     }
     if (result) {

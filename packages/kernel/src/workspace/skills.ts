@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { LoomPaths, LoomScope } from './paths.js';
+import { searchNpmPackages } from './npm-search.js';
 
 // ---- SkillsManager: the unified skills registry ("注册到全局目录然后给各 agent 做软链") ----
 //
@@ -36,13 +37,25 @@ export interface SkillsManagerOptions {
 
 const DEFAULT_AGENT_SKILL_DIRS = ['.claude/skills', '.agents/skills'];
 
-function parseSkillMeta(content: string): { label: string | null; description: string | null; mcpRequires?: string[] } {
+export interface SkillMeta {
+  label: string | null;
+  description: string | null;
+  mcpRequires?: string[];
+}
+
+/**
+ * Parse a SKILL.md's frontmatter (label/name + description + mcp_requires), falling back
+ * to the first `# heading` for the label. Exported so an app scanning additional skill
+ * stores (e.g. an agent's own ~/.claude/skills) reads them with the same rules.
+ */
+export function parseSkillMeta(content: string): SkillMeta {
   let label: string | null = null;
   let description: string | null = null;
   let mcpRequires: string[] | undefined;
   const fm = content.match(/^---\s*\n([\s\S]*?)\n---/);
   if (fm) {
-    const lm = fm[1].match(/^label:\s*(.+)/m);
+    // Both frontmatter dialects: pikiloom's `label:` and the agent-native `name:`.
+    const lm = fm[1].match(/^label:\s*(.+)/m) || fm[1].match(/^name:\s*(.+)/m);
     if (lm) label = lm[1].trim();
     const dm = fm[1].match(/^description:\s*(.+)/m);
     if (dm) description = dm[1].trim();
@@ -96,7 +109,7 @@ function discoverSkillsFromDir(dir: string, scope: LoomScope, seen: Set<string>)
     const skillFile = path.join(skillDir, 'SKILL.md');
     try { if (!fs.statSync(skillDir).isDirectory()) continue; } catch { continue; }
     try { if (!fs.statSync(skillFile).isFile()) continue; } catch { continue; }
-    let meta: ReturnType<typeof parseSkillMeta> = { label: null, description: null };
+    let meta: SkillMeta = { label: null, description: null };
     try { meta = parseSkillMeta(fs.readFileSync(skillFile, 'utf8')); } catch { /* keep defaults */ }
     out.push({ name, label: meta.label, description: meta.description, scope, path: skillDir, mcpRequires: meta.mcpRequires });
     seen.add(name);
@@ -153,24 +166,12 @@ export class SkillsManager {
   /** Search installable skills on the npm registry (best-effort; [] on failure). */
   async search(query: string, limit = 20): Promise<SkillSearchResult[]> {
     const q = (query || '').trim();
-    const text = encodeURIComponent(`agent skill ${q}`.trim());
-    const url = `https://registry.npmjs.org/-/v1/search?text=${text}&size=${Math.max(1, Math.min(50, limit))}`;
     try {
-      const res = await fetch(url, { headers: { accept: 'application/json' } });
-      if (!res.ok) return [];
-      const data = await res.json() as any;
-      const objects: any[] = Array.isArray(data?.objects) ? data.objects : [];
-      return objects.map((o) => {
-        const pkg = o?.package ?? {};
-        return {
-          name: String(pkg.name ?? ''),
-          description: pkg.description ?? null,
-          source: 'npm',
-          author: pkg.publisher?.username ?? pkg.author?.name ?? null,
-          homepage: pkg.links?.homepage ?? pkg.links?.npm ?? null,
-          version: pkg.version ?? null,
-        } as SkillSearchResult;
-      }).filter(s => s.name);
+      const hits = await searchNpmPackages(`agent skill ${q}`.trim(), Math.max(1, Math.min(50, limit)), fetch);
+      return hits.map(h => ({
+        name: h.name, description: h.description, source: 'npm',
+        author: h.author, homepage: h.homepage, version: h.version,
+      }));
     } catch (e: any) {
       this.log?.(`[skills] search failed: ${e?.message || e}`);
       return [];

@@ -21,7 +21,7 @@ export interface DiscoverOptions {
   runningThresholdMs?: number;
 }
 
-export const NATIVE_SESSION_RUNNING_THRESHOLD_MS = 10_000;
+const NATIVE_SESSION_RUNNING_THRESHOLD_MS = 10_000;
 
 function homeOf(opts?: DiscoverOptions): string {
   return opts?.home || os.homedir();

@@ -10,6 +10,7 @@
     "dist/",
     "dashboard/dist/",
     "packages/kernel/dist/",
+    "packages/kernel/examples/console.html",
     "LICENSE",
     "README.md"
   ],

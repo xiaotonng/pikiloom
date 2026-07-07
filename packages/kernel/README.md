@@ -205,7 +205,8 @@ interrupts only the current turn and the next queued task promotes.
 | `ClaudeDriver` | `claude` | `claude` CLI, stream-json (+ `--effort`, partial messages) | ✓ | — | ✓ | ✓ |
 | `CodexDriver` | `codex` | `codex app-server` JSON-RPC (HITL via `requestUserInput`) | ✓ | via askUser | ✓ | ✓ |
 | `GeminiDriver` | `gemini` | `gemini --output-format stream-json` | — | — | ✓ | ✓ |
-| `HermesDriver` | `hermes` | ACP `session/update` | — | — | ✓ | — |
+| `AcpDriver` | *(config)* | generic ACP ndjson JSON-RPC — any ACP CLI: `new AcpDriver({ id, command, args })` | — | via askUser | ✓ | — |
+| `HermesDriver` | `hermes` | ACP preset over `AcpDriver` (`hermes acp`) | — | via askUser | ✓ | — |
 | `EchoDriver` | `echo` | none (hermetic, in-process) | ✓ | ✓ | ✓ | ✓ |
 
 Write your own by implementing `AgentDriver` and passing it to `createLoom({ drivers })` (or
@@ -311,16 +312,28 @@ node-builtins-only and additive — every existing port/default is unchanged.
 
 ## Exports
 
-Main entry `@pikiloom/kernel` re-exports everything. Subpaths: `@pikiloom/kernel/drivers`,
-`@pikiloom/kernel/surfaces`, `@pikiloom/kernel/protocol`.
+Main entry `@pikiloom/kernel` is the public API, pinned by `test/api-surface.test.ts`.
+Subpaths: `@pikiloom/kernel/drivers`, `@pikiloom/kernel/surfaces`, `@pikiloom/kernel/protocol`.
+Driver-internal parser/settle helpers are exported only from their modules (for white-box
+tests) and are NOT part of the public surface.
 
 - Runtime: `createLoom`, `Loom`, `Hub`, `SessionRunner`, `runTurn`, `PtyBridge`, `ptyAvailable`, `attachTui`
-- Drivers: `EchoDriver`, `ClaudeDriver`, `CodexDriver`, `GeminiDriver`, `HermesDriver`
+- Drivers: `EchoDriver`, `ClaudeDriver`, `CodexDriver`, `GeminiDriver`, `AcpDriver` (+ `AcpDriverConfig`), `HermesDriver`
+- Native discovery (driver-axis): `discover{Claude,Codex,Gemini}NativeSessions`, `encodeClaudeProjectDir` + type `DiscoverOptions`
 - Surfaces: `WebSurface`, `CliSurface`
 - Ports/defaults: `FsSessionStore`, `NullModelResolver`, `NoopToolProvider`, `PassthroughSystemPromptBuilder`, `AutoCancelInteractionHandler`, `DeferToTerminalInteractionHandler`, `NoopCatalog`, `defaultBaseDir`
-- Workspace: `resolveLoomPaths`, `SessionsManager`, `SkillsManager`, `McpRegistry`, `ensureDirSymlink`, `discover{Claude,Codex,Gemini}NativeSessions` + types `LoomPaths`, `LoomScope`, `ManagedSessionInfo`, `NativeSessionInfo`, `SkillInfo`, `McpCatalogEntry`
-- Protocol: `UniversalSnapshot`, `diffSnapshot`, `applySnapshotPatch`, `emptySnapshot`, `PROTOCOL_VERSION`, all wire/`Client*`/`Server*` message types
-- Types: `AgentDriver`, `AgentTurnInput`, `DriverContext`, `DriverEvent`, `DriverResult`, `LoomIO`, `PromptInput`, `Surface`, `Plugin`, `SpawnContribution`, `SessionStore`, `ModelResolver`, `ToolProvider`, `SystemPromptBuilder`, `InteractionHandler`, `Catalog`, …
+- Workspace: `resolveLoomPaths`, `normalizeStateDirName`, `SessionsManager`, `SkillsManager`, `McpRegistry`, `ensureDirSymlink`, `parseSkillMeta` + types `LoomPaths`, `LoomScope`, `ManagedSessionInfo`, `SkillInfo`, `SkillMeta`, `McpCatalogEntry`
+- Multi-account: `accountTokenSupported`, `accountTokenEnvVar`, `accountTokenEnv` — which env var carries an agent's auth token, so an app can inject a selected account's token per spawn (claude: `CLAUDE_CODE_OAUTH_TOKEN`; storage/selection stay app-side)
+- Protocol: `UniversalSnapshot`, `diffSnapshot`, `applySnapshotPatch`, `emptySnapshot`, `PROTOCOL_VERSION`, `makeSessionKey`, `splitSessionKey`, all wire/`Client*`/`Server*` message types
+- Types: `AgentDriver`, `AgentTurnInput`, `DriverContext`, `DriverEvent`, `DriverResult`, `NativeSessionInfo`, `LoomIO`, `PromptInput`, `Surface`, `Plugin`, `SpawnContribution`, `SessionStore`, `ModelResolver`, `ToolProvider`, `SystemPromptBuilder`, `InteractionHandler`, `Catalog`, …
+
+### Claude driver tuning (env)
+
+The claude driver's background-hold / stall / recovery heuristics ship sane defaults and can
+be tuned per deployment: `PIKILOOM_CLAUDE_BG_HOLD_MS`, `PIKILOOM_CLAUDE_BG_AGENT_HOLD_MS`,
+`PIKILOOM_CLAUDE_BG_HOLD_RECHECK_MS`, `PIKILOOM_CLAUDE_BG_SETTLE_QUIET_MS`,
+`PIKILOOM_CLAUDE_MODEL_STALL_MS`, `PIKILOOM_CLAUDE_TRUNCATED_RECOVERY` (=0 disables),
+`PIKILOOM_CLAUDE_RESUME_NOOP_RETRIES`.
 
 ---
 

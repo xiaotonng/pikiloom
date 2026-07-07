@@ -59,6 +59,7 @@ interface UniversalSnapshot {
 }
 ```
 Wire delta helpers: `diffSnapshot(prev,next) => SnapshotPatch` (prefix-append text/reasoning; undefined→null clears) and `applySnapshotPatch(prev,patch)`. `emptySnapshot()`, `PROTOCOL_VERSION`.
+Session keys: a sessionKey is `${agent}:${sessionId}` — compose/parse ONLY via `makeSessionKey(agent, sessionId)` / `splitSessionKey(sessionKey)`.
 
 ## Control verbs (LoomIO, via loom.io)
 
@@ -86,7 +87,8 @@ governs a session index, a skills registry and per-agent symlinks, resolved in t
 - `loom.skills: SkillsManager` — the canonical skills registry. `canonicalDir(scope,wd?)` = `<root>/skills`;
   `ensureLinks(scope, wd?)` symlinks it into each agent's dir (default `.claude/skills`, `.agents/skills`,
   overridable via `agentSkillDirs`) so a skill registered once is visible to every agent. `list({workdir?,scope?})`,
-  `search(query) => npm results`.
+  `search(query) => npm results`. `parseSkillMeta(content)` (exported) reads a SKILL.md's frontmatter
+  (label/name + description + mcp_requires) — reuse it when scanning additional skill stores yourself.
 - `loom.mcp: McpRegistry` — `recommended(): McpCatalogEntry[]` (curated), `search(query)` (MCP registry → npm),
   `toServerSpec(entry, env?) => McpServerSpec`. Enabling/injecting a server stays on the Plugin.tools()/ToolProvider seam.
 
@@ -95,11 +97,17 @@ Drivers expose native discovery via the optional `AgentDriver.listNativeSessions
 
 ## Drivers (pass to createLoom({drivers}) or loom.registerDriver)
 
-- ClaudeDriver (id 'claude'): `claude` CLI stream-json, supports --effort; steer ✓, resume ✓, tui ✓
+- ClaudeDriver (id 'claude'): `claude` CLI stream-json, supports --effort; steer ✓, resume ✓, tui ✓.
+  Background-hold/stall/recovery heuristics tunable via PIKILOOM_CLAUDE_* env (see README).
 - CodexDriver (id 'codex'): `codex app-server` JSON-RPC; steer ✓, HITL via askUser, resume ✓, tui ✓
 - GeminiDriver (id 'gemini'): `gemini` stream-json; resume ✓, tui ✓
-- HermesDriver (id 'hermes'): ACP session/update; resume ✓
+- AcpDriver (id from config): generic ACP ndjson JSON-RPC — any ACP CLI via `new AcpDriver({ id, command, args })`; HITL via askUser, resume ✓
+- HermesDriver (id 'hermes'): preset `new AcpDriver({ id:'hermes', command:'hermes', args:['acp'] })`; HITL via askUser, resume ✓
 - EchoDriver (id 'echo'): hermetic in-process test driver; all caps ✓
+
+Multi-account: `accountTokenSupported(agent)` / `accountTokenEnvVar(agent)` / `accountTokenEnv(agent, token)` —
+which env var carries an agent's auth token (claude: CLAUDE_CODE_OAUTH_TOKEN), so an app injects a selected
+account's token per spawn (via ModelResolver env or a Plugin contributeSpawn). Storage/selection stay app-side.
 
 Write a driver: implement `AgentDriver { id; capabilities?; run(input, ctx); tui?(input) }`. In run(), call `ctx.emit(event)`:
 `DriverEvent = {type:'session',sessionId} | {type:'text',delta} | {type:'reasoning',delta} | {type:'tool',call:UniversalToolCall} | {type:'plan',plan} | {type:'subagent',subagent} | {type:'usage',usage} | {type:'artifact',artifact} | {type:'activity',line}`.

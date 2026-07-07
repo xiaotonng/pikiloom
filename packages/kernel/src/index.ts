@@ -8,6 +8,10 @@
 //   await loom.start()
 //
 // pikiloom itself is just a consumer of this package.
+//
+// This barrel IS the public API (pinned by test/api-surface.test.ts). Driver-internal
+// parser/settle helpers are exported by their modules for white-box tests but are
+// deliberately NOT re-exported here.
 
 export { createLoom, type Loom, type LoomConfig, type TuiLaunchOptions } from './runtime/loom.js';
 export { Hub } from './runtime/hub.js';
@@ -39,17 +43,7 @@ export {
 
 // Drivers & surfaces (also available via subpath exports)
 export { EchoDriver } from './drivers/echo.js';
-export {
-  ClaudeDriver,
-  isTerminalTaskStatus, trackClaudeBackgroundTask, pendingClaudeBackgroundTasks,
-  markClaudeTaskNotificationTerminal,
-  decideClaudeResultSettle, claudeBgHoldCapMs, claudeBgAgentHoldCapMs, claudeTurnHasAgentBackground,
-  claudeBgHoldRecheckMs, claudeBgSettleQuietMs, type ClaudeResultSettleDecision,
-  claudeModelStallMs, claudeUserEventHasToolResult,
-  handleClaudeEvent, claudeTurnEndedDangling,
-  claudeTruncatedRecoveryEnabled, CLAUDE_TRUNCATED_RECOVERY_PROMPT,
-  isClaudeSyntheticResumeNoise, claudeProducedRealOutput, claudeResumeNoopRetryLimit,
-} from './drivers/claude.js';
+export { ClaudeDriver } from './drivers/claude.js';
 export { CodexDriver } from './drivers/codex.js';
 export { GeminiDriver } from './drivers/gemini.js';
 export { AcpDriver, type AcpDriverConfig } from './drivers/acp.js';
@@ -57,10 +51,18 @@ export { HermesDriver } from './drivers/hermes.js';
 export { WebSurface, type WebSurfaceOptions } from './surfaces/web.js';
 export { CliSurface } from './surfaces/cli.js';
 
+// Native-session discovery: pure readers of each agent CLI's own transcript store
+// (driver-axis knowledge; drivers implement listNativeSessions with these).
+export {
+  discoverClaudeNativeSessions, discoverCodexNativeSessions, discoverGeminiNativeSessions,
+  encodeClaudeProjectDir, type DiscoverOptions,
+} from './drivers/native.js';
+
 // Workspace: unified top-level directory + session/skill/mcp management (loom.paths/sessions/skills/mcp)
 export * from './workspace/index.js';
 
-// Multi-account: per-account isolated config dirs (CLAUDE_CONFIG_DIR / CODEX_HOME)
+// Multi-account: which env var carries an agent's auth token, so an app can inject a
+// selected account's token per spawn (see accounts.ts for the design notes).
 export * from './accounts.js';
 
 // Protocol (the wire vocabulary; shared with transports)

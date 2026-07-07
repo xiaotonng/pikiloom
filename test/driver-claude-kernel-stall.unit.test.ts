@@ -2,9 +2,9 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  claudeModelStallMs, claudeUserEventHasToolResult, ClaudeDriver, runTurn,
-} from '../packages/kernel/dist/index.js';
+import { ClaudeDriver, runTurn } from '../packages/kernel/dist/index.js';
+// White-box settle heuristics live at the module path, off the public barrel.
+import { claudeModelStallMs, claudeUserEventHasToolResult } from '../packages/kernel/dist/drivers/claude.js';
 
 // Regression: the kernel claude driver settled a turn ONLY on `result`, abort, or process close.
 // `claude -p` (stdin kept open) emits exactly one `result` at end_turn and otherwise stays alive,

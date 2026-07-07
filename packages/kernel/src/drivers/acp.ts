@@ -1,11 +1,11 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, extname } from 'node:path';
+import { dirname } from 'node:path';
 import type {
   AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, McpServerSpec,
 } from '../contracts/driver.js';
 import type { UniversalUsage, UniversalPlan, UniversalInteraction } from '../protocol/index.js';
+import { RpcError, StdioRpcClient } from './rpc.js';
+import { attachedFileNote, contextPercent, imageMimeForFile, wireAbort } from './shared.js';
 
 // ── Generic ACP (Agent Client Protocol) driver ────────────────────────────────
 // Speaks the ACP ndjson JSON-RPC wire to ANY ACP-compatible agent CLI — OpenCode,
@@ -35,101 +35,6 @@ export interface AcpDriverConfig {
   capabilities?: AgentDriver['capabilities'];
 }
 
-type RpcMsg = { jsonrpc?: string; id?: number | string; method?: string; params?: any; result?: any; error?: any };
-
-class AcpRpcError extends Error {
-  constructor(readonly code: number, message: string) { super(message); }
-}
-
-// ── ACP JSON-RPC client over a child process' stdio (ndjson framing) ───────────
-class AcpClient {
-  private proc: ChildProcess | null = null;
-  private nextId = 1;
-  private readonly pending = new Map<number, (m: RpcMsg) => void>();
-  private notifyCb?: (method: string, params: any) => void;
-  private requestCb?: (method: string, params: any) => Promise<any>;
-  private readonly stderrTail: string[] = [];
-
-  constructor(
-    private readonly bin: string,
-    private readonly args: string[],
-    private readonly env: Record<string, string> | undefined,
-    private readonly cwd: string,
-  ) {}
-
-  onNotification(cb: (method: string, params: any) => void): void { this.notifyCb = cb; }
-  onRequest(cb: (method: string, params: any) => Promise<any>): void { this.requestCb = cb; }
-  stderrText(): string { return this.stderrTail.join('\n'); }
-
-  start(): boolean {
-    try {
-      this.proc = spawn(this.bin, this.args, {
-        cwd: this.cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: this.env ? { ...process.env, ...this.env } : process.env,
-      });
-    } catch { return false; }
-    const rl = createInterface({ input: this.proc.stdout!, crlfDelay: Infinity });
-    rl.on('line', (line) => this.onLine(line));
-    this.proc.stderr!.on('data', (chunk: Buffer) => {
-      for (const ln of chunk.toString('utf8').split('\n')) {
-        const t = ln.trim();
-        if (!t) continue;
-        this.stderrTail.push(t.slice(0, 240));
-        if (this.stderrTail.length > 20) this.stderrTail.shift();
-      }
-    });
-    this.proc.on('close', () => { for (const cb of this.pending.values()) cb({ error: { message: 'acp process exited' } }); this.pending.clear(); });
-    this.proc.on('error', () => { /* surfaced via request timeouts / start() false */ });
-    return true;
-  }
-
-  private onLine(line: string): void {
-    const t = line.trim();
-    if (!t) return;
-    let m: RpcMsg;
-    try { m = JSON.parse(t); } catch { return; }            // non-JSON stdout noise
-    if (m.method && m.id != null) { void this.handleRequest(m); return; }   // agent -> client request
-    if (m.id != null) {                                      // response to one of our requests
-      const cb = this.pending.get(m.id as number);
-      if (cb) { this.pending.delete(m.id as number); cb(m); }
-      return;
-    }
-    if (m.method) this.notifyCb?.(m.method, m.params ?? {});  // notification (session/update)
-  }
-
-  private async handleRequest(m: RpcMsg): Promise<void> {
-    const id = m.id!;
-    if (!this.requestCb) { this.respondError(id, -32601, `Method not implemented: ${m.method}`); return; }
-    try {
-      const result = await this.requestCb(m.method!, m.params ?? {});
-      this.respond(id, result ?? null);
-    } catch (e: any) {
-      const code = e instanceof AcpRpcError ? e.code : -32603;
-      this.respondError(id, code, e?.message || 'handler error');
-    }
-  }
-
-  request(method: string, params?: any, timeoutMs = 60_000): Promise<RpcMsg> {
-    return new Promise((resolve) => {
-      if (!this.proc || this.proc.killed) { resolve({ error: { message: 'not connected' } }); return; }
-      const id = this.nextId++;
-      const timer = setTimeout(() => { this.pending.delete(id); resolve({ error: { message: `ACP '${method}' timed out` } }); }, timeoutMs);
-      this.pending.set(id, (m) => { clearTimeout(timer); resolve(m); });
-      this.write({ jsonrpc: '2.0', id, method, params });
-    });
-  }
-
-  notify(method: string, params?: any): void { this.write({ jsonrpc: '2.0', method, params }); }
-  private respond(id: number | string, result: any): void { this.write({ jsonrpc: '2.0', id, result }); }
-  private respondError(id: number | string, code: number, message: string): void { this.write({ jsonrpc: '2.0', id, error: { code, message } }); }
-  private write(msg: unknown): void {
-    if (!this.proc || this.proc.killed) return;
-    try { this.proc.stdin!.write(JSON.stringify(msg) + '\n'); } catch { /* stream closed */ }
-  }
-  kill(): void { try { this.proc?.kill('SIGTERM'); } catch { /* ignore */ } this.proc = null; }
-}
-
 // ── pikiloom McpServerSpec[] -> ACP mcpServers[] ───────────────────────────────
 export function toAcpMcpServers(servers?: McpServerSpec[]): any[] {
   if (!servers || !servers.length) return [];
@@ -147,24 +52,16 @@ export function toAcpMcpServers(servers?: McpServerSpec[]): any[] {
   return out;
 }
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
-function mimeForExt(ext: string): string {
-  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
-  if (ext === '.gif') return 'image/gif';
-  if (ext === '.webp') return 'image/webp';
-  return 'image/png';
-}
-
 // ACP prompt content blocks: text + inline base64 images; other attachments noted as text.
 export function buildAcpPromptBlocks(prompt: string, attachments: string[]): any[] {
   const blocks: any[] = [];
   for (const f of attachments) {
-    const ext = extname(f).toLowerCase();
-    if (IMAGE_EXTS.has(ext)) {
-      try { blocks.push({ type: 'image', mimeType: mimeForExt(ext), data: readFileSync(f).toString('base64') }); continue; }
+    const mime = imageMimeForFile(f);
+    if (mime) {
+      try { blocks.push({ type: 'image', mimeType: mime, data: readFileSync(f).toString('base64') }); continue; }
       catch { /* fall through to a text note */ }
     }
-    blocks.push({ type: 'text', text: `[Attached file: ${f}]` });
+    blocks.push({ type: 'text', text: attachedFileNote(f) });
   }
   blocks.push({ type: 'text', text: prompt });
   return blocks;
@@ -236,11 +133,13 @@ export function applyAcpUpdate(update: any, s: any, tools: Set<string>, emit: (e
     }
     case 'usage_update': {
       if (typeof update.size === 'number') s.contextWindow = update.size;
-      if (typeof update.used === 'number') s.contextUsed = update.used;
       if (typeof update.used === 'number') {
-        const window = s.contextWindow;
-        const contextPercent = window && update.used > 0 ? Math.min(99.9, Math.round((update.used / window) * 1000) / 10) : null;
-        emit({ type: 'usage', usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null, contextUsedTokens: update.used, contextPercent } });
+        s.contextUsed = update.used;
+        emit({ type: 'usage', usage: {
+          inputTokens: null, outputTokens: null, cachedInputTokens: null,
+          contextUsedTokens: update.used,
+          contextPercent: contextPercent(update.used > 0 ? update.used : null, s.contextWindow),
+        } });
       }
       return;
     }
@@ -294,7 +193,7 @@ function fallbackOptionId(options: any[], fallback: 'allow' | 'reject' | 'cancel
 
 function readAcpTextFile(params: any): { content: string } {
   const p = String(params?.path || '');
-  if (!p || !existsSync(p)) throw new AcpRpcError(-32602, `file not found: ${p}`);
+  if (!p || !existsSync(p)) throw new RpcError(-32602, `file not found: ${p}`);
   let content = readFileSync(p, 'utf8');
   const line = typeof params?.line === 'number' ? params.line : null;
   const limit = typeof params?.limit === 'number' ? params.limit : null;
@@ -308,7 +207,7 @@ function readAcpTextFile(params: any): { content: string } {
 
 function writeAcpTextFile(params: any): null {
   const p = String(params?.path || '');
-  if (!p) throw new AcpRpcError(-32602, 'path required');
+  if (!p) throw new RpcError(-32602, 'path required');
   try { mkdirSync(dirname(p), { recursive: true }); } catch { /* parent may exist */ }
   writeFileSync(p, String(params?.content ?? ''), 'utf8');
   return null;
@@ -322,9 +221,11 @@ function acpUsage(s: { contextWindow: number | null; contextUsed: number | null 
     output = n(raw.outputTokens ?? raw.output_tokens);
     cached = n(raw.cachedReadTokens ?? raw.cached_read_tokens ?? raw.cachedInputTokens);
   }
-  const window = s.contextWindow, used = s.contextUsed;
-  const contextPercent = window && used ? Math.min(99.9, Math.round((used / window) * 1000) / 10) : null;
-  return { inputTokens: input, outputTokens: output, cachedInputTokens: cached, contextUsedTokens: used, contextPercent, turnOutputTokens: output };
+  const used = s.contextUsed;
+  return {
+    inputTokens: input, outputTokens: output, cachedInputTokens: cached, contextUsedTokens: used,
+    contextPercent: contextPercent(used || null, s.contextWindow), turnOutputTokens: output,
+  };
 }
 
 export class AcpDriver implements AgentDriver {
@@ -350,7 +251,7 @@ export class AcpDriver implements AgentDriver {
 
   async run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult> {
     const env = { ...(this.cfg.env || {}), ...(input.env || {}) };
-    const client = new AcpClient(this.cfg.command, this.cfg.args, env, input.workdir);
+    const client = new StdioRpcClient({ command: this.cfg.command, args: this.cfg.args, env, cwd: input.workdir, label: this.id });
     const state = { text: '', reasoning: '', contextWindow: null as number | null, contextUsed: null as number | null };
     const tools = new Set<string>();
     let sessionId = input.sessionId ?? null;
@@ -358,8 +259,10 @@ export class AcpDriver implements AgentDriver {
 
     if (!client.start()) return { ok: false, text: '', error: `failed to start ${this.cfg.command}`, stopReason: 'error' };
 
-    const onAbort = () => { if (sessionId) client.notify('session/cancel', { sessionId }); client.kill(); };
-    if (ctx.signal.aborted) onAbort(); else ctx.signal.addEventListener('abort', onAbort, { once: true });
+    const unwireAbort = wireAbort(ctx.signal, () => {
+      if (sessionId) client.notify('session/cancel', { sessionId });
+      client.kill();
+    });
 
     client.onNotification((method, params) => {
       if (method === 'session/update') applyAcpUpdate(params?.update ?? params, state, tools, ctx.emit);
@@ -368,13 +271,13 @@ export class AcpDriver implements AgentDriver {
       switch (method) {
         case 'session/request_permission': return this.resolvePermission(params, ctx, `${this.id}-perm-${++permSeq}`);
         case 'fs/read_text_file':
-          if (!this.cfg.fsAccess) throw new AcpRpcError(-32601, 'fs/read_text_file not supported');
+          if (!this.cfg.fsAccess) throw new RpcError(-32601, 'fs/read_text_file not supported');
           return readAcpTextFile(params);
         case 'fs/write_text_file':
-          if (!this.cfg.fsAccess) throw new AcpRpcError(-32601, 'fs/write_text_file not supported');
+          if (!this.cfg.fsAccess) throw new RpcError(-32601, 'fs/write_text_file not supported');
           return writeAcpTextFile(params);
         default:
-          throw new AcpRpcError(-32601, `Method not implemented: ${method}`);
+          throw new RpcError(-32601, `Method not implemented: ${method}`);
       }
     });
 
@@ -411,7 +314,7 @@ export class AcpDriver implements AgentDriver {
       const stopReason = promptResp.result?.stopReason ?? 'end_turn';
       return { ok: true, text: state.text, reasoning: state.reasoning || undefined, error: null, stopReason, sessionId, usage };
     } finally {
-      ctx.signal.removeEventListener('abort', onAbort);
+      unwireAbort();
       client.kill();
     }
   }
@@ -427,7 +330,7 @@ export class AcpDriver implements AgentDriver {
     return picked ? { outcome: { outcome: 'selected', optionId: picked } } : { outcome: { outcome: 'cancelled' } };
   }
 
-  private startupError(client: AcpClient, base: string): string {
+  private startupError(client: StdioRpcClient, base: string): string {
     const tail = client.stderrText().trim();
     return tail ? `${base} — ${truncate(tail, 300)}` : base;
   }

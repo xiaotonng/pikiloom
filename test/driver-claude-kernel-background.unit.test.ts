@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
+// White-box settle heuristics live at the module path, off the public barrel.
 import {
   isTerminalTaskStatus, trackClaudeBackgroundTask, pendingClaudeBackgroundTasks,
   markClaudeTaskNotificationTerminal,
   decideClaudeResultSettle, claudeBgHoldCapMs, claudeBgSettleQuietMs,
-} from '../packages/kernel/dist/index.js';
+} from '../packages/kernel/dist/drivers/claude.js';
 
 // Regression: the kernel claude driver used to end the turn (and hard-SIGTERM the process) at the
 // first `result`. But `claude -p`, with stdin kept open, launches detached background work, ends a

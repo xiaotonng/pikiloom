@@ -1,83 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import type {
   AgentDriver, AgentTurnInput, DriverContext, DriverEvent, DriverResult, TuiInput, TuiSpec, NativeSessionInfo,
 } from '../contracts/driver.js';
 import type { UniversalPlan, UniversalUsage, UniversalInteraction } from '../protocol/index.js';
-import { discoverCodexNativeSessions } from '../workspace/native.js';
-
-type RpcMsg = { jsonrpc?: string; id?: number; method?: string; params?: any; result?: any; error?: any };
-
-// Minimal newline-delimited JSON-RPC client for `codex app-server` (ported faithfully
-// from pikiloom's CodexAppServer; trimmed to what the kernel needs).
-class AppServer {
-  private proc: ChildProcess | null = null;
-  private buf = '';
-  private nextId = 1;
-  private readonly pending = new Map<number, (m: RpcMsg) => void>();
-  private notify?: (method: string, params: any) => void;
-  private requestResponder?: (method: string, params: any, id: number) => any | Promise<any>;
-
-  constructor(private readonly bin: string, private readonly configOverrides: string[], private readonly env?: Record<string, string>) {}
-
-  onNotification(cb: (method: string, params: any) => void) { this.notify = cb; }
-  onServerRequest(cb: (method: string, params: any, id: number) => any | Promise<any>) { this.requestResponder = cb; }
-
-  async start(): Promise<boolean> {
-    const args = ['app-server'];
-    // Do NOT force model_reasoning_summary — codex reasoning summaries stay OFF by default
-    // (respecting ~/.codex/config.toml, which is the original behavior). A caller that wants
-    // thinking can pass `model_reasoning_summary=...` via configOverrides; we never inject it.
-    const overrides = [...this.configOverrides];
-    if (!overrides.some(c => /^features\.goals\s*=/.test(c))) overrides.push('features.goals=true');
-    for (const c of overrides) args.push('-c', c);
-    try {
-      this.proc = spawn(this.bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.env ? { ...process.env, ...this.env } : process.env });
-    } catch { return false; }
-    this.proc.stdout!.on('data', (chunk: Buffer) => this.onData(chunk));
-    this.proc.on('close', () => { for (const cb of this.pending.values()) cb({ error: { message: 'app-server exited' } }); this.pending.clear(); });
-    this.proc.on('error', () => { /* surfaced via call timeouts */ });
-    const init = await this.call('initialize', { clientInfo: { name: '@pikiloom/kernel', version: '0.1.0' }, capabilities: { experimentalApi: true } }, 15_000);
-    return !init.error;
-  }
-
-  private onData(chunk: Buffer): void {
-    this.buf += chunk.toString('utf8');
-    const lines = this.buf.split('\n');
-    this.buf = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let msg: RpcMsg;
-      try { msg = JSON.parse(line); } catch { continue; }
-      if (msg.method && msg.id != null) {                       // server -> client request
-        const id = msg.id;
-        Promise.resolve(this.requestResponder ? this.requestResponder(msg.method, msg.params ?? {}, id) : {})
-          .then((result) => this.respond(id, result ?? {}))
-          .catch(() => this.respond(id, {}));
-      } else if (msg.id != null) {                              // response to our call
-        const cb = this.pending.get(msg.id); if (cb) { this.pending.delete(msg.id); cb(msg); }
-      } else if (msg.method) {                                  // notification
-        this.notify?.(msg.method, msg.params ?? {});
-      }
-    }
-  }
-
-  call(method: string, params?: any, timeoutMs = 60_000): Promise<RpcMsg> {
-    return new Promise((resolve) => {
-      if (!this.proc || this.proc.killed) { resolve({ error: { message: 'not connected' } }); return; }
-      const id = this.nextId++;
-      const timer = setTimeout(() => { this.pending.delete(id); resolve({ error: { message: `RPC '${method}' timed out` } }); }, timeoutMs);
-      this.pending.set(id, (m) => { clearTimeout(timer); resolve(m); });
-      const msg: RpcMsg = { jsonrpc: '2.0', id, method }; if (params !== undefined) msg.params = params;
-      try { this.proc.stdin!.write(JSON.stringify(msg) + '\n'); } catch { clearTimeout(timer); this.pending.delete(id); resolve({ error: { message: 'write failed' } }); }
-    });
-  }
-
-  private respond(id: number, result: any): void {
-    try { this.proc?.stdin!.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n'); } catch { /* closed */ }
-  }
-
-  kill(): void { try { this.proc?.kill('SIGTERM'); } catch { /* ignore */ } this.proc = null; }
-}
+import { discoverCodexNativeSessions } from './native.js';
+import { StdioRpcClient } from './rpc.js';
+import { attachedFileNote, contextPercent, imageMimeForFile, wireAbort } from './shared.js';
 
 function planFromUpdate(params: any): UniversalPlan | null {
   const rawSteps = Array.isArray(params?.plan?.steps) ? params.plan.steps : Array.isArray(params?.steps) ? params.steps : Array.isArray(params?.plan) ? params.plan : [];
@@ -231,8 +158,14 @@ export class CodexDriver implements AgentDriver {
     // BYOK provider routing arrives as `-c key=value` overrides; pass them through so the
     // kernel path keeps third-party models (e.g. glm via OpenRouter) instead of falling back
     // to the native account.
-    const config: string[] = [...(input.configOverrides || [])];
-    const srv = new AppServer(this.bin, config, input.env);
+    // Do NOT force model_reasoning_summary — codex reasoning summaries stay OFF by default
+    // (respecting ~/.codex/config.toml, which is the original behavior). A caller that wants
+    // thinking can pass `model_reasoning_summary=...` via configOverrides; we never inject it.
+    const overrides = [...(input.configOverrides || [])];
+    if (!overrides.some(c => /^features\.goals\s*=/.test(c))) overrides.push('features.goals=true');
+    const args = ['app-server'];
+    for (const c of overrides) args.push('-c', c);
+    const srv = new StdioRpcClient({ command: this.bin, args, env: input.env, label: 'codex app-server' });
     const state = { text: '', reasoning: '', streamedReasoning: false, msgs: [] as string[], thinkParts: [] as string[], sessionId: input.sessionId ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, contextUsed: null as number | null, contextWindow: null as number | null, status: null as string | null, error: null as string | null, turnId: null as string | null };
     const phases = new Map<string, string>();
     const toolSummaries = new Map<string, string>();
@@ -240,8 +173,7 @@ export class CodexDriver implements AgentDriver {
     let lastTextItemId: string | null = null;
     let steerRegistered = false;
 
-    const ok = await srv.start();
-    if (!ok) return { ok: false, text: '', error: 'failed to start codex app-server', stopReason: 'error' };
+    if (!srv.start()) return { ok: false, text: '', error: 'failed to start codex app-server', stopReason: 'error' };
 
     let settle: () => void = () => {};
     const turnDone = new Promise<void>((res) => { settle = res; });
@@ -250,23 +182,24 @@ export class CodexDriver implements AgentDriver {
     // srv.kill() (SIGTERM) never produces a turn/completed notification, so without this explicit
     // settle() the `await turnDone` below hangs forever — run() never resolves and the task stays
     // "running" in the orchestrator even though the codex process is already dead ("停止不掉，但实际上已经停了").
-    const onAbort = () => {
+    wireAbort(ctx.signal, () => {
       if (state.sessionId && state.turnId) {
-        srv.call('turn/interrupt', { threadId: state.sessionId, turnId: state.turnId }, 5_000).finally(() => settle());
+        srv.request('turn/interrupt', { threadId: state.sessionId, turnId: state.turnId }, 5_000).finally(() => settle());
       } else {
         srv.kill();
         settle();
       }
-    };
-    if (ctx.signal.aborted) onAbort(); else ctx.signal.addEventListener('abort', onAbort, { once: true });
+    });
 
     try {
+      const init = await srv.request('initialize', { clientInfo: { name: '@pikiloom/kernel', version: '0.1.0' }, capabilities: { experimentalApi: true } }, 15_000);
+      if (init.error) return { ok: false, text: '', error: 'failed to start codex app-server', stopReason: 'error' };
       const threadParams: any = { cwd: input.workdir, model: input.model || null };
       if (input.systemPrompt) threadParams.developerInstructions = input.systemPrompt;
       if (input.fullAccess) { threadParams.approvalPolicy = 'never'; threadParams.sandbox = 'danger-full-access'; }
       const threadResp = input.sessionId
-        ? await srv.call('thread/resume', { threadId: input.sessionId, ...threadParams })
-        : await srv.call('thread/start', threadParams);
+        ? await srv.request('thread/resume', { threadId: input.sessionId, ...threadParams })
+        : await srv.request('thread/start', threadParams);
       if (threadResp.error) return { ok: false, text: '', error: threadResp.error.message || 'thread/start failed', stopReason: 'error' };
       const threadId = threadResp.result?.thread?.id ?? input.sessionId ?? null;
       if (threadId && threadId !== state.sessionId) { state.sessionId = threadId; ctx.emit({ type: 'session', sessionId: threadId }); }
@@ -280,7 +213,7 @@ export class CodexDriver implements AgentDriver {
               steerRegistered = true;
               ctx.registerSteer(async (prompt: string, attachments: string[] = []) => {
                 if (!state.sessionId || !state.turnId) return false;
-                const r = await srv.call('turn/steer', { threadId: state.sessionId, expectedTurnId: state.turnId, input: buildTurnInput(prompt, attachments) }, 30_000);
+                const r = await srv.request('turn/steer', { threadId: state.sessionId, expectedTurnId: state.turnId, input: buildTurnInput(prompt, attachments) }, 30_000);
                 if (r.error) return false;
                 state.turnId = r.result?.turnId ?? state.turnId;
                 return true;
@@ -352,20 +285,23 @@ export class CodexDriver implements AgentDriver {
         }
       });
       // Codex server->client requests: route user-input to the HITL seam (ctx.askUser),
-      // accept approvals by default (parity with the legacy codex driver).
-      srv.onServerRequest(async (method, params, id) => {
-        if (method === 'item/tool/requestUserInput') {
-          const interaction = codexUserInputToInteraction(params, `codex-input-${id}`);
-          if (!interaction) return { answers: {} };
-          const answers = await ctx.askUser(interaction);
-          return { answers: Object.fromEntries(Object.entries(answers).map(([qid, vals]) => [qid, { answers: vals }])) };
-        }
-        if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') return { decision: 'accept' };
-        if (method === 'item/permissions/requestApproval') return { permissions: {}, scope: 'turn' };
-        return {};
+      // accept approvals by default (parity with the legacy codex driver). Never throw —
+      // an unanswerable request degrades to an empty response, not a JSON-RPC error.
+      srv.onRequest(async (method, params, id) => {
+        try {
+          if (method === 'item/tool/requestUserInput') {
+            const interaction = codexUserInputToInteraction(params, `codex-input-${id}`);
+            if (!interaction) return { answers: {} };
+            const answers = await ctx.askUser(interaction);
+            return { answers: Object.fromEntries(Object.entries(answers).map(([qid, vals]) => [qid, { answers: vals }])) };
+          }
+          if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') return { decision: 'accept' };
+          if (method === 'item/permissions/requestApproval') return { permissions: {}, scope: 'turn' };
+          return {};
+        } catch { return {}; }
       });
 
-      const turnResp = await srv.call('turn/start', {
+      const turnResp = await srv.request('turn/start', {
         threadId: state.sessionId,
         input: buildTurnInput(input.prompt, input.attachments || []),
         model: input.model || undefined,
@@ -403,12 +339,10 @@ export class CodexDriver implements AgentDriver {
   }
 }
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 function buildTurnInput(prompt: string, attachments: string[]): any[] {
   const input: any[] = [];
   for (const f of attachments) {
-    const ext = f.slice(f.lastIndexOf('.')).toLowerCase();
-    input.push(IMAGE_EXTS.has(ext) ? { type: 'localImage', path: f } : { type: 'text', text: `[Attached file: ${f}]` });
+    input.push(imageMimeForFile(f) ? { type: 'localImage', path: f } : { type: 'text', text: attachedFileNote(f) });
   }
   input.push({ type: 'text', text: prompt });
   return input;
@@ -421,7 +355,7 @@ function buildTurnInput(prompt: string, attachments: string[]): any[] {
 // analog of the claude driver's claudeUsageOf; without it the kernel path shows no
 // live token row for codex sessions.
 
-export interface CodexUsageState {
+interface CodexUsageState {
   input: number | null; output: number | null; cached: number | null;
   contextUsed?: number | null; contextWindow?: number | null;
 }
@@ -444,7 +378,7 @@ function codexContextUsed(raw: any): number | null {
 
 // Fold a codex tokenUsage payload into driver state: last-turn counts, context
 // occupancy, and the model window. Tolerant of nested {info:{…}} and flat shapes.
-export function applyCodexTokenUsage(s: CodexUsageState, rawUsage: any): void {
+function applyCodexTokenUsage(s: CodexUsageState, rawUsage: any): void {
   if (!rawUsage || typeof rawUsage !== 'object') return;
   const info = rawUsage.info && typeof rawUsage.info === 'object' ? rawUsage.info : rawUsage;
   const last = info.last ?? info.lastTokenUsage ?? info.last_token_usage ?? rawUsage.last;
@@ -471,18 +405,17 @@ export function applyCodexTokenUsage(s: CodexUsageState, rawUsage: any): void {
   if (cw != null && cw > 0) s.contextWindow = cw;
 }
 
-export function codexUsageOf(s: CodexUsageState): UniversalUsage {
+function codexUsageOf(s: CodexUsageState): UniversalUsage {
   const fallback = (s.input ?? 0) + (s.cached ?? 0);
   const used = s.contextUsed ?? (fallback > 0 ? fallback : null);
   const window = s.contextWindow ?? null;
-  const contextPercent = used != null && window ? Math.min(99.9, Math.round((used / window) * 1000) / 10) : null;
   const turnOutput = s.output ?? 0;
   return {
     inputTokens: s.input,
     outputTokens: s.output,
     cachedInputTokens: s.cached,
     contextUsedTokens: used,
-    contextPercent,
+    contextPercent: contextPercent(used, window),
     turnOutputTokens: turnOutput > 0 ? turnOutput : null,
   };
 }

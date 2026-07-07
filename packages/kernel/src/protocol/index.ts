@@ -109,6 +109,19 @@ export interface SessionMeta {
   updatedAt?: number;
 }
 
+// ---- Session keys ----
+// A sessionKey is `${agent}:${sessionId}` — the composite id shared by the runtime, every
+// store, and every terminal. These two helpers ARE that contract; nothing else parses it.
+
+export function makeSessionKey(agent: string, sessionId: string): string {
+  return `${agent}:${sessionId}`;
+}
+
+export function splitSessionKey(sessionKey: string): { agent: string; sessionId: string } {
+  const i = sessionKey.indexOf(':');
+  return i < 0 ? { agent: '', sessionId: sessionKey } : { agent: sessionKey.slice(0, i), sessionId: sessionKey.slice(i + 1) };
+}
+
 export interface SnapshotPatch {
   full?: UniversalSnapshot;
   appendText?: string;

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   type UniversalSnapshot, type SnapshotPatch, type SessionMeta, type UniversalQueuedTask,
   type AgentInfo, type ModelDescriptor, type EffortOption, type ToolDescriptor, type SkillDescriptor,
-  diffSnapshot, emptySnapshot,
+  diffSnapshot, emptySnapshot, makeSessionKey, splitSessionKey,
 } from '../protocol/index.js';
 import type { AgentDriver, AgentTurnInput, McpServerSpec, TuiSpec } from '../contracts/driver.js';
 import type {
@@ -48,11 +48,6 @@ interface QueuedItem {
   workdir: string;
   workspacePath: string;
   preExisted: boolean;
-}
-
-function splitKey(sessionKey: string): { agent: string; sessionId: string } {
-  const i = sessionKey.indexOf(':');
-  return i < 0 ? { agent: '', sessionId: sessionKey } : { agent: sessionKey.slice(0, i), sessionId: sessionKey.slice(i + 1) };
 }
 
 export class Hub implements LoomIO {
@@ -107,12 +102,12 @@ export class Hub implements LoomIO {
     if (!driver) throw new Error(`No driver registered for agent "${agent}"`);
     const workdir = input.workdir || this.deps.workdir;
 
-    const resumeId = input.sessionKey ? splitKey(input.sessionKey).sessionId : null;
+    const resumeId = input.sessionKey ? splitSessionKey(input.sessionKey).sessionId : null;
     const preExisted = resumeId ? !!(await this.deps.sessionStore.get(agent, resumeId)) : false;
     const { sessionId, workspacePath } = await this.deps.sessionStore.ensure(agent, {
       sessionId: resumeId, workdir, title: input.prompt.slice(0, 80),
     });
-    const sessionKey = `${agent}:${sessionId}`;
+    const sessionKey = makeSessionKey(agent, sessionId);
 
     const taskId = randomUUID();
     const runner = new SessionRunner(sessionKey, agent, taskId, (snap, seq) => this.onRunnerUpdate(sessionKey, snap, seq), this.deps.interactionHandler);
@@ -335,7 +330,7 @@ export class Hub implements LoomIO {
     return e ? { snapshot: e.snapshot, seq: e.seq } : null;
   }
   async getHistory(sessionKey: string): Promise<UniversalSnapshot[]> {
-    const { agent, sessionId } = splitKey(sessionKey);
+    const { agent, sessionId } = splitSessionKey(sessionKey);
     if (!agent || !this.deps.sessionStore.history) return [];
     try { return await this.deps.sessionStore.history(agent, sessionId); }
     catch (e: any) { this.deps.log?.(`[hub] history failed ${sessionKey}: ${e?.message || e}`); return []; }

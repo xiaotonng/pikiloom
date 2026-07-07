@@ -8,7 +8,7 @@ import { resolveLoomPaths } from '../src/workspace/paths.js';
 import {
   discoverClaudeNativeSessions, discoverCodexNativeSessions, discoverGeminiNativeSessions,
   encodeClaudeProjectDir,
-} from '../src/workspace/native.js';
+} from '../src/drivers/native.js';
 import { SessionsManager } from '../src/workspace/sessions.js';
 import { SkillsManager } from '../src/workspace/skills.js';
 import { McpRegistry } from '../src/workspace/mcp.js';

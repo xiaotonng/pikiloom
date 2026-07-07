@@ -1,4 +1,5 @@
 import type { McpServerSpec } from '../contracts/driver.js';
+import { searchNpmPackages } from './npm-search.js';
 
 // ---- McpRegistry: the unified MCP catalog + discovery ----
 //
@@ -98,21 +99,11 @@ export class McpRegistry {
 
     // 2) npm fallback.
     try {
-      const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(`mcp server ${q}`.trim())}&size=${n}`;
-      const res = await fetchImpl(url, { headers: { accept: 'application/json' } });
-      if (!res.ok) return [];
-      const data = await res.json() as any;
-      const objects: any[] = Array.isArray(data?.objects) ? data.objects : [];
-      return objects.map((o) => {
-        const pkg = o?.package ?? {};
-        return {
-          name: String(pkg.name ?? ''),
-          description: pkg.description ?? null,
-          source: 'npm' as const,
-          npmPackage: pkg.name ?? null,
-          homepage: pkg.links?.homepage ?? pkg.links?.npm ?? null,
-        };
-      }).filter(s => s.name).slice(0, n);
+      const hits = await searchNpmPackages(`mcp server ${q}`.trim(), n, fetchImpl);
+      return hits.map(h => ({
+        name: h.name, description: h.description, source: 'npm' as const,
+        npmPackage: h.name, homepage: h.homepage,
+      })).slice(0, n);
     } catch (e: any) {
       this.log?.(`[mcp] npm search failed: ${e?.message || e}`);
       return [];

@@ -2,10 +2,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ClaudeDriver, runTurn } from '../packages/kernel/dist/index.js';
+// White-box settle heuristics live at the module path, off the public barrel.
 import {
-  ClaudeDriver, runTurn, trackClaudeBackgroundTask,
+  trackClaudeBackgroundTask,
   claudeTurnHasAgentBackground, claudeBgAgentHoldCapMs, claudeBgHoldRecheckMs,
-} from '../packages/kernel/dist/index.js';
+} from '../packages/kernel/dist/drivers/claude.js';
 import { composeKernelFinalPresentation } from '../src/agent/kernel-bridge.js';
 
 // Regression 2026-07-06 ("停止不再继续生成"): a research turn with 4 background Explore

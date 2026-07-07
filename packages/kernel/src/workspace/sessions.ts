@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { AgentDriver, NativeSessionInfo } from '../contracts/driver.js';
 import type { SessionStore, CoreSessionRecord } from '../contracts/ports.js';
+import { makeSessionKey, splitSessionKey } from '../protocol/index.js';
 import type { LoomScope } from './paths.js';
 
 // ---- SessionsManager: the unified, searchable session read-model ----
@@ -53,11 +54,6 @@ export interface SessionsManagerDeps {
   log?: (msg: string) => void;
 }
 
-function splitKey(sessionKey: string): { agent: string; sessionId: string } {
-  const i = sessionKey.indexOf(':');
-  return i < 0 ? { agent: '', sessionId: sessionKey } : { agent: sessionKey.slice(0, i), sessionId: sessionKey.slice(i + 1) };
-}
-
 function ts(iso: string | null | undefined): number {
   if (!iso) return 0;
   const n = Date.parse(iso);
@@ -70,7 +66,7 @@ function newer(a: string | null, b: string | null): string | null {
 
 function managedToInfo(agent: string, rec: CoreSessionRecord): ManagedSessionInfo {
   return {
-    sessionKey: `${agent}:${rec.sessionId}`,
+    sessionKey: makeSessionKey(agent, rec.sessionId),
     agent,
     sessionId: rec.sessionId,
     title: rec.title ?? null,
@@ -88,7 +84,7 @@ function managedToInfo(agent: string, rec: CoreSessionRecord): ManagedSessionInf
 
 function nativeToInfo(agent: string, n: NativeSessionInfo): ManagedSessionInfo {
   return {
-    sessionKey: `${agent}:${n.sessionId}`,
+    sessionKey: makeSessionKey(agent, n.sessionId),
     agent,
     sessionId: n.sessionId,
     title: n.title,
@@ -124,7 +120,7 @@ export class SessionsManager {
         if (scope === 'workspace') {
           if (!rec.workdir || path.resolve(rec.workdir) !== workdir) continue;
         }
-        byKey.set(`${agent}:${rec.sessionId}`, managedToInfo(agent, rec));
+        byKey.set(makeSessionKey(agent, rec.sessionId), managedToInfo(agent, rec));
       }
     }
 
@@ -137,7 +133,7 @@ export class SessionsManager {
         try { natives = await driver.listNativeSessions({ workdir, limit: opts.limit }); }
         catch (e: any) { this.deps.log?.(`[sessions] ${agent}.listNativeSessions failed: ${e?.message || e}`); }
         for (const n of natives) {
-          const key = `${agent}:${n.sessionId}`;
+          const key = makeSessionKey(agent, n.sessionId);
           const existing = byKey.get(key);
           if (existing) {
             // Same identity discovered both ways: managed record wins, but adopt the newer
@@ -168,7 +164,7 @@ export class SessionsManager {
   }
 
   async get(sessionKey: string, opts: { workdir?: string } = {}): Promise<ManagedSessionInfo | null> {
-    const { agent, sessionId } = splitKey(sessionKey);
+    const { agent, sessionId } = splitSessionKey(sessionKey);
     if (!agent) return null;
     const rec = await this.deps.store.get(agent, sessionId).catch(() => null);
     if (rec) return managedToInfo(agent, rec);

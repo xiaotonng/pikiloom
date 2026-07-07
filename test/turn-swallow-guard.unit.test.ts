@@ -4,10 +4,12 @@ import path from 'node:path';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ClaudeDriver, runTurn } from '../packages/kernel/dist/index.js';
+// White-box settle heuristics live at the module path, off the public barrel.
 import {
-  ClaudeDriver, runTurn, handleClaudeEvent, claudeTurnEndedDangling,
+  handleClaudeEvent, claudeTurnEndedDangling,
   claudeTruncatedRecoveryEnabled, CLAUDE_TRUNCATED_RECOVERY_PROMPT,
-} from '../packages/kernel/dist/index.js';
+} from '../packages/kernel/dist/drivers/claude.js';
 import { composeKernelFinalPresentation } from '../src/agent/kernel-bridge.js';
 import { getSessionMessages } from '../src/agent/index.ts';
 import { appendTurnAudit, turnAuditPath } from '../src/core/turn-audit.js';

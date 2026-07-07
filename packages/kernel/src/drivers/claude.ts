@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { extname } from 'node:path';
 import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage, UniversalPlan, UniversalSubAgent } from '../protocol/index.js';
-import { discoverClaudeNativeSessions } from '../workspace/native.js';
+import { discoverClaudeNativeSessions } from './native.js';
+import { attachedFileNote, contextPercent, createLineBuffer, imageMimeForFile, parseJsonLine, sigterm, wireAbort } from './shared.js';
 
 // Real driver: shells the local `claude` CLI in stream-json mode and normalizes its
 // events into kernel DriverEvents. Faithful to pikiloom's claude.ts event shapes
@@ -65,8 +65,11 @@ export class ClaudeDriver implements AgentDriver {
       taskList: new Map<string, { subject: string; status: string }>(),
       taskOrder: [] as string[],
       pendingTaskCreates: new Map<string, { subject: string }>(),
-      // run_in_background lifecycle: task ids seen as started vs. reached a terminal status.
-      bgStarted: new Set<string>(), bgTerminal: new Set<string>(),
+      todoPlan: null as UniversalPlan | null,
+      seenImages: new Set<string>(),
+      // run_in_background lifecycle: task ids seen as started vs. reached a terminal status;
+      // bgAgentTasks marks the sub-agent-backed ones (they earn the longer hold cap).
+      bgStarted: new Set<string>(), bgTerminal: new Set<string>(), bgAgentTasks: new Set<string>(),
     };
 
     return new Promise<DriverResult>((resolve) => {
@@ -102,9 +105,9 @@ export class ClaudeDriver implements AgentDriver {
         clearHoldCap(); clearQuiet(); clearModelStall();
         try { child?.stdin?.end(); } catch { /* ignore */ }
         if (!child.killed && child.exitCode == null) {
-          if (kill) { try { child.kill('SIGTERM'); } catch { /* ignore */ } }
+          if (kill) sigterm(child);
           else {
-            const guard = setTimeout(() => { try { child?.kill('SIGTERM'); } catch { /* ignore */ } }, CLAUDE_EXIT_LEAK_GUARD_MS);
+            const guard = setTimeout(() => sigterm(child), CLAUDE_EXIT_LEAK_GUARD_MS);
             unref(guard);
           }
         }
@@ -171,9 +174,7 @@ export class ClaudeDriver implements AgentDriver {
         return;
       }
 
-      const onAbort = () => { try { child.kill('SIGTERM'); } catch { /* ignore */ } };
-      if (ctx.signal.aborted) onAbort();
-      else ctx.signal.addEventListener('abort', onAbort, { once: true });
+      wireAbort(ctx.signal, () => sigterm(child));
 
       if (steerable) {
         ctx.registerSteer(async (prompt: string, attachments?: string[]) => {
@@ -181,19 +182,14 @@ export class ClaudeDriver implements AgentDriver {
         });
       }
 
-      let buf = '';
+      const nextLines = createLineBuffer();
       let stderr = '';
       child.stdout!.on('data', (chunk: Buffer) => {
         if (settled) return; // ignore the process's post-settle shutdown chatter
-        buf += chunk.toString('utf8');
-        const lines = buf.split('\n');
-        buf = lines.pop() || '';
-        for (const line of lines) {
+        for (const line of nextLines(chunk)) {
           if (settled) return;
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          let ev: any;
-          try { ev = JSON.parse(trimmed); } catch { continue; }
+          const ev = parseJsonLine(line);
+          if (ev === undefined) continue;
           state.lastEventAt = Date.now();
           handleClaudeEvent(ev, state, ctx.emit);
           const pending = pendingClaudeBackgroundTasks(state);
@@ -300,13 +296,13 @@ export class ClaudeDriver implements AgentDriver {
 // output. Computing them here (not just inputTokens/outputTokens) is what restores the
 // live "xx.x% · NNk · ↑NN" row the kernel path previously dropped.
 
-export interface ClaudeUsageState {
+interface ClaudeUsageState {
   input: number | null; output: number | null; cached: number | null;
   cacheCreation?: number | null; contextWindow?: number | null; turnOutputTokensBase?: number | null;
   thinkingEstTokens?: number | null;
 }
 
-export function claudeUsageOf(s: ClaudeUsageState): UniversalUsage {
+function claudeUsageOf(s: ClaudeUsageState): UniversalUsage {
   // While a message is still streaming, the CLI's live thinking estimate (system/thinking_tokens)
   // is often the ONLY output signal — subscription accounts stream no plaintext thinking and no
   // usage until the message settles. Fold it into the derived numbers (never into the raw
@@ -314,15 +310,13 @@ export function claudeUsageOf(s: ClaudeUsageState): UniversalUsage {
   // output_tokens supersedes it at message_delta.
   const effOutput = Math.max(s.output ?? 0, s.thinkingEstTokens ?? 0);
   const used = (s.input ?? 0) + (s.cached ?? 0) + (s.cacheCreation ?? 0) + effOutput;
-  const window = s.contextWindow ?? null;
-  const contextPercent = window && used > 0 ? Math.min(99.9, Math.round((used / window) * 1000) / 10) : null;
   const turnOutput = (s.turnOutputTokensBase ?? 0) + effOutput;
   return {
     inputTokens: s.input,
     outputTokens: s.output,
     cachedInputTokens: s.cached,
     contextUsedTokens: used > 0 ? used : null,
-    contextPercent,
+    contextPercent: contextPercent(used > 0 ? used : null, s.contextWindow ?? null),
     turnOutputTokens: turnOutput > 0 ? turnOutput : null,
   };
 }
@@ -330,7 +324,7 @@ export function claudeUsageOf(s: ClaudeUsageState): UniversalUsage {
 // Accumulate the CLI's live thinking-token estimate onto driver state. Prefer the per-event
 // delta (correct whether the CLI's running total is per-message or per-turn); fall back to a
 // monotonic max of the running total. Returns true when the estimate advanced.
-export function applyClaudeThinkingEstimate(s: any, ev: any): boolean {
+function applyClaudeThinkingEstimate(s: any, ev: any): boolean {
   const prev = s.thinkingEstTokens ?? 0;
   const delta = Number(ev?.estimated_tokens_delta);
   const total = Number(ev?.estimated_tokens);
@@ -342,7 +336,7 @@ export function applyClaudeThinkingEstimate(s: any, ev: any): boolean {
 // Advertised context window by Claude model id (best-effort; unknown -> null so the
 // percent simply stays absent rather than wrong). Anchor-free so vendor-prefixed ids
 // (us.anthropic.claude-…) still match.
-export function claudeContextWindowFromModel(model: unknown): number | null {
+function claudeContextWindowFromModel(model: unknown): number | null {
   const id = String(model ?? '').trim().toLowerCase();
   if (!id) return null;
   if (id === 'haiku' || /claude-haiku-/.test(id)) return 200_000;
@@ -353,7 +347,7 @@ export function claudeContextWindowFromModel(model: unknown): number | null {
 
 // Usable window = advertised minus Claude's max-output (20k) + autocompact (13k) reserve.
 const CLAUDE_USABLE_WINDOW_RESERVE = 33_000;
-export function claudeEffectiveContextWindow(advertised: number | null): number | null {
+function claudeEffectiveContextWindow(advertised: number | null): number | null {
   if (advertised == null) return null;
   return advertised <= CLAUDE_USABLE_WINDOW_RESERVE ? advertised : advertised - CLAUDE_USABLE_WINDOW_RESERVE;
 }
@@ -802,12 +796,6 @@ export function decideClaudeResultSettle(input: {
   return input.sawBackground ? 'quiet-settle' : 'settle';
 }
 
-// Claude vision input formats (matches the legacy driver / Anthropic API: png, jpeg, gif, webp).
-const CLAUDE_IMAGE_MIME: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp',
-};
-
 // A stream-json user message (for --input-format stream-json; used to send the prompt and to
 // inject mid-turn steer messages while stdin stays open). Image attachments are inlined as base64
 // image content blocks so the model actually sees them; other files become a text note. Without
@@ -815,21 +803,21 @@ const CLAUDE_IMAGE_MIME: Record<string, string> = {
 export function claudeUserMessage(text: string, attachments?: string[]): string {
   const content: any[] = [];
   for (const filePath of attachments || []) {
-    const mime = CLAUDE_IMAGE_MIME[extname(filePath).toLowerCase()];
+    const mime = imageMimeForFile(filePath);
     if (mime) {
       try {
         content.push({ type: 'image', source: { type: 'base64', media_type: mime, data: readFileSync(filePath).toString('base64') } });
         continue;
       } catch { /* unreadable -> fall through to a text note */ }
     }
-    content.push({ type: 'text', text: `[Attached file: ${filePath}]` });
+    content.push({ type: 'text', text: attachedFileNote(filePath) });
   }
   content.push({ type: 'text', text });
   return JSON.stringify({ type: 'user', message: { role: 'user', content } });
 }
 
 // Surface base64 image content blocks as artifacts (data URLs), deduped per turn.
-export function emitClaudeImages(blocks: any[], s: any, emit: (e: DriverEvent) => void): void {
+function emitClaudeImages(blocks: any[], s: any, emit: (e: DriverEvent) => void): void {
   if (!Array.isArray(blocks)) return;
   s.seenImages ||= new Set<string>();
   let n = 0;
@@ -870,7 +858,7 @@ export function todoWriteToPlan(input: any): UniversalPlan | null {
 
 // The assigned task id from a TaskCreate tool_result. Prefer the structured field; fall back
 // to parsing "Task #N" from a string result.
-export function readClaudeTaskCreateId(ev: any, block: any): string | null {
+function readClaudeTaskCreateId(ev: any, block: any): string | null {
   const structured = ev?.toolUseResult?.task?.id;
   if (structured != null && String(structured).trim()) return String(structured).trim();
   const content = block?.content;
@@ -881,7 +869,7 @@ export function readClaudeTaskCreateId(ev: any, block: any): string | null {
   return null;
 }
 
-export function rebuildClaudeTaskPlan(s: any): UniversalPlan | null {
+function rebuildClaudeTaskPlan(s: any): UniversalPlan | null {
   if (!Array.isArray(s?.taskOrder) || !s.taskOrder.length) return null;
   const steps: UniversalPlan['steps'] = [];
   for (const id of s.taskOrder) {
@@ -901,7 +889,7 @@ export function rebuildClaudeTaskPlan(s: any): UniversalPlan | null {
 // Used when the id isn't in the TaskCreate store, so an update issued AFTER a TodoWrite still
 // lands on the displayed list — the plan reflects the state after the LAST change, whichever
 // mechanism wrote it. Returns a fresh plan (never mutates) or null when inapplicable.
-export function applyTaskUpdateToTodoPlan(
+function applyTaskUpdateToTodoPlan(
   plan: UniversalPlan | null | undefined,
   taskId: string,
   rawStatus: string,
@@ -927,7 +915,7 @@ export function applyTaskUpdateToTodoPlan(
 // activity projector joins these into snapshot.activity; the structured form lives in
 // toolCalls. Kept driver-local: knowing Claude's tool input shapes is the driver's job.
 
-export function shortToolValue(value: unknown, max = 140): string {
+function shortToolValue(value: unknown, max = 140): string {
   if (value == null) return '';
   const text = (typeof value === 'string' ? value : String(value)).replace(/\s+/g, ' ').trim();
   if (text.length <= max) return text;
@@ -939,7 +927,7 @@ function toolInputDetail(name: string, input: any): string {
   return i.command || i.file_path || i.path || i.pattern || i.query || i.url || i.description || '';
 }
 
-export function summarizeToolUse(name: string, input: any): string {
+function summarizeToolUse(name: string, input: any): string {
   const tool = String(name || '').trim() || 'Tool';
   const i = input || {};
   const description = shortToolValue(i.description, 120);
@@ -972,7 +960,7 @@ export function summarizeToolUse(name: string, input: any): string {
 }
 
 // First non-empty line of a tool_result content (string | block[]), for the "summary -> detail" form.
-export function firstResultLine(content: any): string {
+function firstResultLine(content: any): string {
   let text = '';
   if (typeof content === 'string') text = content;
   else if (Array.isArray(content)) text = content.map((b: any) => (typeof b === 'string' ? b : b?.type === 'text' ? b.text || '' : '')).join('\n');

@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage } from '../protocol/index.js';
-import { discoverGeminiNativeSessions } from '../workspace/native.js';
+import { discoverGeminiNativeSessions } from './native.js';
+import { createLineBuffer, parseJsonLine, sigterm, wireAbort } from './shared.js';
 
 // Native kernel Gemini driver: `gemini --output-format stream-json ... -p <prompt>` and
 // parse its stream-json events into kernel DriverEvents. Faithful to pikiloom's geminiParse.
@@ -20,7 +21,7 @@ export class GeminiDriver implements AgentDriver {
     if (extra.length) args.push(...extra);
     args.push('-p', input.prompt);
 
-    const s = { text: '', sessionId: input.sessionId ?? null, model: input.model ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, stopReason: null as string | null, error: null as string | null };
+    const s = { text: '', sessionId: input.sessionId ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, stopReason: null as string | null, error: null as string | null };
     const tools = new Map<string, { name: string; summary: string }>();
 
     return new Promise<DriverResult>((resolve) => {
@@ -28,17 +29,14 @@ export class GeminiDriver implements AgentDriver {
       try { child = spawn(this.bin, args, { cwd: input.workdir, env: input.env ? { ...process.env, ...input.env } : process.env, stdio: ['ignore', 'pipe', 'pipe'] }); }
       catch (err: any) { resolve({ ok: false, text: '', error: `spawn failed: ${err?.message || err}`, stopReason: 'error' }); return; }
 
-      const onAbort = () => { try { child.kill('SIGTERM'); } catch { /* ignore */ } };
-      if (ctx.signal.aborted) onAbort(); else ctx.signal.addEventListener('abort', onAbort, { once: true });
+      wireAbort(ctx.signal, () => sigterm(child));
 
-      let buf = ''; let stderr = '';
+      const nextLines = createLineBuffer();
+      let stderr = '';
       child.stdout!.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf8');
-        const lines = buf.split('\n'); buf = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim(); if (!trimmed) continue;
-          let ev: any; try { ev = JSON.parse(trimmed); } catch { continue; }
-          parseGeminiEvent(ev, s, tools, ctx.emit);
+        for (const line of nextLines(chunk)) {
+          const ev = parseJsonLine(line);
+          if (ev !== undefined) parseGeminiEvent(ev, s, tools, ctx.emit);
         }
       });
       child.stderr!.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
@@ -68,7 +66,6 @@ export function parseGeminiEvent(ev: any, s: any, tools: Map<string, { name: str
   const t = ev.type || '';
   if (t === 'init') {
     if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
-    s.model = ev.model ?? s.model;
     return;
   }
   if (t === 'message' && ev.role === 'assistant') {

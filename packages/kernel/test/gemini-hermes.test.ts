@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseGeminiEvent } from '../src/drivers/gemini.js';
-import { applyHermesUpdate } from '../src/drivers/hermes.js';
+import { applyAcpUpdate } from '../src/drivers/acp.js';
 import type { DriverEvent } from '../src/contracts/driver.js';
 
 function geminiRun(events: any[]): DriverEvent[] {
@@ -10,7 +10,7 @@ function geminiRun(events: any[]): DriverEvent[] {
 }
 function hermesRun(updates: any[]): DriverEvent[] {
   const out: DriverEvent[] = []; const s: any = { text: '', reasoning: '' }; const tools = new Set<string>();
-  for (const u of updates) applyHermesUpdate(u, s, tools, (e) => out.push(e));
+  for (const u of updates) applyAcpUpdate(u, s, tools, (e) => out.push(e));
   return out;
 }
 

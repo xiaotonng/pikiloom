@@ -2,10 +2,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, chmodSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ClaudeDriver, runTurn } from '../packages/kernel/dist/index.js';
+// White-box settle heuristics live at the module path, off the public barrel.
 import {
   isClaudeSyntheticResumeNoise, claudeProducedRealOutput, claudeResumeNoopRetryLimit,
-  handleClaudeEvent, ClaudeDriver, runTurn,
-} from '../packages/kernel/dist/index.js';
+  handleClaudeEvent,
+} from '../packages/kernel/dist/drivers/claude.js';
 
 // Regression: resuming a claude session whose PREVIOUS turn was left incomplete (a background hold
 // that reclaimed its sub-agents/workflow — the ultra "no response" report — an interrupt, a stall)

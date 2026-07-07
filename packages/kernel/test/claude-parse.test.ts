@@ -72,21 +72,47 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(events.some(e => e.type === 'tool' && (e as any).call.id === 'tc1' && (e as any).call.status === 'done')).toBe(true);
   });
 
-  it('latest wins: a TodoWrite supersedes the task list — a later TaskUpdate cannot resurrect it', () => {
+  it('chronological: a TaskUpdate AFTER a TodoWrite still applies — store id first', () => {
     const events = run([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'old mechanism task' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'store task' } }] } },
       { type: 'user', toolUseResult: { task: { id: '1' } }, message: { content: [{ type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1' }] } },
-      // The agent switches panels: TodoWrite rebuilds tracking from scratch.
       { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tw1', name: 'TodoWrite', input: { todos: [
         { content: 'fresh todo', status: 'in_progress' },
       ] } }] } },
-      // A stray update against the abandoned task list must not emit a stale plan.
+      // The update's id lives in the TaskCreate store → the plan reflects the store AFTER it.
       { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } }] } },
     ]);
     const planEvents = events.filter(e => e.type === 'plan') as any[];
     expect(planEvents[planEvents.length - 1].plan.steps).toEqual([
-      { text: 'fresh todo', status: 'inProgress' },
+      { text: 'store task', status: 'completed' },
     ]);
+  });
+
+  it('chronological: a TaskUpdate with an unknown id lands positionally on the latest TodoWrite list', () => {
+    const events = run([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tw1', name: 'TodoWrite', input: { todos: [
+        { content: 'first', status: 'completed' },
+        { content: 'second', status: 'in_progress' },
+        { content: 'third', status: 'pending' },
+      ] } }] } },
+      // No TaskCreate store: id "2" = the 2nd todo item.
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '2', status: 'completed' } }] } },
+    ]);
+    const planEvents = events.filter(e => e.type === 'plan') as any[];
+    expect(planEvents.length).toBe(2);
+    expect(planEvents[1].plan.steps).toEqual([
+      { text: 'first', status: 'completed' },
+      { text: 'second', status: 'completed' },
+      { text: 'third', status: 'pending' },
+    ]);
+    // Out-of-range or non-numeric ids stay plan-silent.
+    const more = run([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tw1', name: 'TodoWrite', input: { todos: [
+        { content: 'only', status: 'pending' },
+      ] } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu9', name: 'TaskUpdate', input: { taskId: '9', status: 'completed' } }] } },
+    ]);
+    expect(more.filter(e => e.type === 'plan').length).toBe(1);
   });
 
   it('drops a TaskUpdate status=deleted task from the plan', () => {

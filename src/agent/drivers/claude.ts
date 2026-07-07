@@ -14,6 +14,7 @@ import {
   Q, run, agentError, agentLog, agentWarn,
   appendSystemPrompt, buildStreamPreviewMeta, computeContext, pushRecentActivity,
   summarizeClaudeToolUse, summarizeClaudeToolResult, joinErrorMessages, parseTodoWriteAsPlan,
+  applyClaudeTaskUpdateToPlan,
   previewToolCallInput, previewToolCallResult,
   detectClaudeApiError, isRetryableClaudeApiError,
   detectClaudeModelError, claudeModelErrorMessage,
@@ -503,12 +504,7 @@ export function claudeParse(ev: any, s: any) {
       const toolName = String(block?.name || 'Tool').trim() || 'Tool';
       if (toolName === 'TodoWrite') {
         const plan = parseTodoWriteAsPlan(block?.input);
-        if (plan) s.plan = plan;
-        // Latest wins: a TodoWrite replaces the TaskCreate/TaskUpdate list wholesale, so a
-        // later TaskUpdate against the abandoned list can't resurrect a stale plan.
-        s.pendingClaudeTaskCreates.clear();
-        s.claudeTaskList.clear();
-        s.claudeTaskOrder = [];
+        if (plan) { s.plan = plan; s.claudeTodoPlan = plan; }
         s.seenClaudeToolIds.add(toolId);
         s.claudeToolsById.set(toolId, { name: toolName, summary: 'Update plan' });
         pushRecentActivity(s.recentActivity, 'Update plan');
@@ -526,7 +522,10 @@ export function claudeParse(ev: any, s: any) {
       if (toolName === 'TaskUpdate') {
         const taskId = String(block?.input?.taskId ?? '').trim();
         const rawStatus = String(block?.input?.status ?? '').trim().toLowerCase();
-        if (taskId) {
+        // Chronological: the plan reflects the state AFTER this update. An id known to the
+        // TaskCreate store lands there; otherwise it lands positionally on the latest
+        // TodoWrite list (ids are 1-based positions when the todo panel owns the list).
+        if (taskId && s.claudeTaskList.has(taskId)) {
           if (rawStatus === 'deleted') {
             s.claudeTaskList.delete(taskId);
             s.claudeTaskOrder = s.claudeTaskOrder.filter((id: string) => id !== taskId);
@@ -535,6 +534,9 @@ export function claudeParse(ev: any, s: any) {
             if (existing) existing.status = rawStatus;
           }
           rebuildClaudePlanFromTasks(s);
+        } else if (taskId) {
+          const updated = applyClaudeTaskUpdateToPlan(s.claudeTodoPlan, taskId, rawStatus);
+          if (updated) { s.plan = updated; s.claudeTodoPlan = updated; }
         }
         s.seenClaudeToolIds.add(toolId);
         const updateSummary = `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}`;
@@ -701,6 +703,7 @@ export function createClaudeStreamState(opts: StreamOpts) {
     activity: '',
     recentActivity: [] as string[],
     plan: null as StreamPreviewPlan | null,
+    claudeTodoPlan: null as StreamPreviewPlan | null,
     claudeTaskList: new Map<string, { subject: string; status: string }>(),
     claudeTaskOrder: [] as string[],
     pendingClaudeTaskCreates: new Map<string, { subject: string }>(),
@@ -1333,18 +1336,19 @@ function claudeImageBlockFromEntry(entry: any): MessageBlock | null {
 
 // Session-scoped task-list state for history parsing. TaskCreate/TaskUpdate maintain a task
 // list ACROSS turns (a later turn's TaskUpdate mutates tasks created earlier), while a
-// TodoWrite carries a full snapshot. Whichever mechanism wrote LAST owns the displayed plan:
-// the CLI swaps its todo panel wholesale, so a TaskUpdate against an abandoned list must not
-// resurrect a stale plan over a newer TodoWrite (and vice versa).
+// TodoWrite carries a full snapshot. The displayed plan is purely chronological — the state
+// after the LAST change wins, whichever mechanism wrote it: a TaskUpdate lands on the
+// TaskCreate store when its id is known there, else positionally on the latest TodoWrite list.
 interface ClaudeHistoryTaskCtx {
   planToolIds: Set<string>;
   pendingTaskCreates: Map<string, { subject: string }>;
   taskList: Map<string, { subject: string; status: string }>;
   taskOrder: string[];
+  todoPlan: StreamPreviewPlan | null;
 }
 
 function createClaudeHistoryTaskCtx(): ClaudeHistoryTaskCtx {
-  return { planToolIds: new Set(), pendingTaskCreates: new Map(), taskList: new Map(), taskOrder: [] };
+  return { planToolIds: new Set(), pendingTaskCreates: new Map(), taskList: new Map(), taskOrder: [], todoPlan: null };
 }
 
 function claudeTaskPlanFromCtx(ctx: ClaudeHistoryTaskCtx): StreamPreviewPlan | null {
@@ -1387,17 +1391,17 @@ function extractClaudeBlocks(
         blocks.push({ type: 'tool_use', content: inputStr, toolName: block.name, toolId: block.id });
         if (block.name === 'TodoWrite') {
           const plan = parseTodoWriteAsPlan(block.input);
-          taskCtx.pendingTaskCreates.clear();
-          taskCtx.taskList.clear();
-          taskCtx.taskOrder.length = 0;
-          if (plan) blocks.push({ type: 'plan', content: '', plan, toolId: block.id });
+          if (plan) {
+            taskCtx.todoPlan = plan;
+            blocks.push({ type: 'plan', content: '', plan, toolId: block.id });
+          }
         } else if (block.name === 'TaskCreate') {
           const subject = typeof block.input?.subject === 'string' ? block.input.subject.trim() : '';
           if (subject) taskCtx.pendingTaskCreates.set(block.id, { subject });
         } else {
           const taskId = String(block.input?.taskId ?? '').trim();
           const rawStatus = String(block.input?.status ?? '').trim().toLowerCase();
-          if (taskId) {
+          if (taskId && taskCtx.taskList.has(taskId)) {
             if (rawStatus === 'deleted') {
               taskCtx.taskList.delete(taskId);
               const idx = taskCtx.taskOrder.indexOf(taskId);
@@ -1408,6 +1412,14 @@ function extractClaudeBlocks(
             }
             const plan = claudeTaskPlanFromCtx(taskCtx);
             if (plan) blocks.push({ type: 'plan', content: '', plan, toolId: block.id });
+          } else if (taskId) {
+            // Unknown id in the TaskCreate store: land the update positionally on the latest
+            // TodoWrite list so the plan card reflects the state AFTER this update.
+            const updated = applyClaudeTaskUpdateToPlan(taskCtx.todoPlan, taskId, rawStatus);
+            if (updated) {
+              taskCtx.todoPlan = updated;
+              blocks.push({ type: 'plan', content: '', plan: updated, toolId: block.id });
+            }
           }
         }
         continue;

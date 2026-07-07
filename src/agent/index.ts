@@ -54,7 +54,7 @@ export {
 export {
   Q, agentLog, agentWarn, agentError,
   dedupeStrings, numberOrNull,
-  normalizeStreamPreviewPlan, parseTodoWriteAsPlan, normalizeActivityLine, pushRecentActivity,
+  normalizeStreamPreviewPlan, parseTodoWriteAsPlan, applyClaudeTaskUpdateToPlan, normalizeActivityLine, pushRecentActivity,
   detectClaudeApiError, isRetryableClaudeApiError,
   detectClaudeModelError, claudeModelErrorMessage,
   firstNonEmptyLine, shortValue, normalizeErrorMessage, joinErrorMessages,

@@ -98,6 +98,31 @@ export function parseTodoWriteAsPlan(input: any): StreamPreviewPlan | null {
   return { explanation: null, steps };
 }
 
+// Apply a TaskUpdate to a TodoWrite-produced plan positionally (taskId = 1-based item index).
+// Used when the id isn't in the TaskCreate store, so an update issued AFTER a TodoWrite still
+// lands on the displayed list — the plan card always reflects the state after the LAST change,
+// whichever mechanism wrote it. Returns a fresh plan (never mutates) or null when inapplicable.
+export function applyClaudeTaskUpdateToPlan(
+  plan: StreamPreviewPlan | null | undefined,
+  taskId: string,
+  rawStatus: string,
+): StreamPreviewPlan | null {
+  if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) return null;
+  if (!/^\d+$/.test(taskId)) return null;
+  const idx = Number(taskId) - 1;
+  if (idx < 0 || idx >= plan.steps.length) return null;
+  if (rawStatus === 'deleted') {
+    const steps = plan.steps.filter((_, i) => i !== idx);
+    return steps.length ? { explanation: plan.explanation ?? null, steps } : null;
+  }
+  const status = rawStatus === 'completed' ? 'completed'
+    : rawStatus === 'in_progress' || rawStatus === 'inprogress' ? 'inProgress'
+      : rawStatus === 'pending' ? 'pending' : null;
+  if (!status) return null;
+  const steps = plan.steps.map((step, i) => i === idx ? { ...step, status } : step);
+  return { explanation: plan.explanation ?? null, steps };
+}
+
 export function normalizeActivityLine(text: string): string { return text.replace(/\s+/g, ' ').trim(); }
 
 export function pushRecentActivity(lines: string[], line: string, maxLines = 80) {

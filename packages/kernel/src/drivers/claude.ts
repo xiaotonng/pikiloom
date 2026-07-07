@@ -434,13 +434,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       const name = String(b.name || 'Tool');
       if (name === 'TodoWrite') {
         const plan = todoWriteToPlan(b.input);
-        if (plan) emit({ type: 'plan', plan });
-        // Latest wins across mechanisms: a TodoWrite replaces the TaskCreate/TaskUpdate list
-        // wholesale, so a later TaskUpdate against the abandoned list can't resurrect a stale
-        // plan over this snapshot.
-        s.pendingTaskCreates?.clear();
-        s.taskList?.clear();
-        if (Array.isArray(s.taskOrder)) s.taskOrder = [];
+        if (plan) { s.todoPlan = plan; emit({ type: 'plan', plan }); }
         const summary = 'Update plan';
         (s.tools ||= new Map()).set(id, { name, summary });
         emit({ type: 'tool', call: { id, name, summary, input: null, status: 'running' } });
@@ -460,16 +454,22 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       if (name === 'TaskUpdate') {
         const taskId = String(b.input?.taskId ?? '').trim();
         const rawStatus = String(b.input?.status ?? '').trim().toLowerCase();
-        if (taskId) {
+        // Chronological: the plan reflects the state AFTER this update. An id known to the
+        // TaskCreate store lands there; otherwise it lands positionally on the latest
+        // TodoWrite list (ids are 1-based positions when the todo panel owns the list).
+        if (taskId && s.taskList?.has(taskId)) {
           if (rawStatus === 'deleted') {
-            s.taskList?.delete(taskId);
+            s.taskList.delete(taskId);
             if (Array.isArray(s.taskOrder)) s.taskOrder = s.taskOrder.filter((x: string) => x !== taskId);
           } else if (rawStatus) {
-            const existing = s.taskList?.get(taskId);
+            const existing = s.taskList.get(taskId);
             if (existing) existing.status = rawStatus;
           }
           const plan = rebuildClaudeTaskPlan(s);
           if (plan) emit({ type: 'plan', plan });
+        } else if (taskId) {
+          const updated = applyTaskUpdateToTodoPlan(s.todoPlan, taskId, rawStatus);
+          if (updated) { s.todoPlan = updated; emit({ type: 'plan', plan: updated }); }
         }
         const summary = `Update task ${taskId || '?'} → ${rawStatus || 'unknown'}`;
         (s.tools ||= new Map()).set(id, { name, summary });
@@ -844,6 +844,31 @@ export function rebuildClaudeTaskPlan(s: any): UniversalPlan | null {
     if (text) steps.push({ text, status });
   }
   return steps.length ? { explanation: null, steps } : null;
+}
+
+// Apply a TaskUpdate to a TodoWrite-produced plan positionally (taskId = 1-based item index).
+// Used when the id isn't in the TaskCreate store, so an update issued AFTER a TodoWrite still
+// lands on the displayed list — the plan reflects the state after the LAST change, whichever
+// mechanism wrote it. Returns a fresh plan (never mutates) or null when inapplicable.
+export function applyTaskUpdateToTodoPlan(
+  plan: UniversalPlan | null | undefined,
+  taskId: string,
+  rawStatus: string,
+): UniversalPlan | null {
+  if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) return null;
+  if (!/^\d+$/.test(taskId)) return null;
+  const idx = Number(taskId) - 1;
+  if (idx < 0 || idx >= plan.steps.length) return null;
+  if (rawStatus === 'deleted') {
+    const steps = plan.steps.filter((_, i) => i !== idx);
+    return steps.length ? { explanation: plan.explanation ?? null, steps } : null;
+  }
+  const status: UniversalPlan['steps'][number]['status'] | null = rawStatus === 'completed' ? 'completed'
+    : (rawStatus === 'in_progress' || rawStatus === 'inprogress') ? 'inProgress'
+    : rawStatus === 'pending' ? 'pending' : null;
+  if (!status) return null;
+  const steps = plan.steps.map((step, i): UniversalPlan['steps'][number] => i === idx ? { ...step, status } : step);
+  return { explanation: plan.explanation ?? null, steps };
 }
 
 // ── Tool-call summarization (ported from pikiloom's summarizeClaudeToolUse) ──────────

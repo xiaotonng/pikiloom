@@ -82,12 +82,12 @@ describe('claude history task-list parsing', () => {
     expect(perTurn[1].some(b => b.type === 'tool_use' && b.toolName === 'TaskUpdate')).toBe(true);
   });
 
-  it('latest wins: TodoWrite supersedes the task list; a later stray TaskUpdate stays plan-silent', async () => {
+  it('chronological: a TaskUpdate AFTER a TodoWrite still applies (store id first)', async () => {
     const perTurn = await parseSession([
       { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
       { type: 'assistant', message: { content: [
         { type: 'text', text: 'tasking' },
-        { type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'old mechanism task' } },
+        { type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'store task' } },
       ] } },
       { type: 'user', toolUseResult: { task: { id: '1' } }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1' }] } },
       { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'continue' }] } },
@@ -98,8 +98,36 @@ describe('claude history task-list parsing', () => {
       ] } },
     ]);
     const lastTurnPlans = perTurn[1].filter(b => b.type === 'plan');
-    // Only the TodoWrite plan — the TaskUpdate against the abandoned list emits nothing.
-    expect(lastTurnPlans.length).toBe(1);
+    // TodoWrite snapshot first, then the TaskUpdate's resulting store state — latest change wins.
+    expect(lastTurnPlans.length).toBe(2);
     expect(lastTurnPlans[0].plan?.steps).toEqual([{ step: 'fresh todo', status: 'inProgress' }]);
+    expect(lastTurnPlans[1].plan?.steps).toEqual([{ step: 'store task', status: 'completed' }]);
+  });
+
+  it('chronological: a TaskUpdate with an unknown id lands positionally on the latest TodoWrite list', async () => {
+    const perTurn = await parseSession([
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
+      { type: 'assistant', message: { content: [
+        { type: 'text', text: 'todos' },
+        { type: 'tool_use', id: 'tw1', name: 'TodoWrite', input: { todos: [
+          { content: 'first', status: 'completed' },
+          { content: 'second', status: 'in_progress' },
+          { content: 'third', status: 'pending' },
+        ] } },
+      ] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'continue' }] } },
+      // Next turn: no TaskCreate store — id "2" = the 2nd item of the latest todo list.
+      { type: 'assistant', message: { content: [
+        { type: 'text', text: 'updating' },
+        { type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '2', status: 'completed' } },
+      ] } },
+    ]);
+    const lastTurnPlans = perTurn[1].filter(b => b.type === 'plan');
+    expect(lastTurnPlans.length).toBe(1);
+    expect(lastTurnPlans[0].plan?.steps).toEqual([
+      { step: 'first', status: 'completed' },
+      { step: 'second', status: 'completed' },
+      { step: 'third', status: 'pending' },
+    ]);
   });
 });

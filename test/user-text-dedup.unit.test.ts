@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
   displayPromptForPending,
+  latestOwnPlan,
   normalizeUserText,
   promptEndsWithUserPrompt,
   sameUserText,
   shouldCarryLatestPlanIntoLiveStream,
   streamPromptMatchesTurnText,
 } from '../dashboard/src/pages/sessions/utils';
+import type { MessageBlock } from '../dashboard/src/types';
+
+function planBlock(steps: Array<{ step: string; status: 'pending' | 'inProgress' | 'completed' }>): MessageBlock {
+  return { type: 'plan', content: '', plan: { explanation: null, steps } };
+}
+const toolBlock: MessageBlock = { type: 'tool_use', content: '', toolName: 'Bash' };
+const textBlock: MessageBlock = { type: 'text', content: 'done' };
 
 // shortValue(text, 500): first (500-3) chars, trimEnd, + '...'
 function shortValue(text: string, max = 500): string {
@@ -128,5 +136,28 @@ describe('live plan fallback isolation', () => {
   it('allows the fallback only when there is no current live question', () => {
     expect(shouldCarryLatestPlanIntoLiveStream(null, null)).toBe(true);
     expect(shouldCarryLatestPlanIntoLiveStream('', '')).toBe(true);
+  });
+});
+
+describe('settled turn shows only its own plan', () => {
+  it('returns a turn\'s own latest plan block (latest wins within the turn)', () => {
+    const blocks = [
+      planBlock([{ step: 'design', status: 'completed' }, { step: 'build', status: 'inProgress' }]),
+      planBlock([{ step: 'design', status: 'completed' }, { step: 'build', status: 'completed' }]),
+    ];
+    expect(latestOwnPlan(blocks)?.steps).toEqual([
+      { step: 'design', status: 'completed' },
+      { step: 'build', status: 'completed' },
+    ]);
+  });
+
+  it('returns null for a plan-less turn — never inheriting an earlier turn\'s plan', () => {
+    // The bug: a new, unrelated reply (tool activity + text, no todo write of its own) used to
+    // borrow the previous turn's completed plan via a session-level fallback. A plan-less turn
+    // must resolve to no plan card at all.
+    expect(latestOwnPlan([toolBlock, textBlock])).toBeNull();
+    expect(latestOwnPlan([])).toBeNull();
+    // An empty-steps plan block is not a plan.
+    expect(latestOwnPlan([planBlock([])])).toBeNull();
   });
 });

@@ -29,6 +29,7 @@ import { resolveGuiIntegrationConfig, type McpSendFileCallback, type McpSendFile
 import { composeSessionToolPrompt } from '../agent/mcp/capabilities.js';
 import { terminateProcessTree } from '../core/process-control.js';
 import { appendTurnAudit } from '../core/turn-audit.js';
+import { recordDeliveredTurn } from '../agent/turn-snapshot.js';
 import { expandTilde } from '../core/platform.js';
 import { VERSION } from '../core/version.js';
 import {
@@ -2424,6 +2425,16 @@ export class Bot {
       error: result.error ? String(result.error).slice(0, 500) : null,
       elapsedS: result.elapsedS, model: result.model ?? resolvedModel, promptPreview: prompt.slice(0, 120),
     });
+    // Durable copy of what we just delivered, so the history render can restore it if the CLI's
+    // jsonl later loses this turn to a flush race or an in-place resume rewrite (the swallow).
+    // claude-only: it is the driver whose renderer knows how to merge these at a tombstone.
+    if (cs.agent === 'claude') {
+      recordDeliveredTurn({
+        sessionId: result.sessionId || cs.sessionId || null,
+        prompt, message: result.message, model: result.model ?? resolvedModel ?? null,
+        ok: result.ok, stopReason: result.stopReason ?? null,
+      });
+    }
     if (cs.agent === 'claude' && workflowEnabled && result.thinkingEffort) {
       result.thinkingEffort = 'ultra';
     }

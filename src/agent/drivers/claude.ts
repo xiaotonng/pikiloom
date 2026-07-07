@@ -32,6 +32,7 @@ import {
 import { AGENT_STREAM_HARD_KILL_GRACE_MS, AGENT_GRACEFUL_ABORT_GRACE_MS, SESSION_RUNNING_THRESHOLD_MS } from '../../core/constants.js';
 import { terminateProcessTree } from '../../core/process-control.js';
 import { getHome, IS_MAC, encodePathAsDirName } from '../../core/platform.js';
+import { loadDeliveredTurns, buildRecoveryQueue, normalizeSnapshotPrompt } from '../turn-snapshot.js';
 
 function buildClaudeUserMessage(prompt: string, attachments: string[]): string {
   const content: any[] = [];
@@ -1459,6 +1460,11 @@ function isClaudeSyntheticResumeNoise(text: string): boolean {
 const CLAUDE_INCOMPLETE_TURN_NOTICE =
   '⚠️ This reply ended before a closing message was delivered (interrupted, or the model returned an empty final response).';
 
+// Shown under a reply we restored from pikiloom's delivery snapshot because the agent transcript
+// lost it (see turn-snapshot.ts). The content above is what was actually streamed to the user.
+const CLAUDE_RECOVERED_TURN_NOTICE =
+  'ℹ️ Restored by pikiloom from the delivered reply — the agent’s own transcript dropped this turn.';
+
 function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesResult {
   const projectDir = path.join(getHome(), '.claude', 'projects', claudeProjectDirName(opts.workdir));
   const filePath = path.join(projectDir, `${opts.sessionId}.jsonl`);
@@ -1473,6 +1479,14 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
 
     const allMsgs: TailMessage[] = [];
     const richMsgs: RichMessage[] = [];
+
+    // Delivered-reply snapshots keyed by prompt, consumed at tombstones to restore swallowed turns.
+    const recoveryQueue = buildRecoveryQueue(loadDeliveredTurns(opts.sessionId));
+    let lastUserPromptNorm = '';
+    const takeRecoveredTurn = (promptNorm: string): string | null => {
+      const list = promptNorm ? recoveryQueue.get(promptNorm) : undefined;
+      return list && list.length ? list.shift()! : null;
+    };
 
     let pendingRole: 'user' | 'assistant' | null = null;
     let pendingTextParts: string[] = [];
@@ -1641,6 +1655,7 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
             pendingRole = 'user';
             pendingTextParts = text ? [text] : [];
             pendingBlocks = text ? [{ type: 'text', content: text }, ...imageBlocks] : [...imageBlocks];
+            if (text) lastUserPromptNorm = normalizeSnapshotPrompt(text);
           }
         } else if (ev.type === 'assistant') {
           if (ev.message?.model === '<synthetic>') {
@@ -1654,7 +1669,20 @@ function getClaudeSessionMessages(opts: SessionMessagesOpts): SessionMessagesRes
             if (!displayText) continue;
             if (pendingRole === 'user') flush();
             pendingRole = 'assistant';
-            pendingBlocks.push({ type: 'system_notice', content: displayText });
+            // If this tombstone is the whole assistant turn (nothing landed in the jsonl) and we
+            // hold a delivered-reply snapshot for the preceding prompt, restore the real reply
+            // instead of the "ended before a closing message" notice. When partial content did
+            // land (pending blocks already present) we leave it — partial + notice is truthful.
+            const turnEmpty = pendingBlocks.length === 0 && pendingTextParts.length === 0;
+            const recovered = (displayText === CLAUDE_INCOMPLETE_TURN_NOTICE && turnEmpty)
+              ? takeRecoveredTurn(lastUserPromptNorm) : null;
+            if (recovered) {
+              pendingTextParts.push(recovered);
+              pendingBlocks.push({ type: 'text', content: recovered });
+              pendingBlocks.push({ type: 'system_notice', content: CLAUDE_RECOVERED_TURN_NOTICE });
+            } else {
+              pendingBlocks.push({ type: 'system_notice', content: displayText });
+            }
             continue;
           }
           if (pendingRole === 'user') flush();

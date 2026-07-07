@@ -4,21 +4,17 @@ import { cn } from '../../utils';
 import { CollapsibleCard, CountBadge } from '../../components/ui';
 import { PlanProgressCard, hasPlan } from '../../components/PlanProgressCard';
 import { createMarkdownComponents, mdPlugins, LinkifyPaths } from './markdown';
-import { lastNLines, summarizeToolResult, summarizeToolUse } from './utils';
+import { lastNLines, latestOwnPlan, summarizeToolResult, summarizeToolUse } from './utils';
 import { ImageLightbox } from './TurnView';
 import { SubAgentCard } from './LivePreview';
 import { FileChip } from './FileChip';
-import type { RichMessage, MessageBlock, StreamPlan } from '../../types';
+import type { RichMessage, MessageBlock } from '../../types';
 
-export function AssistantMsg({ message, t, workdir, fallbackPlan }: {
+export function AssistantMsg({ message, t, workdir }: {
   message: RichMessage; t: (k: string) => string; workdir?: string | null;
-  // The session's latest known task list from earlier turns. A turn without its own todo
-  // update (e.g. a resumed continuation) still shows the current plan — latest wins.
-  fallbackPlan?: StreamPlan | null;
 }) {
   const { activityBlocks, thinkingBlocks, planBlocks, subAgentBlocks, outputBlocks, noticeBlocks } = categorizeAssistantBlocks(message.blocks);
-  const latestPlan = [...planBlocks].reverse().find(block => hasPlan(block.plan));
-  const planToShow = latestPlan?.plan ?? (hasPlan(fallbackPlan) ? fallbackPlan : null);
+  const planToShow = latestOwnPlan(planBlocks);
   const hasContent = activityBlocks.length > 0 || subAgentBlocks.length > 0 || !!planToShow || thinkingBlocks.length > 0 || outputBlocks.length > 0 || noticeBlocks.length > 0;
   if (!hasContent) return null;
   return (

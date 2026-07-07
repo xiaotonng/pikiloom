@@ -7,10 +7,10 @@ import { BrandIcon } from '../../components/BrandIcon';
 import { createMarkdownComponents, mdPlugins } from './markdown';
 import { isContinuationSummary, formatTokens, formatTokensShort, contextDotClass } from './utils';
 import { AssistantMsg, hasRenderableAssistant } from './AssistantContent';
-import type { MessageBlock, StreamPreviewMeta, StreamPlan } from '../../types';
+import type { MessageBlock, StreamPreviewMeta } from '../../types';
 import type { Turn } from './utils';
 
-export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork, hideHeaderUsage, fallbackPlan, isTail }: {
+export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork, hideHeaderUsage, isTail }: {
   turn: Turn; turnIndex?: number; agent: string; meta: ReturnType<typeof getAgentMeta>; model?: string | null; effort?: string | null; t: (k: string) => string; workdir?: string | null;
   providerName?: string | null;
   onResend?: (text: string) => void;
@@ -19,8 +19,6 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
   // Set while this turn is still running (trailing status row shows usage instead), so the
   // header stays a clean identity line exactly like a live LivePreview turn.
   hideHeaderUsage?: boolean;
-  // Session-latest task list carried into a turn that hasn't written its own yet (latest wins).
-  fallbackPlan?: StreamPlan | null;
   // The most-recent turn: opt out of content-visibility skipping (its content streams/grows and
   // must never be collapsed to the intrinsic-size placeholder mid-render).
   isTail?: boolean;
@@ -46,7 +44,7 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
         <>
           <TurnDivider agent={agent} meta={meta} model={model} effort={effort} providerName={providerName} previewMeta={turn.assistant!.usage ?? null} hideContextUsage={hideHeaderUsage} />
           <div className="mb-6">
-            <AssistantMsg message={turn.assistant!} t={t} workdir={workdir} fallbackPlan={fallbackPlan} />
+            <AssistantMsg message={turn.assistant!} t={t} workdir={workdir} />
           </div>
         </>
       )}

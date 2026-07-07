@@ -11,6 +11,7 @@ import {
 import { composeKernelFinalPresentation } from '../src/agent/kernel-bridge.js';
 import { getSessionMessages } from '../src/agent/index.ts';
 import { appendTurnAudit, turnAuditPath } from '../src/core/turn-audit.js';
+import { recordDeliveredTurn, loadDeliveredTurns } from '../src/agent/turn-snapshot.ts';
 import { withTempHome, makeTmpDir } from './support/env.ts';
 
 // Regression suite for the swallowed-reply family ("吞消息"): a claude turn that ends without
@@ -341,6 +342,90 @@ describe('transcript rendering of a dangling turn', () => {
       const userMsgs = rich.filter(m => m.role === 'user').map(m => m.text);
       expect(userMsgs).toEqual(['do the thing']);
       expect(rich.map(m => m.text).join('\n')).not.toContain('pikiloom-recover');
+    });
+  });
+
+  it('restores a swallowed reply from the delivery snapshot at a tombstone', async () => {
+    await withTempHome(async (homeDir) => {
+      const workdir = '/Users/test/swallow';
+      const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-swallow');
+      const sessionId = 'sess-swallow';
+      fs.mkdirSync(projectDir, { recursive: true });
+      // The exact bug shape: a user prompt whose (delivered) assistant reply never landed in the
+      // jsonl, followed by the CLI's resume-repair tombstone, then the next turn.
+      const events = [
+        { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '你帮我针对这个用户起草一份回复邮件' }] } },
+        { type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: 'Continue from where you left off.' }] } },
+        { type: 'assistant', message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '结果呢' }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: '这封邮件顺带证实了……' }] } },
+      ];
+      fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), events.map(e => JSON.stringify(e)).join('\n'));
+
+      const draft = 'Subject: RE: payment confirmation\n\nHi PK,\n\n这是我为你起草的回复邮件正文……';
+      recordDeliveredTurn({
+        sessionId, prompt: '你帮我针对这个用户起草一份回复邮件',
+        message: draft, model: 'claude-opus-4-8', ok: true, stopReason: 'end_turn',
+      });
+
+      const result = await getSessionMessages({ agent: 'claude', sessionId, workdir, rich: true } as any);
+      expect(result.ok).toBe(true);
+      const rich = result.richMessages || [];
+      // The tombstone turn now carries the restored draft, not the "ended before a closing" notice.
+      const allText = rich.map(m => m.text).join('\n');
+      expect(allText).toContain('这是我为你起草的回复邮件正文');
+      expect(allText).not.toContain('ended before a closing message');
+      expect(allText).not.toContain('No response requested.');
+      const notices = rich.flatMap(m => m.blocks || []).filter((b: any) => b.type === 'system_notice');
+      expect(notices.length).toBe(1);
+      expect(String(notices[0].content)).toContain('Restored by pikiloom');
+      // The follow-up turn ("结果呢") is untouched and not double-restored.
+      const userMsgs = rich.filter(m => m.role === 'user').map(m => m.text);
+      expect(userMsgs).toEqual(['你帮我针对这个用户起草一份回复邮件', '结果呢']);
+    });
+  });
+
+  it('leaves the incomplete-turn notice when no delivery snapshot exists for the prompt', async () => {
+    await withTempHome(async (homeDir) => {
+      const workdir = '/Users/test/nosnap';
+      const projectDir = path.join(homeDir, '.claude', 'projects', '-Users-test-nosnap');
+      const sessionId = 'sess-nosnap';
+      fs.mkdirSync(projectDir, { recursive: true });
+      const events = [
+        { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'draft me an email' }] } },
+        { type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: 'Continue from where you left off.' }] } },
+        { type: 'assistant', message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] } },
+      ];
+      fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), events.map(e => JSON.stringify(e)).join('\n'));
+
+      const result = await getSessionMessages({ agent: 'claude', sessionId, workdir, rich: true } as any);
+      const rich = result.richMessages || [];
+      const notices = rich.flatMap(m => m.blocks || []).filter((b: any) => b.type === 'system_notice');
+      expect(notices.length).toBe(1);
+      expect(String(notices[0].content)).toContain('ended before a closing message');
+    });
+  });
+});
+
+// ── delivery snapshot store ─────────────────────────────────────────────────────────────────
+
+describe('recordDeliveredTurn', () => {
+  it('persists real prose, strips a trailing incomplete-notice, and skips placeholders', async () => {
+    await withTempHome(async () => {
+      const sessionId = 'sess-store';
+      recordDeliveredTurn({ sessionId, prompt: 'p1', message: 'the real answer\n\n⚠️ The turn stopped responding after tool use. Send any message to continue.', model: 'm', ok: false, stopReason: 'stalled' });
+      recordDeliveredTurn({ sessionId, prompt: 'p2', message: '(no textual response)', model: 'm', ok: true, stopReason: 'end_turn' });
+      recordDeliveredTurn({ sessionId, prompt: 'p3', message: '   ', model: 'm', ok: true, stopReason: 'end_turn' });
+      const turns = loadDeliveredTurns(sessionId);
+      expect(turns.map(t => t.prompt)).toEqual(['p1']);
+      expect(turns[0].text).toBe('the real answer');
+    });
+  });
+
+  it('no-ops without a sessionId', async () => {
+    await withTempHome(async () => {
+      recordDeliveredTurn({ sessionId: null, prompt: 'p', message: 'x', model: null, ok: true, stopReason: null });
+      expect(loadDeliveredTurns(null)).toEqual([]);
     });
   });
 });

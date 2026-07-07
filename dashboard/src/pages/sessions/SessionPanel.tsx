@@ -791,8 +791,11 @@ export const SessionPanel = memo(function SessionPanel({
 
   const rawTurns = history?.turns || [];
   // The session's current task list = the LAST plan snapshot anywhere in history (TodoWrite or
-  // TaskCreate/TaskUpdate — latest wins). Carried into the trailing turn / live stream so a
-  // continuation that hasn't rewritten its todos yet still shows the up-to-date plan.
+  // TaskCreate/TaskUpdate — latest wins). Carried ONLY into the actively-streaming live turn (see
+  // `livePlanToShow`) so a background/wake-up continuation that hasn't re-emitted its todos still
+  // shows the up-to-date list. It is NEVER grafted onto a settled/reconciled history turn — each
+  // completed turn renders its own plan only, or none — so a new, unrelated turn no longer
+  // inherits the previous turn's (often completed) plan card.
   const latestSessionPlan = useMemo<StreamPlan | null>(() => {
     for (let i = rawTurns.length - 1; i >= 0; i--) {
       const blocks = rawTurns[i].assistant?.blocks;
@@ -948,7 +951,6 @@ export const SessionPanel = memo(function SessionPanel({
                   turnIndex={absoluteTurnIndex}
                   hideHeaderUsage={trailingContinuesLastTurn && i === turns.length - 1}
                   isTail={i === turns.length - 1}
-                  fallbackPlan={i === turns.length - 1 && !(liveStream && liveStreamShouldRender(liveStream)) ? latestSessionPlan : undefined}
                   agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} t={t}
                   workdir={workdir}
                   onResend={(txt) => {

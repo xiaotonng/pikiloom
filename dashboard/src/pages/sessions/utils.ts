@@ -1,4 +1,4 @@
-import type { MessageBlock, RichMessage, SessionMessagesResult } from '../../types';
+import type { MessageBlock, RichMessage, SessionMessagesResult, StreamPlan } from '../../types';
 
 export interface Turn {
   user: RichMessage | null;
@@ -45,6 +45,19 @@ export function shouldCarryLatestPlanIntoLiveStream(
   liveQuestion: string | null | undefined,
 ): boolean {
   return !displayPromptForPending(pendingPrompt, liveQuestion);
+}
+
+// The plan card an assistant turn renders = its OWN latest task-list snapshot only (TodoWrite /
+// TaskCreate / TaskUpdate — latest wins within the turn), or none. A turn NEVER inherits a plan
+// from another turn: cross-turn carry-forward is confined to the live stream
+// (`shouldCarryLatestPlanIntoLiveStream`), so a settled/reconciled reply can no longer surface an
+// earlier — often already completed — turn's plan under a new, unrelated message.
+export function latestOwnPlan(planBlocks: MessageBlock[]): StreamPlan | null {
+  for (let i = planBlocks.length - 1; i >= 0; i--) {
+    const plan = planBlocks[i].plan;
+    if (plan?.steps?.length) return plan;
+  }
+  return null;
 }
 
 // While a turn streams (before its native transcript is parseable) the history turn can

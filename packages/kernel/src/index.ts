@@ -48,6 +48,7 @@ export {
   claudeModelStallMs, claudeUserEventHasToolResult,
   handleClaudeEvent, claudeTurnEndedDangling,
   claudeTruncatedRecoveryEnabled, CLAUDE_TRUNCATED_RECOVERY_PROMPT,
+  isClaudeSyntheticResumeNoise, claudeProducedRealOutput, claudeResumeNoopRetryLimit,
 } from './drivers/claude.js';
 export { CodexDriver } from './drivers/codex.js';
 export { GeminiDriver } from './drivers/gemini.js';

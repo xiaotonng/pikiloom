@@ -74,6 +74,10 @@ export class ClaudeDriver implements AgentDriver {
       let settled = false;
       // One-shot guard for the truncated-turn recovery injection (see the result handler).
       let truncatedRecoveryAttempted = false;
+      // Bounded counter for the no-op-resume recovery re-injection (see the result handler): a
+      // resume of a session left incomplete by a prior turn can no-op several times before the
+      // CLI's repair clears and it runs our prompt for real.
+      let noopResumeRetries = 0;
       // holdCap: hard backstop while a background task is still running (never-completing daemon).
       // quiet: fires once all known background tasks finished AND Claude has gone quiet, so trailing
       // wake-up turns can still land before we close (see claudeBgSettleQuietMs).
@@ -216,6 +220,22 @@ export class ClaudeDriver implements AgentDriver {
                 }
                 settleResult({ stopReason: 'truncated', kill: false });
                 return;
+              }
+              // No-op resume repair: resuming a session whose previous turn was left incomplete (a
+              // background hold that reclaimed its sub-agents/workflow — the ultra "no response"
+              // report — an interrupt, a stall) makes the CLI answer with a synthetic "No response
+              // requested." no-op that ran NONE of our prompt (no model turn at all), instead of
+              // processing the message. Settling here delivers a silent "(no textual response)" and
+              // drops the user's send. stdin is still open: re-issue the prompt so the CLI drives
+              // through its repair to a real answer within this one turn. Bounded (the repair can
+              // no-op more than once); the post-tool stall watchdog is the backstop if the CLI never
+              // engages. Scoped to resumes (input.sessionId) — a fresh session has no dangling turn.
+              if (!hasError && !!input.sessionId && !claudeProducedRealOutput(state)
+                  && noopResumeRetries < claudeResumeNoopRetryLimit()) {
+                noopResumeRetries++;
+                let injected = false;
+                try { child.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n'); injected = true; } catch { /* fall through to settle */ }
+                if (injected) { armModelStall(); continue; }
               }
               // kill=false: the CLI persists the turn into the session jsonl AFTER emitting
               // `result`, and on a large session that flush (a whole-file rewrite) takes long
@@ -427,6 +447,12 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     return;
   }
   if (t === 'assistant') {
+    // Synthetic resume-repair no-op: resuming a session whose previous turn was left incomplete
+    // makes the CLI emit an assistant message with model '<synthetic>' whose only text is
+    // "No response requested." (paired with an isMeta "Continue from where you left off." user
+    // record). It is NOT model output — mirror the legacy driver and drop it, so it neither shows
+    // as the reply nor counts as real output (the no-op-resume recovery keys off that emptiness).
+    if (ev.message?.model === '<synthetic>' && isClaudeSyntheticResumeNoise(claudeContentText(ev.message?.content))) return;
     const contents = ev.message?.content || [];
     for (const b of contents) {
       if (b?.type !== 'tool_use') continue;
@@ -663,6 +689,31 @@ export const CLAUDE_TRUNCATED_RECOVERY_PROMPT =
 export function claudeTruncatedRecoveryEnabled(): boolean {
   const v = String(process.env.PIKILOOM_CLAUDE_TRUNCATED_RECOVERY ?? '').trim().toLowerCase();
   return v !== '0' && v !== 'false' && v !== 'off';
+}
+// The CLI's resume-repair placeholder for a turn that never concluded: an assistant message with
+// model '<synthetic>' whose only text is "No response requested." (paired with an isMeta "Continue
+// from where you left off." user record). It is NOT model output. Mirrors the legacy driver.
+export function isClaudeSyntheticResumeNoise(text: string): boolean {
+  const t = (text || '').trim().toLowerCase();
+  return t === 'no response requested.' || t === 'no response requested';
+}
+// True once the turn produced ANY real model output — streamed or whole-message text/reasoning, a
+// tool use, or a spawned sub-agent. False for a pure no-op (a synthetic resume-repair result that
+// ran none of the prompt), which is exactly what the no-op-resume recovery keys off. Pure +
+// exported for hermetic testing.
+export function claudeProducedRealOutput(s: any): boolean {
+  return !!(s?.streamedText || s?.streamedReasoning
+    || (s?.tools?.size ?? 0) > 0 || (s?.subAgents?.size ?? 0) > 0
+    || (typeof s?.text === 'string' && s.text.trim().length > 0)
+    || (typeof s?.reasoning === 'string' && s.reasoning.trim().length > 0));
+}
+// How many times to re-issue the prompt when a resume comes back a pure no-op before giving up and
+// settling (see the result handler). Bounded so a genuinely dead session can't loop forever; 0
+// disables the recovery. Override with PIKILOOM_CLAUDE_RESUME_NOOP_RETRIES.
+const CLAUDE_RESUME_NOOP_RETRY_DEFAULT = 3;
+export function claudeResumeNoopRetryLimit(): number {
+  const raw = Number(process.env.PIKILOOM_CLAUDE_RESUME_NOOP_RETRIES);
+  return Number.isFinite(raw) && raw >= 0 ? raw : CLAUDE_RESUME_NOOP_RETRY_DEFAULT;
 }
 // True when a claude `type:'user'` stream event carries at least one tool_result block — i.e. the
 // tool loop just handed control back to the model. Pure + exported for hermetic testing.

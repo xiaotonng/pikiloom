@@ -55,7 +55,7 @@ describe('dashboard live session state helpers', () => {
     expect(next.runDetail).toBe('Timed out before completion.');
   });
 
-  it('lets fresh server running state supersede stale done snapshots, and shows waiting for parked sessions', () => {
+  it('lets fresh server running state supersede older done snapshots, and shows waiting for parked sessions', () => {
     const base = {
       sessionId: 'sess-resume',
       agent: 'claude',
@@ -78,7 +78,7 @@ describe('dashboard live session state helpers', () => {
       updatedAt: Date.parse('2026-06-03T11:59:50.000Z'),
     });
     const mergedBackToBack = applyLiveSessionState(backToBackBase, coincidentDone);
-    expect(sessionDisplayState(mergedBackToBack)).toBe('running');
+    expect(sessionDisplayState(mergedBackToBack)).toBe('completed');
     expect(mergedBackToBack.runUpdatedAt).toBe('2026-06-03T11:59:50.000Z');
 
     const flashBase = { ...base, runUpdatedAt: '2026-06-03T11:00:00.000Z' };

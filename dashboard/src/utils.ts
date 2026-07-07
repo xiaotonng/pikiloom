@@ -213,14 +213,12 @@ export function normalizeLiveSessionState(sessionKey: string, snapshot: unknown)
   };
 }
 
-const DONE_OVERRIDES_RUNNING_MARGIN_MS = 2_000;
-
 export function applyLiveSessionState(session: SessionInfo, liveState?: LiveSessionState | null): SessionInfo {
   if (!liveState) return session;
 
   if (liveState.phase === 'done' && (session.running || session.runState === 'running')) {
     const serverUpdatedMs = session.runUpdatedAt ? Date.parse(session.runUpdatedAt) : NaN;
-    if (Number.isFinite(serverUpdatedMs) && liveState.updatedAt - serverUpdatedMs <= DONE_OVERRIDES_RUNNING_MARGIN_MS) {
+    if (Number.isFinite(serverUpdatedMs) && liveState.updatedAt < serverUpdatedMs) {
       return session;
     }
   }

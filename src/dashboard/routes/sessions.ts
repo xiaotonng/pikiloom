@@ -144,6 +144,21 @@ function sanitizeUploadFileName(rawName: string, mimeType: string, index: number
   return `${safeStem}${ext.toLowerCase()}`;
 }
 
+export function reserveUploadFileName(rawName: string, mimeType: string, index: number, usedNames: Set<string>): string {
+  const desired = sanitizeUploadFileName(rawName, mimeType, index);
+  const parsed = path.parse(desired);
+  const stem = parsed.name || `attachment-${index + 1}`;
+  const ext = parsed.ext;
+  let candidate = desired;
+  let suffix = 2;
+  while (usedNames.has(candidate.toLowerCase())) {
+    candidate = `${stem}-${suffix}${ext}`;
+    suffix++;
+  }
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
 async function materializeUploadedFiles(entries: unknown[]): Promise<{ attachments: string[]; cleanup: () => Promise<void> }> {
   const files = entries.filter(isUploadFile);
   if (!files.length) {
@@ -153,8 +168,9 @@ async function materializeUploadedFiles(entries: unknown[]): Promise<{ attachmen
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pikiloom-dashboard-upload-'));
   try {
     const attachments: string[] = [];
+    const usedNames = new Set<string>();
     for (const [index, file] of files.entries()) {
-      const filename = sanitizeUploadFileName(String(file.name || ''), String(file.type || ''), index);
+      const filename = reserveUploadFileName(String(file.name || ''), String(file.type || ''), index, usedNames);
       const filePath = path.join(tempDir, filename);
       await fs.promises.writeFile(filePath, Buffer.from(await file.arrayBuffer()));
       attachments.push(filePath);

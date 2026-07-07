@@ -151,4 +151,8 @@ describe('shouldShowTrailingLoader', () => {
   it('stays hidden for a frozen incomplete turn (done, not running, nothing queued)', () => {
     expect(shouldShowTrailingLoader({ ...base, streamPhase: 'done' })).toBe(false);
   });
+
+  it('lets an observed done snapshot override stale session running state', () => {
+    expect(shouldShowTrailingLoader({ ...base, sessionRunning: true, streamPhase: 'done' })).toBe(false);
+  });
 });

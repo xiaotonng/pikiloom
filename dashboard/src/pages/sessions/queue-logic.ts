@@ -77,6 +77,12 @@ export interface TrailingLoaderInput {
 // even though work continues. Suppressed whenever another loader is already visible.
 export function shouldShowTrailingLoader(input: TrailingLoaderInput): boolean {
   if (input.liveTurnStreaming || input.pendingBubbleDots) return false;
+  if (input.streamPhase === 'done'
+      && !input.streaming
+      && input.queuedTaskCount === 0
+      && input.pendingQueuedCount === 0) {
+    return false;
+  }
   return input.sessionRunning
     || input.streaming
     || input.streamPhase === 'streaming'

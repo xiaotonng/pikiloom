@@ -10,7 +10,7 @@ import { AssistantMsg, hasRenderableAssistant } from './AssistantContent';
 import type { MessageBlock, StreamPreviewMeta, StreamPlan } from '../../types';
 import type { Turn } from './utils';
 
-export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork, hideHeaderUsage, fallbackPlan }: {
+export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork, hideHeaderUsage, fallbackPlan, isTail }: {
   turn: Turn; turnIndex?: number; agent: string; meta: ReturnType<typeof getAgentMeta>; model?: string | null; effort?: string | null; t: (k: string) => string; workdir?: string | null;
   providerName?: string | null;
   onResend?: (text: string) => void;
@@ -21,6 +21,9 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
   hideHeaderUsage?: boolean;
   // Session-latest task list carried into a turn that hasn't written its own yet (latest wins).
   fallbackPlan?: StreamPlan | null;
+  // The most-recent turn: opt out of content-visibility skipping (its content streams/grows and
+  // must never be collapsed to the intrinsic-size placeholder mid-render).
+  isTail?: boolean;
 }) {
   const isSystemMsg = turn.user && isContinuationSummary(turn.user.text);
   const handleFork = onFork && typeof turnIndex === 'number' ? () => onFork(turnIndex) : undefined;
@@ -28,7 +31,7 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
   const showAssistant = !!turn.assistant && hasRenderableAssistant(turn.assistant);
 
   return (
-    <div className="session-turn">
+    <div className={cn('session-turn', isTail && 'session-turn--live')}>
       {turn.user && !isSystemMsg && (
         <UserBubble text={turn.user.text} blocks={turn.user.blocks} t={t} onResend={onResend} onEdit={onEdit} onFork={handleFork} />
       )}

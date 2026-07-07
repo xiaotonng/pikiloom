@@ -943,6 +943,7 @@ export const SessionPanel = memo(function SessionPanel({
                   turn={turn}
                   turnIndex={absoluteTurnIndex}
                   hideHeaderUsage={trailingContinuesLastTurn && i === turns.length - 1}
+                  isTail={i === turns.length - 1}
                   fallbackPlan={i === turns.length - 1 && !(liveStream && liveStreamShouldRender(liveStream)) ? latestSessionPlan : undefined}
                   agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} t={t}
                   workdir={workdir}
@@ -966,7 +967,7 @@ export const SessionPanel = memo(function SessionPanel({
             {(pendingPrompt || pendingBubbleBlocks.length > 0)
               && !liveQuestionCoversPending
               && (optimisticBridgesImages || !pendingAlreadyInHistory) && (
-              <div className="session-turn">
+              <div className="session-turn session-turn--live">
                 <UserBubble text={pendingPrompt || ''} blocks={pendingBubbleBlocks} t={t} />
                 {!liveStream && (
                   <div className="mt-3 mb-5 animate-in">
@@ -979,7 +980,7 @@ export const SessionPanel = memo(function SessionPanel({
               && (!pendingPrompt || liveQuestionCoversPending)
               && !(rawTurns.length > 0
                    && streamPromptMatchesTurnText(rawLastUserText, liveStream.question)) && (
-              <div className="session-turn">
+              <div className="session-turn session-turn--live">
                 <UserBubble text={liveStream.question} blocks={liveStream.questionBlocks || undefined} t={t} />
               </div>
             )}

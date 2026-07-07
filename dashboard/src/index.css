@@ -497,9 +497,20 @@ button:disabled { cursor: not-allowed; }
 }
 
 @supports (content-visibility: auto) {
+  /* Off-screen turns skip layout/paint for scroll perf in long sessions. `auto` in
+     contain-intrinsic-size makes the browser REMEMBER each turn's real rendered height and
+     reuse it while skipped — without it the fixed 320px placeholder diverges wildly from a
+     long reply, so the viewport-relevance heuristic mis-skips an on-screen turn and collapses
+     it to a blank box (text "swallowed" until a relayout re-checks it). */
   .session-turn {
     content-visibility: auto;
-    contain-intrinsic-size: 1px 320px;
+    contain-intrinsic-size: auto 320px;
+  }
+  /* The most-recent turn streams/grows and the transient pending & live-question bubbles sit at
+     the bottom edge — never skip these, or their actively-changing content blanks mid-render. */
+  .session-turn--live {
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
   }
 }
 

@@ -34,7 +34,20 @@ export function HeaderAccountMenu({ agent, nativeGauge, nativeUsage, t }: {
   // `fresh` = the user is actively looking (popover open / just switched): the backend re-probes
   // past its short fresh window. Debounce lives server-side, so firing on every hover is safe.
   const load = async (fresh = false) => { try { const r = await api.getAgentAccounts(agent, { fresh }); if (r.ok) setData(r); } catch { /* ignore */ } };
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [agent]);
+  // The top-bar ring is driven by this snapshot, not the polled agent-status store, so it needs
+  // its own cadence or it freezes at the mount value. Probe fresh on open, every 5 min while the
+  // tab is visible, and whenever the tab regains focus — server-side debounce keeps this cheap.
+  useEffect(() => {
+    void load(true);
+    const id = window.setInterval(() => { if (!document.hidden) void load(true); }, 5 * 60_000);
+    const onVisibility = () => { if (!document.hidden) void load(true); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [agent]);
   useEffect(() => () => { if (closeTimer.current) window.clearTimeout(closeTimer.current); }, []);
 
   // Explicit refresh (the ↻ button): `force` bypasses the backend failure backoff, so rows a

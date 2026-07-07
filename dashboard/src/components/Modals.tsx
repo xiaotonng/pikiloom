@@ -922,7 +922,7 @@ export function WorkdirModal({ open, onClose }: { open: boolean; onClose: () => 
   return (
     <Modal
       open={open}
-      onClose={switching ? undefined : onClose}
+      onClose={switching ? () => {} : onClose}
       panelStyle={{
         width: 'min(500px, calc(100vw - 2rem))',
         maxWidth: 'min(500px, calc(100vw - 2rem))',

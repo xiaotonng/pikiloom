@@ -355,7 +355,8 @@ function ProfileModal({
                 value: m.id,
                 label: m.id,
                 description: m.name && m.name.toLowerCase() !== m.id.toLowerCase() ? m.name : undefined,
-                meta: m.contextLength ? formatContextLength(m.contextLength) : undefined,
+                // formatContextLength returns string | null; ModelOption.meta is string | undefined.
+                meta: formatContextLength(m.contextLength) ?? undefined,
               })),
             ];
             return (

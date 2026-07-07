@@ -239,13 +239,14 @@ export const SessionWorkspace = memo(function SessionWorkspace({
   const newSessionSlotRef = useRef(-1);
 
   const selectedSession = openSessions[activeSlotIndex] ?? null;
-  const setSelectedSession = useCallback((next: SessionSlot | null) => {
+  // mountKey is optional for callers — this fills one in when absent (see withKey below).
+  const setSelectedSession = useCallback((next: (Omit<SessionSlot, 'mountKey'> & { mountKey?: string }) | null) => {
     if (!next) {
       setOpenSessions([]);
       setActiveSlotIndex(0);
       return;
     }
-    const withKey = next.mountKey ? next : { ...next, mountKey: nextMountKey() };
+    const withKey: SessionSlot = next.mountKey ? (next as SessionSlot) : { ...next, mountKey: nextMountKey() };
     setOpenSessions(prev => {
       const existingIdx = prev.findIndex(s => s.agent === withKey.agent && s.sessionId === withKey.sessionId);
       if (existingIdx >= 0) {

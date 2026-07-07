@@ -19,7 +19,7 @@ import {
   readImagesFromAsyncClipboard,
   type ComposerImageAttachment,
 } from './utils';
-import type { SessionInfo, AgentRuntimeStatus, SkillInfo, EffortLevel, QueuedTaskPreview } from '../../types';
+import type { Agent, SessionInfo, AgentRuntimeStatus, SkillInfo, EffortLevel, QueuedTaskPreview } from '../../types';
 
 type CascadeStep = 'closed' | 'agent' | 'model';
 
@@ -488,7 +488,7 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
         description: m.alias && m.alias.toLowerCase() !== m.id.toLowerCase() ? m.alias : undefined,
       });
     }
-    const acceptedKinds = new Set(AGENT_ACCEPTED_PROVIDER_KINDS[cascadeAgentId] || []);
+    const acceptedKinds = new Set(AGENT_ACCEPTED_PROVIDER_KINDS[cascadeAgentId as Agent] || []);
     for (const p of profiles) {
       const provider = providers.find(x => x.id === p.providerId);
       if (!provider || !acceptedKinds.has(provider.kind)) continue;

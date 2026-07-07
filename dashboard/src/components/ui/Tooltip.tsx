@@ -4,7 +4,9 @@ import { cn } from '../../utils';
 
 const TOOLTIP_MAX_WIDTH = 340;
 
-export interface TooltipProps extends HTMLAttributes<HTMLSpanElement> {
+// Omit the DOM `content` attribute (typed `string`) so our richer ReactNode content doesn't
+// clash with HTMLAttributes.
+export interface TooltipProps extends Omit<HTMLAttributes<HTMLSpanElement>, 'content'> {
   content: ReactNode;
   side?: 'top' | 'bottom';
   delayMs?: number;

@@ -115,7 +115,7 @@ export function applyClaudeTaskUpdateToPlan(
     const steps = plan.steps.filter((_, i) => i !== idx);
     return steps.length ? { explanation: plan.explanation ?? null, steps } : null;
   }
-  const status = rawStatus === 'completed' ? 'completed'
+  const status: StreamPreviewPlanStep['status'] | null = rawStatus === 'completed' ? 'completed'
     : rawStatus === 'in_progress' || rawStatus === 'inprogress' ? 'inProgress'
       : rawStatus === 'pending' ? 'pending' : null;
   if (!status) return null;

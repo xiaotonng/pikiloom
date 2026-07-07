@@ -10,12 +10,15 @@ import { AssistantMsg, hasRenderableAssistant } from './AssistantContent';
 import type { MessageBlock, StreamPreviewMeta } from '../../types';
 import type { Turn } from './utils';
 
-export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork }: {
+export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, model, effort, providerName, t, workdir, onResend, onEdit, onFork, hideHeaderUsage }: {
   turn: Turn; turnIndex?: number; agent: string; meta: ReturnType<typeof getAgentMeta>; model?: string | null; effort?: string | null; t: (k: string) => string; workdir?: string | null;
   providerName?: string | null;
   onResend?: (text: string) => void;
   onEdit?: (text: string) => void;
   onFork?: (atTurn: number) => void;
+  // Set while this turn is still running (trailing status row shows usage instead), so the
+  // header stays a clean identity line exactly like a live LivePreview turn.
+  hideHeaderUsage?: boolean;
 }) {
   const isSystemMsg = turn.user && isContinuationSummary(turn.user.text);
   const handleFork = onFork && typeof turnIndex === 'number' ? () => onFork(turnIndex) : undefined;
@@ -36,7 +39,7 @@ export const TurnView = memo(function TurnView({ turn, turnIndex, agent, meta, m
       )}
       {showAssistant && (
         <>
-          <TurnDivider agent={agent} meta={meta} model={model} effort={effort} providerName={providerName} previewMeta={turn.assistant!.usage ?? null} />
+          <TurnDivider agent={agent} meta={meta} model={model} effort={effort} providerName={providerName} previewMeta={turn.assistant!.usage ?? null} hideContextUsage={hideHeaderUsage} />
           <div className="mb-6">
             <AssistantMsg message={turn.assistant!} t={t} workdir={workdir} />
           </div>

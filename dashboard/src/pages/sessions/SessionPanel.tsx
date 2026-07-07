@@ -9,7 +9,8 @@ import { Spinner, Modal, ModalHeader, Button } from '../../components/ui';
 import { hasPlan } from '../../components/PlanProgressCard';
 import type { InteractionSnapshot, MessageBlock, QueuedTaskPreview, SessionInfo, StreamPlan, StreamPreviewMeta, StreamSubAgent, SnapshotArtifact } from '../../types';
 import { TurnView, UserBubble, TurnDivider } from './TurnView';
-import { LivePreview, ThinkingDots, liveStreamShouldRender, liveStreamHasBody, RunEndNotice, type LiveStreamView } from './LivePreview';
+import { LivePreview, ThinkingDots, LiveStatusRow, liveStreamShouldRender, liveStreamHasBody, RunEndNotice, type LiveStreamView } from './LivePreview';
+import { hasRenderableAssistant } from './AssistantContent';
 import { InputComposer } from './InputComposer';
 import { InteractionPromptModal } from './InteractionPromptModal';
 import { sendWillQueue, optimisticSendWasQueued, doneAppliesToLivePreview, shouldShowTrailingLoader } from './queue-logic';
@@ -864,6 +865,25 @@ export const SessionPanel = memo(function SessionPanel({
     liveTurnStreaming,
     pendingBubbleDots,
   });
+  // When the running turn's partial content has already reconciled into history, the loader must
+  // CONTINUE that turn — the standard status row (dots + tools + ctx% + tokens + elapsed) appended
+  // under the same header, fed from the turn's own usage — never a second agent header, which
+  // would read as a new reply inside the same conversation. The header-and-dots scaffold is only
+  // for a running turn with no history content yet (a turn genuinely starting).
+  const trailingLastTurn = showTrailingLoader && turns.length > 0 ? turns[turns.length - 1] : null;
+  const trailingContinuesLastTurn = !!trailingLastTurn?.assistant && hasRenderableAssistant(trailingLastTurn.assistant);
+  const trailingUsage = trailingContinuesLastTurn ? (trailingLastTurn!.assistant!.usage ?? null) : null;
+  const trailingToolCount = trailingContinuesLastTurn
+    ? trailingLastTurn!.assistant!.blocks.filter(b => b.type === 'tool_use').length
+    : 0;
+  // Turn start approximation when no stream snapshot exists: runUpdatedAt is stamped when the
+  // run flips to 'running' server-side, so the elapsed timer stays meaningful. Once a real
+  // snapshot arrives, LivePreview takes over with its authoritative startedAt.
+  const trailingStartedAt = (() => {
+    if (!showTrailingLoader || displayState !== 'running') return null;
+    const ms = session.runUpdatedAt ? Date.parse(session.runUpdatedAt) : NaN;
+    return Number.isFinite(ms) ? ms : null;
+  })();
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -908,6 +928,7 @@ export const SessionPanel = memo(function SessionPanel({
                 <TurnView key={`${history?.startTurn || 0}:${i}`}
                   turn={turn}
                   turnIndex={absoluteTurnIndex}
+                  hideHeaderUsage={trailingContinuesLastTurn && i === turns.length - 1}
                   agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} t={t}
                   workdir={workdir}
                   onResend={(txt) => {
@@ -954,10 +975,24 @@ export const SessionPanel = memo(function SessionPanel({
               </div>
             )}
             {showTrailingLoader && (
-              <div className="mb-6">
-                <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} hideContextUsage />
-                <LivePreview stream={TRAILING_LOADER_STREAM} t={t} workdir={workdir} />
-              </div>
+              trailingContinuesLastTurn ? (
+                // TurnView's assistant block ends with mb-6; pull the row back up to the same
+                // 12px rhythm LivePreview uses between its content and the live-status row.
+                <div className="-mt-3 mb-6 animate-in">
+                  <LiveStatusRow
+                    toolCount={trailingToolCount}
+                    ctxPct={trailingUsage?.contextPercent ?? null}
+                    ctxTokens={trailingUsage?.contextUsedTokens ?? 0}
+                    turnOutTokens={trailingUsage?.turnOutputTokens ?? 0}
+                    startedAt={trailingStartedAt}
+                  />
+                </div>
+              ) : (
+                <div className="mb-6">
+                  <TurnDivider agent={session.agent || ''} meta={meta} model={displayModelShort} effort={displayEffort} providerName={byokProviderName} hideContextUsage />
+                  <LivePreview stream={{ ...TRAILING_LOADER_STREAM, startedAt: trailingStartedAt }} t={t} workdir={workdir} />
+                </div>
+              )
             )}
             <div className="h-4" />
           </div>

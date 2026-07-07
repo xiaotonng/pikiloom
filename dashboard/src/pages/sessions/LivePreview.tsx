@@ -236,16 +236,13 @@ export function LivePreview({
       )}
 
       {showLiveStatus && (
-        <div className="flex items-center gap-2 text-[11px] font-mono text-fg-5/50 tabular-nums">
-          <ThinkingDots className="text-fg-5/45 shrink-0" />
-          <LiveStatusMetrics
-            toolCount={toolCount}
-            ctxPct={liveCtxPct}
-            ctxTokens={liveCtxTokens}
-            turnOutTokens={liveTurnOutTokens}
-            startedAt={showElapsed ? stream.startedAt! : null}
-          />
-        </div>
+        <LiveStatusRow
+          toolCount={toolCount}
+          ctxPct={liveCtxPct}
+          ctxTokens={liveCtxTokens}
+          turnOutTokens={liveTurnOutTokens}
+          startedAt={showElapsed ? stream.startedAt! : null}
+        />
       )}
 
       {failureLabelKey && stream.error && (
@@ -294,6 +291,31 @@ export function ThinkingDots({ className }: { className?: string }) {
     <span className={`thinking-dots inline-flex items-center gap-[3px] ${className || ''}`}>
       <span /><span /><span />
     </span>
+  );
+}
+
+// The standard in-progress status row: loading dots + this turn's tool count / ctx% / tokens /
+// elapsed. Rendered by LivePreview while streaming; also exported so SessionPanel can append the
+// identical row to a turn that is known to be running but has no stream snapshot to drive the
+// full LivePreview (the turn's reconciled history carries the metrics instead).
+export function LiveStatusRow({ toolCount, ctxPct, ctxTokens, turnOutTokens, startedAt }: {
+  toolCount: number;
+  ctxPct: number | null;
+  ctxTokens: number;
+  turnOutTokens: number;
+  startedAt: number | null;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-[11px] font-mono text-fg-5/50 tabular-nums">
+      <ThinkingDots className="text-fg-5/45 shrink-0" />
+      <LiveStatusMetrics
+        toolCount={toolCount}
+        ctxPct={ctxPct}
+        ctxTokens={ctxTokens}
+        turnOutTokens={turnOutTokens}
+        startedAt={startedAt}
+      />
+    </div>
   );
 }
 

@@ -7,6 +7,7 @@ import { EchoDriver } from '../src/drivers/echo.js';
 import { FsSessionStore } from '../src/ports/defaults.js';
 import type { UniversalSnapshot } from '../src/protocol/index.js';
 import type { LoomIO } from '../src/contracts/surface.js';
+import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult } from '../src/contracts/driver.js';
 
 function watch(io: LoomIO) {
   const updates: UniversalSnapshot[] = [];
@@ -107,5 +108,62 @@ describe('kernel runtime (EchoDriver, hermetic)', () => {
     expect(res2.sessionKey).toBe(sessionKey);
     await w2.done;
     w.unsub(); w2.unsub();
+  });
+});
+
+// A driver that — like the real ClaudeDriver — only wires steer when the turn was launched
+// steerable, and records the flag it was handed. Proves the Hub derives `steerable` from the
+// driver's declared capability (without it, `LoomIO.steer()` is a silent no-op for claude).
+class CapDriver implements AgentDriver {
+  lastSteerable: boolean | undefined;
+  constructor(readonly id: string, readonly capabilities: { steer: boolean }) {}
+  async run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult> {
+    this.lastSteerable = input.steerable;
+    let steered: string | null = null;
+    if (input.steerable) {
+      ctx.emit({ type: 'activity', line: 'holding for steer' });
+      await new Promise<void>((resolve) => {
+        ctx.registerSteer(async (p) => { steered = p; resolve(); return true; });
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+    }
+    const text = `ok${steered ? ` steered:${steered}` : ''}`;
+    ctx.emit({ type: 'text', delta: text });
+    return { ok: true, text, stopReason: 'end_turn' };
+  }
+}
+
+describe('kernel runtime: Hub derives turn `steerable` from driver capability', () => {
+  let tmp: string;
+  let loom: Loom;
+  const steerCap = new CapDriver('capsteer', { steer: true });
+  const noSteer = new CapDriver('nosteer', { steer: false });
+
+  beforeEach(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-cap-'));
+    steerCap.lastSteerable = noSteer.lastSteerable = undefined;
+    loom = createLoom({ drivers: [steerCap, noSteer], defaultAgent: 'capsteer', sessionStore: new FsSessionStore(tmp) });
+    await loom.start();
+  });
+  afterEach(async () => { await loom.stop(); fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('launches a steer-capable driver steerable, so io.steer() reaches it', async () => {
+    const w = watch(loom.io);
+    const { taskId } = await loom.io.prompt({ prompt: 'go', agent: 'capsteer' });
+    await waitFor(() => w.updates.some(u => u.activity === 'holding for steer'));
+    expect(steerCap.lastSteerable).toBe(true);
+    expect(await loom.io.steer(taskId, 'X')).toBe(true);
+    const final = await w.done;
+    expect(final.text).toBe('ok steered:X');
+    w.unsub();
+  });
+
+  it('leaves a non-steer driver un-steerable', async () => {
+    const w = watch(loom.io);
+    await loom.io.prompt({ prompt: 'go', agent: 'nosteer' });
+    await w.done;
+    expect(noSteer.lastSteerable).toBeFalsy();
+    w.unsub();
   });
 });

@@ -6,7 +6,7 @@ import { ClaudeDriver, runTurn } from '../packages/kernel/dist/index.js';
 // White-box settle heuristics live at the module path, off the public barrel.
 import {
   isClaudeSyntheticResumeNoise, claudeProducedRealOutput, claudeResumeNoopRetryLimit,
-  handleClaudeEvent,
+  handleClaudeEvent, isClaudeSlashCommand,
 } from '../packages/kernel/dist/drivers/claude.js';
 
 // Regression: resuming a claude session whose PREVIOUS turn was left incomplete (a background hold
@@ -27,6 +27,26 @@ describe('isClaudeSyntheticResumeNoise', () => {
     expect(isClaudeSyntheticResumeNoise('Here is your answer.')).toBe(false);
     expect(isClaudeSyntheticResumeNoise('')).toBe(false);
     expect(isClaudeSyntheticResumeNoise('No response requested yet, working on it')).toBe(false);
+  });
+});
+
+describe('isClaudeSlashCommand', () => {
+  it('matches a leading slash command (bare, with args, namespaced, hyphenated)', () => {
+    expect(isClaudeSlashCommand('/compact')).toBe(true);
+    expect(isClaudeSlashCommand('/clear')).toBe(true);
+    expect(isClaudeSlashCommand('/compact focus on the API')).toBe(true);
+    expect(isClaudeSlashCommand('/model claude-opus-4-8')).toBe(true);
+    expect(isClaudeSlashCommand('/my-command')).toBe(true);
+    expect(isClaudeSlashCommand('/plugin:skill')).toBe(true);
+    expect(isClaudeSlashCommand('  /compact')).toBe(true); // leading whitespace tolerated
+    expect(isClaudeSlashCommand('/compact\nmore')).toBe(true); // first line only
+  });
+  it('does not match ordinary prompts or filesystem-style paths', () => {
+    expect(isClaudeSlashCommand('fix the bug in the parser')).toBe(false);
+    expect(isClaudeSlashCommand('/Users/admin/notes.md')).toBe(false); // a path, not a command
+    expect(isClaudeSlashCommand('please run /compact later')).toBe(false); // not leading
+    expect(isClaudeSlashCommand('/')).toBe(false);
+    expect(isClaudeSlashCommand('')).toBe(false);
   });
 });
 
@@ -137,6 +157,21 @@ describe('no-op resume recovery (integration)', () => {
     const { result } = await runTurn(driver, { prompt: 'do the thing', workdir: process.cwd(), sessionId: 'sess-existing' } as any);
     expect(result.ok).toBe(true);
     expect(result.text).toContain('real answer');
+  }, 8000);
+
+  it('does NOT re-issue a /compact resume that no-ops (a local slash command is legitimately empty)', async () => {
+    // Same fake as above: an immediate empty result, and the "real answer" only if the prompt is
+    // re-issued (2nd stdin message). But /compact is a local command that is *expected* to produce no
+    // assistant reply, so the repair must NOT re-issue it — otherwise it fires a spurious second
+    // compaction ("Not enough messages to compact."). The turn settles empty, count never reaches 2.
+    const bin = writeFakeClaude(
+      `emit({ type: 'result', subtype: 'success', is_error: false });`,
+      `if (count === 2) { ${REAL_ANSWER} }`,
+    );
+    const driver = new ClaudeDriver(bin);
+    const { result } = await runTurn(driver, { prompt: '/compact', workdir: process.cwd(), sessionId: 'sess-existing' } as any);
+    expect(result.text).not.toContain('real answer');
+    expect((result.text || '').trim()).toBe('');
   }, 8000);
 
   it('does NOT re-issue on a fresh session (no sessionId) — an empty result settles as-is', async () => {

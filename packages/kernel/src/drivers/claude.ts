@@ -226,7 +226,13 @@ export class ClaudeDriver implements AgentDriver {
               // through its repair to a real answer within this one turn. Bounded (the repair can
               // no-op more than once); the post-tool stall watchdog is the backstop if the CLI never
               // engages. Scoped to resumes (input.sessionId) — a fresh session has no dangling turn.
+              // Excludes local slash commands (isClaudeSlashCommand): /compact, /clear & friends are
+              // LEGITIMATELY output-empty (their effect is a local action, not an assistant reply), so
+              // the emptiness that flags a dropped send is normal for them. Re-issuing one is never a
+              // repair — for /compact it just fires a second compaction that reports "Not enough
+              // messages to compact." A real dropped send is a plain prompt and still self-heals.
               if (!hasError && !!input.sessionId && !claudeProducedRealOutput(state)
+                  && !isClaudeSlashCommand(input.prompt)
                   && noopResumeRetries < claudeResumeNoopRetryLimit()) {
                 noopResumeRetries++;
                 let injected = false;
@@ -690,6 +696,15 @@ export function claudeTruncatedRecoveryEnabled(): boolean {
 export function isClaudeSyntheticResumeNoise(text: string): boolean {
   const t = (text || '').trim().toLowerCase();
   return t === 'no response requested.' || t === 'no response requested';
+}
+// A prompt whose first token is a Claude slash command (/compact, /clear, /cost, /model …, a custom
+// /namespace:command). Such a prompt is a LOCAL action, not a request for a model reply, so an
+// output-empty result is expected — not the dropped-send signature the no-op-resume repair targets.
+// The first token must be a bare command name (letters/digits/_/- with an optional :namespace) ending
+// at whitespace or end-of-string, so a filesystem-style path (/Users/foo) is NOT matched. Pure +
+// exported for hermetic testing.
+export function isClaudeSlashCommand(prompt: string): boolean {
+  return /^\/[a-z0-9][\w-]*(?::[\w-]+)?(?:\s|$)/i.test((prompt || '').trimStart());
 }
 // True once the turn produced ANY real model output — streamed or whole-message text/reasoning, a
 // tool use, or a spawned sub-agent. False for a pure no-op (a synthetic resume-repair result that

@@ -174,6 +174,12 @@ export class Hub implements LoomIO {
       extraArgs: spawn.extraArgs,
       configOverrides: spawn.configOverrides,
       extraMcpServers: tools.servers,
+      // The managed path's control verb `LoomIO.steer()` can only reach a driver that was
+      // launched steer-enabled, so honor the driver's declared capability here — otherwise
+      // steer is a silent no-op for steer-capable agents (claude gates registerSteer +
+      // --replay-user-messages on this flag). Drivers that don't support steer stay
+      // un-steerable; those that steer over their own channel regardless (codex RPC) ignore it.
+      steerable: !!driver.capabilities?.steer,
     };
 
     runner.run(driver, turnInput, input.prompt, model, effort)

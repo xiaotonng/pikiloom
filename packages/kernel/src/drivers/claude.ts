@@ -163,7 +163,7 @@ export class ClaudeDriver implements AgentDriver {
           // Background work legitimately produces no stream events; keep waiting (the bg hold owns it).
           if (pendingClaudeBackgroundTasks(state) > 0) { armModelStall(); return; }
           settleResult({ stopReason: 'stalled', kill: false, ok: false });
-        }, claudeModelStallMs());
+        }, claudeModelStallMs(input.effort));
         unref(modelStallTimer);
       };
 
@@ -682,15 +682,21 @@ export function claudeBgSettleQuietMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_BG_SETTLE_QUIET_DEFAULT_MS;
 }
 // How long the model may stay COMPLETELY silent after a tool_result (control handed back to it,
-// no background pending) before the driver gives up and settles the turn as 'stalled'. Deliberately
-// generous: legitimate silent extended-thinking (subscription accounts stream no thinking text) and
-// slow providers must not trip it, and a still-running tool never trips it (it has no tool_result
-// yet). This is the backstop for a turn that would otherwise hang forever with the answer never
-// delivered. Override with PIKILOOM_CLAUDE_MODEL_STALL_MS.
-const CLAUDE_MODEL_STALL_DEFAULT_MS = 120_000;
-export function claudeModelStallMs(): number {
+// no background pending) before the driver gives up and settles the turn as 'stalled'. Must be
+// generous: subscription accounts stream NO events during extended thinking, and at the reasoning
+// rungs a legitimate silent think regularly exceeds two minutes — the original 120s default
+// misfired on exactly that (settling a LIVE turn as 'stalled' and then killing its still-running
+// tool via the leak-guard; mirasim#111). A too-long window only means a truly hung turn shows its
+// dead spinner longer, so the costs are asymmetric — err long. Effort-laddered: the deep-reasoning
+// rungs (high and up) think the longest. A still-running tool never trips this (it has no
+// tool_result yet). Override with PIKILOOM_CLAUDE_MODEL_STALL_MS (wins over the ladder).
+const CLAUDE_MODEL_STALL_DEFAULT_MS = 300_000;
+const CLAUDE_MODEL_STALL_DEEP_MS = 600_000;
+const CLAUDE_DEEP_REASONING_EFFORTS = new Set(['high', 'xhigh', 'max', 'ultra']);
+export function claudeModelStallMs(effort?: string | null): number {
   const raw = Number(process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_MODEL_STALL_DEFAULT_MS;
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return effort && CLAUDE_DEEP_REASONING_EFFORTS.has(effort) ? CLAUDE_MODEL_STALL_DEEP_MS : CLAUDE_MODEL_STALL_DEFAULT_MS;
 }
 // In-process self-heal for a truncated turn: when a clean result lands while the tool loop is
 // still dangling (the model's closing round came back empty), the stdin is still open — inject

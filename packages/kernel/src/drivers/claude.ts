@@ -453,6 +453,23 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     // record). It is NOT model output — mirror the legacy driver and drop it, so it neither shows
     // as the reply nor counts as real output (the no-op-resume recovery keys off that emptiness).
     if (ev.message?.model === '<synthetic>' && isClaudeSyntheticResumeNoise(claudeContentText(ev.message?.content))) return;
+    // API-error message: Claude surfaces a failed model call (401 auth, overloaded, quota, …) not as a
+    // result code but as a synthetic assistant message — model '<synthetic>', a lone text block carrying
+    // the human-readable error ("Failed to authenticate. API Error: 401 …"), and a TOP-LEVEL `error` tag
+    // on the event (e.g. "authentication_failed"; the persisted transcript also stamps `isApiErrorMessage`).
+    // It is NOT model output. Routing its text through the normal path below would make the error render
+    // as the assistant's reply body (原文). Send it to `s.error` — the run-end notice, same slot as the
+    // `result{is_error}` branch below — and never to `s.text`. The trailing `result` also flags the error
+    // (and would set `s.error` too), but claiming it here keeps a narration-less turn from double-rendering
+    // (body + notice), and preserves any real narration already streamed before the call failed.
+    const apiErrorTag = typeof ev.error === 'string' ? ev.error.trim() : (ev.isApiErrorMessage ? 'api_error' : '');
+    if (apiErrorTag) {
+      if (!s.error) {
+        const msg = claudeContentText(ev.message?.content).trim();
+        s.error = msg || `Claude reported an API error (${apiErrorTag})`;
+      }
+      return;
+    }
     const contents = ev.message?.content || [];
     for (const b of contents) {
       if (b?.type !== 'tool_use') continue;

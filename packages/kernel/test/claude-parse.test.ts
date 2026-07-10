@@ -327,4 +327,45 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(todoWriteToPlan({ todos: [] })).toBeNull();
     expect(todoWriteToPlan({ todos: [{ content: '   ' }] })).toBeNull();
   });
+
+  // ── API-error message classification ──────────────────────────────────────
+  // Claude surfaces a failed model call (401 auth, overloaded, quota) as a synthetic assistant text
+  // message flagged with a top-level `error`, plus a trailing `result{is_error}`. It must land in
+  // `s.error` (→ run-end notice), never in `s.text` (→ reply body / 原文).
+  function runState(events: any[]): { state: any; out: DriverEvent[] } {
+    const out: DriverEvent[] = [];
+    const state: any = { text: '', reasoning: '', streamedText: false, sessionId: null, input: null, output: null, cached: null, error: null };
+    for (const ev of events) handleClaudeEvent(ev, state, (e) => out.push(e));
+    return { state, out };
+  }
+
+  it('routes a synthetic API-error assistant message to s.error, not s.text (no body render)', () => {
+    const err = 'Failed to authenticate. API Error: 401 invalid user token';
+    const { state, out } = runState([
+      { type: 'assistant', error: 'authentication_failed', message: { model: '<synthetic>', content: [{ type: 'text', text: err }] } },
+      { type: 'result', subtype: 'success', is_error: true, api_error_status: 401, result: err },
+    ]);
+    expect(state.text).toBe('');                                   // never becomes the reply body
+    expect(out.some((e) => e.type === 'text')).toBe(false);        // and never streams as a text delta
+    expect(state.error).toBe(err);                                 // surfaces via the error slot (once)
+  });
+
+  it('keeps real streamed narration as the body when an API error ends the turn', () => {
+    const err = 'Failed to authenticate. API Error: 401 invalid user token';
+    const { state } = runState([
+      { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Here is the plan.' } } },
+      { type: 'assistant', error: 'authentication_failed', message: { model: '<synthetic>', content: [{ type: 'text', text: err }] } },
+      { type: 'result', subtype: 'success', is_error: true, api_error_status: 401, result: err },
+    ]);
+    expect(state.text).toBe('Here is the plan.');                  // narration preserved as body
+    expect(state.error).toBe(err);                                 // error still surfaces as the notice
+  });
+
+  it('leaves an ordinary assistant text reply (no top-level error) as the body', () => {
+    const { state } = runState([
+      { type: 'assistant', message: { model: 'claude-opus-4-8', content: [{ type: 'text', text: 'All done.' }] } },
+    ]);
+    expect(state.text).toBe('All done.');
+    expect(state.error).toBeNull();
+  });
 });

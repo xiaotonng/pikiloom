@@ -40,19 +40,28 @@ describe('claudeModelStallMs', () => {
     if (prev === undefined) delete process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS;
     else process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS = prev;
   });
-  it('defaults to 120s', () => {
+  // Subscription accounts stream nothing during extended thinking, and at the reasoning rungs a
+  // legitimate silent think regularly exceeds 2 minutes — the old 120s default settled LIVE turns
+  // as 'stalled' and the leak-guard then killed their still-running tools (mirasim#111). The
+  // window is now effort-laddered and errs long (a hung turn showing its spinner longer is the
+  // cheap side of the asymmetry).
+  it('defaults to 5min for light rungs and 10min for deep-reasoning rungs', () => {
     delete process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS;
-    expect(claudeModelStallMs()).toBe(120_000);
+    expect(claudeModelStallMs()).toBe(300_000);
+    expect(claudeModelStallMs('low')).toBe(300_000);
+    expect(claudeModelStallMs('medium')).toBe(300_000);
+    for (const effort of ['high', 'xhigh', 'max', 'ultra']) expect(claudeModelStallMs(effort)).toBe(600_000);
   });
-  it('honors a positive env override', () => {
+  it('honors a positive env override regardless of effort', () => {
     process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS = '5000';
     expect(claudeModelStallMs()).toBe(5000);
+    expect(claudeModelStallMs('xhigh')).toBe(5000);
   });
   it('ignores a non-positive / garbage override', () => {
     process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS = '-1';
-    expect(claudeModelStallMs()).toBe(120_000);
+    expect(claudeModelStallMs()).toBe(300_000);
     process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS = 'nope';
-    expect(claudeModelStallMs()).toBe(120_000);
+    expect(claudeModelStallMs('max')).toBe(600_000);
   });
 });
 

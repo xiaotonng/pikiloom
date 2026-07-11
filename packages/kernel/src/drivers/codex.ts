@@ -1,7 +1,7 @@
 import type {
   AgentDriver, AgentTurnInput, DriverContext, DriverEvent, DriverResult, TuiInput, TuiSpec, NativeSessionInfo,
 } from '../contracts/driver.js';
-import type { UniversalPlan, UniversalUsage, UniversalInteraction } from '../protocol/index.js';
+import type { UniversalPlan, UniversalUsage, UniversalInteraction, UniversalToolCall } from '../protocol/index.js';
 import { discoverCodexNativeSessions } from './native.js';
 import { StdioRpcClient } from './rpc.js';
 import { attachedFileNote, contextPercent, imageMimeForFile, wireAbort } from './shared.js';
@@ -40,6 +40,80 @@ const CODEX_TOOL_CALL_TYPES = new Set(['dynamicToolCall', 'mcpToolCall', 'collab
 // Field-less placeholder summaries — a completed item with only one of these never overrides
 // a more specific summary cached at item/started.
 const CODEX_GENERIC_TOOL_SUMMARIES = new Set(['Search web', 'Run shell command', 'Edit files', 'Use tool']);
+const CODEX_TOOL_INPUT_MAX = 4 * 1024;
+const CODEX_TOOL_RESULT_MAX = 12 * 1024;
+
+function codexToolText(value: unknown, max: number): string | null {
+  if (value == null) return null;
+  let text: string;
+  if (typeof value === 'string') text = value;
+  else {
+    try { text = JSON.stringify(value, null, 2); }
+    catch { text = String(value); }
+  }
+  text = text.replace(/\r\n/g, '\n').trim();
+  if (!text) return null;
+  return text.length <= max ? text : `${text.slice(0, max).trimEnd()}\n… (truncated)`;
+}
+
+function codexToolInput(item: any): string | null {
+  switch (item?.type) {
+    case 'commandExecution': {
+      const command = Array.isArray(item.command) ? item.command.join(' ') : item.command;
+      if (!command) return null;
+      const detail: Record<string, unknown> = { command };
+      if (typeof item.cwd === 'string' && item.cwd.trim()) detail.cwd = item.cwd;
+      return codexToolText(detail, CODEX_TOOL_INPUT_MAX);
+    }
+    case 'fileChange':
+    case 'patch':
+      return codexToolText(item.changes ?? item.patch ?? item.diff, CODEX_TOOL_INPUT_MAX);
+    case 'mcpToolCall':
+    case 'dynamicToolCall':
+      return codexToolText(item.arguments ?? item.input, CODEX_TOOL_INPUT_MAX);
+    case 'collabAgentToolCall':
+      return codexToolText({
+        prompt: item.prompt ?? undefined,
+        model: item.model ?? undefined,
+        reasoningEffort: item.reasoningEffort ?? item.reasoning_effort ?? undefined,
+        receiverThreadIds: item.receiverThreadIds ?? item.receiver_thread_ids ?? undefined,
+      }, CODEX_TOOL_INPUT_MAX);
+    case 'webSearch':
+      return codexToolText(item.action ?? item.query, CODEX_TOOL_INPUT_MAX);
+    default:
+      return null;
+  }
+}
+
+function codexToolResult(item: any): string | null {
+  if (item?.type === 'commandExecution') {
+    const output = codexToolText(item.aggregatedOutput ?? item.aggregated_output, CODEX_TOOL_RESULT_MAX);
+    const exitCode = item.exitCode ?? item.exit_code;
+    if (output && typeof exitCode === 'number' && exitCode !== 0) return `${output}\n\n(exit code ${exitCode})`;
+    if (output) return output;
+    return typeof exitCode === 'number' && exitCode !== 0 ? `exit code ${exitCode}` : null;
+  }
+  if (item?.type === 'mcpToolCall') {
+    const error = item.error?.message ?? item.error;
+    if (error) return codexToolText(error, CODEX_TOOL_RESULT_MAX);
+    return codexToolText(item.result, CODEX_TOOL_RESULT_MAX);
+  }
+  if (item?.type === 'dynamicToolCall') {
+    return codexToolText(item.contentItems ?? item.content_items, CODEX_TOOL_RESULT_MAX);
+  }
+  if (item?.type === 'collabAgentToolCall') {
+    return codexToolText(item.agentsStates ?? item.agents_states, CODEX_TOOL_RESULT_MAX);
+  }
+  return null;
+}
+
+function codexToolStatus(item: any, fallback: UniversalToolCall['status']): UniversalToolCall['status'] {
+  const raw = String(item?.status || '').toLowerCase();
+  if (raw === 'failed' || raw === 'declined' || item?.success === false || item?.error) return 'failed';
+  if (raw === 'completed' || raw === 'done' || item?.success === true) return 'done';
+  return fallback;
+}
+
 export function codexToolSummary(item: any): { id: string; name: string; summary: string } | null {
   const id = String(item?.id || '');
   if (!id) return null;
@@ -64,6 +138,26 @@ export function codexToolSummary(item: any): { id: string; name: string; summary
     return { id, name, summary: raw ? `Use ${name}` : 'Use tool' };
   }
   return null;
+}
+
+/** Project one app-server item into the kernel's rich, expandable tool-call shape. */
+export function codexToolCall(item: any, fallbackStatus: UniversalToolCall['status']): UniversalToolCall | null {
+  const base = codexToolSummary(item);
+  if (!base) return null;
+  return {
+    ...base,
+    input: codexToolInput(item),
+    result: codexToolResult(item),
+    status: codexToolStatus(item, fallbackStatus),
+  };
+}
+
+function appendCodexToolOutput(previous: string | null | undefined, delta: unknown): string | null {
+  if (typeof delta !== 'string' || !delta) return previous ?? null;
+  const next = `${previous ?? ''}${delta}`.replace(/\r\n/g, '\n');
+  if (next.length <= CODEX_TOOL_RESULT_MAX) return next;
+  const marker = '… (earlier output truncated)\n';
+  return marker + next.slice(-(CODEX_TOOL_RESULT_MAX - marker.length));
 }
 
 // codex `item/tool/requestUserInput` params -> a normalized UniversalInteraction
@@ -168,7 +262,7 @@ export class CodexDriver implements AgentDriver {
     const srv = new StdioRpcClient({ command: this.bin, args, env: input.env, label: 'codex app-server' });
     const state = { text: '', reasoning: '', streamedReasoning: false, msgs: [] as string[], thinkParts: [] as string[], sessionId: input.sessionId ?? null, input: null as number | null, output: null as number | null, cached: null as number | null, contextUsed: null as number | null, contextWindow: null as number | null, status: null as string | null, error: null as string | null, turnId: null as string | null };
     const phases = new Map<string, string>();
-    const toolSummaries = new Map<string, string>();
+    const toolCalls = new Map<string, UniversalToolCall>();
     const deltaItems = new Set<string>();
     let lastTextItemId: string | null = null;
     let steerRegistered = false;
@@ -223,8 +317,31 @@ export class CodexDriver implements AgentDriver {
           case 'item/started': {
             const item = params?.item || {};
             if (item.type === 'agentMessage' && item.id) phases.set(item.id, item.phase || 'final_answer');
-            const t = codexToolSummary(item);
-            if (t && !toolSummaries.has(t.id)) { toolSummaries.set(t.id, t.summary); ctx.emit({ type: 'tool', call: { id: t.id, name: t.name, summary: t.summary, status: 'running' } }); }
+            const call = codexToolCall(item, 'running');
+            if (call && !toolCalls.has(call.id)) {
+              toolCalls.set(call.id, call);
+              ctx.emit({ type: 'tool', call });
+            }
+            break;
+          }
+          case 'item/commandExecution/outputDelta':
+          case 'item/fileChange/outputDelta': {
+            const id = String(params?.itemId || '');
+            const previous = toolCalls.get(id);
+            if (!previous) break;
+            const call = { ...previous, result: appendCodexToolOutput(previous.result, params?.delta) };
+            toolCalls.set(id, call);
+            ctx.emit({ type: 'tool', call });
+            break;
+          }
+          case 'item/fileChange/patchUpdated': {
+            const id = String(params?.itemId || '');
+            const projected = codexToolCall({ type: 'fileChange', id, changes: params?.changes }, 'running');
+            if (!projected) break;
+            const previous = toolCalls.get(id);
+            const call = previous ? { ...previous, ...projected, result: projected.result ?? previous.result } : projected;
+            toolCalls.set(id, call);
+            ctx.emit({ type: 'tool', call });
             break;
           }
           case 'item/agentMessage/delta': {
@@ -251,14 +368,26 @@ export class CodexDriver implements AgentDriver {
             // Final answer / reasoning delivered as a completed item (no preceding deltas).
             if (item.type === 'agentMessage') captureCodexAgentMessage(item, state, deltaItems, phases, ctx.emit);
             else if (item.type === 'reasoning') captureCodexReasoning(codexReasoningItemText(item), state, ctx.emit);
-            const t = codexToolSummary(item);
-            if (t) {
+            const projected = codexToolCall(item, 'done');
+            if (projected) {
               // Prefer the completed item's summary when it is specific — webSearch carries its
               // query only at completion (item/started may be query-less or absent entirely,
-              // so no `toolSummaries.has` gate: a completed-only tool still gets its row).
-              const summary = !CODEX_GENERIC_TOOL_SUMMARIES.has(t.summary) ? t.summary : (toolSummaries.get(t.id) || t.summary);
-              toolSummaries.set(t.id, summary);
-              ctx.emit({ type: 'tool', call: { id: t.id, name: t.name, summary, status: item.status === 'failed' ? 'failed' : 'done' } });
+              // so a completed-only tool still gets its row).
+              const previous = toolCalls.get(projected.id);
+              const summary = !CODEX_GENERIC_TOOL_SUMMARIES.has(projected.summary)
+                ? projected.summary
+                : (previous?.summary || projected.summary);
+              const call: UniversalToolCall = {
+                ...previous,
+                ...projected,
+                summary,
+                input: projected.input ?? previous?.input ?? null,
+                // Some app-server versions stream output deltas but omit aggregatedOutput on the
+                // terminal item. Preserve the accumulated live result in that case.
+                result: projected.result ?? previous?.result ?? null,
+              };
+              toolCalls.set(call.id, call);
+              ctx.emit({ type: 'tool', call });
             }
             break;
           }

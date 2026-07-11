@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   CodexDriver, captureCodexReasoning, captureCodexAgentMessage, codexReasoningItemText,
-  codexFinalText, codexFinalReasoning, codexToolSummary, type CodexContentState,
+  codexFinalText, codexFinalReasoning, codexToolCall, codexToolSummary, type CodexContentState,
 } from '../src/drivers/codex.js';
 import type { DriverContext, DriverEvent } from '../src/contracts/driver.js';
 
@@ -29,8 +29,11 @@ process.stdin.on('data', (d) => {
       notify('item/reasoning/textDelta', { threadId: TID, delta: 'thinking...' });
       notify('item/agentMessage/delta', { threadId: TID, itemId: 'msg1', delta: 'CODEX-' });
       notify('item/agentMessage/delta', { threadId: TID, itemId: 'msg1', delta: 'KERNEL-OK' });
-      notify('item/started', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', command: 'ls' } });
-      notify('item/completed', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', status: 'completed' } });
+      notify('item/started', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', command: 'ls -la', cwd: '/tmp/work' } });
+      notify('item/commandExecution/outputDelta', { threadId: TID, itemId: 'cmd1', delta: 'live output\\n' });
+      // Some app-server versions omit aggregatedOutput after streaming outputDelta. The driver
+      // must preserve the accumulated live result instead of replacing it with an empty value.
+      notify('item/completed', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', status: 'completed', aggregatedOutput: null, exitCode: 0 } });
       notify('item/completed', { threadId: TID, item: { type: 'webSearch', id: 'ws1', status: 'completed', query: 'pikiloom rename' } });
       notify('turn/plan/updated', { threadId: TID, plan: { steps: [{ step: 'do the thing', status: 'in_progress' }] } });
       notify('thread/tokenUsage/updated', { threadId: TID, tokenUsage: { input_tokens: 42, output_tokens: 7 } });
@@ -77,6 +80,16 @@ describe('CodexDriver native (app-server JSON-RPC, hermetic via fake server)', (
     const toolStatuses = events.filter(e => e.type === 'tool').map(e => (e as any).call.status);
     expect(toolStatuses).toContain('running');
     expect(toolStatuses).toContain('done');
+    const commandCalls = events.filter(e => e.type === 'tool').map(e => (e as any).call).filter(c => c.id === 'cmd1');
+    expect(commandCalls[0]).toMatchObject({
+      name: 'shell',
+      summary: 'Run shell: ls -la',
+      status: 'running',
+    });
+    expect(commandCalls[0].input).toContain('"command": "ls -la"');
+    expect(commandCalls[0].input).toContain('"cwd": "/tmp/work"');
+    expect(commandCalls.some(c => c.status === 'running' && c.result === 'live output\n')).toBe(true);
+    expect(commandCalls.at(-1)).toMatchObject({ status: 'done', result: 'live output\n' });
     // webSearch arrives as a completed-only item (no item/started, query only at completion) —
     // it must still surface as an Activity tool row with its query.
     const ws = events.filter(e => e.type === 'tool').map(e => (e as any).call).find(c => c.id === 'ws1');
@@ -166,6 +179,44 @@ describe('codexToolSummary (content items must NOT become Activity tools)', () =
   it('ignores unknown/content item types and id-less items', () => {
     expect(codexToolSummary({ id: 'x1', type: 'tokenCount' })).toBeNull();
     expect(codexToolSummary({ type: 'mcpToolCall', tool: 'x' })).toBeNull(); // no id
+  });
+});
+
+describe('codexToolCall live detail projection', () => {
+  it('projects shell input/output and marks non-zero commands failed', () => {
+    const call = codexToolCall({
+      id: 'c1', type: 'commandExecution', command: 'npm test', cwd: '/repo',
+      status: 'failed', aggregatedOutput: '1 test failed', exitCode: 1,
+    }, 'done');
+    expect(call).toMatchObject({ name: 'shell', status: 'failed' });
+    expect(call?.input).toContain('"command": "npm test"');
+    expect(call?.input).toContain('"cwd": "/repo"');
+    expect(call?.result).toBe('1 test failed\n\n(exit code 1)');
+  });
+
+  it('projects file diffs plus MCP/dynamic tool arguments and results', () => {
+    const patch = codexToolCall({
+      id: 'p1', type: 'fileChange', status: 'completed',
+      changes: [{ path: '/repo/a.ts', kind: 'update', diff: '@@ -1 +1 @@' }],
+    }, 'running');
+    expect(patch).toMatchObject({ name: 'edit', status: 'done' });
+    expect(patch?.input).toContain('@@ -1 +1 @@');
+
+    const mcp = codexToolCall({
+      id: 'm1', type: 'mcpToolCall', tool: 'browser.open', status: 'completed',
+      arguments: { url: 'https://example.com' }, result: { content: [{ type: 'text', text: 'ok' }] },
+    }, 'running');
+    expect(mcp).toMatchObject({ name: 'open', status: 'done' });
+    expect(mcp?.input).toContain('https://example.com');
+    expect(mcp?.result).toContain('"text": "ok"');
+
+    const dynamic = codexToolCall({
+      id: 'd1', type: 'dynamicToolCall', tool: 'image.inspect', status: 'failed',
+      arguments: { path: '/tmp/a.png' }, contentItems: [{ type: 'inputText', text: 'bad image' }], success: false,
+    }, 'running');
+    expect(dynamic).toMatchObject({ name: 'inspect', status: 'failed' });
+    expect(dynamic?.input).toContain('/tmp/a.png');
+    expect(dynamic?.result).toContain('bad image');
   });
 });
 

@@ -38,6 +38,53 @@ function statSafe(p: string): fs.Stats | null {
   try { return fs.statSync(p); } catch { return null; }
 }
 
+// A transcript's title/preview/model/effort/turns all live in a BOUNDED slice of the file: the HEAD
+// (first prompt, model, ai-title) and the TAIL (latest reply, last turn_context). We read only those
+// slices — never the whole file — so discovery stays O(bounded) per session even when a rollout grows
+// to hundreds of MB. Results are memoized by the file's (mtime,size): an unchanged transcript is read
+// once and every later list call is free, so adding the tail read costs nothing on repeat. Any real
+// change moves mtime+size and re-reads, so the cache can never go stale.
+const HEAD_BYTES = 256 * 1024;
+const TAIL_BYTES = 256 * 1024;
+
+/** Read a bounded byte region as UTF-8. A partial leading/trailing line is expected; callers skip unparseable lines. */
+function readRegion(filePath: string, start: number, length: number): string {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(Math.max(0, length));
+    const n = fs.readSync(fd, buf, 0, buf.length, Math.max(0, start));
+    return buf.toString('utf8', 0, n);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function memoized<T>(cache: Map<string, { mtimeMs: number; size: number; value: T }>, filePath: string, stat: fs.Stats, compute: () => T): T {
+  const hit = cache.get(filePath);
+  if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.value;
+  const value = compute();
+  cache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, value });
+  return value;
+}
+
+/** Extract plain text from a Codex `response_item` message content (array of `{type,text}` blocks). */
+function codexText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return (content as Array<{ type?: string; text?: string }>)
+    .filter((b) => b && typeof b.text === 'string' && (b.type === 'text' || (b.type ?? '').endsWith('_text')))
+    .map((b) => b.text as string)
+    .join('');
+}
+
+/** Reasoning effort from a Codex `turn_context` payload: top-level `effort`, else the nested collaboration setting. */
+function codexEffortOf(payload: any): string | null {
+  const top = payload?.effort;
+  if (typeof top === 'string' && top.trim()) return top.trim();
+  const re = payload?.collaboration_mode?.settings?.reasoning_effort;
+  return typeof re === 'string' && re.trim() ? re.trim() : null;
+}
+
 // ---- Claude: ~/.claude/projects/<encoded-workdir>/<sessionId>.jsonl ----
 
 /** Claude encodes a workdir into a project dir name by replacing non-alphanumerics with '-'. */
@@ -58,40 +105,61 @@ function claudeText(content: unknown): string {
   return parts.join(' ');
 }
 
-function readClaudeHead(filePath: string, size: number): { title: string | null; model: string | null; preview: string | null; turns: number } {
-  let title: string | null = null;
-  let model: string | null = null;
-  let lastUser: string | null = null;
-  let lastAssistant: string | null = null;
-  let turns = 0;
-  let head = '';
-  try {
-    const fd = fs.openSync(filePath, 'r');
-    const buf = Buffer.alloc(Math.min(256 * 1024, Math.max(65536, size)));
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-    head = buf.toString('utf8', 0, n);
-  } catch { return { title: null, model: null, preview: null, turns: 0 }; }
+const claudeMetaCache = new Map<string, { mtimeMs: number; size: number; value: { title: string | null; model: string | null; preview: string | null; turns: number } }>();
 
-  for (const line of head.split('\n')) {
-    if (!line || line[0] !== '{') continue;
-    let ev: any;
-    try { ev = JSON.parse(line); } catch { continue; }
-    if (ev.type === 'user' && ev.isMeta !== true) {
-      const text = claudeText(ev.message?.content).trim();
-      if (text && !text.startsWith('<') && !text.startsWith('[Image:')) {
-        if (!title) title = cleanTitle(text);
-        lastUser = text;
-        turns++;
+function readClaudeMeta(filePath: string, stat: fs.Stats): { title: string | null; model: string | null; preview: string | null; turns: number } {
+  return memoized(claudeMetaCache, filePath, stat, () => {
+    const size = stat.size;
+    let title: string | null = null;
+    let headModel: string | null = null;
+    let lastUser: string | null = null;
+    let headAssistant: string | null = null;
+    let turns = 0;
+    let head = '';
+    try {
+      head = readRegion(filePath, 0, Math.min(HEAD_BYTES, Math.max(65536, size)));
+    } catch { return { title: null, model: null, preview: null, turns: 0 }; }
+
+    for (const line of head.split('\n')) {
+      if (!line || line[0] !== '{') continue;
+      let ev: any;
+      try { ev = JSON.parse(line); } catch { continue; }
+      if (ev.type === 'user' && ev.isMeta !== true) {
+        const text = claudeText(ev.message?.content).trim();
+        if (text && !text.startsWith('<') && !text.startsWith('[Image:')) {
+          if (!title) title = cleanTitle(text);
+          lastUser = text;
+          turns++;
+        }
+      } else if (ev.type === 'assistant') {
+        if (!headModel && ev.message?.model && ev.message.model !== '<synthetic>') headModel = ev.message.model;
+        const text = claudeText(ev.message?.content).trim();
+        if (text) headAssistant = text;
       }
-    } else if (ev.type === 'assistant') {
-      if (!model && ev.message?.model && ev.message.model !== '<synthetic>') model = ev.message.model;
-      const text = claudeText(ev.message?.content).trim();
-      if (text) lastAssistant = text;
     }
-  }
-  const preview = cleanTitle(lastAssistant || lastUser, 200);
-  return { title, model, preview, turns };
+
+    // The LATEST reply lives at the end of a long transcript, not in the head — read a bounded tail
+    // slice for an accurate preview (and the most recent model). Skipped when the file already fits
+    // in the head window (then the head scan above already saw the whole thing).
+    let tailAssistant: string | null = null;
+    let tailModel: string | null = null;
+    if (size > HEAD_BYTES) {
+      try {
+        for (const line of readRegion(filePath, size - TAIL_BYTES, TAIL_BYTES).split('\n')) {
+          if (!line || line[0] !== '{') continue;
+          let ev: any;
+          try { ev = JSON.parse(line); } catch { continue; }
+          if (ev.type !== 'assistant') continue;
+          const text = claudeText(ev.message?.content).trim();
+          if (text) tailAssistant = text;
+          if (ev.message?.model && ev.message.model !== '<synthetic>') tailModel = ev.message.model;
+        }
+      } catch { /* keep head-derived values */ }
+    }
+
+    const preview = cleanTitle(tailAssistant || headAssistant || lastUser, 200);
+    return { title, model: tailModel || headModel, preview, turns };
+  });
 }
 
 export function discoverClaudeNativeSessions(workdir: string, opts: DiscoverOptions = {}): NativeSessionInfo[] {
@@ -113,7 +181,7 @@ export function discoverClaudeNativeSessions(workdir: string, opts: DiscoverOpti
 
   const now = Date.now();
   return selected.map(({ sessionId, filePath, stat }) => {
-    const { title, model, preview, turns } = readClaudeHead(filePath, stat.size);
+    const { title, model, preview, turns } = readClaudeMeta(filePath, stat);
     return {
       sessionId,
       title,
@@ -145,6 +213,18 @@ function loadCodexTitleIndex(home: string): Map<string, { threadName: string; up
   return map;
 }
 
+// A rollout's `session_meta` (id/cwd/timestamp) is written once at creation and never changes, so its
+// parsed head is cached by path permanently — the per-list cwd filter then costs one 8 KB read per file
+// only the FIRST time it is ever seen, not on every list call.
+const codexHeadCache = new Map<string, { sessionId: string; cwd: string; timestamp: string | null; isSubagent: boolean } | null>();
+function readCodexHeadCached(filePath: string): { sessionId: string; cwd: string; timestamp: string | null; isSubagent: boolean } | null {
+  const hit = codexHeadCache.get(filePath);
+  if (hit !== undefined) return hit;
+  const v = readCodexHead(filePath);
+  codexHeadCache.set(filePath, v);
+  return v;
+}
+
 function readCodexHead(filePath: string): { sessionId: string; cwd: string; timestamp: string | null; isSubagent: boolean } | null {
   try {
     const fd = fs.openSync(filePath, 'r');
@@ -164,6 +244,58 @@ function readCodexHead(filePath: string): { sessionId: string; cwd: string; time
       isSubagent: /"source"\s*:\s*\{\s*"subagent"\s*:/.test(head) || /"thread_spawn"\s*:/.test(head),
     };
   } catch { return null; }
+}
+
+const codexMetaCache = new Map<string, { mtimeMs: number; size: number; value: { firstPrompt: string | null; preview: string | null; model: string | null; effort: string | null } }>();
+
+/**
+ * Bounded per-row metadata for a Codex rollout: the first user prompt (title fallback when the thread
+ * has no index name) from a HEAD slice, and the latest reply + last model/effort from a TAIL slice.
+ * Memoized by (mtime,size); never reads the whole file.
+ */
+function readCodexBoundedMeta(filePath: string, stat: fs.Stats): { firstPrompt: string | null; preview: string | null; model: string | null; effort: string | null } {
+  return memoized(codexMetaCache, filePath, stat, () => {
+    let firstPrompt: string | null = null;
+    let firstAny: string | null = null;
+    let preview: string | null = null;
+    let model: string | null = null;
+    let effort: string | null = null;
+    try {
+      // HEAD: the first real user turn (skip a leading <handover> injected by an agent switch).
+      for (const line of readRegion(filePath, 0, Math.min(HEAD_BYTES, stat.size)).split('\n')) {
+        const t = line.trim();
+        if (!t || t[0] !== '{' || !t.includes('user_message')) continue;
+        let ev: any;
+        try { ev = JSON.parse(t); } catch { continue; }
+        if (ev.type !== 'event_msg' || ev.payload?.type !== 'user_message') continue;
+        const text = String(ev.payload.message ?? '').trim();
+        if (!text) continue;
+        if (!firstAny) firstAny = text;
+        if (!String(text).toLowerCase().startsWith('<handover')) { firstPrompt = text; break; }
+      }
+    } catch { /* best-effort */ }
+    try {
+      // TAIL: the latest assistant reply + last turn_context (model/effort).
+      const start = Math.max(0, stat.size - TAIL_BYTES);
+      for (const line of readRegion(filePath, start, Math.min(TAIL_BYTES, stat.size)).split('\n')) {
+        const t = line.trim();
+        if (!t || t[0] !== '{') continue;
+        let ev: any;
+        try { ev = JSON.parse(t); } catch { continue; }
+        const p = ev.payload;
+        if (!p) continue;
+        if (ev.type === 'turn_context') {
+          if (typeof p.model === 'string' && p.model.trim()) model = p.model.trim();
+          const e = codexEffortOf(p);
+          if (e) effort = e;
+        } else if (ev.type === 'response_item' && p.type === 'message' && p.role === 'assistant') {
+          const text = codexText(p.content).trim();
+          if (text) preview = text;
+        }
+      }
+    } catch { /* best-effort */ }
+    return { firstPrompt: cleanTitle(firstPrompt ?? firstAny), preview: cleanTitle(preview, 200), model, effort };
+  });
 }
 
 export function discoverCodexNativeSessions(workdir: string, opts: DiscoverOptions = {}): NativeSessionInfo[] {
@@ -191,18 +323,23 @@ export function discoverCodexNativeSessions(workdir: string, opts: DiscoverOptio
   const out: NativeSessionInfo[] = [];
   const seen = new Set<string>();
   for (const { filePath, stat } of files) {
-    const meta = readCodexHead(filePath);
+    const meta = readCodexHeadCached(filePath);
     if (!meta || meta.isSubagent || path.resolve(meta.cwd) !== resolvedWorkdir) continue;
     if (seen.has(meta.sessionId)) continue;
     seen.add(meta.sessionId);
     const idx = titleIndex.get(meta.sessionId);
     const updatedAt = idx?.updatedAt || stat.mtime.toISOString();
+    // Only files that passed the cwd/subagent filter above pay for the bounded head+tail read (first
+    // prompt / preview / model / effort) — scoped to THIS workdir's own rollouts, and memoized per file.
+    const bounded = readCodexBoundedMeta(filePath, stat);
     out.push({
       sessionId: meta.sessionId,
-      title: cleanTitle(idx?.threadName || null),
-      preview: null,
+      // The agent's own thread name wins; otherwise fall back to the first prompt so the row is named + searchable.
+      title: cleanTitle(idx?.threadName || null) ?? bounded.firstPrompt,
+      preview: bounded.preview,
       cwd: meta.cwd,
-      model: null,
+      model: bounded.model,
+      effort: bounded.effort,
       createdAt: meta.timestamp || stat.birthtime.toISOString(),
       updatedAt,
       running: Date.now() - Date.parse(updatedAt) < threshold,

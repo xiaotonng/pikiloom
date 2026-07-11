@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   MANAGED_BROWSER_PROFILE_SUBPATH,
+  MANAGED_BROWSER_STEALTH_ARGS,
   PIKILOOM_BROWSER_CDP_URL_ENV,
   PLAYWRIGHT_MCP_PACKAGE_NAME,
   PLAYWRIGHT_MCP_PACKAGE_SPEC,
@@ -201,7 +202,7 @@ export function ensurePlaywrightMcpConfigFile(
   const desired = JSON.stringify({
     browser: {
       launchOptions: {
-        ignoreDefaultArgs: ['--disable-blink-features=AutomationControlled'],
+        args: [...MANAGED_BROWSER_STEALTH_ARGS],
       },
     },
   }, null, 2);
@@ -271,6 +272,7 @@ export function getManagedBrowserLaunchArgs(profileDir = getManagedBrowserProfil
   return [
     `--user-data-dir=${profileDir}`,
     '--remote-debugging-port=0',
+    ...MANAGED_BROWSER_STEALTH_ARGS,
     '--no-first-run',
     '--no-default-browser-check',
     '--new-window',

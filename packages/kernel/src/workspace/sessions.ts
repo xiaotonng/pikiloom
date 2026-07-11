@@ -28,6 +28,7 @@ export interface ManagedSessionInfo {
   source: SessionSource;
   createdAt: string | null;
   updatedAt: string | null;
+  messageCount?: number | null;
 }
 
 export interface ListSessionsOptions {
@@ -41,6 +42,8 @@ export interface ListSessionsOptions {
   agent?: string;
   includeNative?: boolean;     // default true
   limit?: number;
+  /** Skip this many of the most-recent rows before taking `limit` — for paginated "load more". */
+  offset?: number;
 }
 
 export interface SearchSessionsOptions extends ListSessionsOptions {
@@ -79,6 +82,7 @@ function managedToInfo(agent: string, rec: CoreSessionRecord): ManagedSessionInf
     source: 'managed',
     createdAt: rec.createdAt ?? null,
     updatedAt: rec.updatedAt ?? null,
+    messageCount: null, // managed records don't track a turn count; native rows carry the head-approx one
   };
 }
 
@@ -91,12 +95,13 @@ function nativeToInfo(agent: string, n: NativeSessionInfo): ManagedSessionInfo {
     preview: n.preview,
     workdir: n.cwd,
     model: n.model,
-    effort: null,
+    effort: n.effort ?? null,
     runState: n.running ? 'running' : 'completed',
     running: n.running,
     source: 'native',
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
+    messageCount: n.messageCount ?? null,
   };
 }
 
@@ -110,6 +115,16 @@ export class SessionsManager {
     const drivers = this.deps.drivers();
     const agentIds = opts.agent ? [opts.agent] : [...drivers.keys()];
     const byKey = new Map<string, ManagedSessionInfo>();
+    // Native discovery must surface enough of the newest rows to satisfy offset+limit paging, since
+    // the final page is sliced AFTER merging managed + native. `undefined` limit = discover all.
+    const offset = Math.max(0, opts.offset ?? 0);
+    const nativeLimit = typeof opts.limit === 'number' ? offset + opts.limit : undefined;
+
+    // Native session keys a managed record already represents because the agent minted a DIVERGENT
+    // transcript id (rec.sessionId ≠ rec.nativeSessionId — the new-chat case). Those native rows are
+    // dropped below so they don't double up with their managed row. Deduping HERE (before paging) keeps
+    // page sizes and "has more" correct — doing it in a host wrapper after slicing shrinks pages.
+    const coveredNativeKeys = new Set<string>();
 
     // Managed sessions (the kernel's own store).
     for (const agent of agentIds) {
@@ -117,6 +132,9 @@ export class SessionsManager {
       try { records = await this.deps.store.list(agent); }
       catch (e: any) { this.deps.log?.(`[sessions] store.list(${agent}) failed: ${e?.message || e}`); }
       for (const rec of records) {
+        if (rec.nativeSessionId && rec.nativeSessionId !== rec.sessionId) {
+          coveredNativeKeys.add(makeSessionKey(agent, rec.nativeSessionId));
+        }
         if (scope === 'workspace') {
           if (!rec.workdir || path.resolve(rec.workdir) !== workdir) continue;
         }
@@ -130,10 +148,11 @@ export class SessionsManager {
         const driver = drivers.get(agent);
         if (!driver?.listNativeSessions) continue;
         let natives: NativeSessionInfo[] = [];
-        try { natives = await driver.listNativeSessions({ workdir, limit: opts.limit }); }
+        try { natives = await driver.listNativeSessions({ workdir, limit: nativeLimit }); }
         catch (e: any) { this.deps.log?.(`[sessions] ${agent}.listNativeSessions failed: ${e?.message || e}`); }
         for (const n of natives) {
           const key = makeSessionKey(agent, n.sessionId);
+          if (coveredNativeKeys.has(key)) continue; // a managed record already represents this transcript
           const existing = byKey.get(key);
           if (existing) {
             // Same identity discovered both ways: managed record wins, but adopt the newer
@@ -151,16 +170,17 @@ export class SessionsManager {
     }
 
     const out = [...byKey.values()].sort((a, b) => ts(b.updatedAt) - ts(a.updatedAt));
-    return typeof opts.limit === 'number' ? out.slice(0, Math.max(0, opts.limit)) : out;
+    return typeof opts.limit === 'number' ? out.slice(offset, offset + opts.limit) : offset ? out.slice(offset) : out;
   }
 
   async search(opts: SearchSessionsOptions): Promise<ManagedSessionInfo[]> {
     const q = (opts.query || '').trim().toLowerCase();
-    const all = await this.list({ ...opts, limit: undefined });
+    const all = await this.list({ ...opts, limit: undefined, offset: 0 });
     const matched = q
       ? all.filter(s => [s.title, s.preview, s.sessionId, s.model, s.agent].some(v => v != null && v.toLowerCase().includes(q)))
       : all;
-    return typeof opts.limit === 'number' ? matched.slice(0, Math.max(0, opts.limit)) : matched;
+    const offset = Math.max(0, opts.offset ?? 0);
+    return typeof opts.limit === 'number' ? matched.slice(offset, offset + opts.limit) : offset ? matched.slice(offset) : matched;
   }
 
   async get(sessionKey: string, opts: { workdir?: string } = {}): Promise<ManagedSessionInfo | null> {

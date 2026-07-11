@@ -91,9 +91,10 @@ export interface TuiSpec {
 export interface NativeSessionInfo {
   sessionId: string;
   title: string | null;
-  preview: string | null;     // head of the latest message text
+  preview: string | null;     // the latest message text (from the transcript tail, not just the head)
   cwd: string | null;
   model: string | null;
+  effort?: string | null;     // reasoning effort the session last ran with (codex), when discoverable
   createdAt: string | null;   // ISO
   updatedAt: string | null;   // ISO
   running: boolean;

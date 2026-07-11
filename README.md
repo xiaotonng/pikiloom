@@ -368,7 +368,7 @@ Questions, feedback, or want to compare notes on agent orchestration? Add me on 
 ## Star History
 
 <a href="https://www.star-history.com/#xiaotonng/pikiloom&Date">
-  <img src="https://api.star-history.com/svg?repos=xiaotonng/pikiloom&type=Date" alt="Star History" width="640">
+  <img src="https://raw.githubusercontent.com/xiaotonng/pikiloom/main/docs/star-history.svg" alt="Star History" width="640">
 </a>
 
 ---

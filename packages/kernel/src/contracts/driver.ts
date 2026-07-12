@@ -11,6 +11,12 @@ export interface AgentTurnInput {
   prompt: string;
   attachments?: string[];
   sessionId?: string | null;      // resume target (null/undefined = fresh)
+  // Fork-on-dispatch: with `sessionId` set to the PARENT's native id, branch a NEW native
+  // session off it instead of appending — the parent transcript is never touched. `anchor`
+  // is the agent-native INCLUSIVE keep-boundary (claude: transcript record uuid of the last
+  // kept message; codex: the last kept turn id); null/absent forks at the parent's tail.
+  // Only drivers declaring capabilities.fork honor this; the hub never sets it for others.
+  fork?: { anchor?: string | null } | null;
   workdir: string;
   model?: string | null;
   effort?: string | null;
@@ -63,6 +69,9 @@ export interface DriverResult {
   stopReason?: string | null;
   sessionId?: string | null;
   usage?: UniversalUsage | null;
+  // Agent-native boundary marker of THIS settled turn (claude: last transcript record uuid;
+  // codex: turn id) — persisted per turn so a later fork can cut exactly here (fork anchor).
+  anchor?: string | null;
 }
 
 // ---- TUI mode (the second, orthogonal shape) ----
@@ -103,7 +112,7 @@ export interface NativeSessionInfo {
 
 export interface AgentDriver {
   readonly id: string;
-  readonly capabilities?: { steer?: boolean; interact?: boolean; resume?: boolean; tui?: boolean };
+  readonly capabilities?: { steer?: boolean; interact?: boolean; resume?: boolean; tui?: boolean; fork?: boolean };
   run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult>;
   // Optional: how to launch this agent's interactive TUI. Drivers that set capabilities.tui
   // must implement this. The kernel spawns it in a PTY and passes terminal I/O through.
@@ -111,4 +120,8 @@ export interface AgentDriver {
   // Optional: discover the agent's own native sessions for a workdir (e.g. claude reads
   // ~/.claude/projects/<enc>/*.jsonl). The kernel merges these with its managed sessions.
   listNativeSessions?(opts: { workdir: string; limit?: number }): NativeSessionInfo[] | Promise<NativeSessionInfo[]>;
+  // Optional (fork-capable drivers): the CURRENT tail boundary of a native session, in the
+  // same terms as AgentTurnInput.fork.anchor. Hub.forkSession pins a tail cut with it at
+  // fork time, so the branch stays put even if the parent keeps running afterwards.
+  resolveNativeAnchor?(opts: { sessionId: string; workdir: string }): string | null | Promise<string | null>;
 }

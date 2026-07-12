@@ -368,4 +368,26 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(state.text).toBe('All done.');
     expect(state.error).toBeNull();
   });
+
+  it('collapses a spend/usage-limit notice narrated as the WHOLE body into a single error notice', () => {
+    // The CLI streams the limit message as a normal assistant reply (real model, NO error tag,
+    // so the synthetic-error guard doesn't catch it) AND flags the result an error with the same
+    // text — the "body + identical red notice" duplicate. The body is dropped: it renders once.
+    const msg = 'You\'ve hit your monthly spend limit. Run /usage-credits to manage your limit or switch models to continue this chat.';
+    const { state } = runState([
+      { type: 'assistant', message: { model: 'claude-fable-5', content: [{ type: 'text', text: msg }] } },
+      { type: 'result', subtype: 'error_max_spend', is_error: true, result: msg },
+    ]);
+    expect(state.text).toBe('');       // duplicate body dropped
+    expect(state.error).toBe(msg);     // surfaces once, as the notice
+  });
+
+  it('keeps a real reply that merely ENDS with an error (body ≠ error) as the body + notice', () => {
+    const { state } = runState([
+      { type: 'assistant', message: { model: 'claude-opus-4-8', content: [{ type: 'text', text: 'Here is the answer you asked for.' }] } },
+      { type: 'result', subtype: 'error_during_execution', is_error: true, result: 'Tool crashed after the reply.' },
+    ]);
+    expect(state.text).toBe('Here is the answer you asked for.');
+    expect(state.error).toBe('Tool crashed after the reply.');
+  });
 });

@@ -2,7 +2,7 @@ import type {
   AgentDriver, AgentTurnInput, DriverContext, DriverEvent, DriverResult, TuiInput, TuiSpec, NativeSessionInfo,
 } from '../contracts/driver.js';
 import type { UniversalPlan, UniversalUsage, UniversalInteraction, UniversalToolCall } from '../protocol/index.js';
-import { discoverCodexNativeSessions } from './native.js';
+import { codexRolloutTailAnchor, discoverCodexNativeSessions } from './native.js';
 import { StdioRpcClient } from './rpc.js';
 import { attachedFileNote, contextPercent, imageMimeForFile, wireAbort } from './shared.js';
 
@@ -244,7 +244,7 @@ export function codexFinalReasoning(s: CodexContentState): string {
 
 export class CodexDriver implements AgentDriver {
   readonly id = 'codex';
-  readonly capabilities = { steer: true, interact: false, resume: true, tui: true };
+  readonly capabilities = { steer: true, interact: false, resume: true, tui: true, fork: true };
 
   constructor(private readonly bin: string = 'codex') {}
 
@@ -307,10 +307,14 @@ export class CodexDriver implements AgentDriver {
       const threadParams: any = { cwd: input.workdir, model: input.model || null };
       if (input.systemPrompt) threadParams.developerInstructions = input.systemPrompt;
       if (input.fullAccess) { threadParams.approvalPolicy = 'never'; threadParams.sandbox = 'danger-full-access'; }
+      // Fork-on-dispatch: thread/fork copies the parent's stored history into a NEW thread
+      // (inclusive cut at lastTurnId when an anchor is pinned) and never mutates the parent.
       const threadResp = input.sessionId
-        ? await srv.request('thread/resume', { threadId: input.sessionId, ...threadParams })
+        ? (input.fork
+            ? await srv.request('thread/fork', { threadId: input.sessionId, ...threadParams, ...(input.fork.anchor ? { lastTurnId: input.fork.anchor } : {}) })
+            : await srv.request('thread/resume', { threadId: input.sessionId, ...threadParams }))
         : await srv.request('thread/start', threadParams);
-      if (threadResp.error) return { ok: false, text: '', error: threadResp.error.message || 'thread/start failed', stopReason: 'error' };
+      if (threadResp.error) return { ok: false, text: '', error: threadResp.error.message || (input.fork ? 'thread/fork failed' : 'thread/start failed'), stopReason: 'error' };
       const threadId = threadResp.result?.thread?.id ?? input.sessionId ?? null;
       if (threadId && threadId !== state.sessionId) { state.sessionId = threadId; ctx.emit({ type: 'session', sessionId: threadId }); }
 
@@ -465,6 +469,8 @@ export class CodexDriver implements AgentDriver {
         error: state.error || (ctx.signal.aborted ? 'Interrupted by user.' : null),
         stopReason: ctx.signal.aborted ? 'interrupted' : (state.status || 'end_turn'),
         sessionId: state.sessionId,
+        // Fork anchor: the turn id is the inclusive keep-boundary thread/fork's lastTurnId takes.
+        anchor: state.turnId,
         usage,
       };
     } finally {
@@ -481,6 +487,12 @@ export class CodexDriver implements AgentDriver {
 
   listNativeSessions(opts: { workdir: string; limit?: number }): NativeSessionInfo[] {
     return discoverCodexNativeSessions(opts.workdir, { limit: opts.limit });
+  }
+
+  // Current tail keep-boundary of a native thread: the last turn id in its rollout.
+  // Pins a tail fork at fork time (see AgentDriver contract).
+  resolveNativeAnchor(opts: { sessionId: string; workdir: string }): string | null {
+    return codexRolloutTailAnchor(opts.sessionId);
   }
 }
 

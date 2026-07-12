@@ -67,6 +67,7 @@ export class SessionRunner {
     }
     if (result.reasoning && !(this.snapshot.reasoning || '').trim()) this.snapshot.reasoning = result.reasoning;
     if (result.sessionId) this.snapshot.sessionId = result.sessionId;
+    if (result.anchor) this.snapshot.anchor = result.anchor;
     if (result.usage) this.snapshot.usage = result.usage;
     this.snapshot.error = result.error ?? null;
     this.snapshot.incomplete = !result.ok;

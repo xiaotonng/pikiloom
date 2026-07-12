@@ -29,6 +29,8 @@ export interface ManagedSessionInfo {
   createdAt: string | null;
   updatedAt: string | null;
   messageCount?: number | null;
+  /** Fork lineage when this session was branched off another (see CoreSessionRecord.forkedFrom). */
+  forkedFrom?: { sessionKey: string; taskId?: string | null } | null;
 }
 
 export interface ListSessionsOptions {
@@ -83,6 +85,7 @@ function managedToInfo(agent: string, rec: CoreSessionRecord): ManagedSessionInf
     createdAt: rec.createdAt ?? null,
     updatedAt: rec.updatedAt ?? null,
     messageCount: null, // managed records don't track a turn count; native rows carry the head-approx one
+    forkedFrom: rec.forkedFrom ?? null,
   };
 }
 

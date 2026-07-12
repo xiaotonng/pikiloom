@@ -18,9 +18,27 @@ export interface PromptInput {
   attachments?: string[];
 }
 
+// Branch a session at a turn boundary into a NEW session; the source is never mutated.
+export interface ForkSessionInput {
+  fromSessionKey: string;
+  // Last KEPT turn (kernel taskId from the parent's transcript); omit/null = keep everything
+  // up to the parent's current tail.
+  atTaskId?: string | null;
+  // Explicit agent-native keep-boundary override (same terms as AgentTurnInput.fork.anchor).
+  // When absent the hub resolves it from the kept turn's recorded anchor, else from the
+  // driver's resolveNativeAnchor (tail cuts), else falls back to a seed fork.
+  anchor?: string | null;
+  title?: string | null;
+}
+
 export interface LoomIO {
   // inbound (terminal -> kernel)
   prompt(input: PromptInput): Promise<{ sessionKey: string; taskId: string }>;
+  // Create a new managed session branched off `fromSessionKey` at a turn boundary: copies
+  // the kept transcript prefix, stamps fork lineage, and defers the native-side branch to
+  // the first prompt() on the returned key (fork-on-dispatch). The parent session — managed
+  // record, transcript, and native store alike — is never mutated.
+  forkSession(input: ForkSessionInput): Promise<{ sessionKey: string }>;
   stop(sessionKey: string): boolean;
   steer(taskId: string, prompt: string, attachments?: string[]): Promise<boolean>;
   interact(promptId: string, action: 'select' | 'text' | 'skip' | 'cancel', value?: string): boolean;

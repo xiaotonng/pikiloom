@@ -8,8 +8,9 @@ import type { AgentDriver, AgentTurnInput, McpServerSpec, TuiSpec } from '../con
 import type {
   SessionStore, ModelResolver, ToolProvider, SystemPromptBuilder, InteractionHandler, Catalog,
 } from '../contracts/ports.js';
-import type { LoomIO, PromptInput, Plugin, SpawnContribution } from '../contracts/surface.js';
+import type { LoomIO, PromptInput, ForkSessionInput, Plugin, SpawnContribution } from '../contracts/surface.js';
 import { SessionRunner } from './session-runner.js';
+import { buildForkSeed } from './fork.js';
 
 export interface HubDeps {
   drivers: Map<string, AgentDriver>;
@@ -125,6 +126,68 @@ export class Hub implements LoomIO {
     return { sessionKey, taskId };
   }
 
+  // Branch `fromSessionKey` at a turn boundary into a NEW managed session. Copies the kept
+  // transcript prefix, pins the native keep-boundary NOW (so the branch is immune to the
+  // parent continuing afterwards), and stamps a pendingFork the first prompt() dispatch
+  // consumes (fork-on-dispatch). The parent — record, transcript, native store — is never
+  // mutated. Works for sessions the kernel never ran: a native-only session's id IS its
+  // native id (the same assumption prompt() makes when resuming one).
+  async forkSession(input: ForkSessionInput): Promise<{ sessionKey: string }> {
+    const { agent, sessionId: fromId } = splitSessionKey(input.fromSessionKey);
+    const driver = this.deps.drivers.get(agent);
+    if (!driver) throw new Error(`No driver registered for agent "${agent}"`);
+    const parent = await this.deps.sessionStore.get(agent, fromId);
+    const parentNativeId = parent?.nativeSessionId || fromId;
+    const workdir = parent?.workdir || this.deps.workdir;
+
+    // Kept transcript prefix: through atTaskId inclusive (default: the whole transcript).
+    const turns = this.deps.sessionStore.history
+      ? await this.deps.sessionStore.history(agent, fromId).catch(() => [] as UniversalSnapshot[])
+      : [];
+    let kept = turns;
+    if (input.atTaskId) {
+      const cut = turns.findIndex(t => t.taskId === input.atTaskId);
+      if (cut < 0) throw new Error(`fork point ${input.atTaskId} not found in ${input.fromSessionKey}`);
+      kept = turns.slice(0, cut + 1);
+    }
+    const cutIsTail = kept.length === turns.length;
+
+    // Pin the native keep-boundary at fork time: explicit override → the kept turn's recorded
+    // anchor → the parent's CURRENT tail (tail cuts only). A mid cut that can't be anchored
+    // falls back to a seed fork — a tail-anchored native fork there would silently absorb the
+    // dropped turns, which is worse than the seed's lower fidelity.
+    let anchor = input.anchor ?? kept[kept.length - 1]?.anchor ?? null;
+    if (!anchor && cutIsTail && driver.resolveNativeAnchor) {
+      try { anchor = (await driver.resolveNativeAnchor({ sessionId: parentNativeId, workdir })) ?? null; }
+      catch { anchor = null; }
+    }
+    const mode: 'native' | 'seed' = driver.capabilities?.fork && parentNativeId && (anchor || cutIsTail) ? 'native' : 'seed';
+
+    const { sessionId: newId } = await this.deps.sessionStore.ensure(agent, {
+      workdir, title: input.title ?? parent?.title ?? null,
+    });
+    for (const turn of kept) {
+      try { await this.deps.sessionStore.appendTurn?.(agent, newId, turn); }
+      catch (e: any) { this.deps.log?.(`[hub] fork transcript copy failed ${newId}: ${e?.message || e}`); }
+    }
+    const rec = await this.deps.sessionStore.get(agent, newId);
+    if (rec) {
+      const last = kept[kept.length - 1];
+      rec.model = parent?.model ?? last?.model ?? null;
+      rec.effort = parent?.effort ?? last?.effort ?? null;
+      rec.preview = parent?.preview ?? null;
+      // ensure() stamps fresh records 'running' (prompt() marks them properly right after);
+      // a fork has not dispatched anything yet — settle it so it can't read as a live turn.
+      rec.runState = 'completed';
+      rec.runDetail = null;
+      rec.forkedFrom = { sessionKey: input.fromSessionKey, taskId: input.atTaskId ?? last?.taskId ?? null };
+      rec.pendingFork = { parentNativeSessionId: parentNativeId, anchor, mode };
+      await this.deps.sessionStore.save(rec);
+    }
+    this.deps.log?.(`[hub] forked ${input.fromSessionKey} -> ${agent}:${newId} (${mode}${anchor ? `, anchor ${anchor}` : ''}, ${kept.length}/${turns.length} turns)`);
+    return { sessionKey: makeSessionKey(agent, newId) };
+  }
+
   private enqueue(item: QueuedItem): void {
     const q = this.waiting.get(item.sessionKey) ?? [];
     q.push(item);
@@ -155,6 +218,10 @@ export class Hub implements LoomIO {
     // Resolve injection / tools / resume-target at run time so a promoted turn sees the
     // prior turn's native session id and any refreshed credentials/tools.
     const rec = await this.deps.sessionStore.get(agent, sessionId);
+    // Fork-on-dispatch: a pendingFork rides every dispatch until a native id lands (a failed
+    // first turn keeps the intent, so the retry forks again). Native mode resumes the PARENT's
+    // native id with the fork flag; seed mode starts fresh and replays the copied transcript.
+    const pendingFork = rec && !rec.nativeSessionId ? rec.pendingFork ?? null : null;
     const injection = await this.deps.modelResolver.resolve(agent, { model: input.model, profileId: null }).catch(() => null);
     const model = injection?.model ?? input.model ?? null;
     const effort = input.effort ?? null;
@@ -167,12 +234,29 @@ export class Hub implements LoomIO {
       { env: tools.env },
       ...pluginParts,
     ]);
-    const systemPrompt = await this.composeSystemPrompt(agent, workdir, !preExisted);
+    // A seed fork opens a brand-new native session, so it takes the first-turn system prompt;
+    // a native fork is resume-shaped (the parent's opening turn already carried it).
+    const systemPrompt = await this.composeSystemPrompt(agent, workdir, !preExisted || pendingFork?.mode === 'seed');
+
+    let driverSessionId = rec?.nativeSessionId || (input.sessionKey ? sessionId : null);
+    let driverFork: { anchor?: string | null } | null = null;
+    let driverPrompt = input.prompt;
+    if (pendingFork) {
+      if (pendingFork.mode === 'native' && pendingFork.parentNativeSessionId) {
+        driverSessionId = pendingFork.parentNativeSessionId;
+        driverFork = { anchor: pendingFork.anchor };
+      } else {
+        driverSessionId = null;
+        const seed = buildForkSeed(await this.getHistory(sessionKey));
+        if (seed) driverPrompt = `${seed}\n\n${input.prompt}`;
+      }
+    }
 
     const turnInput: AgentTurnInput = {
-      prompt: input.prompt,
+      prompt: driverPrompt,
       attachments: input.attachments,
-      sessionId: rec?.nativeSessionId || (input.sessionKey ? sessionId : null),
+      sessionId: driverSessionId,
+      fork: driverFork,
       workdir,
       model, effort, systemPrompt,
       env: spawn.env,
@@ -190,6 +274,14 @@ export class Hub implements LoomIO {
     runner.run(driver, turnInput, input.prompt, model, effort)
       .then(async (result) => {
         await this.deps.sessionStore.recordResult(agent, sessionId, result);
+        // The branch materialized natively (recordResult stored its id) — consume the fork
+        // intent. A turn that died before a native id landed keeps it, so the retry re-forks.
+        if (pendingFork && result.sessionId) {
+          try {
+            const settled = await this.deps.sessionStore.get(agent, sessionId);
+            if (settled?.pendingFork) { settled.pendingFork = null; await this.deps.sessionStore.save(settled); }
+          } catch (e: any) { this.deps.log?.(`[hub] pendingFork clear failed ${sessionKey}: ${e?.message || e}`); }
+        }
         // Persist the completed turn's final snapshot as a transcript entry. The runner's
         // snapshot is stable once done (a follow-up prompt spawns a fresh runner+snapshot).
         try { await this.deps.sessionStore.appendTurn?.(agent, sessionId, runner.snapshot); }

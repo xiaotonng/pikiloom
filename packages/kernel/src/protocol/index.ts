@@ -99,6 +99,9 @@ export interface UniversalSnapshot {
   incomplete?: boolean;
   startedAt?: number;
   updatedAt: number;
+  // Agent-native boundary marker of this settled turn (see DriverResult.anchor) — lets a
+  // later fork cut the parent's native transcript exactly after this turn.
+  anchor?: string | null;
 }
 
 export interface SessionMeta {
@@ -135,7 +138,7 @@ export function emptySnapshot(): UniversalSnapshot {
 
 const APPEND_FIELDS = ['text', 'reasoning'] as const;
 const STRUCT_FIELDS = ['plan', 'toolCalls', 'subAgents', 'usage', 'artifacts', 'interactions', 'queued'] as const;
-const SCALAR_FIELDS = ['phase', 'taskId', 'sessionId', 'agent', 'model', 'effort', 'prompt', 'activity', 'error', 'incomplete', 'startedAt', 'updatedAt'] as const;
+const SCALAR_FIELDS = ['phase', 'taskId', 'sessionId', 'agent', 'model', 'effort', 'prompt', 'activity', 'error', 'incomplete', 'startedAt', 'updatedAt', 'anchor'] as const;
 
 export function diffSnapshot(prev: UniversalSnapshot, next: UniversalSnapshot): SnapshotPatch {
   const patch: SnapshotPatch = {};

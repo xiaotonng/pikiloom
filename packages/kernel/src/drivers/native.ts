@@ -432,3 +432,67 @@ export function discoverGeminiNativeSessions(workdir: string, opts: DiscoverOpti
   const out = [...byId.values()].sort((a, b) => Date.parse(b.updatedAt || '') - Date.parse(a.updatedAt || ''));
   return typeof opts.limit === 'number' ? out.slice(0, Math.max(0, opts.limit)) : out;
 }
+
+// ---- Fork anchors: the CURRENT tail keep-boundary of a native transcript ----
+// Same terms as AgentTurnInput.fork.anchor: claude = transcript record uuid, codex = turn id.
+// Used by fork-capable drivers' resolveNativeAnchor so Hub.forkSession can pin a tail cut at
+// fork time (the branch must not absorb turns the parent runs afterwards). Bounded tail reads.
+
+/** Claude: uuid of the last user/assistant record in the session's transcript. */
+export function claudeTranscriptTailAnchor(workdir: string, sessionId: string, opts: DiscoverOptions = {}): string | null {
+  const home = homeOf(opts);
+  const filePath = path.join(home, '.claude', 'projects', encodeClaudeProjectDir(workdir), `${sessionId}.jsonl`);
+  const stat = statSafe(filePath);
+  if (!stat) return null;
+  let anchor: string | null = null;
+  try {
+    const start = Math.max(0, stat.size - TAIL_BYTES);
+    for (const line of readRegion(filePath, start, Math.min(TAIL_BYTES, stat.size)).split('\n')) {
+      const t = line.trim();
+      if (!t || t[0] !== '{') continue;
+      let ev: any;
+      try { ev = JSON.parse(t); } catch { continue; }
+      if ((ev.type === 'assistant' || ev.type === 'user') && typeof ev.uuid === 'string' && ev.uuid) anchor = ev.uuid;
+    }
+  } catch { return null; }
+  return anchor;
+}
+
+/** Codex: the last turn id recorded in the session's rollout. */
+export function codexRolloutTailAnchor(sessionId: string, opts: DiscoverOptions = {}): string | null {
+  const filePath = findCodexRolloutPath(homeOf(opts), sessionId);
+  const stat = filePath ? statSafe(filePath) : null;
+  if (!filePath || !stat) return null;
+  let anchor: string | null = null;
+  try {
+    const start = Math.max(0, stat.size - TAIL_BYTES);
+    for (const line of readRegion(filePath, start, Math.min(TAIL_BYTES, stat.size)).split('\n')) {
+      const t = line.trim();
+      if (!t || t[0] !== '{' || !t.includes('turn_id')) continue;
+      let ev: any;
+      try { ev = JSON.parse(t); } catch { continue; }
+      const tid = ev.payload?.turn_id;
+      if (typeof tid === 'string' && tid) anchor = tid;
+    }
+  } catch { return null; }
+  return anchor;
+}
+
+/** Locate a codex rollout by session id (filenames end in `-<sessionId>.jsonl`). */
+function findCodexRolloutPath(home: string, sessionId: string): string | null {
+  const suffix = `${sessionId}.jsonl`;
+  let found: string | null = null;
+  const walk = (dir: string) => {
+    if (found) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (found) return;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (entry.name.startsWith('rollout-') && entry.name.endsWith(suffix)) { found = full; return; }
+    }
+  };
+  walk(path.join(home, '.codex', 'sessions'));
+  return found;
+}

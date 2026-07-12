@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage, UniversalPlan, UniversalSubAgent } from '../protocol/index.js';
-import { discoverClaudeNativeSessions } from './native.js';
+import { claudeTranscriptTailAnchor, discoverClaudeNativeSessions } from './native.js';
 import { attachedFileNote, contextPercent, createLineBuffer, imageMimeForFile, parseJsonLine, sigterm, wireAbort } from './shared.js';
 
 // Real driver: shells the local `claude` CLI in stream-json mode and normalizes its
@@ -11,7 +11,7 @@ import { attachedFileNote, contextPercent, createLineBuffer, imageMimeForFile, p
 // but fully self-contained. Proves "下层 Claude 不变".
 export class ClaudeDriver implements AgentDriver {
   readonly id = 'claude';
-  readonly capabilities = { steer: true, interact: false, resume: true, tui: true };
+  readonly capabilities = { steer: true, interact: false, resume: true, tui: true, fork: true };
 
   constructor(private readonly bin: string = 'claude') {}
 
@@ -41,7 +41,7 @@ export class ClaudeDriver implements AgentDriver {
     const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '--input-format', 'stream-json'];
     if (input.model) args.push('--model', input.model);
     if (input.effort) args.push('--effort', input.effort === 'ultra' ? 'max' : input.effort); // request extended thinking (ultra is a display-only alias for max)
-    if (input.sessionId) args.push('--resume', input.sessionId);
+    if (input.sessionId) args.push(...claudeResumeArgs(input.sessionId, input.fork));
     if (input.systemPrompt) args.push('--append-system-prompt', input.systemPrompt);
     if (input.mcpConfigPath) args.push('--mcp-config', input.mcpConfigPath);
     if (input.permissionMode) args.push('--permission-mode', input.permissionMode); // parity: keep bypass/accept-edits on the kernel path
@@ -56,6 +56,9 @@ export class ClaudeDriver implements AgentDriver {
       // Wall-clock of the last parsed stream event — the hold cap defers while this is fresh.
       lastEventAt: Date.now(),
       sessionId: null as string | null, model: null as string | null,
+      // Fork anchor: uuid of the latest REAL assistant transcript record seen this turn —
+      // the inclusive keep-boundary a later fork of this session passes to --resume-session-at.
+      anchor: null as string | null,
       stopReason: null as string | null, error: null as string | null,
       input: null as number | null, output: null as number | null, cached: null as number | null,
       cacheCreation: null as number | null,
@@ -115,7 +118,7 @@ export class ClaudeDriver implements AgentDriver {
       };
       const settleResult = (opts: { stopReason?: string | null; kill?: boolean; ok?: boolean } = {}) => finish({
         ok: opts.ok ?? !state.error, text: state.text, reasoning: state.reasoning || undefined,
-        error: state.error, stopReason: opts.stopReason ?? state.stopReason, sessionId: state.sessionId, usage: usageOf(),
+        error: state.error, stopReason: opts.stopReason ?? state.stopReason, sessionId: state.sessionId, anchor: state.anchor, usage: usageOf(),
       }, opts.kill ?? true);
       // Cap while holding for a still-running background task (stopReason marks it as
       // "still running in the background" so the terminal presentation reads right). Idempotent —
@@ -272,14 +275,14 @@ export class ClaudeDriver implements AgentDriver {
       child.on('error', (err) => finish({ ok: false, text: state.text, error: `claude spawn error: ${err.message}`, stopReason: 'error' }));
       child.on('close', (code) => {
         if (settled) return;
-        if (ctx.signal.aborted) { finish({ ok: false, text: state.text, reasoning: state.reasoning, error: 'Interrupted by user.', stopReason: 'interrupted', sessionId: state.sessionId, usage: usageOf() }, false); return; }
+        if (ctx.signal.aborted) { finish({ ok: false, text: state.text, reasoning: state.reasoning, error: 'Interrupted by user.', stopReason: 'interrupted', sessionId: state.sessionId, anchor: state.anchor, usage: usageOf() }, false); return; }
         const ok = !state.error && code === 0;
         // A clean exit with no result while the tool loop dangles is the same swallowed-reply
         // shape as the result-event case above — stamp it so it can't pass as a full answer.
         // (state.stopReason is typically the tool round's leftover 'tool_use' here, so the
         // dangling check must win over it.)
         const stopReason = (ok && claudeTurnEndedDangling(state)) ? 'truncated' : state.stopReason;
-        finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason, sessionId: state.sessionId, usage: usageOf() }, false);
+        finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason, sessionId: state.sessionId, anchor: state.anchor, usage: usageOf() }, false);
       });
 
       try {
@@ -294,6 +297,23 @@ export class ClaudeDriver implements AgentDriver {
     return claudeUsageOf(s);
   }
 
+  // Current tail keep-boundary of a native session: the uuid of the last user/assistant
+  // record in its transcript. Pins a tail fork at fork time (see AgentDriver contract).
+  resolveNativeAnchor(opts: { sessionId: string; workdir: string }): string | null {
+    return claudeTranscriptTailAnchor(opts.workdir, opts.sessionId);
+  }
+}
+
+// The --resume flag family for one turn: plain resume appends to the session; a fork branches
+// a NEW session off it (--fork-session), optionally cut at an inclusive keep-boundary record
+// uuid (--resume-session-at). Pure so tests can pin the arg contract without spawning.
+export function claudeResumeArgs(sessionId: string, fork?: { anchor?: string | null } | null): string[] {
+  const args = ['--resume', sessionId];
+  if (fork) {
+    args.push('--fork-session');
+    if (fork.anchor) args.push('--resume-session-at', fork.anchor);
+  }
+  return args;
 }
 
 // ── Token usage / context projection (ported from pikiloom's claude driver) ──────
@@ -470,6 +490,9 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       }
       return;
     }
+    // A real assistant event's uuid IS its persisted transcript record uuid — track the
+    // latest as this turn's fork anchor (inclusive keep-boundary for --resume-session-at).
+    if (typeof ev.uuid === 'string' && ev.uuid) s.anchor = ev.uuid;
     const contents = ev.message?.content || [];
     for (const b of contents) {
       if (b?.type !== 'tool_use') continue;
@@ -613,6 +636,12 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
         : (typeof ev.result === 'string' && ev.result.trim() ? ev.result.trim()
         : `claude ended the turn with an error result${subtype ? ` (${subtype})` : ''}`);
     }
+    // When the WHOLE assistant body is that same error notice — a spend/usage-limit hit or a
+    // permission refusal the CLI narrates as a message AND flags the `result` an error, so the
+    // identical text lands in BOTH s.text and s.error — the turn is a single notice, not an
+    // answer-plus-red-echo. Drop the duplicate body so it renders once (as the error notice).
+    // Only exact-equal collapses: a real reply that merely ENDS with an error keeps both.
+    if (s.error && s.text.trim() && sameClaudeText(s.text, s.error)) { s.text = ''; s.streamedText = false; }
     if (!isErrorResult && typeof ev.result === 'string' && ev.result.trim()) {
       if (!s.text.trim()) s.text = ev.result;
       s.textSinceToolResult = true; // the closing reply arrived via the result payload
@@ -783,6 +812,13 @@ function claudeContentText(content: any): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n');
   return '';
+}
+
+// Whitespace-insensitive text equality — the error notice (a trimmed `result` string) and the
+// streamed body (may carry trailing newlines / soft breaks) can differ only in whitespace yet be
+// the same message. Used to collapse an error that IS the whole body (see the result handler).
+export function sameClaudeText(a: string, b: string): boolean {
+  return a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
 }
 
 // Extra completion signal (mirrors the legacy driver): Claude delivers a background wake-up as a

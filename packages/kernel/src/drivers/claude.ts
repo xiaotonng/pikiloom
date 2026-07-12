@@ -979,6 +979,9 @@ function summarizeToolUse(name: string, input: any): string {
     case 'WebSearch': { const q = shortToolValue(i.query, 120); return q ? `Search web: ${q}` : 'Search web'; }
     case 'TodoWrite': return 'Update plan';
     case 'Task': { const p = shortToolValue(i.description || i.prompt, 120); return p ? `Run task: ${p}` : 'Run task'; }
+    // Skill invocations carry the skill name in `input.skill` (plugin skills as `plugin:skill`);
+    // surface it so the row reads "Skill <name>" instead of a bare, indistinguishable "Skill".
+    case 'Skill': { const s = shortToolValue(i.skill || i.name, 80); return s ? `Skill ${s}` : 'Run skill'; }
     case 'Bash': {
       if (description) return `Run shell: ${description}`;
       const c = shortToolValue(i.command, 120);

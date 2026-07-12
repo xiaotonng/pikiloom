@@ -361,6 +361,9 @@ export function summarizeClaudeToolUse(name: string, input: any): string {
       return q ? `Ask user: ${q}` : 'Ask user';
     }
     case 'Task': { const p = shortValue(input?.description || input?.prompt, 120); return p ? `Run task: ${p}` : 'Run task'; }
+    // Skill invocations carry the skill name in `input.skill` (plugin skills as `plugin:skill`);
+    // surface it so the row reads "Skill <name>" instead of a bare, indistinguishable "Skill".
+    case 'Skill': { const s = shortValue(input?.skill || input?.name, 80); return s ? `Skill ${s}` : 'Run skill'; }
     case 'Bash': {
       if (description) return `Run shell: ${description}`;
       const c = shortValue(input?.command, 120);

@@ -17,7 +17,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
-          cache: "npm"
+          # npm cache probing runs the runner-bundled npm inside the repo, which
+          # trips the devEngines npm pin before activate-toolchain.sh can upgrade it.
+          package-manager-cache: false
 
       - run: bash scripts/activate-toolchain.sh
       - run: npm ci

@@ -21,6 +21,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           registry-url: "https://registry.npmjs.org"
+          # bundled-npm cache probe would trip the devEngines npm pin (see ci.yml)
+          package-manager-cache: false
 
       - run: bash scripts/activate-toolchain.sh
       - run: npm ci

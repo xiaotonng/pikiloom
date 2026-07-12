@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+          # bundled-npm cache probe would trip the devEngines npm pin (see ci.yml)
+          package-manager-cache: false
 
       - run: bash scripts/activate-toolchain.sh
       - run: node scripts/refresh-star-history.mjs

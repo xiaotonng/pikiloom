@@ -7,6 +7,9 @@
 set -euo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
+# Release artifacts and lockfile mutations must use the exact same toolchain as CI.
+bash scripts/activate-toolchain.sh
+
 # ── 0. Security check ────────────────────────────────────────────────────────
 # Refuse to release if forbidden paths or credential-like patterns are staged.
 # Bypass once with: SECURITY_CHECK_BYPASS=1 ./scripts/release.sh

@@ -16,14 +16,15 @@ permissions:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version-file: .nvmrc
 
+      - run: bash scripts/activate-toolchain.sh
       - run: node scripts/refresh-star-history.mjs
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -1,6 +1,6 @@
 {
   "name": "pikiloom",
-  "version": "0.4.65",
+  "version": "0.4.66",
   "description": "Put the world's smartest AI agents in your pocket. Command local Claude & Gemini via IM. | 让最好用的 IM 变成你电脑上的顶级 Agent 控制台",
   "type": "module",
   "bin": {
@@ -25,11 +25,13 @@
   ],
   "author": "xiaotonng",
   "license": "MIT",
+  "packageManager": "npm@11.6.2",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/xiaotonng/pikiloom.git"
   },
   "scripts": {
+    "verify:toolchain": "node scripts/verify-toolchain.mjs",
     "dev": "bash scripts/dev.sh",
     "command": "set -ae && . ./.env && set +a && tsx src/cli/run.ts",
     "build:dashboard": "vite build --config dashboard/vite.config.ts",
@@ -45,9 +47,21 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "22.23.1 || ^25.2.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": "11.6.2",
+      "onFail": "error"
+    }
+  },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.1",
-    "@types/node": "^25.3.5",
+    "@types/node": "22.20.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -61,7 +75,7 @@
     "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
+    "typescript": "7.0.2",
     "vitest": "^4.0.18",
     "zustand": "^5.0.12"
   },

@@ -111,6 +111,10 @@ cli/  →  dashboard/  →  channels/*  →  bot/  →  agent/  →  catalog/, c
 ## Test Commands
 
 ```bash
+nvm use                                # canonical Node 22.23.1 from .nvmrc (local Node ^25.2.0 also tolerated)
+bash scripts/activate-toolchain.sh      # exact npm 11.6.2
+npm ci
+npm run verify:toolchain               # also checks TS 7.0.2 + Node 22 types + Docker defaults
 npm run dev                            # local dev (--no-daemon, logs to ~/.pikiloom/dev/dev.log)
 npm test                               # Vitest unit suite
 npx vitest run test/<file>.unit.test.ts

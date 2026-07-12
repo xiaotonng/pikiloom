@@ -1,6 +1,6 @@
 {
   "name": "@pikiloom/kernel",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Heterogeneous coding agents (Claude / Codex / Gemini / ACP) -> an interaction-friendly, accumulating session snapshot + control handle, over pluggable surfaces (IM, Web, tunnel, TUI). The reusable core pikiloom itself is built on.",
   "type": "module",
   "license": "MIT",
@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
-    "typescript": "^5.9.3",
+    "typescript": "7.0.2",
     "vitest": "^4.0.18"
   },
   "publishConfig": {

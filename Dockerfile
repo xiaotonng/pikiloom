@@ -5,7 +5,7 @@
 # Layered approach:
 #   1. `builder`  full deps, compiles TS + builds Vite dashboard
 #   2. `deps`     production-only node_modules (no devDeps)
-#   3. `runtime`  Node 20 slim + agent CLIs (claude / codex / gemini) baked in,
+#   3. `runtime`  pinned Node/npm + agent CLIs (claude / codex / gemini) baked in,
 #                 non-root user, /workspace and /home/piki/.pikiloom as volumes
 #
 # Build:
@@ -21,14 +21,19 @@
 #
 # See docs/DOCKER.md for the full reference.
 
-ARG NODE_VERSION=20-bookworm-slim
+ARG NODE_VERSION=22.23.1-bookworm-slim
+ARG NPM_VERSION=11.6.2
 
 # ---------------------------------------------------------------------------
 # Stage 1 — builder: install all deps, compile TS, build the Vite dashboard.
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION} AS builder
+ARG NPM_VERSION
 
 WORKDIR /build
+
+RUN npm install --global --no-audit --no-fund "npm@${NPM_VERSION}" \
+ && test "$(npm --version)" = "${NPM_VERSION}"
 
 # Native modules (@napi-rs/keyring is optional but pulls a tiny build chain)
 # need python + a C toolchain. Slim has neither; install minimally.
@@ -42,20 +47,27 @@ RUN npm ci --no-audit --no-fund
 
 # Copy only what `npm run build` (tsc + vite) needs. .dockerignore
 # already keeps node_modules, dist/, .pikiloom/, .scratch/, etc. out.
+COPY .nvmrc Dockerfile ./
+COPY scripts/verify-toolchain.mjs ./scripts/verify-toolchain.mjs
 COPY tsconfig.json ./tsconfig.json
 COPY src ./src
 COPY dashboard ./dashboard
 COPY packages/kernel/package.json packages/kernel/tsconfig.json ./packages/kernel/
 COPY packages/kernel/src ./packages/kernel/src
 
+RUN npm run verify:toolchain
 RUN npm run build
 
 # ---------------------------------------------------------------------------
 # Stage 2 — deps: production-only node_modules (drops devDeps to slim runtime).
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION} AS deps
+ARG NPM_VERSION
 
 WORKDIR /deps
+
+RUN npm install --global --no-audit --no-fund "npm@${NPM_VERSION}" \
+ && test "$(npm --version)" = "${NPM_VERSION}"
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git python3 build-essential \
@@ -68,6 +80,10 @@ RUN npm ci --omit=dev --omit=optional --no-audit --no-fund
 # Stage 3 — runtime: Node + agent CLIs + compiled pikiloom.
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION} AS runtime
+ARG NPM_VERSION
+
+RUN npm install --global --no-audit --no-fund "npm@${NPM_VERSION}" \
+ && test "$(npm --version)" = "${NPM_VERSION}"
 
 ARG CLAUDE_CODE_VERSION=latest
 ARG CODEX_VERSION=latest

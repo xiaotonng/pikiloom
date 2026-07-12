@@ -30,7 +30,7 @@
     "@vitejs/plugin-react": "^5.1.4",
     "simple-icons": "^16.23.0",
     "tailwindcss": "^4.2.1",
-    "typescript": "^5.7.3",
+    "typescript": "7.0.2",
     "vite": "^7.0.0"
   }
 }

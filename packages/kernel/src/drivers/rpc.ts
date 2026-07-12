@@ -28,6 +28,7 @@ export class StdioRpcClient {
   private readonly pending = new Map<number, (m: RpcMsg) => void>();
   private notifyCb?: (method: string, params: any) => void;
   private requestCb?: (method: string, params: any, id: number | string) => any | Promise<any>;
+  private closeCb?: () => void;
   private readonly stderrTail: string[] = [];
   private readonly label: string;
 
@@ -38,6 +39,12 @@ export class StdioRpcClient {
   onNotification(cb: (method: string, params: any) => void): void { this.notifyCb = cb; }
   /** Serve peer->client requests. Throw RpcError for a coded error; anything else answers -32603. */
   onRequest(cb: (method: string, params: any, id: number | string) => any | Promise<any>): void { this.requestCb = cb; }
+  /**
+   * Fires once when the child process exits/closes. A driver awaiting a terminal *notification*
+   * (not a pending request) MUST use this to settle its turn — otherwise a process that dies
+   * without emitting its completion notification leaves the turn hanging forever.
+   */
+  onClose(cb: () => void): void { this.closeCb = cb; }
   /** Rolling tail of the process' stderr — startup/crash diagnostics. */
   stderrText(): string { return this.stderrTail.join('\n'); }
 
@@ -63,6 +70,7 @@ export class StdioRpcClient {
     this.proc.on('close', () => {
       for (const cb of this.pending.values()) cb({ error: { message: `${this.label} exited` } });
       this.pending.clear();
+      this.closeCb?.();
     });
     this.proc.on('error', () => { /* surfaced via start() false / request timeouts */ });
     return true;

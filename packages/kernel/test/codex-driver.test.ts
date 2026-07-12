@@ -383,3 +383,49 @@ describe('CodexDriver abort resolves the turn (no hang)', () => {
     expect(result.error).toBe('Interrupted by user.');
   }, 15_000);
 });
+
+// Regression: if the app-server process DIES mid-turn without ever sending turn/completed
+// (crash / external kill / disconnect), run() must RESOLVE as a failed turn — not hang. Before
+// the fix, `await turnDone` only settled on turn/completed or abort, so a dead process stranded
+// the session at runState:"running" forever (the "已经结束了但左上角还是绿色运行中" bug).
+const FAKE_DYING_SERVER = `#!/usr/bin/env node
+let buf = '';
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id, result }) + '\\n');
+const notify = (method, params) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', method, params }) + '\\n');
+const TID = 'codex-thread-die';
+process.stdin.on('data', (d) => {
+  buf += d; const lines = buf.split('\\n'); buf = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.method === 'initialize') reply(m.id, {});
+    else if (m.method === 'thread/start') reply(m.id, { thread: { id: TID } });
+    else if (m.method === 'turn/start') {
+      reply(m.id, {});
+      notify('turn/started', { threadId: TID, turn: { id: 'turn-1' } });
+      // ...then the process crashes: exit WITHOUT ever sending turn/completed.
+      process.stderr.write('fatal: codex app-server crashed\\n');
+      process.exit(1);
+    }
+  }
+});
+`;
+
+describe('CodexDriver settles when the app-server dies mid-turn (no hang)', () => {
+  let tmp: string; let fake: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-die-'));
+    fake = path.join(tmp, 'fake-codex.mjs');
+    fs.writeFileSync(fake, FAKE_DYING_SERVER);
+    fs.chmodSync(fake, 0o755);
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('resolves run() as a failed turn instead of hanging when the process exits without turn/completed', async () => {
+    const { ctx } = ctxCollect();
+    const result = await new CodexDriver(fake).run({ prompt: 'boom', workdir: tmp }, ctx); // must NOT hang
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('error');
+    expect(result.error).toBeTruthy();
+  }, 15_000);
+});

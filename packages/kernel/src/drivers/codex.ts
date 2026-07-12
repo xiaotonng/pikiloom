@@ -269,8 +269,24 @@ export class CodexDriver implements AgentDriver {
 
     if (!srv.start()) return { ok: false, text: '', error: 'failed to start codex app-server', stopReason: 'error' };
 
-    let settle: () => void = () => {};
-    const turnDone = new Promise<void>((res) => { settle = res; });
+    let settled = false;
+    let resolveTurn: () => void = () => {};
+    const turnDone = new Promise<void>((res) => { resolveTurn = res; });
+    // Idempotent: turnDone can be settled from three racing sources (turn/completed, abort,
+    // process death); the first wins and the rest are no-ops.
+    const settle = () => { if (settled) return; settled = true; resolveTurn(); };
+
+    // If the app-server process dies WITHOUT a turn/completed (crash, kill, disconnect), the
+    // `await turnDone` below would otherwise hang forever — run() never resolves, recordResult
+    // never fires, and the session is stranded runState:"running" in the orchestrator even though
+    // the codex process is already dead. Settle it as a failed turn so the orchestrator can
+    // finalize it (mirrors the claude driver's child.on('close') settle).
+    srv.onClose(() => {
+      if (settled) return;
+      state.error = state.error || srv.stderrText().trim().split('\n').pop() || 'codex app-server exited before the turn completed';
+      state.status = 'error';
+      settle();
+    });
 
     // On abort: gracefully interrupt the running turn, then settle turnDone OURSELVES. A bare
     // srv.kill() (SIGTERM) never produces a turn/completed notification, so without this explicit

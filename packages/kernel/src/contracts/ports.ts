@@ -23,6 +23,12 @@ export interface CoreSessionRecord {
   effort?: string | null;
   runState?: 'running' | 'completed' | 'incomplete';
   runDetail?: string | null;
+  // Liveness ownership for a 'running' turn: the OS pid of the process driving it, plus when it
+  // started. A store shared by multiple processes (e.g. a dev + prod app on the same home dir)
+  // uses this to tell a crashed orphan (owner pid dead) apart from a turn live in another
+  // process (owner pid alive) during boot reconciliation — see SessionStore.reconcileRunning.
+  runPid?: number | null;
+  runStartedAt?: number | null;
 }
 
 export interface SessionStore {
@@ -31,6 +37,16 @@ export interface SessionStore {
   save(record: CoreSessionRecord): Promise<void>;
   list(agent: string, opts?: { limit?: number }): Promise<CoreSessionRecord[]>;
   recordResult(agent: string, sessionId: string, result: DriverResult): Promise<void>;
+  // Stamp a session as actively running under the current process (runState:'running' + owner
+  // pid). Called at turn start for BOTH new and resumed sessions, so the persisted runState is
+  // authoritative for the whole turn — not just its opening. Optional: a store that skips it
+  // simply won't be eligible for orphan reconciliation.
+  markRunning?(agent: string, sessionId: string, owner: { pid: number; startedAt: number }): Promise<void>;
+  // Boot-time repair: flip every record stranded at runState:'running' whose owner pid is dead
+  // (isAlive(pid) === false) to 'incomplete'. Records with a live owner or no recorded pid are
+  // left untouched, so this is safe to run against a store shared by several live processes.
+  // Returns the number of records repaired. Optional.
+  reconcileRunning?(isAlive: (pid: number) => boolean): Promise<number>;
   // Transcript: append the final snapshot of a completed turn, and read the ordered
   // history back. Optional so a minimal store can opt out (history() then yields []).
   appendTurn?(agent: string, sessionId: string, turn: UniversalSnapshot): Promise<void>;

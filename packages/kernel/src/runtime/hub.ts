@@ -147,6 +147,11 @@ export class Hub implements LoomIO {
     this.sessions.set(sessionKey, entry);
     this.emitSessionsChanged();
 
+    // Stamp the persisted record as running under THIS process, so runState is authoritative for
+    // the whole turn (new AND resumed) and a crash strands an owner pid that boot reconciliation
+    // can reap. Best-effort: a store without markRunning just won't be reconcilable.
+    await this.deps.sessionStore.markRunning?.(agent, sessionId, { pid: process.pid, startedAt: Date.now() }).catch(() => {});
+
     // Resolve injection / tools / resume-target at run time so a promoted turn sees the
     // prior turn's native session id and any refreshed credentials/tools.
     const rec = await this.deps.sessionStore.get(agent, sessionId);

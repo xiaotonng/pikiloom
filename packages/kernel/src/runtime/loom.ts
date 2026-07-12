@@ -3,7 +3,7 @@ import type { SessionStore, ModelResolver, ToolProvider, SystemPromptBuilder, Ca
 import type { LoomIO, Surface, Plugin } from '../contracts/surface.js';
 import {
   FsSessionStore, NullModelResolver, NoopToolProvider, PassthroughSystemPromptBuilder, NoopCatalog,
-  DeferToTerminalInteractionHandler, defaultBaseDir,
+  DeferToTerminalInteractionHandler, defaultBaseDir, isProcessAlive,
 } from '../ports/defaults.js';
 import { Hub } from './hub.js';
 import { PtyBridge, type PtyOpenOpts, type PtyExit } from './pty.js';
@@ -120,6 +120,13 @@ export function createLoom(config: LoomConfig = {}): Loom {
     async start() {
       if (started) return;
       started = true;
+      // Repair sessions stranded at runState:'running' by a previous process that died mid-turn
+      // (crash / kill / power loss) before its driver could settle. Safe under a shared store:
+      // only records whose owner pid is dead are reaped (see reconcileRunning). Best-effort.
+      try {
+        const repaired = await sessionStore.reconcileRunning?.(isProcessAlive);
+        if (repaired) log(`[loom] reconciled ${repaired} orphaned running session(s) at startup`);
+      } catch (e: any) { log(`[loom] startup reconcile failed: ${e?.message || e}`); }
       for (const t of surfaces) {
         await t.start(hub, { openTui });   // hub = Lane S (LoomIO); openTui = Lane R
         log(`[loom] terminal started: ${t.id}`);

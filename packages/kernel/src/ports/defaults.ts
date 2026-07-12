@@ -78,10 +78,42 @@ export class FsSessionStore implements SessionStore {
     if (!rec) return;
     rec.runState = result.ok ? 'completed' : 'incomplete';
     rec.runDetail = result.error ?? null;
+    rec.runPid = null;            // turn is over — drop the owner so reconciliation ignores it
     if (result.sessionId) rec.nativeSessionId = result.sessionId;
     if (result.text && !rec.title) rec.title = result.text.slice(0, 80);
     if (result.text) rec.preview = result.text.replace(/\s+/g, ' ').trim().slice(0, 200) || rec.preview || null;
     await this.save(rec);
+  }
+
+  async markRunning(agent: string, sessionId: string, owner: { pid: number; startedAt: number }): Promise<void> {
+    const rec = await this.get(agent, sessionId);
+    if (!rec) return;
+    rec.runState = 'running';
+    rec.runDetail = null;
+    rec.runPid = owner.pid;
+    rec.runStartedAt = owner.startedAt;
+    await this.save(rec);
+  }
+
+  async reconcileRunning(isAlive: (pid: number) => boolean): Promise<number> {
+    let agents: string[] = [];
+    try { agents = fs.readdirSync(this.baseDir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); } catch { return 0; }
+    let repaired = 0;
+    for (const agent of agents) {
+      for (const rec of await this.list(agent)) {
+        if (rec.runState !== 'running') continue;
+        // Only reap a KNOWN-dead owner. No pid (legacy record) or a live pid (possibly a turn
+        // running in another process against this shared store) is left alone — never clobber a
+        // turn that might still be live elsewhere.
+        if (typeof rec.runPid !== 'number' || isAlive(rec.runPid)) continue;
+        rec.runState = 'incomplete';
+        rec.runDetail = rec.runDetail || 'interrupted: owner process exited';
+        rec.runPid = null;
+        await this.save(rec);
+        repaired++;
+      }
+    }
+    return repaired;
   }
 
   async appendTurn(agent: string, sessionId: string, turn: UniversalSnapshot): Promise<void> {
@@ -100,6 +132,17 @@ export class FsSessionStore implements SessionStore {
     }
     return out;
   }
+}
+
+/**
+ * Is a pid currently a live process? `signal 0` probes without delivering a signal: ESRCH =>
+ * no such process (dead); EPERM => alive but owned by someone we can't signal (treat as alive).
+ * The conservative bias (unknown => alive) is deliberate — reconciliation must never reap a turn
+ * that might still be running.
+ */
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e: any) { return e?.code === 'EPERM'; }
 }
 
 export function defaultBaseDir(appNamespace: string): string {

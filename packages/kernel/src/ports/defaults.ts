@@ -132,6 +132,25 @@ export class FsSessionStore implements SessionStore {
     }
     return out;
   }
+
+  // Rewrite turns.jsonl to the prefix through `throughTaskId` inclusive (in-place rewind). null
+  // clears the transcript; an unknown id keeps everything (no-op) so a stale cut can't wipe
+  // history. Atomic (temp file + rename) so a crash can't leave a half-written store.
+  async truncateTurns(agent: string, sessionId: string, throughTaskId: string | null): Promise<void> {
+    const all = await this.history(agent, sessionId);
+    let kept: UniversalSnapshot[];
+    if (throughTaskId == null) kept = [];
+    else {
+      const cut = all.findIndex((t) => t.taskId === throughTaskId);
+      if (cut < 0) return; // unknown cut — leave the transcript untouched
+      kept = all.slice(0, cut + 1);
+    }
+    const p = this.turnsPath(agent, sessionId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = `${p}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, kept.map((t) => JSON.stringify(t)).join('\n') + (kept.length ? '\n' : ''));
+    fs.renameSync(tmp, p);
+  }
 }
 
 /**

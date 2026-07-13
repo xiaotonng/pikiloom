@@ -38,6 +38,11 @@ export interface CoreSessionRecord {
   // as a context seed (any driver). `anchor` is pinned at fork time so the branch is
   // immune to the parent continuing to run afterwards.
   pendingFork?: { parentNativeSessionId: string | null; anchor: string | null; mode: 'native' | 'seed' } | null;
+  // Rewind intent (in-place tip regeneration), pending until the next dispatch consumes it (then
+  // cleared). Unlike a fork it keeps the SAME session/native id: the dispatch resumes the native
+  // session at `anchor` (the last KEPT turn's boundary) WITHOUT forking, rebranching in place so
+  // the dropped tip leaves the active context. Only drivers with capabilities.rewind honor it.
+  pendingRewind?: { anchor: string | null } | null;
 }
 
 export interface SessionStore {
@@ -60,6 +65,11 @@ export interface SessionStore {
   // history back. Optional so a minimal store can opt out (history() then yields []).
   appendTurn?(agent: string, sessionId: string, turn: UniversalSnapshot): Promise<void>;
   history?(agent: string, sessionId: string): Promise<UniversalSnapshot[]>;
+  // Drop transcript turns AFTER `throughTaskId` (inclusive keep), rewriting the store to the kept
+  // prefix — the in-place counterpart to appendTurn, used by Hub.rewindSession to regenerate a
+  // tip. `throughTaskId` null clears the whole transcript; an unknown id is a no-op (never wipes
+  // history on a stale cut). Optional so a minimal store can opt out (rewind then rejects).
+  truncateTurns?(agent: string, sessionId: string, throughTaskId: string | null): Promise<void>;
 }
 
 export interface ModelInjection {

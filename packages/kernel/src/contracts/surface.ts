@@ -39,6 +39,13 @@ export interface LoomIO {
   // the first prompt() on the returned key (fork-on-dispatch). The parent session — managed
   // record, transcript, and native store alike — is never mutated.
   forkSession(input: ForkSessionInput): Promise<{ sessionKey: string }>;
+  // Rewind a session IN PLACE to a turn boundary (tip regeneration): drops the transcript AFTER
+  // `atTaskId` (the last KEPT turn) and stamps a rewind intent the next prompt() consumes —
+  // resuming the SAME native session at that boundary (no fork), so the dropped tip leaves the
+  // active context and the re-issued prompt regenerates from there. The session id is unchanged
+  // (returned for symmetry with forkSession). Requires a driver with capabilities.rewind and a
+  // resolvable native anchor at the cut; otherwise rejects (the caller falls back to append/fork).
+  rewindSession(input: { sessionKey: string; atTaskId: string; anchor?: string | null }): Promise<{ sessionKey: string }>;
   stop(sessionKey: string): boolean;
   steer(taskId: string, prompt: string, attachments?: string[]): Promise<boolean>;
   interact(promptId: string, action: 'select' | 'text' | 'skip' | 'cancel', value?: string): boolean;

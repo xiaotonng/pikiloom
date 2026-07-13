@@ -11,7 +11,7 @@ import { attachedFileNote, contextPercent, createLineBuffer, imageMimeForFile, p
 // but fully self-contained. Proves "下层 Claude 不变".
 export class ClaudeDriver implements AgentDriver {
   readonly id = 'claude';
-  readonly capabilities = { steer: true, interact: false, resume: true, tui: true, fork: true };
+  readonly capabilities = { steer: true, interact: false, resume: true, tui: true, fork: true, rewind: true };
 
   constructor(private readonly bin: string = 'claude') {}
 
@@ -41,7 +41,7 @@ export class ClaudeDriver implements AgentDriver {
     const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '--input-format', 'stream-json'];
     if (input.model) args.push('--model', input.model);
     if (input.effort) args.push('--effort', input.effort === 'ultra' ? 'max' : input.effort); // request extended thinking (ultra is a display-only alias for max)
-    if (input.sessionId) args.push(...claudeResumeArgs(input.sessionId, input.fork));
+    if (input.sessionId) args.push(...claudeResumeArgs(input.sessionId, input.fork, input.rewind));
     if (input.systemPrompt) args.push('--append-system-prompt', input.systemPrompt);
     if (input.mcpConfigPath) args.push('--mcp-config', input.mcpConfigPath);
     if (input.permissionMode) args.push('--permission-mode', input.permissionMode); // parity: keep bypass/accept-edits on the kernel path
@@ -306,12 +306,20 @@ export class ClaudeDriver implements AgentDriver {
 
 // The --resume flag family for one turn: plain resume appends to the session; a fork branches
 // a NEW session off it (--fork-session), optionally cut at an inclusive keep-boundary record
-// uuid (--resume-session-at). Pure so tests can pin the arg contract without spawning.
-export function claudeResumeArgs(sessionId: string, fork?: { anchor?: string | null } | null): string[] {
+// uuid (--resume-session-at); a rewind cuts at that boundary WITHOUT --fork-session, so claude
+// rebranches the SAME session in place (the transcript is a parentUuid tree — the dropped tip
+// becomes a dead sibling and leaves the active path). Pure so tests pin the arg contract.
+export function claudeResumeArgs(
+  sessionId: string,
+  fork?: { anchor?: string | null } | null,
+  rewind?: { anchor?: string | null } | null,
+): string[] {
   const args = ['--resume', sessionId];
   if (fork) {
     args.push('--fork-session');
     if (fork.anchor) args.push('--resume-session-at', fork.anchor);
+  } else if (rewind?.anchor) {
+    args.push('--resume-session-at', rewind.anchor);
   }
   return args;
 }

@@ -17,6 +17,11 @@ export interface AgentTurnInput {
   // kept message; codex: the last kept turn id); null/absent forks at the parent's tail.
   // Only drivers declaring capabilities.fork honor this; the hub never sets it for others.
   fork?: { anchor?: string | null } | null;
+  // In-place rewind (tip regeneration): resume `sessionId` (this session's OWN native id) but
+  // rebranch at `anchor` — the last KEPT turn's native boundary — instead of appending, so the
+  // dropped tip leaves the active context. Same native session id (NOT a fork/new session).
+  // Mutually exclusive with `fork`. Only drivers declaring capabilities.rewind honor it.
+  rewind?: { anchor?: string | null } | null;
   workdir: string;
   model?: string | null;
   effort?: string | null;
@@ -113,7 +118,7 @@ export interface NativeSessionInfo {
 
 export interface AgentDriver {
   readonly id: string;
-  readonly capabilities?: { steer?: boolean; interact?: boolean; resume?: boolean; tui?: boolean; fork?: boolean };
+  readonly capabilities?: { steer?: boolean; interact?: boolean; resume?: boolean; tui?: boolean; fork?: boolean; rewind?: boolean };
   run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult>;
   // Optional: how to launch this agent's interactive TUI. Drivers that set capabilities.tui
   // must implement this. The kernel spawns it in a PTY and passes terminal I/O through.

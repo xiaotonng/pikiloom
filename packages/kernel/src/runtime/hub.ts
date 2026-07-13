@@ -188,6 +188,49 @@ export class Hub implements LoomIO {
     return { sessionKey: makeSessionKey(agent, newId) };
   }
 
+  // Rewind `sessionKey` IN PLACE to a turn boundary: drop the transcript after `atTaskId` (the
+  // last KEPT turn) and stamp a pendingRewind the next prompt() consumes (resume the SAME native
+  // session at the kept boundary, NO fork). The session id — managed AND native — is unchanged;
+  // only the dropped tip leaves the active path. Requires a rewind-capable driver, a store that
+  // can truncate, and a resolvable native anchor at the cut; otherwise throws so the caller can
+  // fall back (append on the same session, or a fork).
+  async rewindSession(input: { sessionKey: string; atTaskId: string; anchor?: string | null }): Promise<{ sessionKey: string }> {
+    const { agent, sessionId } = splitSessionKey(input.sessionKey);
+    const driver = this.deps.drivers.get(agent);
+    if (!driver) throw new Error(`No driver registered for agent "${agent}"`);
+    if (!driver.capabilities?.rewind) throw new Error(`agent "${agent}" has no in-place rewind`);
+    if (!this.deps.sessionStore.truncateTurns || !this.deps.sessionStore.history) {
+      throw new Error('session store cannot rewind (no truncateTurns/history)');
+    }
+    const rec = await this.deps.sessionStore.get(agent, sessionId);
+    if (!rec) throw new Error(`rewind: session ${input.sessionKey} not found`);
+    const nativeId = rec.nativeSessionId || sessionId;
+
+    const turns = await this.deps.sessionStore.history(agent, sessionId).catch(() => [] as UniversalSnapshot[]);
+    const cut = turns.findIndex((t) => t.taskId === input.atTaskId);
+    if (cut < 0) throw new Error(`rewind point ${input.atTaskId} not found in ${input.sessionKey}`);
+    if (cut === turns.length - 1) throw new Error(`rewind point ${input.atTaskId} is the tail — nothing to regenerate`);
+    const kept = turns.slice(0, cut + 1);
+    // Native rebranch boundary: explicit override → the kept tail's recorded anchor. No anchor =
+    // the kept turn never recorded one (e.g. a native-only import) — can't rebranch, so refuse.
+    const anchor = input.anchor ?? kept[kept.length - 1]?.anchor ?? null;
+    if (!anchor) throw new Error(`rewind: no native anchor at ${input.atTaskId} in ${input.sessionKey}`);
+
+    // Drop the tip from the managed transcript, then stamp the rewind intent. The native store is
+    // untouched here — the next dispatch rebranches it at `anchor` via AgentTurnInput.rewind.
+    await this.deps.sessionStore.truncateTurns(agent, sessionId, input.atTaskId);
+    const last = kept[kept.length - 1];
+    rec.model = last?.model ?? rec.model ?? null;
+    rec.effort = last?.effort ?? rec.effort ?? null;
+    rec.nativeSessionId = nativeId;
+    rec.runState = 'completed';
+    rec.runDetail = null;
+    rec.pendingRewind = { anchor };
+    await this.deps.sessionStore.save(rec);
+    this.deps.log?.(`[hub] rewound ${input.sessionKey} to ${input.atTaskId} (anchor ${anchor}, kept ${kept.length}/${turns.length} turns)`);
+    return { sessionKey: input.sessionKey };
+  }
+
   private enqueue(item: QueuedItem): void {
     const q = this.waiting.get(item.sessionKey) ?? [];
     q.push(item);
@@ -222,6 +265,9 @@ export class Hub implements LoomIO {
     // first turn keeps the intent, so the retry forks again). Native mode resumes the PARENT's
     // native id with the fork flag; seed mode starts fresh and replays the copied transcript.
     const pendingFork = rec && !rec.nativeSessionId ? rec.pendingFork ?? null : null;
+    // A rewind keeps the SAME native id (it resumes+rebranches this session), so — unlike a fork —
+    // it is NOT gated on a missing native id. Fork and rewind never coexist on one record.
+    const pendingRewind = rec?.pendingRewind ?? null;
     const injection = await this.deps.modelResolver.resolve(agent, { model: input.model, profileId: null }).catch(() => null);
     const model = injection?.model ?? input.model ?? null;
     const effort = input.effort ?? null;
@@ -240,6 +286,7 @@ export class Hub implements LoomIO {
 
     let driverSessionId = rec?.nativeSessionId || (input.sessionKey ? sessionId : null);
     let driverFork: { anchor?: string | null } | null = null;
+    let driverRewind: { anchor?: string | null } | null = null;
     let driverPrompt = input.prompt;
     if (pendingFork) {
       if (pendingFork.mode === 'native' && pendingFork.parentNativeSessionId) {
@@ -250,6 +297,11 @@ export class Hub implements LoomIO {
         const seed = buildForkSeed(await this.getHistory(sessionKey));
         if (seed) driverPrompt = `${seed}\n\n${input.prompt}`;
       }
+    } else if (pendingRewind) {
+      // In-place rewind: resume THIS session's own native id but rebranch at the kept boundary
+      // (no fork), so the dropped tip leaves the active path and the prompt regenerates from it.
+      driverSessionId = rec?.nativeSessionId || sessionId;
+      driverRewind = { anchor: pendingRewind.anchor };
     }
 
     const turnInput: AgentTurnInput = {
@@ -257,6 +309,7 @@ export class Hub implements LoomIO {
       attachments: input.attachments,
       sessionId: driverSessionId,
       fork: driverFork,
+      rewind: driverRewind,
       workdir,
       model, effort, systemPrompt,
       env: spawn.env,
@@ -281,6 +334,14 @@ export class Hub implements LoomIO {
             const settled = await this.deps.sessionStore.get(agent, sessionId);
             if (settled?.pendingFork) { settled.pendingFork = null; await this.deps.sessionStore.save(settled); }
           } catch (e: any) { this.deps.log?.(`[hub] pendingFork clear failed ${sessionKey}: ${e?.message || e}`); }
+        }
+        // A rewind materialized (the turn ran and rebranched the native session) — consume the
+        // intent so a normal follow-up prompt appends to the regenerated tip instead of rewinding.
+        if (pendingRewind && result.sessionId) {
+          try {
+            const settled = await this.deps.sessionStore.get(agent, sessionId);
+            if (settled?.pendingRewind) { settled.pendingRewind = null; await this.deps.sessionStore.save(settled); }
+          } catch (e: any) { this.deps.log?.(`[hub] pendingRewind clear failed ${sessionKey}: ${e?.message || e}`); }
         }
         // Persist the completed turn's final snapshot as a transcript entry. The runner's
         // snapshot is stable once done (a follow-up prompt spawns a fresh runner+snapshot).

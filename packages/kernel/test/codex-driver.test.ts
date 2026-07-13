@@ -429,3 +429,135 @@ describe('CodexDriver settles when the app-server dies mid-turn (no hang)', () =
     expect(result.error).toBeTruthy();
   }, 15_000);
 });
+
+// ── Turn liveness: the codex turn/steer boundary race + silent stalls ───────────────
+// Real-world signature (codex-cli 0.144.x): a turn/steer that lands the instant an item
+// completes is ACCEPTED (recorded into the rollout) but never dispatched — no further
+// notifications, no turn/completed, process idle forever. The driver must treat steer-ok
+// as accepted-not-consumed and heal the turn (interrupt + replay) instead of hanging.
+const FAKE_LIVENESS_SERVER = `#!/usr/bin/env node
+const scenario = process.env.FAKE_SCENARIO || 'wedge';
+let buf = '';
+let turnStarts = 0;
+let sawInterrupt = false;
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id, result }) + '\\n');
+const notify = (method, params) => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', method, params }) + '\\n');
+const TID = 'codex-thread-live';
+process.stdin.on('data', (d) => {
+  buf += d; const lines = buf.split('\\n'); buf = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.method === 'initialize') reply(m.id, {});
+    else if (m.method === 'thread/start') reply(m.id, { thread: { id: TID } });
+    else if (m.method === 'turn/start') {
+      turnStarts++;
+      if (turnStarts === 1) {
+        reply(m.id, { turn: { id: 'turn-1' } });
+        notify('turn/started', { threadId: TID, turn: { id: 'turn-1' } });
+        notify('item/started', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', command: 'make' } });
+        notify('item/completed', { threadId: TID, item: { type: 'commandExecution', id: 'cmd1', status: 'completed', exitCode: 0 } });
+        // ...then dead air: the turn never advances and never completes on its own.
+      } else {
+        // The heal/replay turn: echo back what input we received and how we got here.
+        const texts = (m.params.input || []).filter(p => p.type === 'text').map(p => p.text).join('|');
+        reply(m.id, { turn: { id: 'turn-2' } });
+        notify('turn/started', { threadId: TID, turn: { id: 'turn-2' } });
+        notify('item/agentMessage/delta', { threadId: TID, itemId: 'msg2', delta: (sawInterrupt ? 'HEALED:' : 'REPLAYED:') + texts });
+        notify('turn/completed', { threadId: TID, turn: { id: 'turn-2', status: 'completed' } });
+      }
+    }
+    else if (m.method === 'turn/steer') {
+      if (scenario === 'wedge') reply(m.id, { turnId: 'turn-1' });   // accepted... then swallowed
+      else if (scenario === 'lost-completion') {
+        reply(m.id, { turnId: 'turn-1' });
+        notify('turn/completed', { threadId: TID, turn: { id: 'turn-1', status: 'completed' } });
+      } else if (scenario === 'consumed') {
+        reply(m.id, { turnId: 'turn-1' });
+        notify('item/agentMessage/delta', { threadId: TID, itemId: 'msg1', delta: 'CONSUMED-OK' });
+        notify('turn/completed', { threadId: TID, turn: { id: 'turn-1', status: 'completed' } });
+      }
+    }
+    else if (m.method === 'turn/interrupt') {
+      sawInterrupt = true;
+      reply(m.id, {});
+      notify('turn/completed', { threadId: TID, turn: { id: 'turn-1', status: 'interrupted' } });
+    }
+  }
+});
+`;
+
+type SteerFn = (prompt: string, attachments?: string[]) => Promise<boolean>;
+
+function ctxSteerable(): { ctx: DriverContext; events: DriverEvent[]; steer: () => SteerFn | null } {
+  const events: DriverEvent[] = [];
+  let steerFn: SteerFn | null = null;
+  const ctx: DriverContext = {
+    signal: new AbortController().signal,
+    emit: (e) => events.push(e),
+    askUser: async () => ({}),
+    registerSteer: (fn) => { steerFn = fn; },
+  };
+  return { ctx, events, steer: () => steerFn };
+}
+
+async function until(cond: () => boolean, ms = 5_000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > ms) throw new Error('condition not met in time');
+    await new Promise(r => setTimeout(r, 10));
+  }
+}
+
+describe('CodexDriver turn liveness (steer race + silent stall, hermetic)', () => {
+  let tmp: string; let fake: string;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-codex-live-'));
+    fake = path.join(tmp, 'fake-codex.mjs');
+    fs.writeFileSync(fake, FAKE_LIVENESS_SERVER);
+    fs.chmodSync(fake, 0o755);
+  });
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('heals a steer the turn swallowed at a boundary: interrupt + replay under the same run()', async () => {
+    const { ctx, steer } = ctxSteerable();
+    const driver = new CodexDriver(fake, { steerStallMs: 120 });
+    const done = driver.run({ prompt: 'start', workdir: tmp, env: { FAKE_SCENARIO: 'wedge' } }, ctx);
+    await until(() => steer() !== null);
+    expect(await steer()!('follow-up question')).toBe(true);
+    const result = await done;
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('HEALED:follow-up question');   // interrupted the wedged turn, replayed the steer
+  }, 20_000);
+
+  it('replays a steer when the turn completes without consuming it (no settle, no message loss)', async () => {
+    const { ctx, steer } = ctxSteerable();
+    const driver = new CodexDriver(fake);   // default liveness: replay is completion-driven, not timer-driven
+    const done = driver.run({ prompt: 'start', workdir: tmp, env: { FAKE_SCENARIO: 'lost-completion' } }, ctx);
+    await until(() => steer() !== null);
+    expect(await steer()!('follow-up question')).toBe(true);
+    const result = await done;
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('REPLAYED:follow-up question'); // fresh turn/start, no interrupt needed
+  }, 20_000);
+
+  it('does NOT heal a healthy steer: progress after steer-ok clears the pending marker', async () => {
+    const { ctx, steer } = ctxSteerable();
+    const driver = new CodexDriver(fake, { steerStallMs: 120 });
+    const done = driver.run({ prompt: 'start', workdir: tmp, env: { FAKE_SCENARIO: 'consumed' } }, ctx);
+    await until(() => steer() !== null);
+    expect(await steer()!('follow-up question')).toBe(true);
+    const result = await done;
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('CONSUMED-OK');                 // single turn, no replay/duplicate
+  }, 20_000);
+
+  it('force-closes a turn that goes silent with nothing in flight (stalled, not hung forever)', async () => {
+    const { ctx } = ctxSteerable();
+    const driver = new CodexDriver(fake, { turnStallMs: 250 });
+    const result = await driver.run({ prompt: 'start', workdir: tmp, env: { FAKE_SCENARIO: 'silent-stall' } }, ctx);
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe('stalled');
+    expect(result.error).toMatch(/silent/);
+  }, 20_000);
+});

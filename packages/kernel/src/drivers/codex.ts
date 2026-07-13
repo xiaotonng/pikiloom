@@ -242,11 +242,53 @@ export function codexFinalReasoning(s: CodexContentState): string {
   return s.reasoning.trim() ? s.reasoning : s.thinkParts.join('\n\n');
 }
 
+// ── Turn liveness (steer race + silent-stall recovery) ──────────────────────────
+// codex app-server has a turn-boundary race: a `turn/steer` that lands in the instant an
+// item completes is ACCEPTED (recorded into the rollout) but never dispatched — the agent
+// loop goes idle, no further notifications arrive, and `turn/completed` never fires, so the
+// turn hangs forever while the process sits at 0% CPU (observed on codex-cli 0.144.x;
+// same family as openai/codex#15714 / #23807). Two defenses below:
+//
+// 1. A successful steer is treated as ACCEPTED, NOT CONSUMED: it stays pending until a
+//    progress notification proves the loop picked it up. If the turn instead goes silent
+//    (or completes without consuming it), the driver heals in place — interrupt the wedged
+//    turn and restart it with the same input. The steered text is already in the thread
+//    history, so the worst false-positive cost is one duplicated user message; the turn
+//    keeps running under the same run()/task, invisible to upper layers.
+// 2. A generic silence backstop: a turn with no notifications for a long stretch while
+//    nothing is visibly in flight (no running tool call, no server->client request awaiting
+//    a human) is declared stalled and force-closed, so the session ends as a visible error
+//    instead of spinning forever.
+const CODEX_STEER_STALL_MS = 300_000;   // matches codex core's own 300s stream watchdog
+const CODEX_TURN_STALL_MS = 900_000;    // long: silent thinking stretches are legitimate
+
+// Notifications that prove the agent loop is making forward progress AFTER a steer.
+// item/completed and tokenUsage are deliberately excluded — they can be the trailing edge
+// of work that finished before the steer landed (the exact race signature). Progress that
+// arrives within CODEX_STEER_CONSUMED_MS of the steer only refreshes the pending marker's
+// clock rather than clearing it: the app-server can flush pre-acceptance stream output in
+// the same write as the steer response, so near-simultaneous events are not proof the
+// loop survived the injection. Progress beyond that window is.
+const CODEX_STEER_CONSUMED_MS = 2_000;
+const CODEX_PROGRESS_METHODS = new Set([
+  'turn/started', 'item/started', 'item/agentMessage/delta',
+  'item/reasoning/textDelta', 'item/reasoning/summaryTextDelta',
+  'item/commandExecution/outputDelta', 'item/fileChange/outputDelta',
+  'item/fileChange/patchUpdated', 'turn/plan/updated', 'rawResponseItem/completed',
+]);
+
+export interface CodexLivenessOptions {
+  /** Silence after an accepted steer before the turn is healed (interrupt + replay). */
+  steerStallMs?: number;
+  /** Idle silence (no running tool, no pending HITL request) before the turn is force-closed. */
+  turnStallMs?: number;
+}
+
 export class CodexDriver implements AgentDriver {
   readonly id = 'codex';
   readonly capabilities = { steer: true, interact: false, resume: true, tui: true, fork: true };
 
-  constructor(private readonly bin: string = 'codex') {}
+  constructor(private readonly bin: string = 'codex', private readonly liveness: CodexLivenessOptions = {}) {}
 
   async run(input: AgentTurnInput, ctx: DriverContext): Promise<DriverResult> {
     // BYOK provider routing arrives as `-c key=value` overrides; pass them through so the
@@ -266,6 +308,16 @@ export class CodexDriver implements AgentDriver {
     const deltaItems = new Set<string>();
     let lastTextItemId: string | null = null;
     let steerRegistered = false;
+
+    // Liveness state (see the CODEX_STEER_STALL_MS block comment above).
+    const steerStallMs = this.liveness.steerStallMs ?? CODEX_STEER_STALL_MS;
+    const turnStallMs = this.liveness.turnStallMs ?? CODEX_TURN_STALL_MS;
+    let lastEventAt = Date.now();
+    let pendingSteer: { input: any[]; at: number; progressAt: number | null } | null = null;
+    let pendingServerRequests = 0;
+    let healing = false;
+    let stalled = false;
+    let livenessTimer: ReturnType<typeof setInterval> | null = null;
 
     if (!srv.start()) return { ok: false, text: '', error: 'failed to start codex app-server', stopReason: 'error' };
 
@@ -318,20 +370,67 @@ export class CodexDriver implements AgentDriver {
       const threadId = threadResp.result?.thread?.id ?? input.sessionId ?? null;
       if (threadId && threadId !== state.sessionId) { state.sessionId = threadId; ctx.emit({ type: 'session', sessionId: threadId }); }
 
+      // Heal a wedged/lost steer in place: (optionally) interrupt the dead turn, then restart
+      // it with the same input. Runs under the SAME run()/turnDone, so upper layers just see
+      // the turn continue. `healing` suppresses the interrupt's own turn/completed echo.
+      const heal = async (opts: { interrupt: boolean }) => {
+        if (settled || healing || !pendingSteer) return;
+        healing = true;
+        const replayInput = pendingSteer.input;
+        pendingSteer = null;
+        if (opts.interrupt && state.sessionId && state.turnId) {
+          await srv.request('turn/interrupt', { threadId: state.sessionId, turnId: state.turnId }, 5_000);
+        }
+        if (settled) { healing = false; return; }   // raced with abort / process death
+        const resp = await srv.request('turn/start', {
+          threadId: state.sessionId,
+          input: replayInput,
+          model: input.model || undefined,
+          effort: input.effort || undefined,
+        });
+        if (settled) { healing = false; return; }
+        if (resp.error) {
+          state.status = 'error';
+          state.error = `steer recovery failed: ${resp.error.message || 'turn/start failed'}`;
+          healing = false;
+          settle();
+          return;
+        }
+        state.turnId = resp.result?.turn?.id ?? state.turnId;
+        lastEventAt = Date.now();
+        healing = false;
+      };
+
       // Codex emits no explicit compaction event, so track peak occupancy: a sharp
       // mid-turn drop is an auto-compaction, surfaced as a live `compaction` signal.
       let compactPeakTokens = 0;
       srv.onNotification((method, params) => {
         if (params?.threadId && params.threadId !== state.sessionId && method !== 'turn/started') return;
+        lastEventAt = Date.now();
+        if (pendingSteer && CODEX_PROGRESS_METHODS.has(method)) {
+          const now = Date.now();
+          if (now - pendingSteer.at >= CODEX_STEER_CONSUMED_MS) pendingSteer = null;   // loop provably alive post-steer
+          else pendingSteer.progressAt = now;                                          // maybe pre-acceptance flush — keep watching
+        }
         switch (method) {
           case 'turn/started':
             state.turnId = params?.turn?.id ?? null;
             if (!steerRegistered && state.turnId) {
               steerRegistered = true;
               ctx.registerSteer(async (prompt: string, attachments: string[] = []) => {
-                if (!state.sessionId || !state.turnId) return false;
-                const r = await srv.request('turn/steer', { threadId: state.sessionId, expectedTurnId: state.turnId, input: buildTurnInput(prompt, attachments) }, 30_000);
-                if (r.error) return false;
+                if (settled || !state.sessionId || !state.turnId) return false;
+                const steerInput = buildTurnInput(prompt, attachments);
+                // Arm BEFORE sending — accepted, not yet consumed. Arming after the response
+                // would race the response's own microtask against progress notifications the
+                // server flushed in the same write, mis-arming against already-consumed steers.
+                // Back-to-back steers accumulate so a heal replays everything swallowed.
+                const armed = { input: [...(pendingSteer?.input ?? []), ...steerInput], at: Date.now(), progressAt: null };
+                pendingSteer = armed;
+                const r = await srv.request('turn/steer', { threadId: state.sessionId, expectedTurnId: state.turnId, input: steerInput }, 30_000);
+                if (r.error) {
+                  if (pendingSteer === armed) pendingSteer = null;   // rejected — nothing to watch
+                  return false;
+                }
                 state.turnId = r.result?.turnId ?? state.turnId;
                 return true;
               });
@@ -441,10 +540,19 @@ export class CodexDriver implements AgentDriver {
           }
           case 'turn/completed': {
             const turn = params?.turn || {};
-            state.status = turn.status ?? 'completed';
-            if (turn.error) state.error = turn.error.message || turn.error.code || 'turn error';
             applyCodexTokenUsage(state, params?.tokenUsage || turn.tokenUsage || turn.usage);
             ctx.emit({ type: 'usage', usage: codexUsageOf(state) });
+            if (healing) break;   // completion echo of the turn heal() just interrupted
+            if (pendingSteer && !pendingSteer.progressAt && !ctx.signal.aborted && (turn.status ?? 'completed') === 'completed') {
+              // The other face of the steer race: the turn finished without ever consuming
+              // the injected input. Replay it as a fresh turn instead of settling — the
+              // upper layers already dequeued the message on steer-ok, so settling here
+              // would silently drop it.
+              void heal({ interrupt: false });
+              break;
+            }
+            state.status = turn.status ?? 'completed';
+            if (turn.error) state.error = turn.error.message || turn.error.code || 'turn error';
             settle();
             break;
           }
@@ -454,6 +562,7 @@ export class CodexDriver implements AgentDriver {
       // accept approvals by default (parity with the legacy codex driver). Never throw —
       // an unanswerable request degrades to an empty response, not a JSON-RPC error.
       srv.onRequest(async (method, params, id) => {
+        pendingServerRequests++;   // a request awaiting a human legitimately silences the turn
         try {
           if (method === 'item/tool/requestUserInput') {
             const interaction = codexUserInputToInteraction(params, `codex-input-${id}`);
@@ -465,6 +574,7 @@ export class CodexDriver implements AgentDriver {
           if (method === 'item/permissions/requestApproval') return { permissions: {}, scope: 'turn' };
           return {};
         } catch { return {}; }
+        finally { pendingServerRequests--; }
       });
 
       const turnResp = await srv.request('turn/start', {
@@ -475,6 +585,28 @@ export class CodexDriver implements AgentDriver {
       });
       if (turnResp.error) return { ok: false, text: state.text, error: turnResp.error.message || 'turn/start failed', stopReason: 'error', sessionId: state.sessionId };
 
+      // Liveness checker: heals a stalled steer, force-closes a silently dead turn. The
+      // silence clock only accumulates while nothing is visibly in flight — a running tool
+      // call or a server->client request parked on a human keeps the turn alive forever.
+      const checkEveryMs = Math.max(25, Math.min(5_000, Math.floor(Math.min(steerStallMs, turnStallMs) / 4)));
+      livenessTimer = setInterval(() => {
+        if (settled || healing) return;
+        const now = Date.now();
+        if (pendingSteer) {
+          if (now - (pendingSteer.progressAt ?? pendingSteer.at) >= steerStallMs) void heal({ interrupt: true });
+          return;
+        }
+        const busy = pendingServerRequests > 0 || [...toolCalls.values()].some(c => c.status === 'running');
+        if (busy) { lastEventAt = now; return; }
+        if (now - lastEventAt < turnStallMs) return;
+        stalled = true;
+        state.error = state.error || `codex app-server went silent mid-turn (no events for ${Math.round(turnStallMs / 1000)}s); closing the turn`;
+        if (state.sessionId && state.turnId) {
+          srv.request('turn/interrupt', { threadId: state.sessionId, turnId: state.turnId }, 5_000).finally(() => settle());
+        } else settle();
+      }, checkEveryMs);
+      livenessTimer.unref?.();
+
       await turnDone;
       const usage: UniversalUsage = codexUsageOf(state);
       const ok2 = (state.status === 'completed' || state.status == null) && !state.error && !ctx.signal.aborted;
@@ -484,13 +616,14 @@ export class CodexDriver implements AgentDriver {
         text: codexFinalText(state),
         reasoning: finalReasoning || undefined,
         error: state.error || (ctx.signal.aborted ? 'Interrupted by user.' : null),
-        stopReason: ctx.signal.aborted ? 'interrupted' : (state.status || 'end_turn'),
+        stopReason: ctx.signal.aborted ? 'interrupted' : stalled ? 'stalled' : (state.status || 'end_turn'),
         sessionId: state.sessionId,
         // Fork anchor: the turn id is the inclusive keep-boundary thread/fork's lastTurnId takes.
         anchor: state.turnId,
         usage,
       };
     } finally {
+      if (livenessTimer) clearInterval(livenessTimer);
       srv.kill();
     }
   }

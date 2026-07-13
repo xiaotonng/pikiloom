@@ -259,8 +259,14 @@ export function codexFinalReasoning(s: CodexContentState): string {
 //    nothing is visibly in flight (no running tool call, no server->client request awaiting
 //    a human) is declared stalled and force-closed, so the session ends as a visible error
 //    instead of spinning forever.
-const CODEX_STEER_STALL_MS = 300_000;   // matches codex core's own 300s stream watchdog
-const CODEX_TURN_STALL_MS = 900_000;    // long: silent thinking stretches are legitimate
+// Thresholds are calibrated against measured rollouts: with reasoning summaries off, a
+// HEALTHY turn shows fully silent thinking stretches of up to ~320s (clustered just above
+// codex core's own 300s stream watchdog, whose retry produces the next event). 600s has
+// never been reached intra-turn in days of observed sessions, so a heal at that point is
+// near-certainly a real wedge — and even a misfire only costs one duplicated user message
+// plus the in-flight thinking (completed items live in the thread history).
+const CODEX_STEER_STALL_MS = 600_000;
+const CODEX_TURN_STALL_MS = 900_000;
 
 // Notifications that prove the agent loop is making forward progress AFTER a steer.
 // item/completed and tokenUsage are deliberately excluded — they can be the trailing edge

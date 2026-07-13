@@ -50,7 +50,8 @@ export type DriverEvent =
   | { type: 'subagent'; subagent: UniversalSubAgent }
   | { type: 'usage'; usage: Partial<UniversalUsage> }
   | { type: 'artifact'; artifact: UniversalArtifact }
-  | { type: 'activity'; line: string };
+  | { type: 'activity'; line: string }
+  | { type: 'compaction'; trigger: 'auto' | 'manual'; atTokens?: number | null };
 
 export type SteerFn = (prompt: string, attachments?: string[]) => Promise<boolean>;
 

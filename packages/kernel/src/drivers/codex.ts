@@ -318,6 +318,9 @@ export class CodexDriver implements AgentDriver {
       const threadId = threadResp.result?.thread?.id ?? input.sessionId ?? null;
       if (threadId && threadId !== state.sessionId) { state.sessionId = threadId; ctx.emit({ type: 'session', sessionId: threadId }); }
 
+      // Codex emits no explicit compaction event, so track peak occupancy: a sharp
+      // mid-turn drop is an auto-compaction, surfaced as a live `compaction` signal.
+      let compactPeakTokens = 0;
       srv.onNotification((method, params) => {
         if (params?.threadId && params.threadId !== state.sessionId && method !== 'turn/started') return;
         switch (method) {
@@ -420,6 +423,20 @@ export class CodexDriver implements AgentDriver {
           case 'thread/tokenUsage/updated': {
             applyCodexTokenUsage(state, params?.tokenUsage || params?.usage);
             ctx.emit({ type: 'usage', usage: codexUsageOf(state) });
+            // No explicit boundary event: a sharp drop from a high peak IS a compaction.
+            // Conservative thresholds (peak ≥ 50% of window, drop ≥ 25% of window) so
+            // ordinary turn churn never trips it; re-baseline so it fires once per drop.
+            {
+              const cw = state.contextWindow ?? 0;
+              const used = state.contextUsed ?? 0;
+              if (cw > 0 && used >= 0) {
+                if (used > compactPeakTokens) compactPeakTokens = used;
+                else if (compactPeakTokens / cw >= 0.5 && (compactPeakTokens - used) / cw >= 0.25) {
+                  ctx.emit({ type: 'compaction', trigger: 'auto', atTokens: compactPeakTokens });
+                  compactPeakTokens = used;
+                }
+              }
+            }
             break;
           }
           case 'turn/completed': {

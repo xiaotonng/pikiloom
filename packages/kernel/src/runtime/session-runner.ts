@@ -88,6 +88,7 @@ export class SessionRunner {
       case 'plan': this.snapshot.plan = e.plan; break;
       case 'artifact': (this.snapshot.artifacts ||= []).push(e.artifact); break;
       case 'usage': this.snapshot.usage = mergeUsage(this.snapshot.usage, e.usage); break;
+      case 'compaction': this.snapshot.compaction = { trigger: e.trigger, atTokens: e.atTokens ?? null }; break;
       // toolCalls is the structured SSOT; activity is its derived human-readable view.
       // A driver that streams explicit `activity` lines (e.g. echo) owns activity directly;
       // any driver that emits structured tool/subagent events gets the projection for free.

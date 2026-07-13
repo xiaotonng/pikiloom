@@ -92,6 +92,11 @@ export interface UniversalSnapshot {
   toolCalls?: UniversalToolCall[];
   subAgents?: UniversalSubAgent[];
   usage?: UniversalUsage | null;
+  /** Set when the CLI compacted the context mid-turn (its `compact_boundary`
+   *  event). `trigger` separates an automatic (context-full) compaction from a
+   *  manual `/compact`. Drives a live "compacting" affordance; because a runner
+   *  owns one turn, it naturally clears on the next turn. */
+  compaction?: { trigger: 'auto' | 'manual'; atTokens?: number | null } | null;
   artifacts?: UniversalArtifact[];
   interactions?: UniversalInteraction[];
   queued?: UniversalQueuedTask[];

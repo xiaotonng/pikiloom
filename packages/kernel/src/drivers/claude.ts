@@ -407,6 +407,15 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
     s.model = ev.model ?? s.model;
     s.contextWindow = claudeEffectiveContextWindow(claudeContextWindowFromModel(s.model)) ?? s.contextWindow;
+    // Claude compacted the running context (subtype `compact_boundary`): `trigger` is
+    // `auto` (the context filled up) or `manual` (a `/compact` command). Surface it live
+    // so a terminal can show a "compacting" affordance; the compacted summary itself lands
+    // in the native transcript and settles into a divider separately.
+    if (ev.subtype === 'compact_boundary') {
+      const meta = (ev.compact_metadata ?? {}) as { trigger?: string; pre_tokens?: number };
+      emit({ type: 'compaction', trigger: meta.trigger === 'manual' ? 'manual' : 'auto', atTokens: typeof meta.pre_tokens === 'number' ? meta.pre_tokens : null });
+      return;
+    }
     // Live thinking progress (system/thinking_tokens, ~every 1.4s of sustained thinking): during
     // extended thinking a subscription account streams no plaintext (signature_delta only) and no
     // usage until the message settles, so without projecting these the terminal shows a dead

@@ -43,6 +43,18 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(tool.call).toMatchObject({ id: 'r1', name: 'Read', status: 'running' });
   });
 
+  it('surfaces a compact_boundary system event as a compaction (auto vs manual)', () => {
+    const auto = run([{ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 123456 } }]);
+    expect(auto.find(e => e.type === 'compaction')).toMatchObject({ type: 'compaction', trigger: 'auto', atTokens: 123456 });
+
+    const manual = run([{ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual' } }]);
+    expect(manual.find(e => e.type === 'compaction')).toMatchObject({ type: 'compaction', trigger: 'manual', atTokens: null });
+
+    // A non-boundary system event (e.g. thinking_tokens) emits no compaction.
+    const none = run([{ type: 'system', subtype: 'thinking_tokens' }]);
+    expect(none.find(e => e.type === 'compaction')).toBeUndefined();
+  });
+
   it('builds a UniversalPlan from TaskCreate/TaskUpdate (current Claude task-list mechanism)', () => {
     const events = run([
       // Two TaskCreate tool_uses (subjects), then their results assign ids "1" and "2".

@@ -2,9 +2,16 @@ import type { Agent } from '../../agent/index.js';
 import { normalizeClaudeModelId } from '../../agent/index.js';
 import type { UserConfig } from './user-config.js';
 
+/** Account-scoped GPT-5.6 variants the Codex model catalog currently advertises. */
+export const CODEX_56_MODEL_IDS = [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+] as const;
+
 export const DEFAULT_AGENT_MODELS: Record<Agent, string> = {
   claude: 'claude-opus-4-8',
-  codex: 'gpt-5.5',
+  codex: CODEX_56_MODEL_IDS[0],
   gemini: 'gemini-3.1-pro-preview',
   hermes: 'anthropic/claude-sonnet-4',
 };
@@ -179,9 +186,19 @@ export function effortLabel(id: string | null | undefined): string {
 // so per-model/provider rules stay in one place. Labels come from effortLabel() so the picker
 // and the live status row can never diverge.
 const effortLevels = (...ids: string[]): EffortLevel[] => ids.map(id => ({ id, label: effortLabel(id) }));
+const CODEX_BASE_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+// Per-model Codex reasoning ladders. GPT-5.6 adds the native `max` rung (sol/terra also expose
+// `ultra`), which older Codex models (5.5/5.4) do not support — so the picker must vary by model,
+// never a single flat list. For codex, `max`/`ultra` are REAL CLI reasoning levels (not the
+// claude display alias): they are dispatched verbatim (see splitEffortForAgent / the codex driver).
+const CODEX_56_EFFORTS: Record<(typeof CODEX_56_MODEL_IDS)[number], readonly string[]> = {
+  'gpt-5.6-sol': [...CODEX_BASE_EFFORTS, 'max', ULTRA_EFFORT],
+  'gpt-5.6-terra': [...CODEX_BASE_EFFORTS, 'max', ULTRA_EFFORT],
+  'gpt-5.6-luna': [...CODEX_BASE_EFFORTS, 'max'],
+};
 const AGENT_EFFORT_LEVELS: Partial<Record<Agent, EffortLevel[]>> = {
   claude: effortLevels('low', 'medium', 'high', 'xhigh', 'max', ULTRA_EFFORT),
-  codex: effortLevels('low', 'medium', 'high', 'xhigh'),
+  codex: effortLevels(...CODEX_BASE_EFFORTS),
   // gemini intentionally has no UI-exposed effort levels: pikiloom sends it no reasoning-effort
   // (see the gemini→null guards in InputComposer). Add a gemini entry here to surface low/high.
   hermes: effortLevels('minimal', 'low', 'medium', 'high', 'xhigh'),
@@ -189,11 +206,24 @@ const AGENT_EFFORT_LEVELS: Partial<Record<Agent, EffortLevel[]>> = {
 
 // Valid effort levels for a given (agent, model, providerKind). Returns [] when reasoning
 // effort does not apply (the UI then hides the selector entirely). model/providerKind are the
-// seam for per-model rules — add them here and nowhere else.
+// seam for per-model rules — add them here and nowhere else. A known GPT-5.6 codex model unlocks
+// its `max`/`ultra` rungs; every other codex model (incl. BYOK) keeps the base low→xhigh ladder.
 export function effortOptionsFor(
   agent: Agent,
-  _model?: string | null,
+  model?: string | null,
   _providerKind?: string | null,
 ): EffortLevel[] {
+  if (agent === 'codex' && model && model in CODEX_56_EFFORTS) {
+    return effortLevels(...CODEX_56_EFFORTS[model as (typeof CODEX_56_MODEL_IDS)[number]]);
+  }
   return AGENT_EFFORT_LEVELS[agent] ?? [];
+}
+
+// Reconcile the two meanings of the effort token before dispatch. Codex (GPT-5.6+) treats
+// `max`/`ultra` as NATIVE reasoning levels, so its token must reach the CLI verbatim — never fold
+// `ultra` into `max`, and never turn on the (claude-only) workflow orchestration. For every other
+// agent `ultra` stays a display alias that decomposes to `max` effort + workflow (decomposeEffortSelection).
+export function splitEffortForAgent(agent: Agent, raw: string | null | undefined): { effort: string; workflow: boolean } {
+  if (agent === 'codex') return { effort: trimmed(raw).toLowerCase(), workflow: false };
+  return decomposeEffortSelection(raw);
 }

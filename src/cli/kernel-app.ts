@@ -19,7 +19,11 @@ import { resolveAgentInjection } from '../model/injector.js';
 
 const DEMO_MODELS: Record<string, any[]> = {
   claude: [{ id: 'claude-opus-4-8', label: 'Opus 4.8', providerName: 'anthropic', contextWindow: 200000 }],
-  codex: [{ id: 'gpt-5.5-codex', label: 'GPT-5.5 Codex', providerName: 'openai', contextWindow: 400000 }],
+  codex: [
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol', providerName: 'openai', contextWindow: 372000 },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6-Terra', providerName: 'openai', contextWindow: 372000 },
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6-Luna', providerName: 'openai', contextWindow: 372000 },
+  ],
   gemini: [{ id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', providerName: 'google', contextWindow: 1000000 }],
   opencode: [{ id: 'claude-sonnet-4-6', label: 'OpenCode · Sonnet 4.6 (ACP)', providerName: 'opencode', contextWindow: 200000 }],
   echo: [{ id: 'echo-1', label: 'Echo (hermetic)', providerName: 'local', contextWindow: 8192 }],

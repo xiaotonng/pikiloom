@@ -298,9 +298,11 @@ export async function resumeCodexGoal(threadId: string) {
   return setCodexGoal({ threadId, status: 'active' });
 }
 
-const EFFORT_MAP: Record<string, string> = {
-  low: 'low', medium: 'medium', high: 'high', min: 'minimal', max: 'xhigh',
-};
+// Codex (GPT-5.6+) accepts low / medium / high / xhigh / max / ultra as native reasoning levels,
+// so the effort token is forwarded to the app-server verbatim. Only `min` is an alias for the
+// CLI's `minimal`. (Historically `max` was folded to `xhigh` because older Codex had no `max`
+// rung — that clamp is gone now that 5.6 exposes `max`/`ultra` directly.)
+const EFFORT_MAP: Record<string, string> = { min: 'minimal' };
 function mapEffort(effort: string): string { return EFFORT_MAP[effort] ?? effort; }
 
 interface CodexActiveToolCall { kind: string; summary: string; }
@@ -876,7 +878,7 @@ export function humanizeCodexError(raw: string | null | undefined): string | nul
     const model = match[1];
     return `Codex 正在使用 ChatGPT 账号登录，无法运行第三方模型「${model}」。`
       + `请在「智能体配置」页接入该模型的供应商（填入 Base URL 与 API Key），添加对应模型档案并绑定到 Codex，`
-      + `或改用 Codex 原生模型（如 gpt-5.5）。`;
+      + `或改用 Codex 原生模型（如 gpt-5.6-sol）。`;
   }
   return raw;
 }

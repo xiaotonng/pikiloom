@@ -8,7 +8,7 @@ import { setAgentBoundModelId, type AgentDetectOptions, type UsageResult } from 
 import { getAgentUpdateState, checkAgentLatestVersion, manualAgentUpdate } from '../../agent/auto-update.js';
 import type { Agent } from '../../agent/index.js';
 import { getDriver, getDriverCapabilities } from '../../agent/driver.js';
-import { decomposeEffortSelection, effortOptionsFor } from '../../core/config/runtime-config.js';
+import { splitEffortForAgent, effortOptionsFor } from '../../core/config/runtime-config.js';
 import {
   getActiveProfile, getProvider,
   peekProviderModelList, prefetchProviderModels,
@@ -355,7 +355,6 @@ app.post('/api/runtime-agent', async (c) => {
   const targetAgent = body?.agent;
   const model = typeof body?.model === 'string' ? body.model.trim() : '';
   const rawEffort = typeof body?.effort === 'string' ? body.effort.trim().toLowerCase() : '';
-  const { effort, workflow: effortWorkflow } = decomposeEffortSelection(rawEffort);
   const hasEffort = rawEffort !== '';
   const botRef = runtime.getBotRef();
 
@@ -381,6 +380,9 @@ app.post('/api/runtime-agent', async (c) => {
       if (botRef) botRef.setModelForAgent(targetAgent, model);
     }
     if (hasEffort) {
+      // Codex keeps `max`/`ultra` as native reasoning levels; claude decomposes `ultra` into
+      // `max` effort + workflow. splitEffortForAgent reconciles both before we persist the default.
+      const { effort, workflow: effortWorkflow } = splitEffortForAgent(targetAgent, rawEffort);
       runtime.runtimePrefs.efforts[targetAgent] = effort;
       runtime.setEffortEnv(targetAgent, effort);
       if (targetAgent === 'claude') nextConfig.claudeReasoningEffort = effort;

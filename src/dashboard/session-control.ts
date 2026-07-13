@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { getProjectSkillPaths, listSkills, stageSessionFiles, ensureManagedSession, findPikiloomSession, getDriverCapabilities, isPendingSessionId, type Agent, type HandoverRef } from '../agent/index.js';
 import { loadUserConfig } from '../core/config/user-config.js';
-import { decomposeEffortSelection } from '../core/config/runtime-config.js';
+import { splitEffortForAgent } from '../core/config/runtime-config.js';
 import { runtime } from './runtime.js';
 
 const KNOWN_AGENTS = new Set<Agent>(['claude', 'codex', 'gemini', 'hermes']);
@@ -85,7 +85,8 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     : runtime.getRuntimeDefaultAgent(config);
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
   const profileId = resolveProfileIdOverride(request.profileId);
-  const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
+  const { effort: splitEffort, workflow: ultraWorkflow } = splitEffortForAgent(
+    resolvedAgent,
     typeof request.effort === 'string' ? request.effort : '',
   );
   const thinkingEffort = resolvedAgent === 'gemini' ? '' : splitEffort;
@@ -206,7 +207,8 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
 
   const modelId = typeof request.model === 'string' ? request.model.trim() : '';
   const profileId = resolveProfileIdOverride(request.profileId);
-  const { effort: splitEffort, workflow: ultraWorkflow } = decomposeEffortSelection(
+  const { effort: splitEffort, workflow: ultraWorkflow } = splitEffortForAgent(
+    agent,
     typeof request.effort === 'string' ? request.effort : '',
   );
   const thinkingEffort = agent === 'gemini' ? '' : splitEffort;

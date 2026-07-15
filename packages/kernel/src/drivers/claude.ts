@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage, UniversalPlan, UniversalSubAgent } from '../protocol/index.js';
+import { ClaudeWarmPool } from './claude-pool.js';
 import { claudeTranscriptTailAnchor, discoverClaudeNativeSessions } from './native.js';
 import { attachedFileNote, contextPercent, createLineBuffer, imageMimeForFile, parseJsonLine, sigterm, wireAbort } from './shared.js';
 
@@ -9,11 +10,32 @@ import { attachedFileNote, contextPercent, createLineBuffer, imageMimeForFile, p
 // events into kernel DriverEvents. Faithful to pikiloom's claude.ts event shapes
 // (system / stream_event{message_start,content_block_delta,message_delta} / assistant / result),
 // but fully self-contained. Proves "下层 Claude 不变".
+export interface ClaudeDriverOptions {
+  /** Keep the CLI process alive after a clean turn and reuse it for the session's next
+   *  continuation turn (skips the ~4s spawn+init). Off by default: a parked process holds
+   *  real memory and keeps the event loop alive, which a one-shot embedder must not inherit
+   *  silently. Long-lived hosts opt in and call dispose() on shutdown. */
+  warmPool?: boolean;
+}
+
 export class ClaudeDriver implements AgentDriver {
   readonly id = 'claude';
   readonly capabilities = { steer: true, interact: false, resume: true, tui: true, fork: true, rewind: true };
+  private readonly pool: ClaudeWarmPool | null;
 
-  constructor(private readonly bin: string = 'claude') {}
+  constructor(private readonly bin: string = 'claude', opts: ClaudeDriverOptions = {}) {
+    this.pool = opts.warmPool ? new ClaudeWarmPool() : null;
+  }
+
+  /** Destroy every parked warm process. Long-lived hosts call this on shutdown. */
+  dispose(): void {
+    this.pool?.dispose();
+  }
+
+  /** Parked warm processes right now (tests + telemetry). */
+  warmPoolSize(): number {
+    return this.pool?.size() ?? 0;
+  }
 
   // Interactive Claude Code TUI (no -p): the kernel spawns this in a PTY and passes
   // the terminal through. Model/resume/BYOK-env come from the kernel's resolution.
@@ -48,6 +70,17 @@ export class ClaudeDriver implements AgentDriver {
     if (steerable) args.push('--replay-user-messages'); // parity: mid-turn steer
     if (input.extraArgs?.length) args.push(...input.extraArgs);
 
+    // Warm reuse: a rewind rebranches the session's transcript, so a parked process's
+    // in-memory conversation is stale — destroy it. A fork never touches the parent's
+    // transcript (the parked parent stays valid); the fork turn itself must cold-spawn
+    // for its --fork-session flags. Only a plain continuation may reclaim a process, and
+    // only when the spawn fingerprint still matches what a cold spawn would use now.
+    const fingerprint = claudeProcessFingerprint(this.bin, input);
+    if (input.rewind && input.sessionId) this.pool?.evictSession(input.sessionId);
+    const pooled = (!input.fork && !input.rewind && input.sessionId && this.pool)
+      ? this.pool.take(input.sessionId, fingerprint)
+      : null;
+
     const state = {
       text: '', reasoning: '', streamedText: false, streamedReasoning: false,
       // Dangling-tool-loop tracking: sawToolResult flips on the first tool_result; textSinceToolResult
@@ -77,6 +110,8 @@ export class ClaudeDriver implements AgentDriver {
 
     return new Promise<DriverResult>((resolve) => {
       let child: ChildProcess;
+      let transport: 'cold' | 'warm' = 'cold';
+      let promptDelivered = false;
       let settled = false;
       // One-shot guard for the truncated-turn recovery injection (see the result handler).
       let truncatedRecoveryAttempted = false;
@@ -95,6 +130,8 @@ export class ClaudeDriver implements AgentDriver {
       let modelStallTimer: ReturnType<typeof setTimeout> | null = null;
       const usageOf = () => this.usage(state);
       const unref = (tm: any) => { if (tm && typeof tm.unref === 'function') tm.unref(); };
+      let disposeAbort: (() => void) | null = null;
+      let detachTurnListeners: () => void = () => { /* set once listeners exist */ };
       const clearHoldCap = () => { if (holdCapTimer) { clearTimeout(holdCapTimer); holdCapTimer = null; } };
       const clearQuiet = () => { if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; } };
       const clearModelStall = () => { if (modelStallTimer) { clearTimeout(modelStallTimer); modelStallTimer = null; } };
@@ -103,23 +140,34 @@ export class ClaudeDriver implements AgentDriver {
       // kill=false only ends stdin and lets Claude shut down on its own, so any still-running
       // detached background work survives a clean exit (a hard kill mid-flight is exactly what
       // tore the background — and the wake-up — down before). A leak-guard SIGTERM is the backstop.
-      const finish = (r: DriverResult, kill = true) => {
+      const finish = (r: DriverResult, kill = true, park = false) => {
         if (settled) return; settled = true;
         clearHoldCap(); clearQuiet(); clearModelStall();
+        disposeAbort?.();
+        // Park instead of kill: only a CLEAN settle qualifies (ok, no error, no abort, the
+        // process still healthy, session known) — every other exit keeps today's semantics,
+        // so pooling can never leak a wedged or errored process.
+        if (park && this.pool && state.sessionId && r.ok && !r.error && !ctx.signal.aborted
+            && child && !child.killed && child.exitCode == null) {
+          detachTurnListeners();
+          this.pool.put(state.sessionId, fingerprint, child);
+          resolve({ ...r, transport });
+          return;
+        }
         try { child?.stdin?.end(); } catch { /* ignore */ }
-        if (!child.killed && child.exitCode == null) {
+        if (child && !child.killed && child.exitCode == null) {
           if (kill) sigterm(child);
           else {
             const guard = setTimeout(() => sigterm(child), CLAUDE_EXIT_LEAK_GUARD_MS);
             unref(guard);
           }
         }
-        resolve(r);
+        resolve({ ...r, transport });
       };
-      const settleResult = (opts: { stopReason?: string | null; kill?: boolean; ok?: boolean } = {}) => finish({
+      const settleResult = (opts: { stopReason?: string | null; kill?: boolean; ok?: boolean; park?: boolean } = {}) => finish({
         ok: opts.ok ?? !state.error, text: state.text, reasoning: state.reasoning || undefined,
         error: state.error, stopReason: opts.stopReason ?? state.stopReason, sessionId: state.sessionId, anchor: state.anchor, usage: usageOf(),
-      }, opts.kill ?? true);
+      }, opts.kill ?? true, opts.park ?? false);
       // Cap while holding for a still-running background task (stopReason marks it as
       // "still running in the background" so the terminal presentation reads right). Idempotent —
       // the countdown is absolute from the first arm. Sub-agent-backed holds use the longer
@@ -170,14 +218,27 @@ export class ClaudeDriver implements AgentDriver {
         unref(modelStallTimer);
       };
 
-      try {
-        child = spawn(this.bin, args, { cwd: input.workdir, env: { ...process.env, ...(input.env || {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
-      } catch (err: any) {
-        finish({ ok: false, text: '', error: `spawn failed: ${err?.message || err}`, stopReason: 'error' });
-        return;
+      // Acquire the process: a reclaimed warm process gets the prompt as its acquisition
+      // probe — a dead pipe throws synchronously here and the turn transparently falls
+      // back to a cold spawn (whose --resume flags are already in `args`).
+      let acquired: ChildProcess | null = null;
+      if (pooled) {
+        try {
+          pooled.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n');
+          acquired = pooled; transport = 'warm'; promptDelivered = true;
+        } catch { sigterm(pooled); }
       }
+      if (!acquired) {
+        try {
+          acquired = spawn(this.bin, args, { cwd: input.workdir, env: { ...process.env, ...(input.env || {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch (err: any) {
+          finish({ ok: false, text: '', error: `spawn failed: ${err?.message || err}`, stopReason: 'error' });
+          return;
+        }
+      }
+      child = acquired;
 
-      wireAbort(ctx.signal, () => sigterm(child));
+      disposeAbort = wireAbort(ctx.signal, () => sigterm(child));
 
       if (steerable) {
         ctx.registerSteer(async (prompt: string, attachments?: string[]) => {
@@ -187,7 +248,7 @@ export class ClaudeDriver implements AgentDriver {
 
       const nextLines = createLineBuffer();
       let stderr = '';
-      child.stdout!.on('data', (chunk: Buffer) => {
+      const onStdout = (chunk: Buffer) => {
         if (settled) return; // ignore the process's post-settle shutdown chatter
         for (const line of nextLines(chunk)) {
           if (settled) return;
@@ -248,8 +309,10 @@ export class ClaudeDriver implements AgentDriver {
               // DELIVERED live but never lands in the transcript, so the next re-render erases
               // it (the "对话结束之后就被吞了" shape, caught by the turn audit). Ending stdin
               // lets the CLI finish writing and exit on its own; the leak-guard SIGTERM is the
-              // backstop.
-              settleResult({ kill: false }); return;
+              // backstop. park: this clean settle is the ONE warm-pool-eligible exit — the
+              // process (stdin open, transcript flushing in its own time) is parked for the
+              // session's next turn instead of being shut down; finish() re-checks health.
+              settleResult({ kill: false, park: true }); return;
             }
             if (decision === 'hold') { clearQuiet(); armHoldCap(); continue; }
             // 'quiet-settle': every known background task finished, but Claude may still be delivering
@@ -270,10 +333,10 @@ export class ClaudeDriver implements AgentDriver {
           // post-tool stall watchdog. Cleared above the moment the model's next event streams in.
           if (ev.type === 'user' && pending === 0 && claudeUserEventHasToolResult(ev)) armModelStall();
         }
-      });
-      child.stderr!.on('data', (c: Buffer) => { stderr += c.toString('utf8'); });
-      child.on('error', (err) => finish({ ok: false, text: state.text, error: `claude spawn error: ${err.message}`, stopReason: 'error' }));
-      child.on('close', (code) => {
+      };
+      const onStderr = (c: Buffer) => { stderr += c.toString('utf8'); };
+      const onError = (err: Error) => finish({ ok: false, text: state.text, error: `claude spawn error: ${err.message}`, stopReason: 'error' });
+      const onClose = (code: number | null) => {
         if (settled) return;
         if (ctx.signal.aborted) { finish({ ok: false, text: state.text, reasoning: state.reasoning, error: 'Interrupted by user.', stopReason: 'interrupted', sessionId: state.sessionId, anchor: state.anchor, usage: usageOf() }, false); return; }
         const ok = !state.error && code === 0;
@@ -283,13 +346,27 @@ export class ClaudeDriver implements AgentDriver {
         // dangling check must win over it.)
         const stopReason = (ok && claudeTurnEndedDangling(state)) ? 'truncated' : state.stopReason;
         finish({ ok, text: state.text, reasoning: state.reasoning || undefined, error: state.error || (ok ? null : `claude exited ${code}${stderr ? `: ${stderr.slice(0, 300)}` : ''}`), stopReason, sessionId: state.sessionId, anchor: state.anchor, usage: usageOf() }, false);
-      });
+      };
+      // Parking hands the process to the pool — these turn-scoped listeners must not
+      // outlive the turn (the pool installs its own drain + close bookkeeping).
+      detachTurnListeners = () => {
+        child.stdout?.off('data', onStdout);
+        child.stderr?.off('data', onStderr);
+        child.off('error', onError);
+        child.off('close', onClose);
+      };
+      child.stdout!.on('data', onStdout);
+      child.stderr!.on('data', onStderr);
+      child.on('error', onError);
+      child.on('close', onClose);
 
-      try {
-        // Send the prompt as a stream-json user message and keep stdin OPEN (do not end it here):
-        // closing it makes Claude exit at the first `result`, before any background task finishes.
-        child.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n');
-      } catch { /* ignore */ }
+      if (!promptDelivered) {
+        try {
+          // Send the prompt as a stream-json user message and keep stdin OPEN (do not end it here):
+          // closing it makes Claude exit at the first `result`, before any background task finishes.
+          child.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n');
+        } catch { /* ignore */ }
+      }
     });
   }
 
@@ -302,6 +379,37 @@ export class ClaudeDriver implements AgentDriver {
   resolveNativeAnchor(opts: { sessionId: string; workdir: string }): string | null {
     return claudeTranscriptTailAnchor(opts.workdir, opts.sessionId);
   }
+}
+
+// The spawn-time facts that must still match for a parked warm process to serve a
+// continuation turn as if it were a fresh cold `--resume` — any drift (model switch,
+// effort change, new MCP config, different BYOK env, …) destroys the parked process so
+// the new configuration actually applies. `sessionId` is the pool key, not fingerprint
+// material, and `systemPrompt` is deliberately EXCLUDED: it is a first-turn-only input
+// (the parked process already carries it applied; a cold --resume would not re-send it
+// either), so including it would make every continuation miss the pool. Pure + exported
+// for hermetic testing.
+export function claudeProcessFingerprint(bin: string, input: AgentTurnInput): string {
+  return JSON.stringify([
+    bin, input.workdir, input.model ?? null, input.effort ?? null,
+    input.mcpConfigPath ?? null, input.permissionMode ?? null, !!input.steerable,
+    fingerprintExtraArgs(input.extraArgs),
+    Object.entries(input.env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  ]);
+}
+
+// `--session-id <uuid>` pins a FRESH session's native id and is contributed on the first
+// turn only (continuations resume instead) — it names the session, it doesn't configure
+// the process. Like sessionId itself it must not be fingerprint material, or every
+// continuation of a session born with it would miss the pool forever.
+function fingerprintExtraArgs(extraArgs: string[] | undefined): string[] {
+  const args = extraArgs ?? [];
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--session-id') { i++; continue; }
+    out.push(args[i]);
+  }
+  return out;
 }
 
 // The --resume flag family for one turn: plain resume appends to the session; a fork branches

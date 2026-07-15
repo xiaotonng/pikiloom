@@ -31,4 +31,22 @@ describe('snapshot diff/apply', () => {
     const applied = applySnapshotPatch(emptySnapshot(), { full });
     expect(applied).toEqual(full);
   });
+
+  it('transmits AND clears compaction (a `compact_boundary` belongs to its own turn)', () => {
+    // set: a boundary fires mid-turn → the patch must carry it (it rides patches, not only
+    // full baselines) so a live surface can mark it.
+    const before: UniversalSnapshot = { phase: 'streaming', updatedAt: 1 };
+    const compacted: UniversalSnapshot = { phase: 'streaming', updatedAt: 2, compaction: { trigger: 'manual', atTokens: 178_444 } };
+    const setPatch = diffSnapshot(before, compacted);
+    expect(setPatch.set).toMatchObject({ compaction: { trigger: 'manual', atTokens: 178_444 } });
+    expect(applySnapshotPatch(before, setPatch).compaction).toEqual({ trigger: 'manual', atTokens: 178_444 });
+
+    // clear: the next turn has no compaction → the diff must emit an explicit null so it does
+    // NOT bleed onto the new turn (regression: phantom "auto-compacted" divider after /compact).
+    const nextTurn: UniversalSnapshot = { phase: 'streaming', taskId: 'B', updatedAt: 3 };
+    const clearPatch = diffSnapshot(compacted, nextTurn);
+    const wire = JSON.parse(JSON.stringify(clearPatch)); // undefined would be dropped by JSON
+    expect(wire.set).toHaveProperty('compaction', null);
+    expect(applySnapshotPatch(compacted, wire).compaction).toBeNull();
+  });
 });

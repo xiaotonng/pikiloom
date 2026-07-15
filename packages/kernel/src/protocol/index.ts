@@ -142,7 +142,7 @@ export function emptySnapshot(): UniversalSnapshot {
 }
 
 const APPEND_FIELDS = ['text', 'reasoning'] as const;
-const STRUCT_FIELDS = ['plan', 'toolCalls', 'subAgents', 'usage', 'artifacts', 'interactions', 'queued'] as const;
+const STRUCT_FIELDS = ['plan', 'toolCalls', 'subAgents', 'usage', 'artifacts', 'interactions', 'queued', 'compaction'] as const;
 const SCALAR_FIELDS = ['phase', 'taskId', 'sessionId', 'agent', 'model', 'effort', 'prompt', 'activity', 'error', 'incomplete', 'startedAt', 'updatedAt', 'anchor'] as const;
 
 export function diffSnapshot(prev: UniversalSnapshot, next: UniversalSnapshot): SnapshotPatch {

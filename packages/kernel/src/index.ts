@@ -43,7 +43,7 @@ export {
 
 // Drivers & surfaces (also available via subpath exports)
 export { EchoDriver } from './drivers/echo.js';
-export { ClaudeDriver } from './drivers/claude.js';
+export { ClaudeDriver, type ClaudeDriverOptions } from './drivers/claude.js';
 export { CodexDriver } from './drivers/codex.js';
 export { GeminiDriver } from './drivers/gemini.js';
 export { AcpDriver, type AcpDriverConfig } from './drivers/acp.js';

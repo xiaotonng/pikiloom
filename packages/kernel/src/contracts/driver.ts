@@ -78,6 +78,9 @@ export interface DriverResult {
   // Agent-native boundary marker of THIS settled turn (claude: last transcript record uuid;
   // codex: turn id) — persisted per turn so a later fork can cut exactly here (fork anchor).
   anchor?: string | null;
+  // How the driver obtained this turn's process: 'warm' = reused from its warm pool
+  // (spawn+init skipped), 'cold' = freshly spawned. Absent for drivers that don't report it.
+  transport?: 'cold' | 'warm' | null;
 }
 
 // ---- TUI mode (the second, orthogonal shape) ----

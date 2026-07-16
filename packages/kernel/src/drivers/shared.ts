@@ -1,5 +1,4 @@
 import type { ChildProcess } from 'node:child_process';
-import { extname } from 'node:path';
 
 // Driver-internal helpers shared by the concrete drivers (claude/codex/gemini/acp).
 // NOT part of the public API — nothing here is re-exported by any barrel. Each helper
@@ -38,22 +37,9 @@ export function sigterm(proc: ChildProcess | null | undefined): void {
   try { proc?.kill('SIGTERM'); } catch { /* ignore */ }
 }
 
-// Attachment vocabulary: every driver inlines the same image formats (the Anthropic
-// vision set, which the others accept too) and notes non-image files the same way.
-const IMAGE_MIME_BY_EXT: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp',
-};
-
-/** Mime type when the file is an inlineable image, else null. */
-export function imageMimeForFile(filePath: string): string | null {
-  return IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()] ?? null;
-}
-
-/** The text note substituted for a non-image attachment. */
-export function attachedFileNote(filePath: string): string {
-  return `[Attached file: ${filePath}]`;
-}
+// Attachment vocabulary lives in ../attachments.ts (the Hub also normalizes oversized
+// images there); re-exported so drivers keep one import site for driver-internal helpers.
+export { imageMimeForFile, attachedFileNote } from '../attachments.js';
 
 /**
  * Context-window occupancy as a display percent (one decimal, capped at 99.9).

@@ -11,6 +11,7 @@ import type {
 import type { LoomIO, PromptInput, ForkSessionInput, Plugin, SpawnContribution } from '../contracts/surface.js';
 import { SessionRunner } from './session-runner.js';
 import { buildForkSeed } from './fork.js';
+import { normalizeImageAttachments } from '../attachments.js';
 
 export interface HubDeps {
   drivers: Map<string, AgentDriver>;
@@ -306,7 +307,9 @@ export class Hub implements LoomIO {
 
     const turnInput: AgentTurnInput = {
       prompt: driverPrompt,
-      attachments: input.attachments,
+      // Oversized images are downscaled here and in steer() — the two dispatch chokepoints —
+      // so every driver (built-in or host-plugged) sends model-safe attachments.
+      attachments: await normalizeImageAttachments(input.attachments, this.deps.log),
       sessionId: driverSessionId,
       fork: driverFork,
       rewind: driverRewind,
@@ -464,7 +467,7 @@ export class Hub implements LoomIO {
   }
   async steer(taskId: string, prompt: string, attachments?: string[]): Promise<boolean> {
     const r = this.runnersByTask.get(taskId);
-    return r ? r.steer(prompt, attachments) : false;
+    return r ? r.steer(prompt, await normalizeImageAttachments(attachments, this.deps.log)) : false;
   }
   interact(promptId: string, action: 'select' | 'text' | 'skip' | 'cancel', value?: string): boolean {
     for (const r of this.runnersByTask.values()) {

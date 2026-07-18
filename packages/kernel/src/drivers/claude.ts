@@ -42,7 +42,11 @@ export class ClaudeDriver implements AgentDriver {
   tui(input: TuiInput): TuiSpec {
     const args: string[] = [];
     if (input.model) args.push('--model', input.model);
-    if (input.sessionId) args.push('--resume', input.sessionId);
+    // Fresh-pin wins over resume: `--session-id <uuid>` makes Claude start a NEW session and
+    // write its transcript under the given id, so the host already knows the resumable key
+    // before spawn (terminal-first new session). Falls back to `--resume` for an existing one.
+    if (input.newSessionId) args.push('--session-id', input.newSessionId);
+    else if (input.sessionId) args.push('--resume', input.sessionId);
     if (input.extraArgs?.length) args.push(...input.extraArgs);
     return { command: this.bin, args, cwd: input.workdir, env: input.env };
   }

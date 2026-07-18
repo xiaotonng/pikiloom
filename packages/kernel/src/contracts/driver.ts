@@ -92,6 +92,14 @@ export interface TuiInput {
   workdir: string;
   model?: string | null;
   sessionId?: string | null;       // resume the agent's native interactive session
+  // Spawn a FRESH interactive session and PIN its native id to this value (mutually
+  // exclusive with `sessionId`/resume; if both are set, the fresh pin wins). This lets a
+  // host mint the id up front and bind a pane/record to `agent:<newSessionId>` BEFORE the
+  // CLI runs — the basis for a "terminal-first new session" where the user types the first
+  // prompt into the live TUI. Only drivers whose CLI can pin a fresh id honour it (Claude:
+  // `--session-id <uuid>`); drivers that cannot (Codex) ignore it and the host discovers the
+  // created id post-hoc via `listNativeSessions` + `createdAt`.
+  newSessionId?: string;
   env?: Record<string, string>;    // injected by ModelResolver (BYOK)
   extraArgs?: string[];
 }

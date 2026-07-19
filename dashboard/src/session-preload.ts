@@ -147,13 +147,17 @@ export async function loadSessionMessages(
 ): Promise<SessionMessagesResult> {
   const normalized = normalizeSessionMessagesQuery(query);
   const key = sessionMessagesCacheKey(normalized);
+  const existing = messageCache.get(key);
   if (!opts.force) {
     const cached = getFreshValue(messageCache, key);
     if (cached?.ok) return cached;
+    // Only a non-forced read may piggyback on an in-flight fetch. A forced read
+    // (post-`done` reconcile) must issue a fresh request: the in-flight promise was
+    // very likely created mid-turn — before the assistant reply was flushed to the
+    // transcript — so reusing it would reconcile the panel to a user-only tail and
+    // silently swallow the reply.
+    if (existing?.promise) return existing.promise;
   }
-
-  const existing = messageCache.get(key);
-  if (existing?.promise) return existing.promise;
 
   const request = api.getSessionMessages(
     normalized.workdir,

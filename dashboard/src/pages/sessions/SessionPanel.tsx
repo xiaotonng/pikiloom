@@ -59,6 +59,14 @@ const STREAM_HOLD_TTL_MS = 15_000;
 // WS-independent safety net: while the panel believes a task is live, re-seed stream-state
 // on this cadence so a silently dead socket still converges (see holdExpired above).
 const STREAM_POLL_INTERVAL_MS = 7_000;
+// After a turn completes, the streamed reply stays painted (retention gate) until the disk
+// transcript settles the turn. The agent CLI can signal `done` a beat before it flushes the
+// assistant to the session file (warm process pool / interactive TUI), so the first reload can
+// read a user-only tail. Re-pull history on this backoff until the tail turn carries a
+// renderable assistant. If it never does, the streamed snapshot remains the answer — the reply
+// is never swallowed. (Mirasim gets this for free via a server-side "settled turn always
+// included" guarantee; pikiloom reads the transcript from disk, so it retries instead.)
+const DONE_RECONCILE_BACKOFF_MS = [300, 650, 1200, 2200, 3600, 5200];
 const historySnapshots = new Map<string, TurnHistoryWindow>();
 function snapshotKey(agent: string, sessionId: string) { return `${agent}:${sessionId}`; }
 
@@ -160,6 +168,8 @@ export const SessionPanel = memo(function SessionPanel({
   const streamingRef = useRef(streaming);
   liveStreamRef.current = liveStream;
   streamingRef.current = streaming;
+  const historyRef = useRef(history);
+  historyRef.current = history;
   const queuedTaskIdsRef = useRef<string[]>(queuedTaskIds);
   queuedTaskIdsRef.current = queuedTaskIds;
   const streamPhaseRef = useRef<string | null>(streamPhase);
@@ -176,6 +186,7 @@ export const SessionPanel = memo(function SessionPanel({
   const initialPendingConsumedRef = useRef(false);
   const promotingRef = useRef(false);
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const doneSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAppliedUpdatedAtRef = useRef(0);
   // Last proof-of-life for the local hold: refreshed by every applied non-null snapshot and by
   // each local send. When a null seed arrives and this is older than the TTL, the task the hold
@@ -307,14 +318,14 @@ export const SessionPanel = memo(function SessionPanel({
     }
   }, [workdir, session.agent, session.sessionId]);
 
-  const loadLatestTurns = useCallback(async ({ keepOlder, force = false, scrollToBottom = false }: { keepOlder: boolean; force?: boolean; scrollToBottom?: boolean }) => {
+  const loadLatestTurns = useCallback(async ({ keepOlder, force = false, scrollToBottom = false }: { keepOlder: boolean; force?: boolean; scrollToBottom?: boolean }): Promise<TurnHistoryWindow | null> => {
     const callSessionId = session.sessionId;
-    if (loadingLatestRef.current === callSessionId) return false;
+    if (loadingLatestRef.current === callSessionId) return null;
     loadingLatestRef.current = callSessionId;
     try {
       const next = await fetchTurnWindow({ turnOffset: 0, turnLimit: SESSION_PAGE_TURNS }, { force });
-      if (!next) return false;
-      if (session.sessionId !== callSessionId) return false;
+      if (!next) return null;
+      if (session.sessionId !== callSessionId) return null;
       if (scrollToBottom) scrollToBottomRef.current = true;
       setHistory(current => {
         if (!current || !keepOlder) return next;
@@ -333,7 +344,7 @@ export const SessionPanel = memo(function SessionPanel({
           && (pending === true || liveStreamRef.current.taskId === scopedTaskId);
         if (owned) setLiveStream(null);
       }
-      return true;
+      return next;
     } finally {
       if (loadingLatestRef.current === callSessionId) {
         loadingLatestRef.current = null;
@@ -361,6 +372,38 @@ export const SessionPanel = memo(function SessionPanel({
   }, [fetchTurnWindow, history]);
 
   const prevPhaseRef = useRef<'queued' | 'streaming' | 'done' | null>(null);
+
+  // Retention-gate reconcile for a just-completed turn: re-pull history until the tail turn
+  // actually carries a renderable assistant, then retire the streamed live preview. Until that
+  // happens the streamed reply keeps rendering (never blanked), so a `done` that arrives before
+  // the transcript flush can no longer swallow the answer. Bounded retries converge once the CLI
+  // finishes writing the reply; if they're exhausted the streamed snapshot stays as the answer.
+  const reconcileDoneTurn = useCallback((taskId: string | null) => {
+    if (doneSettleTimerRef.current) { clearTimeout(doneSettleTimerRef.current); doneSettleTimerRef.current = null; }
+    const startKey = sessionKeyRef.current;
+    const retireLiveIfOwned = () => {
+      const live = liveStreamRef.current;
+      if (live && (taskId == null || live.taskId === taskId)) setLiveStream(null);
+    };
+    const tailSettled = (win: TurnHistoryWindow | null): boolean => {
+      const w = win ?? historyRef.current;
+      if (!w || !w.turns.length) return false;
+      const tail = w.turns[w.turns.length - 1];
+      return !!tail.assistant && hasRenderableAssistant(tail.assistant);
+    };
+    let attempt = 0;
+    const run = async () => {
+      if (sessionKeyRef.current !== startKey) return;
+      const win = await loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
+      if (sessionKeyRef.current !== startKey) return;
+      if (tailSettled(win)) { retireLiveIfOwned(); return; }
+      if (attempt < DONE_RECONCILE_BACKOFF_MS.length) {
+        const delay = DONE_RECONCILE_BACKOFF_MS[attempt++];
+        doneSettleTimerRef.current = setTimeout(() => { doneSettleTimerRef.current = null; void run(); }, delay);
+      }
+    };
+    void run();
+  }, [loadLatestTurns]);
 
   const applyStreamSnapshot = useCallback((state: any | null, source: SnapshotSource = 'ws') => {
     const holdsActiveState = streamingRef.current || queuedTaskIdsRef.current.length > 0;
@@ -455,6 +498,8 @@ export const SessionPanel = memo(function SessionPanel({
       pendingTaskIdRef.current = null;
     }
     if (state.phase === 'streaming') {
+      // A fresh streaming turn supersedes any in-flight settle loop from the previous turn.
+      if (doneSettleTimerRef.current) { clearTimeout(doneSettleTimerRef.current); doneSettleTimerRef.current = null; }
       setLiveStream({
         taskId: state.taskId || null,
         phase: 'streaming',
@@ -522,8 +567,20 @@ export const SessionPanel = memo(function SessionPanel({
         const freezePartial = !!state.incomplete && hasPartialBody && !hasMoreQueued;
         if (prevPhaseRef.current !== 'done') {
           if (!hasMoreQueued) clearPendingOnLoadRef.current = true;
-          clearLiveStreamOnLoadRef.current = freezePartial ? false : { taskId: state.taskId || null };
-          void loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
+          const expectAssistant = !freezePartial && !state.error && !state.incomplete;
+          if (expectAssistant) {
+            // Retention gate: keep the streamed reply on screen and retire it only once the
+            // reconciled transcript actually carries this turn's assistant (reconcileDoneTurn).
+            // A single reload can race the CLI's transcript flush — clearing the live preview then
+            // would blank the reply the user just watched stream in.
+            clearLiveStreamOnLoadRef.current = false;
+            reconcileDoneTurn(state.taskId || null);
+          } else {
+            // Incomplete / errored / frozen-partial turn: keep the prior one-shot reconcile (the
+            // live preview either freezes the partial answer or yields to the run-failure notice).
+            clearLiveStreamOnLoadRef.current = freezePartial ? false : { taskId: state.taskId || null };
+            void loadLatestTurns({ keepOlder: true, force: true, scrollToBottom: stickToBottomRef.current });
+          }
           const recAgent = session.agent || '';
           const recSid = session.sessionId;
           const recKey = sessionKeyRef.current;
@@ -555,7 +612,7 @@ export const SessionPanel = memo(function SessionPanel({
       return changed ? next : prev;
     });
     prevPhaseRef.current = state.phase;
-  }, [clearPending, clearPendingQueuedSends, loadLatestTurns, session.sessionId, session.agent, onSessionChange, workdir]);
+  }, [clearPending, clearPendingQueuedSends, loadLatestTurns, reconcileDoneTurn, session.sessionId, session.agent, onSessionChange, workdir]);
 
   const applyStreamSnapshotRef = useRef(applyStreamSnapshot);
   applyStreamSnapshotRef.current = applyStreamSnapshot;
@@ -568,6 +625,7 @@ export const SessionPanel = memo(function SessionPanel({
 
   useEffect(() => () => {
     if (reconcileTimerRef.current) { clearTimeout(reconcileTimerRef.current); reconcileTimerRef.current = null; }
+    if (doneSettleTimerRef.current) { clearTimeout(doneSettleTimerRef.current); doneSettleTimerRef.current = null; }
   }, []);
 
   const handleRecallTask = useCallback(async (taskId: string) => {
@@ -623,6 +681,7 @@ export const SessionPanel = memo(function SessionPanel({
 
   const sk = snapshotKey(session.agent || '', session.sessionId);
   useEffect(() => {
+    if (doneSettleTimerRef.current) { clearTimeout(doneSettleTimerRef.current); doneSettleTimerRef.current = null; }
     if (promotingRef.current) {
       promotingRef.current = false;
       let cancelled = false;

@@ -402,4 +402,27 @@ describe('claude stream-json parser (kernel ClaudeDriver parity)', () => {
     expect(state.text).toBe('Here is the answer you asked for.');
     expect(state.error).toBe('Tool crashed after the reply.');
   });
+
+  it('drops Claude internal [ede_diagnostic] breadcrumbs from the run-end error, keeping real errors', () => {
+    const { state } = runState([
+      { type: 'result', is_error: true, errors: [
+        '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null',
+        'overloaded_error',
+      ] },
+    ]);
+    expect(state.error).toBe('overloaded_error');
+    expect(state.error).not.toContain('ede_diagnostic');
+  });
+
+  it('when the breadcrumb was the ONLY error, derives a plain notice (never a silent success)', () => {
+    // The exact incident shape: a turn the model never answered, whose only errors[] entry is the breadcrumb.
+    const { state } = runState([
+      { type: 'result', is_error: true, subtype: 'error_during_execution', errors: [
+        '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null',
+      ] },
+    ]);
+    expect(state.error).toBeTruthy();
+    expect(state.error).not.toContain('ede_diagnostic');
+    expect(state.error).toContain('error result');
+  });
 });

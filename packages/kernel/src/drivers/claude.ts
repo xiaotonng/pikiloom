@@ -128,9 +128,9 @@ export class ClaudeDriver implements AgentDriver {
       // wake-up turns can still land before we close (see claudeBgSettleQuietMs).
       let holdCapTimer: ReturnType<typeof setTimeout> | null = null;
       let quietTimer: ReturnType<typeof setTimeout> | null = null;
-      // modelStall: post-tool watchdog — fires only while the turn is waiting on the MODEL (a
-      // tool_result handed control back and no reply is streaming), never while a tool or
-      // background task is still running (see armModelStall).
+      // modelStall: watchdog that fires only while the turn is waiting on the MODEL with nothing
+      // streaming — the initial wait after the prompt, or after a tool_result handed control back —
+      // never while a tool or background task is still running (see armModelStall / armModelStallIfIdle).
       let modelStallTimer: ReturnType<typeof setTimeout> | null = null;
       const usageOf = () => this.usage(state);
       const unref = (tm: any) => { if (tm && typeof tm.unref === 'function') tm.unref(); };
@@ -202,15 +202,16 @@ export class ClaudeDriver implements AgentDriver {
         quietTimer = setTimeout(() => { if (!settled) settleResult({ kill: false }); }, claudeBgSettleQuietMs());
         unref(quietTimer);
       };
-      // Post-tool model-stall watchdog: after a tool_result hands control back to the model, the
-      // model normally streams its next message within a couple of seconds. If instead it goes
-      // fully silent — no stream/assistant events — the turn is stuck waiting on the MODEL (a
-      // provider stall / rate-limit backoff), NOT on a tool (a running tool has no tool_result
-      // yet, so this is never armed then) and NOT on background work (its own hold, re-checked
-      // below). Left alone the kernel turn hangs forever with the answer never delivered. Bound
-      // it: settle gracefully (no kill) as incomplete with stopReason 'stalled' so the terminal
-      // shows a clear "resend to continue" note instead of a dead spinner. Armed on tool_result,
-      // cleared the moment the model emits anything.
+      // Model-stall watchdog: while the turn waits on the model with nothing streaming, the model
+      // normally emits its next message within a couple of seconds. If instead it goes fully silent —
+      // no stream/assistant events — the turn is stuck waiting on the MODEL (a provider stall,
+      // rate-limit backoff, or an unreachable model that the CLI is silently retrying), NOT on a tool
+      // (a running tool has no tool_result yet, so this is never armed then) and NOT on background work
+      // (its own hold, re-checked below). Left alone the kernel turn hangs forever with the answer never
+      // delivered. Bound it: settle gracefully (no kill) as incomplete with stopReason 'stalled' so the
+      // terminal shows a clear "resend to continue" note instead of a dead spinner. Armed for the initial
+      // wait (after prompt delivery) and after a tool_result, and re-armed (if idle) on an API-error
+      // event; cleared the moment the model emits REAL output.
       const armModelStall = () => {
         clearModelStall();
         modelStallTimer = setTimeout(() => {
@@ -221,6 +222,11 @@ export class ClaudeDriver implements AgentDriver {
         }, claudeModelStallMs(input.effort));
         unref(modelStallTimer);
       };
+      // Arm the watchdog ONLY if it is not already counting — for the INITIAL model wait (right after
+      // the prompt is delivered) and for API-error events. Unlike `armModelStall` it never resets a
+      // running countdown, so a model that stays unreachable across many retry artifacts still trips
+      // the stall on its original deadline instead of being deferred forever.
+      const armModelStallIfIdle = () => { if (!modelStallTimer) armModelStall(); };
 
       // Acquire the process: a reclaimed warm process gets the prompt as its acquisition
       // probe — a dead pipe throws synchronously here and the turn transparently falls
@@ -261,8 +267,14 @@ export class ClaudeDriver implements AgentDriver {
           state.lastEventAt = Date.now();
           handleClaudeEvent(ev, state, ctx.emit);
           const pending = pendingClaudeBackgroundTasks(state);
-          // Any model output means the model is alive and streaming — cancel the post-tool stall watchdog.
-          if (ev.type === 'stream_event' || ev.type === 'assistant') clearModelStall();
+          // Real model output means the model is alive and streaming — cancel the stall watchdog. But an
+          // API-error event is NOT progress: the model is unreachable and the CLI is retrying. Keep the
+          // watchdog counting (arm it if idle) so a connection that never recovers trips the stall instead
+          // of hanging on silent retries — the "24-minute spinner" after a severed model proxy.
+          if (ev.type === 'stream_event' || ev.type === 'assistant') {
+            if (claudeEventIsApiError(ev)) armModelStallIfIdle();
+            else clearModelStall();
+          }
           if (ev.type === 'result') {
             clearModelStall();
             const hasError = !!ev.is_error || (Array.isArray(ev.errors) && ev.errors.length > 0) || !!state.error;
@@ -371,6 +383,12 @@ export class ClaudeDriver implements AgentDriver {
           child.stdin!.write(claudeUserMessage(input.prompt, input.attachments) + '\n');
         } catch { /* ignore */ }
       }
+      // Arm the model-stall watchdog for the INITIAL wait: the prompt is now delivered (warm or cold) and
+      // we are waiting on the model's FIRST output. The first real stream/assistant event clears it; if the
+      // model never answers — a severed model proxy (e.g. a mid-turn host restart) — it settles the turn as
+      // 'stalled' instead of spinning until Claude exhausts its own retry budget minutes later. Previously
+      // the watchdog only armed AFTER a tool_result, so an initial wait on a dead connection hung unbounded.
+      if (!settled) armModelStallIfIdle();
     });
   }
 
@@ -760,7 +778,13 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     if (isErrorResult && !s.error) {
       const errs = (Array.isArray(ev.errors) ? ev.errors : [])
         .map((x: any) => typeof x === 'string' ? x : (x?.message || (x ? JSON.stringify(x) : '')))
-        .filter((x: string) => x && x.trim());
+        // Claude stamps INTERNAL telemetry breadcrumbs (`[ede_diagnostic] …`) into result.errors[]
+        // but filters them out of its OWN user-facing warning (`.filter(e => !e.startsWith('[ede_diagnostic]'))`).
+        // Surfacing them as a run-end notice just leaks internals — most visibly `result_type=user …
+        // stop_reason=null` on a turn the model never answered. Mirror Claude's own filter. When they were
+        // the ONLY entries, the fallback below derives a plain notice, preserving the never-a-silent-success
+        // guarantee (the turn still ended on an error result).
+        .filter((x: string) => x && x.trim() && !x.trimStart().startsWith(CLAUDE_INTERNAL_DIAGNOSTIC_PREFIX));
       s.error = errs.length ? errs.join('; ')
         : (typeof ev.result === 'string' && ev.result.trim() ? ev.result.trim()
         : `claude ended the turn with an error result${subtype ? ` (${subtype})` : ''}`);
@@ -850,6 +874,15 @@ export function claudeBgSettleQuietMs(): number {
 // tool_result yet). Override with PIKILOOM_CLAUDE_MODEL_STALL_MS (wins over the ladder).
 const CLAUDE_MODEL_STALL_DEFAULT_MS = 300_000;
 const CLAUDE_MODEL_STALL_DEEP_MS = 600_000;
+// Claude's INTERNAL telemetry breadcrumb prefix (see the result-error handler): Claude stamps
+// `[ede_diagnostic] …` into result.errors[] and filters it from its own user-facing warning; so do we.
+const CLAUDE_INTERNAL_DIAGNOSTIC_PREFIX = '[ede_diagnostic]';
+// A synthetic `assistant` API-error event (see the `assistant` handler): a top-level `error` tag or
+// the persisted `isApiErrorMessage` flag. It is NOT model progress — the model is unreachable and the
+// CLI is retrying — so it must not clear the model-stall watchdog (see the stdout event loop).
+function claudeEventIsApiError(ev: any): boolean {
+  return ev?.type === 'assistant' && (typeof ev.error === 'string' || ev.isApiErrorMessage === true);
+}
 const CLAUDE_DEEP_REASONING_EFFORTS = new Set(['high', 'xhigh', 'max', 'ultra']);
 export function claudeModelStallMs(effort?: string | null): number {
   const raw = Number(process.env.PIKILOOM_CLAUDE_MODEL_STALL_MS);

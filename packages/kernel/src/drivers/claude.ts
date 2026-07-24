@@ -560,14 +560,25 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
   if (parentId) {
     const sub: UniversalSubAgent | undefined = s.subAgents?.get?.(parentId);
     if (sub) {
+      // Inline sub events and the transcript tail are two views of the SAME activity (which one
+      // flows depends on the CLI version and run mode) — share one accumulator so tools never
+      // double up and timestamps/usage fold identically whichever source delivers first.
+      const tail = ensureClaudeSubTail(s, sub);
       if (t === 'assistant') {
         for (const b of (ev.message?.content || [])) {
           if (b?.type !== 'tool_use') continue;
+          const id = String(b.id || '');
+          if (!id || tail.seenTools.has(id)) continue;
+          tail.seenTools.add(id);
           const name = String(b.name || 'Tool');
-          sub.tools.push({ id: String(b.id || ''), name, summary: summarizeToolUse(name, b.input) });
+          sub.tools.push({ id, name, summary: summarizeToolUse(name, b.input) });
         }
         const m = ev.message?.model; if (typeof m === 'string' && m.trim()) sub.model = m;
+        foldClaudeSubEventFacts(ev, sub, tail);
         emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
+      } else if (t === 'user') {
+        // Inline sub tool_results carry timestamps — they extend the sub's wall-clock span.
+        if (foldClaudeSubEventFacts(ev, sub, tail)) emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
       } else if (t === 'system' && typeof ev.model === 'string' && ev.model.trim()) {
         sub.model = ev.model;
         emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
@@ -1004,23 +1015,48 @@ export function isFailedTaskStatus(status: unknown): boolean {
 
 export function trackClaudeBackgroundTask(ev: any, s: any, emit?: (e: DriverEvent) => void): void {
   const subtype = ev?.subtype;
-  if (subtype !== 'task_started' && subtype !== 'task_updated' && subtype !== 'task_notification') return;
+  if (subtype !== 'task_started' && subtype !== 'task_updated' && subtype !== 'task_notification' && subtype !== 'task_progress') return;
   // Sub-agent-backed background tasks (Task/Agent tool launches) are FINITE model-driven jobs,
   // unlike a detached shell that may daemonize forever — they earn a much longer hold cap
   // (see armHoldCap). The task_started's tool_use_id points at the launching tool call, which
   // for sub-agents lives in s.subAgents.
   if (subtype === 'task_started') {
     const tui = String(ev?.tool_use_id ?? '').trim();
-    if (tui && s?.subAgents?.has?.(tui)) {
+    const sub = tui ? (s?.subAgents?.get?.(tui) as UniversalSubAgent | undefined) : undefined;
+    if (tui && sub) {
       const taskId = String(ev?.task_id ?? ev?.id ?? tui);
       (s.bgAgentTasks ||= new Set<string>()).add(taskId);
       // task_id IS the sub's agentId — remember the mapping so a terminal task event can flip
       // the sub, and so the tail poller can derive the side-transcript path if the launch
       // notice's output_file line was missing.
       (s.bgTaskSub ||= new Map<string, string>()).set(taskId, tui);
-      const tail = s.subTails?.get?.(tui) as ClaudeSubTail | undefined;
-      if (tail && !tail.agentId) tail.agentId = taskId;
+      const tail = ensureClaudeSubTail(s, sub);
+      if (!tail.agentId) tail.agentId = taskId;
+      // The event also restates the launch facts — backfill anything the tool_use lacked.
+      if (!sub.prompt && typeof ev?.prompt === 'string' && ev.prompt.trim()) sub.prompt = ev.prompt.slice(0, CLAUDE_SUB_TEXT_CAP);
+      if (!sub.kind && typeof ev?.subagent_type === 'string') sub.kind = ev.subagent_type;
+      if (!sub.description && typeof ev?.description === 'string') sub.description = ev.description;
     }
+  }
+  // Live progress heartbeat for an agent-backed task: carries the CLI's OWN running totals
+  // (`usage.total_tokens` — authoritative, supersedes our computed sum). Not part of the
+  // pending/terminal bookkeeping.
+  if (subtype === 'task_progress') {
+    const taskId = String(ev?.task_id ?? '').trim();
+    const tui = String(ev?.tool_use_id ?? '').trim();
+    const subId = (tui && s?.subAgents?.has?.(tui)) ? tui : s?.bgTaskSub?.get?.(taskId);
+    const sub = subId ? (s?.subAgents?.get?.(subId) as UniversalSubAgent | undefined) : undefined;
+    if (sub) {
+      const total = Number(ev?.usage?.total_tokens);
+      let changed = false;
+      if (Number.isFinite(total) && total > 0 && sub.totalTokens !== total) {
+        sub.totalTokens = total;
+        ensureClaudeSubTail(s, sub).authTokens = true;
+        changed = true;
+      }
+      if (changed) emit?.({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
+    }
+    return;
   }
   const id = String(ev?.task_id ?? ev?.tool_use_id ?? '').trim();
   if (!id) return;
@@ -1107,7 +1143,11 @@ export function pendingClaudeBackgroundTasks(s: any): number {
 /** Caps prompt/report text carried on subagent events (mirrors the history reconstruction). */
 const CLAUDE_SUB_TEXT_CAP = 600;
 
-/** Per-sub tail bookkeeping for incremental reads of the sub's own transcript. */
+/**
+ * Per-sub activity accumulator, shared by BOTH live sources — inline `parent_tool_use_id`
+ * events and the transcript tail (which one flows depends on the CLI version/run mode) — so
+ * tools dedupe across them and timestamps/usage fold identically whichever delivers first.
+ */
 export interface ClaudeSubTail {
   /** The sub's transcript path (the launch notice's output_file), or null until derivable. */
   file: string | null;
@@ -1119,8 +1159,55 @@ export interface ClaudeSubTail {
   lastTs: number | null;
   outputSum: number;
   contextPeak: number;
+  /** True once a task_progress reported an authoritative total — computed sums stop overwriting. */
+  authTokens: boolean;
   /** One final sweep runs after the sub settles; then the tail goes dormant. */
   done: boolean;
+}
+
+/** Get or create the sub's shared accumulator (keyed by the launching tool_use id). */
+function ensureClaudeSubTail(s: any, sub: UniversalSubAgent): ClaudeSubTail {
+  const tails: Map<string, ClaudeSubTail> = (s.subTails ||= new Map<string, ClaudeSubTail>());
+  let tail = tails.get(sub.id);
+  if (!tail) {
+    tail = {
+      file: null, agentId: null, offset: 0, carry: '', seenTools: new Set<string>(),
+      firstTs: null, lastTs: null, outputSum: 0, contextPeak: 0, authTokens: false, done: false,
+    };
+    tails.set(sub.id, tail);
+  }
+  return tail;
+}
+
+/** Recompute the sub's derived cost facts from the accumulator. Returns true when they moved. */
+function recomputeClaudeSubFacts(sub: UniversalSubAgent, tail: ClaudeSubTail): boolean {
+  let changed = false;
+  if (tail.firstTs != null && tail.lastTs != null && tail.lastTs > tail.firstTs) {
+    const dur = tail.lastTs - tail.firstTs;
+    if (sub.durationMs !== dur) { sub.durationMs = dur; changed = true; }
+  }
+  if (!tail.authTokens) {
+    const total = tail.outputSum + tail.contextPeak;
+    if (total > 0 && sub.totalTokens !== total) { sub.totalTokens = total; changed = true; }
+  }
+  return changed;
+}
+
+/** Fold one inline sub event's timestamp + usage into the accumulator (live stream events carry both). */
+function foldClaudeSubEventFacts(ev: any, sub: UniversalSubAgent, tail: ClaudeSubTail): boolean {
+  const ts = typeof ev?.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
+  if (Number.isFinite(ts)) {
+    if (tail.firstTs == null) tail.firstTs = ts;
+    if (tail.lastTs == null || ts > tail.lastTs) tail.lastTs = ts;
+  }
+  const u = ev?.message?.usage;
+  if (u && typeof u === 'object') {
+    const out = Number(u.output_tokens);
+    if (Number.isFinite(out) && out > 0) tail.outputSum += out;
+    const ctx = (Number(u.input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
+    if (ctx > tail.contextPeak) tail.contextPeak = ctx;
+  }
+  return recomputeClaudeSubFacts(sub, tail);
 }
 
 // A Task/Agent tool_result: async launch notice → register the tail and keep the sub running;
@@ -1142,12 +1229,12 @@ export function applyClaudeSubAgentResult(
   if (typeof sidecar.resolvedModel === 'string' && sidecar.resolvedModel.trim() && !sub.model) sub.model = sidecar.resolvedModel.trim();
   if (!sub.prompt && typeof sidecar.prompt === 'string' && sidecar.prompt.trim()) sub.prompt = sidecar.prompt.slice(0, CLAUDE_SUB_TEXT_CAP);
   if (isAsync && !b?.is_error) {
-    const outputFile = text.match(/\boutput_file:\s*(\S+)/)?.[1] ?? null;
+    // MERGE into the shared accumulator — inline events may have landed before this ack, and
+    // replacing the record would wipe their dedupe set (double tool rows on dual-source CLIs).
+    const tail = ensureClaudeSubTail(s, sub);
+    tail.file ||= text.match(/\boutput_file:\s*(\S+)/)?.[1] ?? null;
+    tail.agentId ||= agentId;
     if (agentId) (s.bgTaskSub ||= new Map<string, string>()).set(agentId, sub.id);
-    (s.subTails ||= new Map<string, ClaudeSubTail>()).set(sub.id, {
-      file: outputFile, agentId, offset: 0, carry: '', seenTools: new Set<string>(),
-      firstTs: null, lastTs: null, outputSum: 0, contextPeak: 0, done: false,
-    });
     emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
     return;
   }
@@ -1205,9 +1292,7 @@ export function pollClaudeSubAgentTails(s: any, emit: (e: DriverEvent) => void):
       }
     } catch { /* not written yet / rotated — keep trying on the next tick */ }
     if (changed) {
-      if (tail.firstTs != null && tail.lastTs != null && tail.lastTs > tail.firstTs) sub.durationMs = tail.lastTs - tail.firstTs;
-      const total = tail.outputSum + tail.contextPeak;
-      if (total > 0) sub.totalTokens = total;
+      recomputeClaudeSubFacts(sub, tail);
       emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
     }
     // The settle flip (task-notification / system task event) may land between polls — grant the

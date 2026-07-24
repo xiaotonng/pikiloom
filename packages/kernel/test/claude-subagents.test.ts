@@ -206,6 +206,71 @@ describe('claude sub-agent lifecycle (background/run_in_background default)', ()
     expect(s.subTails.get('tu1').done).toBe(true);
   });
 
+  it('INLINE parent_tool_use_id events fold tools, timestamps and usage into the sub', () => {
+    const { out, s } = run([
+      SPAWN,
+      { type: 'assistant', parent_tool_use_id: 'tu1', timestamp: '2026-07-24T10:00:00.000Z',
+        message: { model: 'claude-opus-4-8', usage: { input_tokens: 2, cache_read_input_tokens: 16000, output_tokens: 40 }, content: [
+          { type: 'tool_use', id: 'i1', name: 'Bash', input: { command: 'ls src' } },
+        ] } },
+      { type: 'user', parent_tool_use_id: 'tu1', timestamp: '2026-07-24T10:00:45.000Z',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'i1', content: 'ok' }] } },
+    ]);
+    const sub = s.subAgents.get('tu1');
+    expect(sub.tools.map((t: any) => t.id)).toEqual(['i1']);
+    expect(sub.tools[0].summary).toContain('ls src'); // summarized arguments, not the bare name
+    expect(sub.model).toBe('claude-opus-4-8');
+    expect(sub.durationMs).toBe(45_000);
+    expect(sub.totalTokens).toBe(40 + 16002);
+    expect(out.filter((e) => e.type === 'subagent').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('inline events and the transcript tail DEDUPE against each other', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sub-dedupe-'));
+    const file = join(dir, 'agent-abc123def456.jsonl');
+    writeFileSync(file, JSON.stringify({ type: 'assistant', timestamp: '2026-07-24T10:00:05.000Z', message: { model: 'claude-opus-4-8', content: [
+      { type: 'tool_use', id: 'i1', name: 'Bash', input: { command: 'ls src' } },
+      { type: 'tool_use', id: 'i2', name: 'Read', input: { file_path: '/x' } },
+    ] } }) + '\n');
+    const { s } = run([
+      SPAWN,
+      // inline delivers i1 FIRST…
+      { type: 'assistant', parent_tool_use_id: 'tu1', timestamp: '2026-07-24T10:00:05.000Z',
+        message: { content: [{ type: 'tool_use', id: 'i1', name: 'Bash', input: { command: 'ls src' } }] } },
+      // …then the async ack registers the tail on the same accumulator
+      asyncLaunchResult(file),
+    ]);
+    const sub = s.subAgents.get('tu1');
+    pollClaudeSubAgentTails(s, () => {});
+    expect(sub.tools.map((t: any) => t.id)).toEqual(['i1', 'i2']); // i1 once, i2 from the tail
+  });
+
+  it('task_progress carries the authoritative running total and wins over computed sums', () => {
+    const { out, s } = run([
+      SPAWN,
+      asyncLaunchResult(),
+      { type: 'system', subtype: 'task_started', task_id: 'abc123def456', tool_use_id: 'tu1' },
+      { type: 'system', subtype: 'task_progress', task_id: 'abc123def456', tool_use_id: 'tu1', usage: { total_tokens: 21472, tool_uses: 2 } },
+      // later inline usage must NOT overwrite the authoritative figure
+      { type: 'assistant', parent_tool_use_id: 'tu1', timestamp: '2026-07-24T10:00:05.000Z',
+        message: { usage: { input_tokens: 2, cache_read_input_tokens: 100, output_tokens: 5 }, content: [] } },
+    ]);
+    const sub = s.subAgents.get('tu1');
+    expect(sub.totalTokens).toBe(21472);
+    expect(out.filter((e) => e.type === 'subagent').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('task_started backfills prompt/kind/description the tool_use lacked', () => {
+    const { s } = run([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu9', name: 'Agent', input: {} }] } },
+      { type: 'system', subtype: 'task_started', task_id: 'a99', tool_use_id: 'tu9', subagent_type: 'Explore', description: 'count files', prompt: 'Count the files.' },
+    ]);
+    const sub = s.subAgents.get('tu9');
+    expect(sub.kind).toBe('Explore');
+    expect(sub.description).toBe('count files');
+    expect(sub.prompt).toBe('Count the files.');
+  });
+
   it('isFailedTaskStatus separates failure from completion', () => {
     for (const bad of ['killed', 'failed', 'error', 'cancelled', 'aborted', 'timeout', 'timed_out']) expect(isFailedTaskStatus(bad)).toBe(true);
     for (const ok of ['completed', 'done', 'success', 'finished']) expect(isFailedTaskStatus(ok)).toBe(false);

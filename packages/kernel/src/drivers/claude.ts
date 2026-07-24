@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentDriver, AgentTurnInput, DriverContext, DriverResult, DriverEvent, TuiInput, TuiSpec, NativeSessionInfo } from '../contracts/driver.js';
 import type { UniversalUsage, UniversalPlan, UniversalSubAgent } from '../protocol/index.js';
 import { ClaudeWarmPool } from './claude-pool.js';
-import { claudeTranscriptTailAnchor, discoverClaudeNativeSessions } from './native.js';
+import { claudeTranscriptTailAnchor, discoverClaudeNativeSessions, encodeClaudeProjectDir } from './native.js';
 import { attachedFileNote, contextPercent, createLineBuffer, imageMimeForFile, parseJsonLine, sigterm, wireAbort } from './shared.js';
 
 // Real driver: shells the local `claude` CLI in stream-json mode and normalizes its
@@ -110,6 +112,11 @@ export class ClaudeDriver implements AgentDriver {
       // run_in_background lifecycle: task ids seen as started vs. reached a terminal status;
       // bgAgentTasks marks the sub-agent-backed ones (they earn the longer hold cap).
       bgStarted: new Set<string>(), bgTerminal: new Set<string>(), bgAgentTasks: new Set<string>(),
+      // Background sub-agents: task/agent id → the launching tool_use id (the s.subAgents key),
+      // and per-sub tail state for live-reading the sub's own transcript (see the tail poller —
+      // a background sub's activity NEVER reaches the parent stream, tailing is the only source).
+      bgTaskSub: new Map<string, string>(),
+      subTails: new Map<string, ClaudeSubTail>(),
     };
 
     return new Promise<DriverResult>((resolve) => {
@@ -128,6 +135,10 @@ export class ClaudeDriver implements AgentDriver {
       // wake-up turns can still land before we close (see claudeBgSettleQuietMs).
       let holdCapTimer: ReturnType<typeof setTimeout> | null = null;
       let quietTimer: ReturnType<typeof setTimeout> | null = null;
+      // subTail: live tail of background sub-agents' own transcripts — the ONLY place their
+      // activity is observable (see pollClaudeSubAgentTails). Armed once the first async sub
+      // registers; cleared (after a final sweep) at settle.
+      let subTailTimer: ReturnType<typeof setInterval> | null = null;
       // modelStall: watchdog that fires only while the turn is waiting on the MODEL with nothing
       // streaming — the initial wait after the prompt, or after a tool_result handed control back —
       // never while a tool or background task is still running (see armModelStall / armModelStallIfIdle).
@@ -139,6 +150,24 @@ export class ClaudeDriver implements AgentDriver {
       const clearHoldCap = () => { if (holdCapTimer) { clearTimeout(holdCapTimer); holdCapTimer = null; } };
       const clearQuiet = () => { if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; } };
       const clearModelStall = () => { if (modelStallTimer) { clearTimeout(modelStallTimer); modelStallTimer = null; } };
+      const clearSubTail = () => { if (subTailTimer) { clearInterval(subTailTimer); subTailTimer = null; } };
+      // A launch notice normally names the sub's transcript (output_file); when that line is
+      // absent, derive the canonical side-transcript path once agentId + sessionId are known.
+      const fillSubTailFiles = () => {
+        for (const tail of state.subTails.values()) {
+          if (!tail.file && tail.agentId && state.sessionId) {
+            tail.file = join(homedir(), '.claude', 'projects', encodeClaudeProjectDir(input.workdir), state.sessionId, 'subagents', `agent-${tail.agentId}.jsonl`);
+          }
+        }
+      };
+      const pollSubTails = () => {
+        try { fillSubTailFiles(); pollClaudeSubAgentTails(state, ctx.emit); } catch { /* observe-only — never break the turn */ }
+      };
+      const armSubTail = () => {
+        if (subTailTimer || !state.subTails.size) return;
+        subTailTimer = setInterval(() => { if (settled) { clearSubTail(); return; } pollSubTails(); }, claudeSubTailPollMs());
+        unref(subTailTimer);
+      };
       // kill=true SIGTERMs immediately — fast exit, used once nothing is left running in the
       // background (a normal turn, or a wake-up turn after every background task finished).
       // kill=false only ends stdin and lets Claude shut down on its own, so any still-running
@@ -147,6 +176,10 @@ export class ClaudeDriver implements AgentDriver {
       const finish = (r: DriverResult, kill = true, park = false) => {
         if (settled) return; settled = true;
         clearHoldCap(); clearQuiet(); clearModelStall();
+        // Final tail sweep BEFORE resolving: tools the subs wrote since the last tick still make
+        // it into the turn's live trail (the runtime folds emitted events until run() resolves).
+        if (state.subTails.size) { pollSubTails(); }
+        clearSubTail();
         disposeAbort?.();
         // Park instead of kill: only a CLEAN settle qualifies (ok, no error, no abort, the
         // process still healthy, session known) — every other exit keeps today's semantics,
@@ -266,6 +299,7 @@ export class ClaudeDriver implements AgentDriver {
           if (ev === undefined) continue;
           state.lastEventAt = Date.now();
           handleClaudeEvent(ev, state, ctx.emit);
+          armSubTail(); // no-op until the first async sub registers a tail
           const pending = pendingClaudeBackgroundTasks(state);
           // Real model output means the model is alive and streaming — cancel the stall watchdog. But an
           // API-error event is NOT progress: the model is unreachable and the CLI is retrying. Keep the
@@ -529,7 +563,8 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
       if (t === 'assistant') {
         for (const b of (ev.message?.content || [])) {
           if (b?.type !== 'tool_use') continue;
-          sub.tools.push({ id: String(b.id || ''), name: String(b.name || 'Tool'), summary: String(b.name || 'Tool') });
+          const name = String(b.name || 'Tool');
+          sub.tools.push({ id: String(b.id || ''), name, summary: summarizeToolUse(name, b.input) });
         }
         const m = ev.message?.model; if (typeof m === 'string' && m.trim()) sub.model = m;
         emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
@@ -541,7 +576,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
     return;
   }
   if (t === 'system') {
-    trackClaudeBackgroundTask(ev, s);
+    trackClaudeBackgroundTask(ev, s, emit);
     if (ev.session_id && ev.session_id !== s.sessionId) { s.sessionId = ev.session_id; emit({ type: 'session', sessionId: ev.session_id }); }
     s.model = ev.model ?? s.model;
     s.contextWindow = claudeEffectiveContextWindow(claudeContextWindowFromModel(s.model)) ?? s.contextWindow;
@@ -697,6 +732,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
           description: typeof input.description === 'string' ? input.description : null,
           model: null, tools: [], status: 'running',
         };
+        if (typeof input.prompt === 'string' && input.prompt.trim()) sub.prompt = input.prompt.slice(0, CLAUDE_SUB_TEXT_CAP);
         (s.subAgents ||= new Map()).set(id, sub);
         emit({ type: 'subagent', subagent: { ...sub, tools: [] } });
         continue;
@@ -722,7 +758,7 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
   if (t === 'user') {
     // Background wake-up delivery: a `<task-notification>` tag (as a string or a text block) marks
     // its background task terminal — an extra completion signal alongside the system task events.
-    markClaudeTaskNotificationTerminal(ev.message?.content, s);
+    markClaudeTaskNotificationTerminal(ev.message?.content, s, emit);
     // Tool results: surface generated images as artifacts AND close out the tool call
     // (status done/failed + a result detail) so toolCalls is a faithful structured SSOT
     // and the runtime's activity projection can render the execution trail.
@@ -758,6 +794,13 @@ export function handleClaudeEvent(ev: any, s: any, emit: (e: DriverEvent) => voi
         if (tool) emit({ type: 'tool', call: { id, name: tool.name, summary: tool.summary, status: b.is_error ? 'failed' : 'done', result: null } });
         continue;
       }
+      // A Task/Agent tool_result belongs to a sub-agent, not a tool row: either the sub's FINAL
+      // report (sync run) or the CLI's async-launch acknowledgement (run_in_background — the
+      // DEFAULT). The launch notice must not settle the sub — its real work streams into its own
+      // transcript, never into this stream (no parent_tool_use_id events exist for background
+      // subs), so it registers a tail instead and the task-notification later flips it terminal.
+      const sub = id ? (s.subAgents?.get?.(id) as UniversalSubAgent | undefined) : undefined;
+      if (sub) { applyClaudeSubAgentResult(sub, b, ev, s, emit); continue; }
       if (!tool) continue;
       const isError = !!b.is_error;
       // File-shaped and task-list tools have no useful result detail (mirrors pikiloom): just mark done.
@@ -953,7 +996,13 @@ export function isTerminalTaskStatus(status: unknown): boolean {
     .test(String(status ?? '').trim());
 }
 
-export function trackClaudeBackgroundTask(ev: any, s: any): void {
+// A terminal status that means the work did NOT complete (killed/failed/cancelled/timed out).
+// Subset of isTerminalTaskStatus; anything terminal-but-not-failed settles as 'done'.
+export function isFailedTaskStatus(status: unknown): boolean {
+  return /^(kill|fail|error|cancel|abort|timed?_?out|timeout)/i.test(String(status ?? '').trim());
+}
+
+export function trackClaudeBackgroundTask(ev: any, s: any, emit?: (e: DriverEvent) => void): void {
   const subtype = ev?.subtype;
   if (subtype !== 'task_started' && subtype !== 'task_updated' && subtype !== 'task_notification') return;
   // Sub-agent-backed background tasks (Task/Agent tool launches) are FINITE model-driven jobs,
@@ -962,12 +1011,44 @@ export function trackClaudeBackgroundTask(ev: any, s: any): void {
   // for sub-agents lives in s.subAgents.
   if (subtype === 'task_started') {
     const tui = String(ev?.tool_use_id ?? '').trim();
-    if (tui && s?.subAgents?.has?.(tui)) (s.bgAgentTasks ||= new Set<string>()).add(String(ev?.task_id ?? ev?.id ?? tui));
+    if (tui && s?.subAgents?.has?.(tui)) {
+      const taskId = String(ev?.task_id ?? ev?.id ?? tui);
+      (s.bgAgentTasks ||= new Set<string>()).add(taskId);
+      // task_id IS the sub's agentId — remember the mapping so a terminal task event can flip
+      // the sub, and so the tail poller can derive the side-transcript path if the launch
+      // notice's output_file line was missing.
+      (s.bgTaskSub ||= new Map<string, string>()).set(taskId, tui);
+      const tail = s.subTails?.get?.(tui) as ClaudeSubTail | undefined;
+      if (tail && !tail.agentId) tail.agentId = taskId;
+    }
   }
   const id = String(ev?.task_id ?? ev?.tool_use_id ?? '').trim();
   if (!id) return;
   if (subtype === 'task_started') { (s.bgStarted ||= new Set<string>()).add(id); return; }
-  if (isTerminalTaskStatus(ev?.patch?.status ?? ev?.status)) (s.bgTerminal ||= new Set<string>()).add(id);
+  const status = ev?.patch?.status ?? ev?.status;
+  if (isTerminalTaskStatus(status)) {
+    (s.bgTerminal ||= new Set<string>()).add(id);
+    settleClaudeBackgroundSub(s, id, status, null, emit);
+  }
+}
+
+// Flip the sub-agent behind a terminal background-task signal (system task event or user-message
+// task-notification) from running to done/failed and surface the moment live. Idempotent — a sub
+// already settled by one signal is left alone by the other. `report` (the notification's <result>
+// payload) lands even on the second, richer signal.
+function settleClaudeBackgroundSub(
+  s: any, taskId: string, status: unknown, report: string | null, emit?: (e: DriverEvent) => void,
+): void {
+  const subId = s?.bgTaskSub?.get?.(taskId) ?? (s?.subAgents?.has?.(taskId) ? taskId : null);
+  const sub = subId ? (s?.subAgents?.get?.(subId) as UniversalSubAgent | undefined) : undefined;
+  if (!sub) return;
+  let changed = false;
+  if (sub.status === 'running') {
+    sub.status = isFailedTaskStatus(status) ? 'failed' : 'done';
+    changed = true;
+  }
+  if (report && !sub.report) { sub.report = report.slice(0, CLAUDE_SUB_TEXT_CAP); changed = true; }
+  if (changed) emit?.({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
 }
 
 function claudeContentText(content: any): string {
@@ -986,8 +1067,10 @@ export function sameClaudeText(a: string, b: string): boolean {
 // Extra completion signal (mirrors the legacy driver): Claude delivers a background wake-up as a
 // `type:'user'` message carrying a `<task-notification>` tag (<task-id>/<tool-use-id>/<status>).
 // Mark that task terminal too, so a missed/absent system task_notification still lets pending
-// reach 0 (instead of the turn hanging to the hold cap).
-export function markClaudeTaskNotificationTerminal(content: any, s: any): void {
+// reach 0 (instead of the turn hanging to the hold cap). For an agent-backed task this is also
+// the RICHEST terminal signal: <tool-use-id> names the launching Task/Agent call directly and
+// <result> carries the sub's final report — flip the sub and take the report here.
+export function markClaudeTaskNotificationTerminal(content: any, s: any, emit?: (e: DriverEvent) => void): void {
   const text = claudeContentText(content);
   if (!text || !text.includes('<task-notification>')) return;
   const tag = (name: string): string => {
@@ -997,6 +1080,11 @@ export function markClaudeTaskNotificationTerminal(content: any, s: any): void {
   const status = tag('status');
   if (status && !isTerminalTaskStatus(status)) return;
   for (const id of [tag('task-id'), tag('tool-use-id')]) if (id) (s.bgTerminal ||= new Set<string>()).add(id);
+  // <result> spans multiple lines/nested markup — the [^<]* tag() reader can't take it.
+  const report = /<result>\s*([\s\S]*?)\s*<\/result>/.exec(text)?.[1] ?? null;
+  const tui = tag('tool-use-id');
+  const subId = (tui && s?.subAgents?.has?.(tui)) ? tui : tag('task-id');
+  if (subId) settleClaudeBackgroundSub(s, subId, status || 'completed', report, emit);
 }
 
 export function pendingClaudeBackgroundTasks(s: any): number {
@@ -1006,6 +1094,163 @@ export function pendingClaudeBackgroundTasks(s: any): number {
   let n = 0;
   for (const id of started) if (!terminal?.has(id)) n++;
   return n;
+}
+
+// ── background sub-agent live visibility ─────────────────────────────────────────────────
+// Sub-agents launched by a Task/Agent call now default to run_in_background: the tool_result is
+// an immediate "Async agent launched" acknowledgement (agentId + output_file lines), the real
+// work streams ONLY into the sub's own transcript (output_file — a symlink to
+// <session>/subagents/agent-<agentId>.jsonl), and NO parent_tool_use_id-tagged event ever
+// reaches the parent stream. Without the pieces below, a background sub sits at "running, zero
+// tools" for its whole life and its 40-tool trail is invisible until a history reload.
+
+/** Caps prompt/report text carried on subagent events (mirrors the history reconstruction). */
+const CLAUDE_SUB_TEXT_CAP = 600;
+
+/** Per-sub tail bookkeeping for incremental reads of the sub's own transcript. */
+export interface ClaudeSubTail {
+  /** The sub's transcript path (the launch notice's output_file), or null until derivable. */
+  file: string | null;
+  agentId: string | null;
+  offset: number;
+  carry: string;
+  seenTools: Set<string>;
+  firstTs: number | null;
+  lastTs: number | null;
+  outputSum: number;
+  contextPeak: number;
+  /** One final sweep runs after the sub settles; then the tail goes dormant. */
+  done: boolean;
+}
+
+// A Task/Agent tool_result: async launch notice → register the tail and keep the sub running;
+// sync completion → settle the sub with the report (+ CLI sidecar cost facts when the event
+// carries them — the persisted record does; the live stream may not). Pure + exported for
+// hermetic testing.
+export function applyClaudeSubAgentResult(
+  sub: UniversalSubAgent, b: any, ev: any, s: any, emit: (e: DriverEvent) => void,
+): void {
+  const sidecar = (ev?.toolUseResult && typeof ev.toolUseResult === 'object' ? ev.toolUseResult : {}) as any;
+  const text = claudeContentText(b?.content ?? '');
+  const agentId = (typeof sidecar.agentId === 'string' && sidecar.agentId.trim())
+    ? sidecar.agentId.trim()
+    : (text.match(/\bagentId:\s*([A-Za-z0-9._-]+)/)?.[1] ?? null);
+  const isAsync = sidecar.isAsync === true
+    || String(sidecar.status ?? '') === 'async_launched'
+    || /\basync agent launched\b/i.test(text)
+    || (!!agentId && /\bworking in the background\b/i.test(text));
+  if (typeof sidecar.resolvedModel === 'string' && sidecar.resolvedModel.trim() && !sub.model) sub.model = sidecar.resolvedModel.trim();
+  if (!sub.prompt && typeof sidecar.prompt === 'string' && sidecar.prompt.trim()) sub.prompt = sidecar.prompt.slice(0, CLAUDE_SUB_TEXT_CAP);
+  if (isAsync && !b?.is_error) {
+    const outputFile = text.match(/\boutput_file:\s*(\S+)/)?.[1] ?? null;
+    if (agentId) (s.bgTaskSub ||= new Map<string, string>()).set(agentId, sub.id);
+    (s.subTails ||= new Map<string, ClaudeSubTail>()).set(sub.id, {
+      file: outputFile, agentId, offset: 0, carry: '', seenTools: new Set<string>(),
+      firstTs: null, lastTs: null, outputSum: 0, contextPeak: 0, done: false,
+    });
+    emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
+    return;
+  }
+  sub.status = (b?.is_error || isFailedTaskStatus(sidecar.status)) ? 'failed' : 'done';
+  const report = text.trim();
+  if (report) sub.report = report.slice(0, CLAUDE_SUB_TEXT_CAP);
+  const dur = Number(sidecar.totalDurationMs);
+  if (Number.isFinite(dur) && dur > 0) sub.durationMs = dur;
+  const tok = Number(sidecar.totalTokens);
+  if (Number.isFinite(tok) && tok > 0) sub.totalTokens = tok;
+  emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
+}
+
+// Poll cadence for background sub-agent transcript tails. Observe-only disk reads off the hot
+// path; a whole tick with nothing new costs one stat per running sub. Override with
+// PIKILOOM_CLAUDE_SUBAGENT_POLL_MS (tests need fast ticks).
+const CLAUDE_SUB_TAIL_POLL_DEFAULT_MS = 1_500;
+export function claudeSubTailPollMs(): number {
+  const raw = Number(process.env.PIKILOOM_CLAUDE_SUBAGENT_POLL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_SUB_TAIL_POLL_DEFAULT_MS;
+}
+// Per-tick read cap so one monster transcript can't stall the loop; the rest lands next tick.
+const CLAUDE_SUB_TAIL_READ_CAP = 4 * 1024 * 1024;
+
+// Read the NEW complete lines appended to each background sub's transcript since the last poll
+// and fold them into the sub: tool_use rows (with real summarized arguments — richer than the
+// name-only rows the inline parent_tool_use_id path gets), the sub's model, wall-clock span,
+// and token use. Emits one subagent event per sub that changed. Failures are swallowed — the
+// tail is observe-only and must never break the live turn. Exported for hermetic testing.
+export function pollClaudeSubAgentTails(s: any, emit: (e: DriverEvent) => void): void {
+  const tails: Map<string, ClaudeSubTail> | undefined = s?.subTails;
+  if (!tails?.size) return;
+  for (const [subId, tail] of tails) {
+    if (tail.done || !tail.file) continue;
+    const sub = s.subAgents?.get?.(subId) as UniversalSubAgent | undefined;
+    if (!sub) { tail.done = true; continue; }
+    let changed = false;
+    try {
+      const size = statSync(tail.file).size;
+      if (size > tail.offset) {
+        const fd = openSync(tail.file, 'r');
+        let read = 0;
+        try {
+          const buf = Buffer.alloc(Math.min(size - tail.offset, CLAUDE_SUB_TAIL_READ_CAP));
+          read = readSync(fd, buf, 0, buf.length, tail.offset);
+          tail.offset += read;
+          const lines = (tail.carry + buf.toString('utf8', 0, read)).split('\n');
+          tail.carry = lines.pop() ?? '';
+          for (const line of lines) {
+            if (foldClaudeSubTranscriptLine(line, sub, tail)) changed = true;
+          }
+        } finally {
+          closeSync(fd);
+        }
+      }
+    } catch { /* not written yet / rotated — keep trying on the next tick */ }
+    if (changed) {
+      if (tail.firstTs != null && tail.lastTs != null && tail.lastTs > tail.firstTs) sub.durationMs = tail.lastTs - tail.firstTs;
+      const total = tail.outputSum + tail.contextPeak;
+      if (total > 0) sub.totalTokens = total;
+      emit({ type: 'subagent', subagent: { ...sub, tools: [...sub.tools] } });
+    }
+    // The settle flip (task-notification / system task event) may land between polls — grant the
+    // tail one more pass so tools written just before completion still make it in, then stop.
+    if (sub.status !== 'running' && !changed) tail.done = true;
+  }
+}
+
+// Fold one sub-transcript JSONL line into the sub. Returns true when anything changed.
+function foldClaudeSubTranscriptLine(line: string, sub: UniversalSubAgent, tail: ClaudeSubTail): boolean {
+  const t = line.trim();
+  if (!t || t[0] !== '{') return false;
+  let rec: any;
+  try { rec = JSON.parse(t); } catch { return false; }
+  let changed = false;
+  const ts = typeof rec?.timestamp === 'string' ? Date.parse(rec.timestamp) : NaN;
+  if (Number.isFinite(ts)) {
+    if (tail.firstTs == null) { tail.firstTs = ts; changed = true; }
+    if (tail.lastTs == null || ts > tail.lastTs) { tail.lastTs = ts; changed = true; }
+  }
+  if (rec?.type !== 'assistant') return changed;
+  const m = rec.message?.model;
+  if (typeof m === 'string' && m.trim() && m !== '<synthetic>' && sub.model !== m) { sub.model = m; changed = true; }
+  const u = rec.message?.usage;
+  if (u && typeof u === 'object') {
+    const out = Number(u.output_tokens);
+    if (Number.isFinite(out) && out > 0) { tail.outputSum += out; changed = true; }
+    const ctx = (Number(u.input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
+    if (ctx > tail.contextPeak) { tail.contextPeak = ctx; changed = true; }
+  }
+  const content = rec.message?.content;
+  if (Array.isArray(content)) {
+    for (const b of content) {
+      if (b?.type !== 'tool_use') continue;
+      const id = String(b.id || '');
+      if (!id || tail.seenTools.has(id)) continue;
+      tail.seenTools.add(id);
+      const name = String(b.name || 'Tool');
+      sub.tools.push({ id, name, summary: summarizeToolUse(name, b.input) });
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 // A turn "ended dangling" when it used tools and no visible text arrived after the last

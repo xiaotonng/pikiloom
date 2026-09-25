@@ -38,6 +38,7 @@ function providerSlug(provider: ProviderConfig): string {
   if (host.includes('dashscope') || host.includes('qwen')) return 'qwen';
   if (host.includes('volces') || host.includes('volcengine') || host.includes('doubao')) return 'doubao';
   if (host.includes('openrouter')) return 'openrouter';
+  if (host.includes('requesty')) return 'requesty';
   const label = host.replace(/:\d+$/, '').replace(/^(www|api)\./, '').split('.')[0].replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   return label || 'byok';
 }
@@ -48,6 +49,7 @@ function providerCredentialEnv(provider: ProviderConfig, apiKey: string): Record
   if (provider.kind === 'google') return { GOOGLE_API_KEY: apiKey, GEMINI_API_KEY: apiKey };
   const host = providerHost(provider);
   if (host.includes('openrouter')) return { OPENROUTER_API_KEY: apiKey };
+  if (host.includes('requesty')) return { REQUESTY_API_KEY: apiKey };
   if (host.includes('deepseek')) return { DEEPSEEK_API_KEY: apiKey };
   if (host.includes('moonshot') || host.includes('kimi')) return { KIMI_API_KEY: apiKey, MOONSHOT_API_KEY: apiKey };
   if (host.includes('minimax')) return { MINIMAX_API_KEY: apiKey };
@@ -97,6 +99,7 @@ function claudeUsesNativeAnthropic(provider: ProviderConfig): boolean {
   const slug = providerSlug(provider);
   if (slug in ANTHROPIC_ENDPOINT_BY_SLUG) return true;
   if (slug === 'openrouter') return true;
+  if (slug === 'requesty') return true;
   return false;
 }
 
@@ -158,6 +161,7 @@ function isLocalProvider(provider: ProviderConfig): boolean {
 function isResponsesNativeProvider(provider: ProviderConfig): boolean {
   const host = providerHost(provider);
   if (host.includes('openrouter')) return true;
+  if (host.includes('requesty')) return true;
   return false;
 }
 

@@ -59,6 +59,15 @@ const TEMPLATES: ProviderTemplate[] = [
     defaultModel: 'anthropic/claude-sonnet-4',
   },
   {
+    id: 'requesty',
+    kind: 'openai-compatible',
+    name: { zh: 'Requesty', en: 'Requesty' },
+    blurb: { zh: 'OpenAI 兼容的 LLM 网关', en: 'OpenAI-compatible LLM gateway' },
+    baseURL: 'https://router.requesty.ai/v1',
+    envVar: 'REQUESTY_API_KEY',
+    defaultModel: 'anthropic/claude-sonnet-4-5',
+  },
+  {
     id: 'qwen',
     kind: 'openai-compatible',
     name: { zh: '通义千问 Qwen', en: 'Alibaba Qwen' },
@@ -319,6 +328,7 @@ function brandIdForProvider(p: { kind: ProviderKind; baseURL: string }): string 
   if ((host.startsWith('127.0.0.1') || host.startsWith('localhost')) && port === '11434') return 'ollama';
   if ((host.startsWith('127.0.0.1') || host.startsWith('localhost')) && port === '8080') return 'mlx';
   if (host.includes('openrouter')) return 'openrouter';
+  if (host.includes('requesty')) return 'requesty';
   if (host.includes('anthropic')) return 'anthropic';
   if (host.includes('deepseek')) return 'deepseek';
   if (host.includes('googleapis') || host.includes('vertex')) return 'google';

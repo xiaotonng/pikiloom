@@ -234,7 +234,7 @@ docker run -d --name pikiloom -p 3939:3939 \
 ### 工具层
 
 - **强大的技能系统 (Skills)** —— 项目专属技能存放在 `.pikiloom/skills/*/SKILL.md` 中（也兼容旧的 `.claude/commands/*.md` 格式）。可以从 GitHub（`owner/repo`）一键安装社区包，或挑选我们精选的官方包（Anthropic Official、Vercel Agent Skills 等）。在任何终端里发 `/skills` 浏览，`/sk_<name>` 一键触发。
-- **海量 MCP 生态加持** —— 浏览 [MCP Registry](https://registry.modelcontextprotocol.io)、手工增加 stdio / HTTP 服务、强制真实握手健康探测、支持带动态客户端注册的 OAuth 2.1。精选目录涵盖 GitHub、Atlassian、Notion、Linear、Sentry、Cloudflare、Slack、飞书/Lark、Stripe、Hugging Face、Gamma、Brave Search、Perplexity、Filesystem、SQLite 与 PostgreSQL —— 加上我们自带的两个 computer-use 服务：`pikiloom-browser`（Playwright 驱动的 Chrome）与 `peekaboo`（Peekaboo 驱动的 macOS GUI）。
+- **海量 MCP 生态加持** —— 浏览 [MCP Registry](https://registry.modelcontextprotocol.io)、手工增加 stdio / HTTP 服务、强制真实握手健康探测、支持带动态客户端注册的 OAuth 2.1。精选目录涵盖 GitHub、Atlassian、Notion、Linear、Sentry、Cloudflare、Slack、飞书/Lark、Stripe、Hugging Face、Gamma、Brave Search、Perplexity、You.com、Filesystem、SQLite 与 PostgreSQL —— 加上我们自带的两个 computer-use 服务：`pikiloom-browser`（Playwright 驱动的 Chrome）与 `peekaboo`（Peekaboo 驱动的 macOS GUI）。
 - **无缝接入主流 CLI 工具** —— 自动探测版本与登录态（gh、brew、npm、uv 等），OAuth-web 浏览器授权流程在 Agent 调用面上无缝衔接。
 - **会话级 MCP 桥接** —— `im_list_files`、`im_send_file`、`im_ask_user`、`goal_get`、`goal_update` 等基础工具，加上启用后的浏览器与 macOS 桌面工具，会被自动注入到每一场会话里。
 - **三层合并规则** —— 工具作用域永远遵循：`全局 (global) < 当前工作区 (workspace) < 内建 (built-in)`。引擎自动合并后无感生效。

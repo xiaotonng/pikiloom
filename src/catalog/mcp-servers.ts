@@ -308,4 +308,26 @@ export const MCP_SERVERS: RecommendedMcpServer[] = [
     },
     iconSlug: 'perplexity',
   },
+  {
+    id: 'you-com',
+    name: 'You.com',
+    description: 'Web search, URL reading, and cited research via the You.com MCP server',
+    descriptionZh: '通过 You.com MCP 服务进行网页搜索、网页阅读与带引用的研究',
+    category: 'search',
+    recommendedScope: 'global',
+    transport: { type: 'http', url: 'https://api.you.com/mcp' },
+    auth: {
+      type: 'credentials',
+      fields: [{
+        key: 'YDC_API_KEY',
+        label: 'API key',
+        labelZh: 'API 密钥',
+        secret: true,
+        required: true,
+        helpUrl: 'https://you.com/platform/api-keys',
+      }],
+    },
+    iconSlug: 'you',
+    homepage: 'https://you.com/docs',
+  },
 ];

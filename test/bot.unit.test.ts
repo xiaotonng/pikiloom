@@ -11,7 +11,7 @@ vi.mock('../src/agent/index.ts', async importOriginal => {
       agents: [
         { agent: 'claude', installed: false, path: null, version: null },
         { agent: 'codex', installed: true, path: '/usr/bin/codex', version: null },
-        { agent: 'gemini', installed: false, path: null, version: null },
+        { agent: 'agy', installed: false, path: null, version: null },
         { agent: 'hermes', installed: false, path: null, version: null },
       ],
     }),

@@ -298,6 +298,24 @@ export class FeishuBot extends Bot {
     await ctx.reply(renderStart(d));
   }
 
+  private async cmdNew(ctx: FeishuContext) {
+    this.resetConversationForChat(ctx.chatId);
+    await ctx.reply('Started a new session. Send a message to get started.');
+  }
+
+  private async cmdCompact(ctx: FeishuContext) {
+    const res = await this.compactConversationForChat(ctx.chatId);
+    if (!res.ok) {
+      await ctx.reply(`Compact failed: ${res.error || 'Unknown error'}`);
+      return;
+    }
+    await ctx.reply(
+      `Session Compacted\n` +
+      `Compacted ${res.sessionId!.slice(0, 8)} (${res.messagesIncluded}/${res.messagesTotal} messages retained, ~${res.charsIncluded} chars).\n` +
+      `Send a message to start a fresh session with this compacted context.`,
+    );
+  }
+
   private async cmdSkills(ctx: FeishuContext) {
     await this.sendCommandView(ctx, buildSkillsCommandView(this, ctx.chatId));
   }
@@ -1018,6 +1036,9 @@ export class FeishuBot extends Bot {
     try {
       switch (cmd) {
         case 'start':    await this.cmdStart(ctx); return;
+        case 'new':
+        case 'clear':    await this.cmdNew(ctx); return;
+        case 'compact':  await this.cmdCompact(ctx); return;
         case 'sessions': await this.cmdSessions(ctx, args); return;
         case 'digest': await this.cmdDigest(ctx); return;
         case 'agents':   await this.cmdAgents(ctx, args); return;

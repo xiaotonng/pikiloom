@@ -1,5 +1,6 @@
 import './drivers/claude.js';
 import './drivers/codex.js';
+import './drivers/agy.js';
 import './drivers/gemini.js';
 import './drivers/hermes.js';
 
@@ -63,7 +64,7 @@ export {
   previewToolCallInput, previewToolCallResult,
   roundPercent, toIsoFromEpochSeconds, normalizeUsageStatus,
   labelFromWindowMinutes, usageWindowFromRateLimit,
-  parseJsonTail, modelFamily, normalizeClaudeModelId, emptyUsage,
+  parseJsonTail, modelFamily, normalizeClaudeModelId, normalizeAgyModelId, resolveAgyModelAndEffort, emptyUsage,
   readTailLines, stripInjectedPrompts, sanitizeSessionUserPreviewText, isSystemInjectedUserText,
   SESSION_PREVIEW_IMAGE_PLACEHOLDER_RE,
   CLAUDE_AT_MENTION_IMAGE_RE, extractClaudeAtMentionImagePaths, stripClaudeAtMentionImages,
@@ -168,5 +169,7 @@ export {
 
 export { doClaudeStream } from './drivers/claude.js';
 export { doCodexStream, buildCodexTurnInput, shutdownCodexServer, getCodexUsageLive, humanizeCodexError } from './drivers/codex.js';
+export { doAgyStream, isAgySessionOversized } from './drivers/agy.js';
 export { doGeminiStream } from './drivers/gemini.js';
 export { doHermesStream } from './drivers/hermes.js';
+export { compactForHandover, describeHandoverRef } from './handover.js';

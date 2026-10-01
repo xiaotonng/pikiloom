@@ -1,4 +1,5 @@
-import type { StreamPreviewMeta, StreamPreviewPlan } from '../agent/index.js';
+import { stripInjectedPrompts, type StreamPreviewMeta, type StreamPreviewPlan } from '../agent/index.js';
+export { stripInjectedPrompts };
 
 export interface ActivitySummary {
   narrative: string[];
@@ -26,19 +27,6 @@ function compactPathsInActivityLine(line: string): string {
 const TOOL_DONE_RE = /^(.+?)\s+(done|failed)$/;
 const TOOL_ARROW_RE = /^(.+?)\s*->\s*(.+)$/;
 
-const INJECTED_PROMPT_MARKERS = [
-  '\n[Session Workspace]',
-  '\n[Telegram Artifact Return]',
-  '\n[Artifact Return]',
-];
-
-export function stripInjectedPrompts(text: string): string {
-  for (const marker of INJECTED_PROMPT_MARKERS) {
-    const idx = text.indexOf(marker);
-    if (idx >= 0) return text.slice(0, idx).trim();
-  }
-  return text.trim();
-}
 
 export function summarizePromptForStatus(prompt: string, maxLen = 50): string {
   const clean = stripInjectedPrompts(prompt).replace(/\s+/g, ' ').trim();

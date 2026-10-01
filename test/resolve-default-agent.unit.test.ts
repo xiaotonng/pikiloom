@@ -8,19 +8,20 @@ function info(agent: AgentInfo['agent'], installed: boolean): AgentInfo {
 }
 
 const ALL_INSTALLED: AgentInfo[] = [
-  info('claude', true), info('codex', true), info('gemini', true), info('hermes', true),
+  info('claude', true), info('codex', true), info('agy', true), info('hermes', true),
 ];
 const ONLY_CLAUDE: AgentInfo[] = [
-  info('claude', true), info('codex', false), info('gemini', false), info('hermes', false),
+  info('claude', true), info('codex', false), info('agy', false), info('hermes', false),
 ];
 const NONE_INSTALLED: AgentInfo[] = [
-  info('claude', false), info('codex', false), info('gemini', false), info('hermes', false),
+  info('claude', false), info('codex', false), info('agy', false), info('hermes', false),
 ];
 
 describe('resolveDefaultAgent', () => {
   it('keeps the preference when its CLI is installed (codex default unaffected)', () => {
     expect(resolveDefaultAgent('codex', ALL_INSTALLED)).toBe('codex');
     expect(resolveDefaultAgent('claude', ALL_INSTALLED)).toBe('claude');
+    expect(resolveDefaultAgent('agy', ALL_INSTALLED)).toBe('agy');
   });
 
   it('clamps to the first installed agent when the preference is not installed', () => {
@@ -34,7 +35,8 @@ describe('resolveDefaultAgent', () => {
 
   it('falls back to a valid preference when nothing is installed', () => {
     expect(resolveDefaultAgent('codex', NONE_INSTALLED)).toBe('codex');
-    expect(resolveDefaultAgent('gemini', NONE_INSTALLED)).toBe('gemini');
+    expect(resolveDefaultAgent('agy', NONE_INSTALLED)).toBe('agy');
+    expect(resolveDefaultAgent('gemini', NONE_INSTALLED)).toBe('agy');
   });
 
   it('defaults to codex when neither preference nor installs resolve', () => {

@@ -17,7 +17,7 @@ import { humanizeCodexError } from './drivers/codex.js';
 // Tests always run legacy (the unit suite asserts legacy driver behavior). The bridge
 // re-applies app-level parity the pure kernel must not own (claude jsonl entrypoint, codex humanize).
 
-const KERNEL_AGENTS = new Set(['claude', 'codex', 'gemini', 'hermes']);
+const KERNEL_AGENTS = new Set(['claude', 'codex', 'agy', 'gemini', 'hermes']);
 
 // Generic ACP agents the kernel can drive via @pikiloom/kernel's AcpDriver. Hermes is its
 // own built-in preset; this registry is for ANY other ACP CLI (OpenCode, Zed, …). Extend
@@ -85,8 +85,17 @@ function buildKernelDriver(kernel: any, opts: StreamOpts): { driver: any; input:
       for (let i = 0; i < ce.length; i++) if (ce[i] === '-c' && ce[i + 1]) configOverrides.push(ce[++i]);
       return { driver: new kernel.CodexDriver(), input: { ...common, model: opts.codexModel ?? opts.model ?? null, systemPrompt: opts.codexDeveloperInstructions, configOverrides, fullAccess: opts.codexFullAccess } };
     }
+    case 'agy':
     case 'gemini':
-      return { driver: new kernel.GeminiDriver(), input: { ...common, model: opts.geminiModel ?? opts.model ?? null, systemPrompt: opts.geminiSystemInstruction, extraArgs: opts.geminiExtraArgs } };
+      return {
+        driver: new (kernel.AgyDriver || kernel.GeminiDriver)(),
+        input: {
+          ...common,
+          model: opts.agyModel ?? opts.geminiModel ?? opts.model ?? null,
+          systemPrompt: opts.agySystemInstruction ?? opts.geminiSystemInstruction,
+          extraArgs: opts.agyExtraArgs ?? opts.geminiExtraArgs,
+        },
+      };
     case 'hermes':
       return { driver: new kernel.HermesDriver(), input: { ...common, model: opts.hermesModel ?? opts.model ?? null } };
     case 'claude':

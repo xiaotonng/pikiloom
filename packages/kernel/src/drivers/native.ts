@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import type { NativeSessionInfo } from '../contracts/driver.js';
+
+const nodeRequire = createRequire(import.meta.url);
 
 // ---- Native session discovery ----
 //
@@ -428,7 +431,61 @@ function geminiText(content: unknown): string {
   return '';
 }
 
+// ---- Antigravity: ~/.gemini/antigravity-cli/conversation_summaries.db ----
+
+export function discoverAgyNativeSessions(workdir: string, opts: DiscoverOptions = {}): NativeSessionInfo[] {
+  const home = homeOf(opts);
+  const dbPath = path.join(home, '.gemini', 'antigravity-cli', 'conversation_summaries.db');
+  if (!fs.existsSync(dbPath)) return [];
+
+  const resolvedWorkdir = path.resolve(workdir);
+  const targetUri = `file://${resolvedWorkdir}`;
+
+  try {
+    const { DatabaseSync } = nodeRequire('node:sqlite');
+    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+    const rows = db.prepare(`
+      SELECT conversation_id, title, preview, workspace_uris, last_modified_time, status, step_count
+      FROM conversation_summaries
+      ORDER BY last_modified_time DESC
+    `).all() as any[];
+    db.close();
+
+    const matches: NativeSessionInfo[] = [];
+    for (const row of rows) {
+      const uris = String(row.workspace_uris || '');
+      if (!uris.includes(targetUri) && !uris.includes(resolvedWorkdir)) continue;
+
+      const sessionId = String(row.conversation_id || '');
+      if (!sessionId) continue;
+
+      const updatedAt = row.last_modified_time ? new Date(row.last_modified_time).toISOString() : null;
+      const running = row.status === 'CASCADE_RUN_STATUS_RUNNING';
+
+      matches.push({
+        sessionId,
+        title: row.title ? cleanTitle(String(row.title)) : null,
+        preview: row.preview ? cleanTitle(String(row.preview), 200) : null,
+        cwd: resolvedWorkdir,
+        model: null,
+        createdAt: updatedAt,
+        updatedAt: updatedAt || new Date().toISOString(),
+        running,
+        messageCount: typeof row.step_count === 'number' ? row.step_count : null,
+      });
+
+      if (opts.limit && matches.length >= opts.limit) break;
+    }
+    return matches;
+  } catch {
+    return [];
+  }
+}
+
 export function discoverGeminiNativeSessions(workdir: string, opts: DiscoverOptions = {}): NativeSessionInfo[] {
+  const agySessions = discoverAgyNativeSessions(workdir, opts);
+  if (agySessions.length > 0) return agySessions;
+
   const home = homeOf(opts);
   const projectName = geminiProjectName(home, workdir);
   if (!projectName) return [];

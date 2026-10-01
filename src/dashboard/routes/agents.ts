@@ -373,7 +373,8 @@ app.post('/api/runtime-agent', async (c) => {
       runtime.setModelEnv(targetAgent, model);
       if (targetAgent === 'claude') nextConfig.claudeModel = model;
       if (targetAgent === 'codex') nextConfig.codexModel = model;
-      if (targetAgent === 'gemini') nextConfig.geminiModel = model;
+      if (targetAgent === 'agy') { nextConfig.agyModel = model; nextConfig.geminiModel = model; }
+      if (targetAgent === 'gemini') { nextConfig.geminiModel = model; nextConfig.agyModel = model; }
       if (targetAgent === 'hermes') {
         if (!setAgentBoundModelId('hermes', model)) nextConfig.hermesModel = model;
       }
@@ -387,7 +388,8 @@ app.post('/api/runtime-agent', async (c) => {
       runtime.setEffortEnv(targetAgent, effort);
       if (targetAgent === 'claude') nextConfig.claudeReasoningEffort = effort;
       if (targetAgent === 'codex') nextConfig.codexReasoningEffort = effort;
-      if (targetAgent === 'gemini') nextConfig.geminiReasoningEffort = effort;
+      if (targetAgent === 'agy') { nextConfig.agyReasoningEffort = effort; nextConfig.geminiReasoningEffort = effort; }
+      if (targetAgent === 'gemini') { nextConfig.geminiReasoningEffort = effort; nextConfig.agyReasoningEffort = effort; }
       if (targetAgent === 'hermes') nextConfig.hermesReasoningEffort = effort;
       if (botRef) botRef.setEffortForAgent(targetAgent, effort);
       if (targetAgent === 'claude') {

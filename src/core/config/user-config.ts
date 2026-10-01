@@ -54,6 +54,8 @@ export interface UserConfig {
   claudeAccessMode?: 'subscription' | 'api';
   codexModel?: string;
   codexReasoningEffort?: string;
+  agyModel?: string;
+  agyReasoningEffort?: string;
   geminiModel?: string;
   geminiReasoningEffort?: string;
   hermesModel?: string;
@@ -254,7 +256,18 @@ function normalizeUserConfig(config: Partial<UserConfig>): Partial<UserConfig> {
   delete next.browserGuiHeadless;
   delete next.browserGuiIsolated;
   delete next.browserGuiUseExtension;
-  delete next.browserGuiExtensionToken;
+  if (typeof next.geminiModel === 'string') {
+    const trimmed = next.geminiModel.trim().toLowerCase();
+    if (trimmed.startsWith('auto') || trimmed.includes('2.5') || trimmed.includes('preview')) {
+      next.geminiModel = 'gemini-3.8-flash-high';
+    }
+  }
+  if (typeof next.agyModel === 'string') {
+    const trimmed = next.agyModel.trim().toLowerCase();
+    if (trimmed.startsWith('auto') || trimmed.includes('2.5') || trimmed.includes('preview')) {
+      next.agyModel = 'gemini-3.8-flash-high';
+    }
+  }
   if (Array.isArray(next.workspaces)) {
     next.workspaces = normalizeWorkspaces(next.workspaces);
   } else {

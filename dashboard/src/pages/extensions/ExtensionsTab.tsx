@@ -155,7 +155,7 @@ const UpdateIcon = ({ size = 12 }: { size?: number }) => (
 );
 
 const LOCAL_BRAND_SLUGS = new Set([
-  'claude', 'codex', 'gemini', 'telegram', 'feishu', 'weixin',
+  'claude', 'codex', 'agy', 'gemini', 'telegram', 'feishu', 'weixin',
   'playwright', 'vscode', 'cursor', 'windsurf', 'finder',
 ]);
 

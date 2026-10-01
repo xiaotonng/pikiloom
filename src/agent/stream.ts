@@ -1,6 +1,7 @@
 import { execSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { restartManagedBrowser } from '../browser-supervisor.js';
@@ -98,7 +99,7 @@ function resolveAgentBinPath(cmd: string): string | null {
     return null;
   }
 
-  const searchPaths = String(process.env.PATH || '')
+  const searchPaths = (process.env.PATH || '')
     .split(path.delimiter)
     .map(entry => entry.trim())
     .filter(Boolean);
@@ -175,7 +176,8 @@ export function resolveDefaultAgent(
   preferred: Agent | string | null | undefined,
   agents: AgentInfo[] = listAgents().agents,
 ): Agent {
-  const want = typeof preferred === 'string' ? preferred.trim().toLowerCase() : '';
+  const wantRaw = typeof preferred === 'string' ? preferred.trim().toLowerCase() : '';
+  const want = wantRaw === 'gemini' ? 'agy' : wantRaw;
   const wantValid = !!want && hasDriver(want);
   const installed = agents.filter(a => a.installed).map(a => a.agent);
   if (wantValid && installed.includes(want as Agent)) return want as Agent;
@@ -263,6 +265,14 @@ export async function run(
       const trimmed = line.trim();
       if (!trimmed) continue;
       try { parseStderrLine(trimmed, s); touched = true; } catch {}
+    }
+    if (stderrLineBuf && (/RESOURCE_EXHAUSTED/i.test(stderrLineBuf) || /Individual quota reached/i.test(stderrLineBuf))) {
+      try { parseStderrLine(stderrLineBuf, s); touched = true; } catch {}
+    }
+    if (s.stopReason === 'quota_exhausted') {
+      agentWarn('[quota] resource exhausted detected on stderr, terminating process tree');
+      terminateProcessTree(proc, { signal: 'SIGTERM', forceSignal: 'SIGKILL', forceAfterMs: 2000 });
+      return;
     }
     if (touched) {
       try { opts.onText(s.text, s.thinking, s.activity, buildStreamPreviewMeta(s), null); } catch {}
@@ -420,7 +430,8 @@ function requestedModelForAgent(opts: StreamOpts): string {
   switch (opts.agent) {
     case 'claude': return (opts.claudeModel || opts.model || '').trim();
     case 'codex': return (opts.codexModel || opts.model || '').trim();
-    case 'gemini': return (opts.geminiModel || opts.model || '').trim();
+    case 'agy': return (opts.agyModel || opts.geminiModel || opts.model || '').trim();
+    case 'gemini': return (opts.geminiModel || opts.agyModel || opts.model || '').trim();
     case 'hermes': return (opts.hermesModel || opts.model || '').trim();
   }
   return (opts.model || '').trim();
@@ -509,6 +520,7 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
       if (injection.modelOverride) {
         if (prepared.agent === 'claude') prepared.claudeModel = injection.modelOverride;
         else if (prepared.agent === 'codex') prepared.codexModel = injection.modelOverride;
+        else if (prepared.agent === 'agy') prepared.agyModel = injection.modelOverride;
         else if (prepared.agent === 'gemini') prepared.geminiModel = injection.modelOverride;
         else if (prepared.agent === 'hermes') prepared.hermesModel = injection.modelOverride;
         prepared.model = injection.modelOverride;
@@ -575,7 +587,8 @@ export async function doStream(opts: StreamOpts): Promise<StreamResult> {
     const turnModel = prepared.model
       || (prepared.agent === 'claude' ? prepared.claudeModel
         : prepared.agent === 'codex' ? prepared.codexModel
-        : prepared.agent === 'gemini' ? prepared.geminiModel
+        : prepared.agent === 'agy' ? prepared.agyModel
+        : prepared.agent === 'gemini' ? (prepared.geminiModel || prepared.agyModel)
         : prepared.agent === 'hermes' ? prepared.hermesModel
         : null);
     if (turnModel) session.record.model = turnModel;

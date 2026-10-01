@@ -20,6 +20,7 @@ export interface AgentDriver {
   readonly id: string;
   readonly cmd: string;
   readonly thinkLabel: string;
+  readonly hidden?: boolean;
   readonly capabilities?: AgentDriverCapabilities;
   readonly acceptedProviderKinds?: readonly string[];
 
@@ -40,14 +41,14 @@ const drivers = new Map<string, AgentDriver>();
 export function registerDriver(d: AgentDriver) { drivers.set(d.id, d); }
 
 export function getDriver(id: string): AgentDriver {
-  const d = drivers.get(id);
-  if (!d) throw new Error(`Unknown agent: ${id}. Available: ${[...drivers.keys()].join(', ')}`);
+  const d = drivers.get(id) || (id === 'gemini' ? drivers.get('agy') : undefined);
+  if (!d) throw new Error(`Unknown agent: ${id}. Available: ${allDriverIds().join(', ')}`);
   return d;
 }
 
-export function hasDriver(id: string): boolean { return drivers.has(id); }
-export function allDrivers(): AgentDriver[] { return [...drivers.values()]; }
-export function allDriverIds(): string[] { return [...drivers.keys()]; }
+export function hasDriver(id: string): boolean { return drivers.has(id) || (id === 'gemini' && drivers.has('agy')); }
+export function allDrivers(): AgentDriver[] { return [...drivers.values()].filter(d => !d.hidden); }
+export function allDriverIds(): string[] { return allDrivers().map(d => d.id); }
 
 export function shutdownAllDrivers() {
   for (const d of drivers.values()) d.shutdown();

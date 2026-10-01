@@ -1,5 +1,5 @@
 import type { Agent } from '../../agent/index.js';
-import { normalizeClaudeModelId } from '../../agent/index.js';
+import { normalizeClaudeModelId, normalizeAgyModelId } from '../../agent/index.js';
 import type { UserConfig } from './user-config.js';
 
 /** Account-scoped GPT-5.6 variants the Codex model catalog currently advertises. */
@@ -12,13 +12,15 @@ export const CODEX_56_MODEL_IDS = [
 export const DEFAULT_AGENT_MODELS: Record<Agent, string> = {
   claude: 'claude-opus-5',
   codex: CODEX_56_MODEL_IDS[0],
-  gemini: 'gemini-3.1-pro-preview',
+  agy: 'gemini-3.8-flash-high',
+  gemini: 'gemini-3.8-flash-high',
   hermes: 'anthropic/claude-sonnet-4',
 };
 
 export const DEFAULT_AGENT_EFFORTS: Partial<Record<Agent, string>> = {
   claude: 'high',
   codex: 'xhigh',
+  agy: 'high',
   gemini: 'high',
   hermes: 'medium',
 };
@@ -39,7 +41,8 @@ export function agentModelEnv(agent: Agent, env: Record<string, string | undefin
   switch (agent) {
     case 'claude': return trimmed(env.CLAUDE_MODEL);
     case 'codex': return trimmed(env.CODEX_MODEL);
-    case 'gemini': return trimmed(env.GEMINI_MODEL);
+    case 'agy': return trimmed(env.AGY_MODEL || env.GEMINI_MODEL);
+    case 'gemini': return trimmed(env.GEMINI_MODEL || env.AGY_MODEL);
     case 'hermes': return trimmed(env.HERMES_MODEL);
   }
   return '';
@@ -49,7 +52,8 @@ export function agentEffortEnv(agent: Agent, env: Record<string, string | undefi
   switch (agent) {
     case 'claude': return trimmed(env.CLAUDE_REASONING_EFFORT).toLowerCase();
     case 'codex': return trimmed(env.CODEX_REASONING_EFFORT).toLowerCase();
-    case 'gemini': return trimmed(env.GEMINI_REASONING_EFFORT).toLowerCase();
+    case 'agy': return trimmed(env.AGY_REASONING_EFFORT || env.GEMINI_REASONING_EFFORT).toLowerCase();
+    case 'gemini': return trimmed(env.GEMINI_REASONING_EFFORT || env.AGY_REASONING_EFFORT).toLowerCase();
     case 'hermes': return trimmed(env.HERMES_REASONING_EFFORT).toLowerCase();
   }
   return '';
@@ -64,9 +68,10 @@ export function resolveAgentModel(config: Partial<UserConfig> | Record<string, a
     case 'codex':
       value = trimmed((config as Partial<UserConfig>).codexModel || agentModelEnv('codex') || DEFAULT_AGENT_MODELS.codex);
       return value || DEFAULT_AGENT_MODELS.codex;
+    case 'agy':
     case 'gemini':
-      value = trimmed((config as Partial<UserConfig>).geminiModel || agentModelEnv('gemini') || DEFAULT_AGENT_MODELS.gemini);
-      return value || DEFAULT_AGENT_MODELS.gemini;
+      value = trimmed((config as Partial<UserConfig>).agyModel || (config as Partial<UserConfig>).geminiModel || agentModelEnv(agent) || DEFAULT_AGENT_MODELS.agy);
+      return normalizeAgyModelId(value || DEFAULT_AGENT_MODELS.agy);
     case 'hermes':
       value = trimmed((config as Partial<UserConfig>).hermesModel || agentModelEnv('hermes') || DEFAULT_AGENT_MODELS.hermes);
       return value || DEFAULT_AGENT_MODELS.hermes;
@@ -84,9 +89,10 @@ export function resolveAgentEffort(config: Partial<UserConfig> | Record<string, 
       const value = trimmed((config as Partial<UserConfig>).codexReasoningEffort || agentEffortEnv('codex') || DEFAULT_AGENT_EFFORTS.codex).toLowerCase();
       return value || DEFAULT_AGENT_EFFORTS.codex || null;
     }
+    case 'agy':
     case 'gemini': {
-      const value = trimmed((config as Partial<UserConfig>).geminiReasoningEffort || agentEffortEnv('gemini') || DEFAULT_AGENT_EFFORTS.gemini).toLowerCase();
-      return value || DEFAULT_AGENT_EFFORTS.gemini || null;
+      const value = trimmed((config as Partial<UserConfig>).agyReasoningEffort || (config as Partial<UserConfig>).geminiReasoningEffort || agentEffortEnv(agent) || DEFAULT_AGENT_EFFORTS.agy).toLowerCase();
+      return value || DEFAULT_AGENT_EFFORTS.agy || null;
     }
     case 'hermes': {
       const value = trimmed((config as Partial<UserConfig>).hermesReasoningEffort || agentEffortEnv('hermes') || DEFAULT_AGENT_EFFORTS.hermes).toLowerCase();
@@ -147,6 +153,7 @@ export function setAgentModelEnv(agent: Agent, value: string, env: NodeJS.Proces
   switch (agent) {
     case 'claude': env.CLAUDE_MODEL = value; break;
     case 'codex': env.CODEX_MODEL = value; break;
+    case 'agy': env.AGY_MODEL = value; break;
     case 'gemini': env.GEMINI_MODEL = value; break;
     case 'hermes': env.HERMES_MODEL = value; break;
   }
@@ -156,6 +163,7 @@ export function setAgentEffortEnv(agent: Agent, value: string, env: NodeJS.Proce
   switch (agent) {
     case 'claude': env.CLAUDE_REASONING_EFFORT = value; break;
     case 'codex': env.CODEX_REASONING_EFFORT = value; break;
+    case 'agy': env.AGY_REASONING_EFFORT = value; break;
     case 'gemini': env.GEMINI_REASONING_EFFORT = value; break;
     case 'hermes': env.HERMES_REASONING_EFFORT = value; break;
   }
@@ -199,8 +207,7 @@ const CODEX_56_EFFORTS: Record<(typeof CODEX_56_MODEL_IDS)[number], readonly str
 const AGENT_EFFORT_LEVELS: Partial<Record<Agent, EffortLevel[]>> = {
   claude: effortLevels('low', 'medium', 'high', 'xhigh', 'max', ULTRA_EFFORT),
   codex: effortLevels(...CODEX_BASE_EFFORTS),
-  // gemini intentionally has no UI-exposed effort levels: pikiloom sends it no reasoning-effort
-  // (see the gemini→null guards in InputComposer). Add a gemini entry here to surface low/high.
+  agy: effortLevels('low', 'medium', 'high'),
   hermes: effortLevels('minimal', 'low', 'medium', 'high', 'xhigh'),
 };
 

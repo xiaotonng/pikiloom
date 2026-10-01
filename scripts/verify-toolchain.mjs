@@ -75,8 +75,10 @@ const runtimeAlternatives = (pkg.devEngines?.runtime?.version ?? '')
   .split('||').map((alternative) => alternative.trim()).filter(Boolean);
 expectEqual('devEngines.runtime.name', pkg.devEngines?.runtime?.name, 'node');
 expectEqual('devEngines.runtime canonical pin', runtimeAlternatives[0], expectedNode);
+const pmAlternatives = (pkg.devEngines?.packageManager?.version ?? '')
+  .split('||').map((alternative) => alternative.trim()).filter(Boolean);
 expectEqual('devEngines.packageManager.name', pkg.devEngines?.packageManager?.name, 'npm');
-expectEqual('devEngines.packageManager.version', pkg.devEngines?.packageManager?.version, expectedNpm);
+expectEqual('devEngines.packageManager canonical pin', pmAlternatives[0], expectedNpm);
 expectEqual('kernel TypeScript spec', kernelPkg.devDependencies?.typescript, expectedTypeScript);
 expectEqual('lockfile root @types/node spec', lock.packages?.['']?.devDependencies?.['@types/node'], expectedNodeTypes);
 expectEqual('lockfile @types/node version', lock.packages?.['node_modules/@types/node']?.version, expectedNodeTypes);
@@ -89,7 +91,9 @@ expectEqual('Docker npm', dockerNpm, expectedNpm);
 if (!runtimeAlternatives.some((alternative) => satisfiesRuntimeAlternative(process.versions.node, alternative))) {
   fail(`Node.js: expected ${runtimeAlternatives.join(' || ')}, got ${process.versions.node}`);
 }
-expectEqual('npm', npmVersion(), expectedNpm);
+if (!pmAlternatives.some((alternative) => satisfiesRuntimeAlternative(npmVersion(), alternative))) {
+  fail(`npm: expected ${pmAlternatives.join(' || ')}, got ${npmVersion()}`);
+}
 
 if (!runtimeOnly) {
   for (const location of lockedTypeScriptPackages) {

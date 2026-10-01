@@ -1,10 +1,12 @@
 import type { Agent, HandoverRef, TailMessage } from './types.js';
 import { getSessionMessages } from './session.js';
 import { claudeContextWindowFromModel } from './drivers/claude.js';
+import { stripInjectedPrompts } from './utils.js';
 
 const DEFAULT_AGENT_WINDOW_TOKENS: Record<string, number> = {
   claude: 200_000,
   codex: 256_000,
+  agy: 1_000_000,
   gemini: 1_000_000,
   hermes: 128_000,
 };
@@ -14,7 +16,7 @@ const DEFAULT_AGENT_WINDOW_TOKENS: Record<string, number> = {
 // moment a model lands — which is how every Claude model once fell through to the 200k default.
 function agentWindowTokens(agent: string, model?: string | null): number {
   const m = (model || '').toLowerCase();
-  if (agent === 'gemini' && /(^|-)(2\.5|3|3\.1)/.test(m)) return 1_000_000;
+  if ((agent === 'agy' || agent === 'gemini') && /(^|-)(2\.5|3|3\.1|3\.6|3\.7|3\.8)/.test(m)) return 1_000_000;
   if (agent === 'claude') return claudeContextWindowFromModel(m) ?? DEFAULT_AGENT_WINDOW_TOKENS.claude;
   return DEFAULT_AGENT_WINDOW_TOKENS[agent] ?? 128_000;
 }
@@ -80,9 +82,16 @@ export async function compactForHandover(opts: CompactForHandoverOpts): Promise<
   }
 
   const messagesTotal = messages.length;
-  const envelopeOpen = `<handover from="${opts.fromAgent}" to="${opts.toAgent}" turns="${turnsTotal}">`;
-  const envelopeClose = `</handover>`;
-  const trailerText = `\n[Continuing this conversation. The previous turns above ran under ${opts.fromAgent}; you are now ${opts.toAgent} picking up where it left off. Your next user message follows.]`;
+  const isSameAgent = opts.fromAgent === opts.toAgent;
+  const envelopeOpen = isSameAgent
+    ? `<compacted_history agent="${opts.fromAgent}" turns="${turnsTotal}">`
+    : `<handover from="${opts.fromAgent}" to="${opts.toAgent}" turns="${turnsTotal}">`;
+  const envelopeClose = isSameAgent
+    ? `</compacted_history>`
+    : `</handover>`;
+  const trailerText = isSameAgent
+    ? `\n[Continuing this conversation from the compacted history above. The previous ${turnsTotal} turns have been summarized/tailed above for your context only. Do not repeat, quote, or output <compacted_history> XML tags. Your next prompt follows.]`
+    : `\n[Continuing this conversation. The previous turns above ran under ${opts.fromAgent}; you are now ${opts.toAgent} picking up where it left off. This history is for your context only. Do not repeat, quote, or output <handover> XML tags. Your next user message follows.]`;
   const overhead = envelopeOpen.length + envelopeClose.length + trailerText.length + 8 ;
   const messageBudget = Math.max(0, budgetChars - overhead);
 
@@ -92,13 +101,16 @@ export async function compactForHandover(opts: CompactForHandoverOpts): Promise<
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     const label = msg.role === 'user' ? 'User' : 'Assistant';
-    const line = `${label}: ${msg.text}`;
+    const text = stripInjectedPrompts(msg.text);
+    if (!text.trim()) continue;
+    const line = `${label}: ${text}`;
     if (used + line.length + 1 > messageBudget) break;
     lines.push(line);
     used += line.length + 1;
     kept += 1;
   }
   lines.reverse();
+
 
   if (!lines.length) {
     return { ...makeEmptyHandoverResult('budget too small'), budgetChars };

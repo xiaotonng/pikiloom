@@ -257,7 +257,10 @@ Environment variables (per agent):
   CODEX_REASONING_EFFORT     Reasoning effort (default: xhigh)
   CODEX_FULL_ACCESS          Full-access mode (default: true)
   CODEX_EXTRA_ARGS           Extra CLI args for codex
-  GEMINI_MODEL               Gemini model name
+  AGY_MODEL                  Antigravity model name
+  AGY_REASONING_EFFORT       Antigravity reasoning effort (low|medium|high)
+  AGY_EXTRA_ARGS             Extra CLI args for agy
+  GEMINI_MODEL               Gemini model name (alias for agy)
   GEMINI_APPROVAL_MODE       Approval mode (default: yolo)
   GEMINI_SANDBOX             Sandbox mode (default: false)
   GEMINI_EXTRA_ARGS          Extra CLI args for gemini
@@ -575,7 +578,10 @@ function applyRuntimeConfig(
   if (args.model) {
     const ag = args.agent || runtimeConfig.defaultAgent || 'codex';
     if (ag === 'codex') process.env.CODEX_MODEL = args.model;
-    else if (ag === 'gemini') process.env.GEMINI_MODEL = args.model;
+    else if (ag === 'agy' || ag === 'gemini') {
+      process.env.AGY_MODEL = args.model;
+      process.env.GEMINI_MODEL = args.model;
+    }
     else process.env.CLAUDE_MODEL = args.model;
   }
   if (args.timeout != null) process.env.PIKILOOM_TIMEOUT = String(args.timeout);

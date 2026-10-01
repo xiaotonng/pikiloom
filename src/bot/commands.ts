@@ -5,6 +5,7 @@ import { fmtTokens, fmtUptime, fmtBytes } from './bot.js';
 import {
   getProjectSkillPaths, normalizeClaudeModelId, sessionListDisplayTitle,
   listAllMcpExtensions, listSkills as listAllSkills, isSystemInjectedUserText,
+  stripInjectedPrompts,
 } from '../agent/index.js';
 import { getDriver } from '../agent/driver.js';
 import type { UsageResult } from '../agent/index.js';
@@ -185,6 +186,18 @@ function parseObjective(args: string): { objective: string; tokenBudget: number 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+export async function handleCompactCommand(bot: Bot, chatId: ChatId): Promise<string> {
+  const res = await bot.compactConversationForChat(chatId);
+  if (!res.ok) {
+    return `Compact failed: ${res.error || 'Unknown error'}`;
+  }
+  return [
+    `Compacted session ${res.sessionId?.slice(0, 8)}:`,
+    `Retained ${res.messagesIncluded}/${res.messagesTotal} messages across ${res.turnsTotal} turns (~${res.charsIncluded} chars).`,
+    `Send a message to continue in a fresh session with this context.`,
+  ].join('\n');
 }
 
 export interface SessionEntry {
@@ -378,7 +391,8 @@ export function extractLastSessionTurn(
     }
   }
 
-  const userText = String(lastUserIndex >= 0 ? messages[lastUserIndex].text : '').trim() || null;
+  const rawUserText = lastUserIndex >= 0 ? messages[lastUserIndex].text : '';
+  const userText = stripInjectedPrompts(rawUserText).trim() || null;
   const assistantTexts: string[] = [];
   for (let i = lastUserIndex >= 0 ? lastUserIndex + 1 : 0; i < messages.length; i++) {
     if (messages[i].role === 'assistant' && messages[i].text) assistantTexts.push(messages[i].text);
@@ -422,7 +436,7 @@ export interface AgentsListData {
 const AGENT_LABEL_OVERRIDES: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  gemini: 'Gemini CLI',
+  agy: 'Antigravity',
   hermes: 'Hermes',
 };
 

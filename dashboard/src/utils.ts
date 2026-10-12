@@ -4,7 +4,7 @@ import type { SessionInfo } from './types';
 export const AGENT_ACCEPTED_PROVIDER_KINDS: Record<Agent, readonly string[]> = {
   claude: ['anthropic', 'openai-compatible'],
   codex: ['openai', 'openai-compatible'],
-  gemini: ['google'],
+  agy: ['google'],
   hermes: ['anthropic', 'openai', 'openai-compatible', 'google'],
 };
 
@@ -90,15 +90,15 @@ export const agentMeta: Record<string, AgentMeta> = {
     border: 'rgba(125,211,252,0.2)',
     advantageKey: 'config.agentAdvantageCodex',
   },
-  gemini: {
-    label: 'Gemini CLI',
-    shortLabel: 'Gemini',
-    color: '#c4b5fd',
-    bg: 'rgba(196,181,253,0.12)',
-    letter: 'G',
-    glow: 'rgba(196,181,253,0.2)',
-    border: 'rgba(196,181,253,0.2)',
-    advantageKey: 'config.agentAdvantageGemini',
+  agy: {
+    label: 'Antigravity',
+    shortLabel: 'AGY',
+    color: '#818cf8',
+    bg: 'rgba(129,140,248,0.12)',
+    letter: 'A',
+    glow: 'rgba(129,140,248,0.2)',
+    border: 'rgba(129,140,248,0.2)',
+    advantageKey: 'config.agentAdvantageAgy',
   },
   hermes: {
     label: 'Hermes',
@@ -113,7 +113,8 @@ export const agentMeta: Record<string, AgentMeta> = {
 };
 
 export function getAgentMeta(agent: string): AgentMeta {
-  return agentMeta[agent] || { ...defaultMeta, label: agent, shortLabel: agent };
+  const effectiveAgent = agent === 'gemini' ? 'agy' : agent;
+  return agentMeta[effectiveAgent] || { ...defaultMeta, label: agent, shortLabel: agent };
 }
 
 export function foldUltraEffort(

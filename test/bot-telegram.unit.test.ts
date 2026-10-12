@@ -343,6 +343,7 @@ describe('TelegramBot', () => {
 
     {
       const { bot, ctx, sends } = createBot();
+      bot.chat(ctx.chatId).agent = 'codex';
       const sessionId = 'engine-history-preview';
 
       vi.spyOn(bot, 'fetchSessions').mockResolvedValue({

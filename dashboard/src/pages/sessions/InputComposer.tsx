@@ -273,12 +273,10 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     const targetProfileId: string | null | undefined = selectedProfileId !== undefined
       ? selectedProfileId
       : (sendOwnsSessionAgent && session.model ? (session.profileId ?? null) : undefined);
-    const targetEffort = targetAgent === 'gemini'
-      ? null
-      : ((selectedEffort
-        || (sendOwnsSessionAgent ? foldUltraEffort(targetAgent, session.thinkingEffort, session.workflowEnabled) : '')
-        || foldUltraEffort(targetAgent, targetStatus?.selectedEffort, targetStatus?.workflowEnabled)
-        || '').trim() || null);
+    const targetEffort = (selectedEffort
+      || (sendOwnsSessionAgent ? foldUltraEffort(targetAgent, session.thinkingEffort, session.workflowEnabled) : '')
+      || foldUltraEffort(targetAgent, targetStatus?.selectedEffort, targetStatus?.workflowEnabled)
+      || '').trim() || null;
     const isAgentSwitch = targetAgent !== session.agent;
     const targetSessionId = isAgentSwitch ? '' : session.sessionId;
     const previousAgent = isAgentSwitch && session.agent ? session.agent : null;
@@ -513,12 +511,10 @@ export const InputComposer = memo(function InputComposer({ session, workdir, onS
     || (sessionOwnsAgent ? (session.model || '') : '')
     || currentAgent?.selectedModel
     || '';
-  const currentEffort = effectiveAgent === 'gemini'
-    ? ''
-    : (selectedEffort
-      || (sessionOwnsAgent ? foldUltraEffort(effectiveAgent, session.thinkingEffort, session.workflowEnabled) : '')
-      || foldUltraEffort(effectiveAgent, currentAgent?.selectedEffort, currentAgent?.workflowEnabled)
-      || '');
+  const currentEffort = selectedEffort
+    || (sessionOwnsAgent ? foldUltraEffort(effectiveAgent, session.thinkingEffort, session.workflowEnabled) : '')
+    || foldUltraEffort(effectiveAgent, currentAgent?.selectedEffort, currentAgent?.workflowEnabled)
+    || '';
   useEffect(() => {
     onSelectionChange?.({ model: currentModel || null, effort: currentEffort || null });
   }, [currentModel, currentEffort, onSelectionChange]);

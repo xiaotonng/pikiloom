@@ -15,10 +15,10 @@ const MAIN = [
   'FsSessionStore', 'NullModelResolver', 'NoopToolProvider', 'PassthroughSystemPromptBuilder',
   'AutoCancelInteractionHandler', 'DeferToTerminalInteractionHandler', 'NoopCatalog', 'defaultBaseDir',
   // drivers & surfaces
-  'EchoDriver', 'ClaudeDriver', 'CodexDriver', 'GeminiDriver', 'AcpDriver', 'HermesDriver',
+  'EchoDriver', 'ClaudeDriver', 'CodexDriver', 'AgyDriver', 'GeminiDriver', 'AcpDriver', 'HermesDriver',
   'WebSurface', 'CliSurface',
   // native-session discovery
-  'discoverClaudeNativeSessions', 'discoverCodexNativeSessions', 'discoverGeminiNativeSessions',
+  'discoverClaudeNativeSessions', 'discoverCodexNativeSessions', 'discoverAgyNativeSessions', 'discoverGeminiNativeSessions',
   'encodeClaudeProjectDir',
   // workspace
   'resolveLoomPaths', 'normalizeStateDirName', 'SessionsManager', 'SkillsManager',
@@ -31,8 +31,8 @@ const MAIN = [
 ].sort();
 
 const DRIVERS = [
-  'EchoDriver', 'ClaudeDriver', 'CodexDriver', 'GeminiDriver', 'AcpDriver', 'HermesDriver',
-  'discoverClaudeNativeSessions', 'discoverCodexNativeSessions', 'discoverGeminiNativeSessions',
+  'EchoDriver', 'ClaudeDriver', 'CodexDriver', 'AgyDriver', 'GeminiDriver', 'AcpDriver', 'HermesDriver',
+  'discoverClaudeNativeSessions', 'discoverCodexNativeSessions', 'discoverAgyNativeSessions', 'discoverGeminiNativeSessions',
   'encodeClaudeProjectDir',
 ].sort();
 

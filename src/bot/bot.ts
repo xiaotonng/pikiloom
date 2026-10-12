@@ -5,6 +5,7 @@ import { getActiveUserConfig, loadWorkspaces, onUserConfigChange, resolveUserWor
 import {
   doStream, ensureManagedSession, findManagedThreadSession, getSessionStoredConfig, getUsage, initializeProjectSkills, listAgents, resolveAgentModels, resolveDefaultAgent, listSkills, stageSessionFiles,
   reconcileOrphanedRunningSessions, getAgentBoundModelId, setAgentBoundModelId, collapseSkillPrompt,
+  normalizeAgyModelId, normalizeClaudeModelId, isAgySessionOversized,
   readGoal, accountTurn, shouldContinueAfterTurn, renderContinuationPrompt, renderBudgetLimitPrompt,
   bumpContinuationCount, pauseGoal, resumeGoal, setGoal as setGoalState, clearGoal as clearGoalState,
   setCodexGoal, getCodexGoal, clearCodexGoal, pauseCodexGoal, resumeCodexGoal,
@@ -72,6 +73,7 @@ const MACOS_USER_ACTIVITY_PULSE_TIMEOUT_S = BOT_TIMEOUTS.macosUserActivityPulseT
 
 export function normalizeAgent(raw: string): Agent {
   const v = raw.trim().toLowerCase();
+  if (v === 'gemini') return 'agy';
   if (!hasDriver(v)) throw new Error(`Invalid agent: ${v}. Use: ${allDriverIds().join(', ')}`);
   return v;
 }
@@ -352,6 +354,8 @@ export class Bot {
   get claudeExtraArgs(): string[] { return this.agentConfigs.claude?.extraArgs || []; }
   get claudeWorkflowEnabled(): boolean { return this.agentConfigs.claude?.workflowEnabled ?? false; }
   get claudeAccessMode(): ClaudeAccessMode { return this.agentConfigs.claude?.accessMode || DEFAULT_CLAUDE_ACCESS_MODE; }
+  get agySandbox(): boolean { return this.agentConfigs.agy?.sandbox ?? false; }
+  get agyExtraArgs(): string[] { return this.agentConfigs.agy?.extraArgs || []; }
   get geminiApprovalMode(): string { return this.agentConfigs.gemini?.approvalMode || 'yolo'; }
   get geminiSandbox(): boolean { return this.agentConfigs.gemini?.sandbox ?? false; }
   get geminiExtraArgs(): string[] { return this.agentConfigs.gemini?.extraArgs || []; }
@@ -749,8 +753,15 @@ export class Bot {
         accessMode: resolveClaudeAccessMode(config),
         extraArgs: shellSplit(process.env.CLAUDE_EXTRA_ARGS || ''),
       },
+      agy: {
+        model: resolveAgentModel(config, 'agy'),
+        reasoningEffort: resolveAgentEffort(config, 'agy') || 'high',
+        sandbox: envBool('AGY_SANDBOX', false),
+        extraArgs: shellSplit(process.env.AGY_EXTRA_ARGS || ''),
+      },
       gemini: {
         model: resolveAgentModel(config, 'gemini'),
+        reasoningEffort: resolveAgentEffort(config, 'gemini') || 'high',
         approvalMode: envString('GEMINI_APPROVAL_MODE', 'yolo'),
         sandbox: envBool('GEMINI_SANDBOX', false),
         extraArgs: shellSplit(process.env.GEMINI_EXTRA_ARGS || ''),
@@ -1894,6 +1905,51 @@ export class Bot {
     this.resetChatConversation(cs);
   }
 
+  async compactConversationForChat(chatId: ChatId): Promise<{
+    ok: boolean;
+    error?: string;
+    sessionId?: string;
+    messagesIncluded?: number;
+    messagesTotal?: number;
+    turnsTotal?: number;
+    charsIncluded?: number;
+  }> {
+    const cs = this.chat(chatId);
+    const sessionId = cs.sessionId;
+    if (!sessionId || isPendingSessionId(sessionId)) {
+      return { ok: false, error: 'No active session to compact.' };
+    }
+    const agent = cs.agent;
+    const workdir = this.chatWorkdir(chatId);
+    const model = this.modelForAgent(agent);
+    try {
+      const result = await compactForHandover({
+        fromAgent: agent,
+        fromSessionId: sessionId,
+        workdir,
+        toAgent: agent,
+        toModel: model,
+      });
+      if (!result.ok || !result.seed) {
+        return { ok: false, error: result.error || 'No message history found to compact.' };
+      }
+      cs.pendingHandoverFrom = { agent, sessionId };
+      this.resetConversationForChat(chatId);
+      this.log(`[compact] session ${sessionId} compacted for chat=${chatId} (${result.messagesIncluded}/${result.messagesTotal} msgs)`);
+      return {
+        ok: true,
+        sessionId,
+        messagesIncluded: result.messagesIncluded,
+        messagesTotal: result.messagesTotal,
+        turnsTotal: result.turnsTotal,
+        charsIncluded: result.charsIncluded,
+      };
+    } catch (e: any) {
+      this.warn(`[compact] failed for chat=${chatId}: ${e?.message || e}`);
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
   adoptExistingSessionForChat(
     chatId: ChatId,
     session: Pick<SessionInfo, 'agent' | 'sessionId' | 'workdir' | 'workspacePath' | 'model' | 'title' | 'threadId' | 'thinkingEffort' | 'profileId'>,
@@ -2036,7 +2092,7 @@ export class Bot {
       || (storedConfig?.thinkingEffort || '')
       || agentConfig.reasoningEffort
       || 'high';
-    const effort = cs.agent === 'gemini' ? null : (effortRaw || null);
+    const effort = effortRaw || null;
     const workflowOn = opts?.workflowEnabled ?? this.workflowEnabledForAgent(cs.agent);
     const displayEffort = effort && getDriverCapabilities(cs.agent).workflow && workflowOn
       ? 'ultra'
@@ -2123,12 +2179,14 @@ export class Bot {
       if (kind === 'model') {
         if (agent === 'claude') patch.claudeModel = value;
         else if (agent === 'codex') patch.codexModel = value;
-        else if (agent === 'gemini') patch.geminiModel = value;
+        else if (agent === 'agy') { patch.agyModel = value; patch.geminiModel = value; }
+        else if (agent === 'gemini') { patch.geminiModel = value; patch.agyModel = value; }
         else if (agent === 'hermes') patch.hermesModel = value;
       } else {
         if (agent === 'claude') patch.claudeReasoningEffort = value;
         else if (agent === 'codex') patch.codexReasoningEffort = value;
-        else if (agent === 'gemini') patch.geminiReasoningEffort = value;
+        else if (agent === 'agy') { patch.agyReasoningEffort = value; patch.geminiReasoningEffort = value; }
+        else if (agent === 'gemini') { patch.geminiReasoningEffort = value; patch.agyReasoningEffort = value; }
         else if (agent === 'hermes') patch.hermesReasoningEffort = value;
       }
       if (Object.keys(patch).length) updateUserConfig(patch);
@@ -2268,7 +2326,7 @@ export class Bot {
     if (opts.initial) this.defaultAgent = nextDefaultAgent;
     else if (nextDefaultAgent !== this.defaultAgent) this.setDefaultAgent(nextDefaultAgent);
 
-    for (const agent of ['claude', 'codex', 'gemini', 'hermes'] as Agent[]) {
+    for (const agent of ['claude', 'codex', 'agy', 'gemini', 'hermes'] as Agent[]) {
       const nextModel = resolveAgentModel(config, agent);
       if (nextModel && this.modelForAgent(agent) !== nextModel) {
         if (opts.initial) this.agentConfigs[agent].model = nextModel;
@@ -2308,7 +2366,10 @@ export class Bot {
     const storedConfig = cs.sessionId && !isPendingSessionId(cs.sessionId)
       ? getSessionStoredConfig(sessionWorkdirForConfig, cs.agent, cs.sessionId)
       : null;
-    const resolvedModel = cs.modelId || storedConfig?.model || this.modelForAgent(cs.agent);
+    const rawResolvedModel = cs.modelId || storedConfig?.model || this.modelForAgent(cs.agent);
+    const resolvedModel = (cs.agent === 'agy' || cs.agent === 'gemini')
+      ? normalizeAgyModelId(rawResolvedModel)
+      : (cs.agent === 'claude' ? normalizeClaudeModelId(rawResolvedModel) : rawResolvedModel);
     const resolvedThinkingEffort = ('thinkingEffort' in cs && typeof cs.thinkingEffort === 'string' && cs.thinkingEffort.trim())
       ? cs.thinkingEffort.trim().toLowerCase()
       : (storedConfig?.thinkingEffort || agentConfig.reasoningEffort || 'high');
@@ -2318,7 +2379,31 @@ export class Bot {
       ? path.resolve(cs.workdir)
       : this.workdir;
     this.debug(`[runStream] agent=${cs.agent} session=${cs.sessionId || '(new)'} workdir=${sessionWorkdir} timeout=${this.runTimeout}s attachments=${attachments.length}`);
-    this.debug(`[runStream] ${cs.agent} config: model=${resolvedModel} extraArgs=[${extraArgs.join(' ')}]`);
+    // Auto-compaction for oversized sessions (e.g. agy sessions with large SQLite histories)
+    if (cs.sessionId && !isPendingSessionId(cs.sessionId) && (cs.agent === 'agy' || cs.agent === 'gemini') && isAgySessionOversized(cs.sessionId)) {
+      this.log(`[runStream] ${cs.agent} session ${cs.sessionId} is oversized; auto-compacting into a fresh session`);
+      try {
+        const compResult = await compactForHandover({
+          fromAgent: cs.agent,
+          fromSessionId: cs.sessionId,
+          workdir: sessionWorkdir,
+          toAgent: cs.agent,
+          toModel: resolvedModel,
+        });
+        if (compResult.ok && compResult.seed) {
+          prompt = compResult.seed + '\n\n' + prompt;
+          extras?.onPreparedPrompt?.(prompt);
+          const oldSessionId = cs.sessionId;
+          cs.sessionId = null;
+          if ('activeSessionKey' in cs) cs.activeSessionKey = null;
+          if ('activeThreadId' in cs) cs.activeThreadId = null;
+          this.log(`[runStream] auto-compacted oversized session ${oldSessionId} (${compResult.messagesIncluded}/${compResult.messagesTotal} messages retained)`);
+        }
+      } catch (compErr: any) {
+        this.warn(`[runStream] auto-compaction failed: ${compErr?.message || compErr}`);
+      }
+    }
+
     const isFirstTurnOfSession = !cs.sessionId || isPendingSessionId(cs.sessionId);
 
     const handoverFrom = ('handoverFrom' in cs && cs.handoverFrom) ? cs.handoverFrom : null;
@@ -2396,6 +2481,10 @@ export class Bot {
       claudeAccessMode: cs.agent === 'claude' ? this.claudeAccessMode : undefined,
       claudeAppendSystemPrompt: effectiveSystemPrompt || undefined,
       claudeExtraArgs: this.claudeExtraArgs.length ? this.claudeExtraArgs : undefined,
+      agyModel: (cs.agent === 'agy' || cs.agent === 'gemini') ? resolvedModel : (this.agentConfigs.agy?.model || this.agentConfigs.gemini?.model || ''),
+      agySandbox: this.agySandbox,
+      agySystemInstruction: effectiveSystemPrompt || undefined,
+      agyExtraArgs: this.agyExtraArgs.length ? this.agyExtraArgs : undefined,
       geminiModel: cs.agent === 'gemini' ? resolvedModel : (this.agentConfigs.gemini?.model || ''),
       geminiApprovalMode: this.geminiApprovalMode,
       geminiSandbox: this.geminiSandbox,
@@ -2412,6 +2501,33 @@ export class Bot {
     let result: StreamResult;
     try {
       result = await doStream(opts);
+      if (result.stopReason === 'quota_exhausted' && opts.sessionId && !isPendingSessionId(opts.sessionId)) {
+        this.warn(`[runStream] ${cs.agent} hit quota_exhausted on session ${opts.sessionId}; auto-compacting into a fresh session and retrying`);
+        try {
+          const compResult = await compactForHandover({
+            fromAgent: cs.agent,
+            fromSessionId: opts.sessionId,
+            workdir: sessionWorkdir,
+            toAgent: cs.agent,
+            toModel: resolvedModel,
+          });
+          if (compResult.ok && compResult.seed) {
+            const retryPrompt = compResult.seed + '\n\n' + prompt;
+            extras?.onPreparedPrompt?.(retryPrompt);
+            cs.sessionId = null;
+            if ('activeSessionKey' in cs) cs.activeSessionKey = null;
+            if ('activeThreadId' in cs) cs.activeThreadId = null;
+            const retryOpts = { ...opts, sessionId: null, prompt: retryPrompt };
+            const retryResult = await doStream(retryOpts);
+            if (retryResult.ok) {
+              this.log(`[runStream] auto-compaction retry succeeded in session ${retryResult.sessionId}`);
+              result = retryResult;
+            }
+          }
+        } catch (retryErr: any) {
+          this.warn(`[runStream] auto-compaction retry failed: ${retryErr?.message || retryErr}`);
+        }
+      }
     } catch (e: any) {
       appendTurnAudit({
         agent: cs.agent, sessionId: cs.sessionId || null, ok: false, stopReason: 'exception',

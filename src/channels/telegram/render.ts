@@ -17,6 +17,7 @@ import {
   summarizeHumanLoopAnswer,
 } from '../../bot/human-loop.js';
 import type { FooterStatus, StreamPreviewRenderInput, FooterDecorations } from '../../bot/render-shared.js';
+import { stripInjectedPrompts } from '../../bot/streaming.js';
 import {
   footerStatusSymbol,
   formatFooterParts,
@@ -314,7 +315,7 @@ export function mdToTgHtml(text: string): string {
 
 export function renderSessionTurnHtml(userText: string | null | undefined, assistantText: string | null | undefined): string {
   const parts: string[] = [];
-  const user = String(userText || '').trim();
+  const user = stripInjectedPrompts(String(userText || '')).trim();
   const assistant = String(assistantText || '').trim();
   if (user || assistant) parts.push('<b>Recent Context</b>');
   if (user) parts.push(`<blockquote expandable>${escapeHtml(user)}</blockquote>`);

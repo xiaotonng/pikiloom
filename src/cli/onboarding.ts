@@ -182,7 +182,7 @@ export function buildSetupGuide(state: SetupState, version: string, options?: { 
     '',
     `pikiloom connects ${channelLabel} to a local coding agent running on your machine.`,
     'Before the bot can start, make sure these basics are ready:',
-    '1. Claude Code, Codex, or Gemini CLI installed locally',
+    '1. Claude Code, Codex, or Antigravity installed locally',
     isTelegram
       ? '2. A Telegram bot token from @BotFather'
       : '2. A supported channel token',

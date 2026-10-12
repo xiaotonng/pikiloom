@@ -477,7 +477,7 @@ function commandLooksLikeLiveMcpController(command: string): boolean {
   const text = command.toLowerCase();
   if (/\bpikiloom\b/.test(text) || text.includes('pikiloom@')) return true;
   const first = commandTokenBase(command.split(/\s+/)[0] || '');
-  return first === 'claude' || first === 'codex' || first === 'gemini' || first === 'hermes';
+  return first === 'claude' || first === 'codex' || first === 'agy' || first === 'gemini' || first === 'hermes';
 }
 
 const PEEKABOO_REAP_THROTTLE_MS = 30_000;
@@ -918,7 +918,7 @@ export async function startMcpBridge(opts: McpBridgeOpts): Promise<McpBridgeHand
     if (Object.keys(codexBearerEnv).length) {
       extraEnv = { ...(extraEnv || {}), ...codexBearerEnv };
     }
-  } else if (opts.agent === 'gemini') {
+  } else if (opts.agent === 'agy' || opts.agent === 'gemini') {
     const extServers = getGlobalExtensionsAsServers(opts.workdir);
     const allServers = [...extServers, ...servers];
     configPath = path.join(sessionDir, 'gemini-system-settings.json');

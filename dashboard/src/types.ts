@@ -1,4 +1,4 @@
-export type Agent = 'claude' | 'codex' | 'gemini' | 'hermes';
+export type Agent = 'claude' | 'codex' | 'agy' | 'hermes';
 export type OpenTarget = 'vscode' | 'cursor' | 'windsurf' | 'finder' | 'default';
 
 export interface AgentInfo {
@@ -145,6 +145,8 @@ export interface UserConfig {
   claudeReasoningEffort?: string;
   codexModel?: string;
   codexReasoningEffort?: string;
+  agyModel?: string;
+  agyReasoningEffort?: string;
   geminiModel?: string;
   workdir?: string;
   telegramBotToken?: string;

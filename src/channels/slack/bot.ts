@@ -164,6 +164,13 @@ export class SlackBot extends Bot {
         await ctx.reply('Started a new session.');
         return true;
       }
+      case 'compact': {
+        const res = await this.compactConversationForChat(ctx.chatId);
+        await ctx.reply(res.ok
+          ? `Compacted session ${res.sessionId!.slice(0, 8)} (${res.messagesIncluded}/${res.messagesTotal} messages retained). Fresh session will continue with this context.`
+          : `Compact failed: ${res.error}`);
+        return true;
+      }
       case 'status': await this.cmdStatus(ctx); return true;
       case 'host': await this.cmdHost(ctx); return true;
       case 'agent': await this.cmdAgent(ctx, args); return true;

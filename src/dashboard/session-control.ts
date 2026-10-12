@@ -4,7 +4,7 @@ import { loadUserConfig } from '../core/config/user-config.js';
 import { splitEffortForAgent } from '../core/config/runtime-config.js';
 import { runtime } from './runtime.js';
 
-const KNOWN_AGENTS = new Set<Agent>(['claude', 'codex', 'gemini', 'hermes']);
+const KNOWN_AGENTS = new Set<Agent>(['claude', 'codex', 'agy', 'gemini', 'hermes']);
 
 function parseGoalSlash(prompt: string): { action: 'set' | 'clear' | 'pause' | 'resume' | 'status'; objective: string } | null {
   const trimmed = prompt.trim();
@@ -89,7 +89,7 @@ export async function queueDashboardSessionTask(request: QueueSessionTaskRequest
     resolvedAgent,
     typeof request.effort === 'string' ? request.effort : '',
   );
-  const thinkingEffort = resolvedAgent === 'gemini' ? '' : splitEffort;
+  const thinkingEffort = splitEffort;
   const workflowEnabled = ultraWorkflow || request.workflow === true;
 
   const goalCmd = parseGoalSlash(request.prompt || '');
@@ -211,7 +211,7 @@ export function forkDashboardSessionTask(request: ForkSessionTaskRequest) {
     agent,
     typeof request.effort === 'string' ? request.effort : '',
   );
-  const thinkingEffort = agent === 'gemini' ? '' : splitEffort;
+  const thinkingEffort = splitEffort;
 
   let prompt = request.prompt;
   const skillResult = prompt ? resolveSkillFromPrompt(request.workdir, prompt) : null;

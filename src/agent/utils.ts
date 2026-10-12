@@ -486,6 +486,68 @@ export function normalizeClaudeModelId(model: unknown): string {
   return typeof model === 'string' ? model.trim() : '';
 }
 
+export function normalizeAgyModelId(model: unknown): string {
+  const m = typeof model === 'string' ? model.trim().toLowerCase() : '';
+  if (!m || m === 'auto' || m === 'auto-gemini-3' || m === 'auto-gemini-2.5' || m === 'gemini-auto') {
+    return 'gemini-3.8-flash-high';
+  }
+  if (m === 'pro' || m === 'gemini-pro' || m === 'gemini-2.5-pro' || m === 'gemini-3-pro-preview' || m === 'gemini-3.1-pro-preview') {
+    return 'gemini-3.1-pro-high';
+  }
+  if (m === 'flash' || m === 'gemini-flash' || m === 'gemini-2.5-flash' || m === 'gemini-3-flash-preview') {
+    return 'gemini-3.8-flash-high';
+  }
+  if (m === 'flash-lite' || m === 'gemini-2.5-flash-lite' || m === 'gemini-3.1-flash-lite-preview') {
+    return 'gemini-3.6-flash-high';
+  }
+  return typeof model === 'string' ? model.trim() : '';
+}
+
+export function resolveAgyModelAndEffort(
+  rawModel?: string | null,
+  rawEffort?: string | null
+): { model: string; effort: string | null } {
+  let model = normalizeAgyModelId(rawModel || '');
+  let effort = (rawEffort || '').trim().toLowerCase();
+
+  // Claude models do not accept --effort in agy
+  if (model.startsWith('claude-')) {
+    return { model, effort: null };
+  }
+
+  // Extract embedded effort if present in the model name (e.g. gemini-3.8-flash-high, gpt-oss-120b-medium)
+  const effortMatch = /-(low|medium|high)$/.exec(model);
+  if (effortMatch) {
+    const embeddedEffort = effortMatch[1];
+    if (!effort) {
+      effort = embeddedEffort;
+    }
+    const baseModel = model.replace(/-(low|medium|high)$/, '');
+    if (baseModel.startsWith('gemini-') || baseModel.startsWith('gpt-')) {
+      model = baseModel;
+    }
+  }
+
+  // gemini-* models require an effort flag if passed as base model
+  if (model.startsWith('gemini-')) {
+    if (!effort || !['low', 'medium', 'high'].includes(effort)) {
+      effort = 'high';
+    }
+    if (model.includes('3.1-pro') && effort === 'medium') {
+      effort = 'high';
+    }
+  }
+
+  // gpt-oss models require medium effort
+  if (model.startsWith('gpt-')) {
+    if (!effort || !['low', 'medium', 'high'].includes(effort)) {
+      effort = 'medium';
+    }
+  }
+
+  return { model, effort: effort || null };
+}
+
 export function emptyUsage(agent: Agent, error: string): UsageResult {
   return { ok: false, agent, source: null, capturedAt: null, status: null, windows: [], error };
 }
@@ -502,20 +564,60 @@ export function readTailLines(filePath: string, maxBytes = 256 * 1024): string[]
   } catch { return []; }
 }
 
+export const INJECTED_PROMPT_MARKERS = [
+  '\n[Session Workspace]',
+  '\n[Telegram Artifact Return]',
+  '\n[Artifact Return]',
+];
+
+const COMPACTED_ENVELOPE_START_RE = /^<(?:compacted_history|handover)\b/i;
+const COMPACTED_ENVELOPE_BLOCK_RE = /^<(compacted_history|handover)\b[\s\S]*?<\/\1>\s*(?:\[Continuing this conversation[\s\S]*?\])?\s*/i;
+const CONTINUING_TRAILER_RE = /^\[Continuing this conversation[\s\S]*?\]\s*/i;
+
 export function stripInjectedPrompts(text: string): string {
-  const markers = ['\n[Session Workspace]'];
-  for (const m of markers) {
-    const idx = text.indexOf(m);
-    if (idx >= 0) text = text.slice(0, idx).trim();
+  if (!text) return '';
+  let result = text;
+
+  // Strip leading compacted_history / handover envelopes (including any recursively nested blocks)
+  while (COMPACTED_ENVELOPE_START_RE.test(result.trimStart())) {
+    const trimmed = result.trimStart();
+    const match = COMPACTED_ENVELOPE_BLOCK_RE.exec(trimmed);
+    if (match) {
+      result = trimmed.slice(match[0].length);
+    } else {
+      // If closing tag is missing (e.g. truncated), look for trailer or end of tag
+      const trailerMatch = /\[Continuing this conversation[\s\S]*?\]\s*/i.exec(trimmed);
+      if (trailerMatch) {
+        result = trimmed.slice(trailerMatch.index + trailerMatch[0].length);
+      } else {
+        const tagClose = trimmed.indexOf('>');
+        if (tagClose >= 0) {
+          result = trimmed.slice(tagClose + 1);
+        } else {
+          break;
+        }
+      }
+    }
   }
-  if (text.startsWith('# Context from')) {
+
+  // Strip any standalone leading trailer
+  result = result.replace(CONTINUING_TRAILER_RE, '');
+
+  for (const m of INJECTED_PROMPT_MARKERS) {
+    const idx = result.indexOf(m);
+    if (idx >= 0) result = result.slice(0, idx).trim();
+  }
+
+  if (result.startsWith('# Context from')) {
     const tag = '## My request for Codex:\n';
-    const idx = text.indexOf(tag);
-    if (idx >= 0) return text.slice(idx + tag.length).trim();
+    const idx = result.indexOf(tag);
+    if (idx >= 0) return result.slice(idx + tag.length).trim();
     return '';
   }
-  return text;
+
+  return result.trim();
 }
+
 
 export const SESSION_PREVIEW_IGNORED_USER_PATTERNS = [
   /^\[Request interrupted by user(?: for tool use)?\]$/i,

@@ -15,7 +15,7 @@ import ProfilesSection from '../profiles/ProfilesSection';
 import { AccountsPanel } from './AccountsPanel';
 
 const NATIVE_PROVIDER_VALUE = '__native__';
-const AGENT_ORDER: Agent[] = ['claude', 'codex', 'gemini', 'hermes'];
+const AGENT_ORDER: Agent[] = ['claude', 'codex', 'agy', 'hermes'];
 
 interface ProviderModelInfo {
   id: string;
@@ -75,7 +75,7 @@ function brandIdForNativeSlug(slug: string | undefined | null): string {
   if (s === 'openrouter') return 'openrouter';
   if (s === 'anthropic') return 'anthropic';
   if (s === 'openai') return 'openai';
-  if (s === 'google' || s === 'gemini') return 'google';
+  if (s === 'google' || s === 'gemini' || s === 'agy' || s === 'antigravity') return 'google';
   if (s === 'deepseek') return 'deepseek';
   if (s === 'qwen' || s === 'dashscope') return 'qwen';
   if (s === 'doubao' || s === 'volces' || s === 'volcengine') return 'doubao';
@@ -985,14 +985,14 @@ export function AgentTab() {
         installCommand: undefined,
         selectedModel: null,
         selectedEffort: null,
-        isDefault: snapshot?.defaultAgent === agentId,
+        isDefault: snapshot?.defaultAgent === agentId || (snapshot?.defaultAgent === 'gemini' && agentId === 'agy'),
         models: [],
         usage: null,
       } satisfies AgentRuntimeStatus;
     });
   }, [snapshot]);
 
-  const defaultAgent = snapshot?.defaultAgent || 'codex';
+  const defaultAgent = snapshot?.defaultAgent === 'gemini' ? 'agy' : (snapshot?.defaultAgent || 'codex');
   const defaultAgentStatus = agents.find(agent => agent.agent === defaultAgent) || null;
   const installedAgents = agents.filter(agent => agent.installed);
   const canEditDefaults = installedAgents.length > 0;

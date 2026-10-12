@@ -2,6 +2,7 @@ import claudeLogo from '../assets/brands/claude.png';
 import codexLogo from '../assets/brands/codex.png';
 import feishuLogo from '../assets/brands/feishu.ico';
 import geminiLogo from '../assets/brands/gemini.svg';
+import antigravityLogo from '../assets/brands/antigravity.png';
 import telegramLogo from '../assets/brands/telegram.svg';
 import weixinLogo from '../assets/brands/weixin.svg';
 import slackLogo from '../assets/brands/slack.svg';
@@ -29,6 +30,8 @@ import { cn } from '../utils';
 const brandIcons: Record<string, string> = {
   claude: claudeLogo,
   codex: codexLogo,
+  agy: antigravityLogo,
+  antigravity: antigravityLogo,
   gemini: geminiLogo,
   telegram: telegramLogo,
   feishu: feishuLogo,

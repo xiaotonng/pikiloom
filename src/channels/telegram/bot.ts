@@ -276,6 +276,25 @@ export class TelegramBot extends Bot {
     await ctx.reply(this.renderStartHtml(d), { parseMode: 'HTML' });
   }
 
+  private async cmdNew(ctx: TgContext) {
+    this.resetConversationForChat(ctx.chatId);
+    await ctx.reply('<b>New Session</b>\nSend a message to start a fresh session.', { parseMode: 'HTML' });
+  }
+
+  private async cmdCompact(ctx: TgContext) {
+    const res = await this.compactConversationForChat(ctx.chatId);
+    if (!res.ok) {
+      await ctx.reply(`<b>Compact failed:</b> ${escapeHtml(res.error || 'Unknown error')}`, { parseMode: 'HTML' });
+      return;
+    }
+    await ctx.reply(
+      `<b>Session Compacted</b>\n` +
+      `Compacted <code>${escapeHtml(res.sessionId!.slice(0, 8))}</code> (${res.messagesIncluded}/${res.messagesTotal} messages retained, ~${res.charsIncluded} chars).\n` +
+      `Send a message to start a fresh session with this compacted context.`,
+      { parseMode: 'HTML' },
+    );
+  }
+
   private renderStartHtml(d: StartData): string {
     const lines = [
       `<b>${escapeHtml(d.title)}</b> v${escapeHtml(d.version)}`,
@@ -1207,6 +1226,9 @@ export class TelegramBot extends Bot {
     try {
       switch (cmd) {
         case 'start':    await this.cmdStart(ctx); return;
+        case 'new':
+        case 'clear':    await this.cmdNew(ctx); return;
+        case 'compact':  await this.cmdCompact(ctx); return;
         case 'sessions': await this.cmdSessions(ctx); return;
         case 'digest': await this.cmdDigest(ctx); return;
         case 'agents':   await this.cmdAgents(ctx); return;

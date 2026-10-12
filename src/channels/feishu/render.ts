@@ -13,6 +13,7 @@ import type { StartData, SessionsPageData, AgentsListData, ModelsListData, Skill
 import { summarizePromptForStatus } from '../../bot/commands.js';
 import type { LivePreviewRenderer } from '../telegram/live-preview.js';
 import type { StreamPreviewRenderInput, FooterDecorations } from '../../bot/render-shared.js';
+import { stripInjectedPrompts } from '../../bot/streaming.js';
 import {
   footerStatusSymbol,
   formatFooterParts,
@@ -167,7 +168,7 @@ function renderFeishuQuote(text: string): string {
 
 export function renderSessionTurnMarkdown(userText: string | null | undefined, assistantText: string | null | undefined): string {
   const parts: string[] = [];
-  const user = String(userText || '').trim();
+  const user = stripInjectedPrompts(String(userText || '')).trim();
   const assistant = String(assistantText || '').trim();
   if (user || assistant) parts.push('**Recent Context**');
   if (user) parts.push('**User**', renderFeishuQuote(user));

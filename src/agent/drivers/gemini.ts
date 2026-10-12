@@ -1,6 +1,5 @@
 import { registerDriver, type AgentDriver } from '../driver.js';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { GEMINI_USAGE_TIMEOUTS, SESSION_RUNNING_THRESHOLD_MS } from '../../core/constants.js';
@@ -11,24 +10,27 @@ import {
   type TailMessage, type RichMessage, type MessageBlock,
   type ModelListOpts, type ModelListResult,
   type UsageOpts, type UsageResult, type UsageWindowInfo,
-  run, agentLog, buildStreamPreviewMeta,
-  appendSystemPrompt, pushRecentActivity, firstNonEmptyLine, shortValue, normalizeErrorMessage,
-  sanitizeSessionUserPreviewText, emitSessionIdUpdate,
-  listPikiloomSessions, findPikiloomSession, isPendingSessionId,
+} from '../types.js';
+import {
+  listPikiloomSessions, findPikiloomSession,
   mergeManagedAndNativeSessions, managedRecordToSessionInfo, applyTurnWindow,
-  stripInjectedPrompts, attachAgentImage,
-  roundPercent, emptyUsage, Q,
-} from '../index.js';
+} from '../session.js';
+import {
+  agentLog, isPendingSessionId, shortValue,
+  firstNonEmptyLine, normalizeErrorMessage,
+  stripInjectedPrompts, roundPercent, emptyUsage, Q,
+} from '../utils.js';
+import { attachAgentImage } from '../images.js';
 import { getHome } from '../../core/platform.js';
-
-function hasGeminiFlag(args: string[] | undefined, names: string[]): boolean {
-  if (!args?.length) return false;
-  return args.some(arg => {
-    const trimmed = String(arg || '').trim();
-    if (!trimmed.startsWith('-')) return false;
-    return names.some(name => trimmed === name || trimmed.startsWith(`${name}=`));
-  });
-}
+import {
+  doAgyStream,
+  getAgySessions,
+  getAgySessionTail,
+  getAgySessionMessages,
+  deleteAgyNativeSession,
+  getGoogleQuotaLive,
+  getGoogleQuota,
+} from './agy.js';
 
 export function buildGeminiPromptText(prompt: string, attachments: string[]): string {
   if (!attachments.length) return prompt;
@@ -36,367 +38,19 @@ export function buildGeminiPromptText(prompt: string, attachments: string[]): st
   return prompt ? `${refs}\n\n${prompt}` : refs;
 }
 
-function geminiCmd(o: StreamOpts): string[] {
-  const approvalMode = o.geminiApprovalMode || 'yolo';
-  const sandbox = typeof o.geminiSandbox === 'boolean' ? o.geminiSandbox : false;
-  const args = ['gemini', '--output-format', 'stream-json'];
-  if (o.geminiModel) args.push('--model', o.geminiModel);
-  if (o.sessionId) args.push('--resume', o.sessionId);
-  if (!hasGeminiFlag(o.geminiExtraArgs, ['--approval-mode', '--yolo', '-y'])) {
-    args.push('--approval-mode', approvalMode);
-  }
-  if (!hasGeminiFlag(o.geminiExtraArgs, ['--sandbox', '-s'])) {
-    args.push('--sandbox', String(sandbox));
-  }
-  if (o.geminiExtraArgs?.length) args.push(...o.geminiExtraArgs);
-  const userPrompt = buildGeminiPromptText(o.prompt, o.attachments || []);
-  const promptText = o.geminiSystemInstruction
-    ? appendSystemPrompt(o.geminiSystemInstruction, userPrompt)
-    : userPrompt;
-  args.push('-p', promptText);
-  return args;
-}
+export const doGeminiStream = doAgyStream;
 
-function geminiContextWindowFromModel(model: unknown): number | null {
-  const id = typeof model === 'string' ? model.trim().toLowerCase() : '';
-  if (!id) return null;
-  if (/^(auto-gemini-(2\.5|3)|gemini-(2\.5|3|3\.1)-)/.test(id)) return 1_048_576;
-  return null;
-}
-
-function geminiToolName(value: unknown): string {
-  const name = typeof value === 'string' ? value.trim() : '';
-  return name || 'tool';
-}
-
-function geminiToolLabel(name: string): string {
-  return name
-    .replace(/^mcp_/, '')
-    .replace(/^discovered_tool_/, '')
-    .replace(/_/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim() || 'tool';
-}
-
-function geminiToolSummary(name: unknown, parameters: any): string {
-  const tool = geminiToolName(name);
-  const params = parameters && typeof parameters === 'object' ? parameters : {};
-  switch (tool) {
-    case 'read_file': {
-      const target = shortValue(params.file_path || params.path, 140);
-      return target ? `Read ${target}` : 'Read file';
-    }
-    case 'read_many_files': {
-      const include = shortValue(params.include || params.pattern, 120);
-      return include ? `Read files: ${include}` : 'Read files';
-    }
-    case 'write_file': {
-      const target = shortValue(params.file_path || params.path, 140);
-      return target ? `Write ${target}` : 'Write file';
-    }
-    case 'replace': {
-      const target = shortValue(params.file_path || params.path, 140);
-      return target ? `Edit ${target}` : 'Edit file';
-    }
-    case 'list_directory': {
-      const dir = shortValue(params.dir_path || params.path, 120);
-      return dir ? `List files: ${dir}` : 'List files';
-    }
-    case 'glob': {
-      const pattern = shortValue(params.pattern || params.glob, 120);
-      return pattern ? `Find files: ${pattern}` : 'Find files';
-    }
-    case 'grep_search':
-    case 'search_file_content': {
-      const pattern = shortValue(params.pattern || params.query, 120);
-      return pattern ? `Search text: ${pattern}` : 'Search text';
-    }
-    case 'run_shell_command': {
-      const command = shortValue(params.command, 120);
-      return command ? `Run shell: ${command}` : 'Run shell';
-    }
-    case 'web_fetch': {
-      const target = shortValue(params.url || params.prompt, 120);
-      return target ? `Fetch ${target}` : 'Fetch web page';
-    }
-    case 'google_web_search': {
-      const query = shortValue(params.query, 120);
-      return query ? `Search web: ${query}` : 'Search web';
-    }
-    case 'write_todos': return 'Update todo list';
-    case 'save_memory': return 'Save memory';
-    case 'ask_user': return 'Request user input';
-    case 'activate_skill': {
-      const skill = shortValue(params.name, 80);
-      return skill ? `Activate skill: ${skill}` : 'Activate skill';
-    }
-    case 'get_internal_docs': {
-      const target = shortValue(params.path, 120);
-      return target ? `Read docs: ${target}` : 'Read docs';
-    }
-    case 'enter_plan_mode': return 'Enter plan mode';
-    case 'exit_plan_mode': return 'Exit plan mode';
-    default: {
-      const detail = shortValue(
-        params.file_path
-        || params.path
-        || params.dir_path
-        || params.pattern
-        || params.query
-        || params.command
-        || params.url
-        || params.name,
-        120,
-      );
-      const label = shortValue(geminiToolLabel(tool), 80);
-      return detail ? `Use ${label}: ${detail}` : `Use ${label}`;
-    }
-  }
-}
-
-function geminiToolResultSummary(tool: { name: string; summary: string } | undefined, ev: any): string {
-  const fallbackSummary = geminiToolSummary(
-    tool?.name || ev.tool_name || ev.name || ev.tool,
-    ev.parameters || ev.args || ev.input || {},
-  );
-  const summary = tool?.summary || fallbackSummary;
-  const detail = shortValue(
-    firstNonEmptyLine(
-      normalizeErrorMessage(ev.error)
-      || ev.output
-      || ev.message
-      || '',
-    ),
-    120,
-  );
-  if (ev.status === 'error') return detail ? `${summary} failed: ${detail}` : `${summary} failed`;
-  return detail ? `${summary} -> ${detail}` : `${summary} done`;
-}
-
-function geminiParse(ev: any, s: any) {
-  const t = ev.type || '';
-
-  if (t === 'init') {
-    emitSessionIdUpdate(s, ev.session_id);
-    s.model = ev.model ?? s.model;
-    s.contextWindow = geminiContextWindowFromModel(s.model) ?? s.contextWindow;
-    pushRecentActivity(s.recentActivity, 'Thinking...');
-    s.activity = s.recentActivity.join('\n');
-  }
-
-  if (t === 'message' && ev.role === 'assistant') {
-    if (ev.delta) s.text += ev.content || '';
-    else if (!s.text.trim()) s.text = ev.content || '';
-  }
-
-  if (t === 'tool_use' || t === 'tool_call') {
-    const name = geminiToolName(ev.tool_name || ev.name || ev.tool);
-    const summary = geminiToolSummary(name, ev.parameters || ev.args || ev.input || {});
-    const toolId = String(ev.tool_id || ev.id || '').trim();
-    if (toolId) s.geminiToolsById.set(toolId, { name, summary });
-    pushRecentActivity(s.recentActivity, summary);
-    s.activity = s.recentActivity.join('\n');
-  }
-
-  if (t === 'tool_result') {
-    const toolId = String(ev.tool_id || ev.id || '').trim();
-    const tool = toolId ? s.geminiToolsById.get(toolId) : undefined;
-    pushRecentActivity(s.recentActivity, geminiToolResultSummary(tool, ev));
-    s.activity = s.recentActivity.join('\n');
-  }
-
-  if (t === 'error') {
-    const message = normalizeErrorMessage(ev.message || ev.error) || 'Gemini reported an error';
-    if (ev.severity === 'error') {
-      s.errors = [...(s.errors || []), message];
-    } else {
-      pushRecentActivity(s.recentActivity, message);
-      s.activity = s.recentActivity.join('\n');
-    }
-  }
-
-  if (t === 'result') {
-    emitSessionIdUpdate(s, ev.session_id);
-    if (ev.status === 'error' || ev.status === 'failure') {
-      const message = normalizeErrorMessage(ev.error)
-        || normalizeErrorMessage(ev.errors)
-        || normalizeErrorMessage(ev.message)
-        || `Gemini returned status: ${ev.status}`;
-      s.errors = [message];
-    }
-    s.stopReason = ev.status === 'success' ? 'end_turn' : ev.status;
-    const u = ev.stats;
-    if (u) {
-      s.inputTokens = u.input_tokens ?? u.input ?? s.inputTokens;
-      s.outputTokens = u.output_tokens ?? u.output ?? s.outputTokens;
-      s.cachedInputTokens = u.cached ?? s.cachedInputTokens;
-      if (s.inputTokens != null) s.contextUsedTokens = s.inputTokens;
-    }
-    s.contextWindow = geminiContextWindowFromModel(s.model) ?? s.contextWindow;
-  }
-}
-
-const GEMINI_RETRY_RE = /^Attempt\s+(\d+)\s+failed\s+with\s+status\s+(\d+)/i;
-function geminiParseStderrLine(line: string, s: any) {
-  const m = GEMINI_RETRY_RE.exec(line);
-  if (!m) return;
-  const attempt = m[1];
-  const status = m[2];
-  const reason = status === '429' ? 'rate limit / capacity exhausted'
-    : status === '503' ? 'service unavailable'
-    : `status ${status}`;
-  pushRecentActivity(s.recentActivity, `Retrying after ${reason} (attempt ${attempt})`);
-  s.activity = s.recentActivity.join('\n');
-}
-
-function geminiEffortOverlay(effort: string | null | undefined): Record<string, any> | null {
-  const value = String(effort || '').trim().toLowerCase();
-  if (!value) return null;
-
-  let level3: 'LOW' | 'HIGH';
-  let budget25: number;
-  if (value === 'low' || value === 'minimal') {
-    level3 = 'LOW';
-    budget25 = 512;
-  } else if (value === 'medium') {
-    level3 = 'HIGH';
-    budget25 = 8192;
-  } else {
-    level3 = 'HIGH';
-    budget25 = -1;
-  }
-
-  return {
-    'chat-base-3': {
-      modelConfig: { generateContentConfig: { thinkingConfig: { thinkingLevel: level3 } } },
-    },
-    'chat-base-2.5': {
-      modelConfig: { generateContentConfig: { thinkingConfig: { thinkingBudget: budget25 } } },
-    },
-  };
-}
-
-function deepMergeAgents(base: any, overlay: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = base && typeof base === 'object' && !Array.isArray(base) ? { ...base } : {};
-  for (const key of Object.keys(overlay)) {
-    out[key] = mergePlainObjects(out[key], overlay[key]);
-  }
-  return out;
-}
-
-function mergePlainObjects(a: any, b: any): any {
-  if (b === undefined) return a;
-  if (a === undefined || a === null || typeof a !== 'object' || Array.isArray(a)) return b;
-  if (typeof b !== 'object' || Array.isArray(b)) return b;
-  const out: Record<string, any> = { ...a };
-  for (const key of Object.keys(b)) out[key] = mergePlainObjects(a[key], b[key]);
-  return out;
-}
-
-interface GeminiHomeOverlay {
-  homeDir: string;
-  cleanup: () => void;
-}
-
-interface GeminiOverlayOpts {
-  effort: string | null | undefined;
-  hasAttachments: boolean;
-}
-
-function prepareGeminiHomeOverlay(opts: GeminiOverlayOpts): GeminiHomeOverlay | null {
-  const effortOverrides = geminiEffortOverlay(opts.effort);
-  const needsFileFilterBypass = opts.hasAttachments;
-  if (!effortOverrides && !needsFileFilterBypass) return null;
-
-  const home = getHome();
-  if (!home) return null;
-  const userGeminiDir = path.join(home, '.gemini');
-  if (!fs.existsSync(userGeminiDir)) return null;
-
-  let overlayHome: string;
-  try {
-    overlayHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pikiloom-gemini-'));
-  } catch {
-    return null;
-  }
-  const overlayGeminiDir = path.join(overlayHome, '.gemini');
-  try { fs.mkdirSync(overlayGeminiDir, { recursive: true }); } catch {
-    try { fs.rmSync(overlayHome, { recursive: true, force: true }); } catch {}
-    return null;
-  }
-
-  try {
-    for (const entry of fs.readdirSync(userGeminiDir, { withFileTypes: true })) {
-      if (entry.name === 'settings.json') continue;
-      try {
-        fs.symlinkSync(path.join(userGeminiDir, entry.name), path.join(overlayGeminiDir, entry.name));
-      } catch {  }
-    }
-  } catch {  }
-
-  let userSettings: any = {};
-  const userSettingsPath = path.join(userGeminiDir, 'settings.json');
-  try {
-    if (fs.existsSync(userSettingsPath)) {
-      userSettings = JSON.parse(fs.readFileSync(userSettingsPath, 'utf-8'));
-    }
-  } catch {  }
-
-  const merged: Record<string, any> = { ...userSettings };
-  if (effortOverrides) {
-    merged.agents = deepMergeAgents(userSettings.agents, effortOverrides);
-  }
-  if (needsFileFilterBypass) {
-    const baseContext = userSettings.context && typeof userSettings.context === 'object' && !Array.isArray(userSettings.context)
-      ? userSettings.context : {};
-    const baseFileFiltering = baseContext.fileFiltering && typeof baseContext.fileFiltering === 'object' && !Array.isArray(baseContext.fileFiltering)
-      ? baseContext.fileFiltering : {};
-    merged.context = {
-      ...baseContext,
-      fileFiltering: {
-        ...baseFileFiltering,
-        respectGitIgnore: false,
-        respectGeminiIgnore: false,
-      },
-    };
-  }
-
-  try {
-    fs.writeFileSync(path.join(overlayGeminiDir, 'settings.json'), JSON.stringify(merged, null, 2));
-  } catch {
-    try { fs.rmSync(overlayHome, { recursive: true, force: true }); } catch {}
-    return null;
-  }
-
-  return {
-    homeDir: overlayHome,
-    cleanup: () => { try { fs.rmSync(overlayHome, { recursive: true, force: true }); } catch {} },
-  };
-}
-
-export async function doGeminiStream(opts: StreamOpts): Promise<StreamResult> {
-  const overlay = prepareGeminiHomeOverlay({
-    effort: opts.thinkingEffort,
-    hasAttachments: (opts.attachments?.length ?? 0) > 0,
-  });
-  const extraEnv = overlay
-    ? { ...(opts.extraEnv || {}), GEMINI_CLI_HOME: overlay.homeDir }
-    : opts.extraEnv;
-  const streamOpts = { ...opts, _stdinOverride: '', extraEnv };
-  try {
-    return await run(geminiCmd(opts), streamOpts, geminiParse, geminiParseStderrLine);
-  } finally {
-    overlay?.cleanup();
-  }
-}
+// ---------------------------------------------------------------------------
+// Legacy Gemini Project & Chat Paths
+// ---------------------------------------------------------------------------
 
 function geminiProjectName(workdir: string): string | null {
   const home = getHome();
   if (!home) return null;
   const projectsPath = path.join(home, '.gemini', 'projects.json');
   try {
-    const data = JSON.parse(fs.readFileSync(projectsPath, 'utf8'));
-    const projects = data?.projects;
+    const raw = fs.readFileSync(projectsPath, 'utf8');
+    const { projects } = JSON.parse(raw);
     if (!projects || typeof projects !== 'object') return null;
     const resolved = path.resolve(workdir);
     if (projects[resolved]) return projects[resolved];
@@ -524,13 +178,11 @@ function loadGeminiSessionData(filePath: string): any {
     let data: any = {};
     const messages: any[] = [];
     for (const line of lines) {
-      if (!line.trim() || line[0] !== '{') continue;
+      if (!line.trim()) continue;
       try {
         const obj = JSON.parse(line);
         if (obj.sessionId && !data.sessionId) {
           data = { ...obj };
-        } else if (obj.$set) {
-          if (obj.$set.lastUpdated) data.lastUpdated = obj.$set.lastUpdated;
         } else if (obj.type === 'user' || obj.type === 'gemini' || obj.type === 'model' || obj.type === 'assistant') {
           messages.push(obj);
         }
@@ -546,12 +198,12 @@ function loadGeminiSessionData(filePath: string): any {
 interface GeminiNativeContent {
   sessionId: string;
   title: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-  lastUpdated: string | null;
   lastQuestion: string | null;
   lastAnswer: string | null;
-  lastMessageText: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  mtimeMs: number;
+  model: string | null;
   numTurns: number | null;
 }
 
@@ -567,34 +219,39 @@ function readNativeGeminiContent(filePath: string): GeminiNativeContent | null {
   let title: string | null = null;
   let lastQuestion: string | null = null;
   let lastAnswer: string | null = null;
-  let lastMessageText: string | null = null;
+  let numTurns = 0;
+
   for (const msg of messages) {
-    if (msg.type === 'user') {
-      const text = sanitizeSessionUserPreviewText(flattenGeminiUserText(extractGeminiText(msg.content)));
-      if (!title) title = normalizeGeminiSessionTitle(text);
-      if (text) {
-        lastQuestion = shortValue(text, 500);
-        lastMessageText = shortValue(text, 500);
+    const isUser = msg.type === 'user';
+    const isAssistant = msg.type === 'gemini' || msg.type === 'model' || msg.type === 'assistant';
+    const text = extractGeminiText(msg.content);
+    if (!text) continue;
+
+    if (isUser) {
+      const userText = flattenGeminiUserText(text);
+      if (userText) {
+        if (!title) title = userText;
+        lastQuestion = userText;
+        numTurns++;
       }
-    } else if (msg.type === 'model' || msg.type === 'assistant' || msg.type === 'gemini') {
-      const text = extractGeminiText(msg.content);
-      if (text) {
-        lastAnswer = shortValue(text, 500);
-        lastMessageText = shortValue(text, 500);
-      }
+    } else if (isAssistant) {
+      lastAnswer = shortValue(firstNonEmptyLine(text), 140) || null;
     }
   }
-  const numTurns = messages.filter((m: any) => m.type === 'user' && flattenGeminiUserText(extractGeminiText(m.content))).length;
+
+  let stat: fs.Stats | null = null;
+  try { stat = fs.statSync(filePath); } catch {  }
+
   return {
-    sessionId: String(data.sessionId),
-    title,
-    createdAt: data.startTime || data.createdAt || null,
-    updatedAt: data.lastUpdated || data.startTime || data.createdAt || null,
-    lastUpdated: data.lastUpdated || null,
+    sessionId: data.sessionId,
+    title: normalizeGeminiSessionTitle(title),
     lastQuestion,
     lastAnswer,
-    lastMessageText,
-    numTurns: numTurns || null,
+    createdAt: data.startTime || (stat ? stat.birthtime.toISOString() : null),
+    updatedAt: data.lastUpdated || (stat ? stat.mtime.toISOString() : null),
+    mtimeMs: stat ? stat.mtimeMs : 0,
+    model: data.model || null,
+    numTurns: numTurns > 0 ? numTurns : null,
   };
 }
 
@@ -606,10 +263,12 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
   try { entries = fs.readdirSync(chatsDir, { withFileTypes: true }); } catch { return []; }
 
   const sessionsById = new Map<string, SessionInfo>();
+
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.startsWith('session-')) continue;
     if (!entry.name.endsWith('.json') && !entry.name.endsWith('.jsonl')) continue;
     const filePath = path.join(chatsDir, entry.name);
+
     let stat: fs.Stats;
     try { stat = fs.statSync(filePath); } catch { continue; }
 
@@ -618,6 +277,7 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
       cached = { mtimeMs: stat.mtimeMs, size: stat.size, content: readNativeGeminiContent(filePath) };
       nativeGeminiContentCache.set(filePath, cached);
     }
+
     const content = cached.content;
     if (!content) continue;
 
@@ -625,15 +285,18 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
     if (existing && content.updatedAt && existing.runUpdatedAt && Date.parse(content.updatedAt) <= Date.parse(existing.runUpdatedAt)) {
       continue;
     }
-    const running = content.lastUpdated ? Date.now() - Date.parse(content.lastUpdated) < SESSION_RUNNING_THRESHOLD_MS : false;
+
+    const running = content.mtimeMs > 0 && (Date.now() - content.mtimeMs) < SESSION_RUNNING_THRESHOLD_MS;
     sessionsById.set(content.sessionId, {
       sessionId: content.sessionId,
       agent: 'gemini',
-      workdir,
+      workdir: path.resolve(workdir),
       workspacePath: null,
-      model: null,
       createdAt: content.createdAt,
       title: content.title,
+      lastQuestion: content.lastQuestion,
+      lastAnswer: content.lastAnswer,
+      lastMessageText: content.lastQuestion,
       running,
       runState: running ? 'running' : 'completed',
       runDetail: null,
@@ -641,15 +304,14 @@ function getNativeGeminiSessionsFromFiles(workdir: string): SessionInfo[] {
       classification: null,
       userStatus: null,
       userNote: null,
-      lastQuestion: content.lastQuestion,
-      lastAnswer: content.lastAnswer,
-      lastMessageText: content.lastMessageText,
       migratedFrom: null,
       migratedTo: null,
       linkedSessions: [],
+      model: content.model,
       numTurns: content.numTurns,
     });
   }
+
   return [...sessionsById.values()];
 }
 
@@ -657,261 +319,146 @@ function getNativeGeminiSessions(workdir: string): SessionInfo[] {
   return getNativeGeminiSessionsFromFiles(workdir);
 }
 
-function getGeminiSessions(workdir: string, limit?: number): SessionListResult {
+export function getGeminiSessions(workdir: string, limit?: number): SessionListResult {
   const resolvedWorkdir = path.resolve(workdir);
   const pikiloomSessions = listPikiloomSessions(resolvedWorkdir, 'gemini').map(managedRecordToSessionInfo);
   const nativeSessions = getNativeGeminiSessions(resolvedWorkdir);
   const merged = mergeManagedAndNativeSessions(pikiloomSessions, nativeSessions);
   const sessions = typeof limit === 'number' ? merged.slice(0, limit) : merged;
-  const projectName = geminiProjectName(resolvedWorkdir);
-  const chatsDir = projectName ? geminiChatsDir(resolvedWorkdir) || '' : '';
-  agentLog(
-    `[sessions:gemini] workdir=${resolvedWorkdir} projectName=${projectName || '(none)'} chatsDir=${chatsDir || '(none)'} ` +
-    `chatsDirExists=${chatsDir ? fs.existsSync(chatsDir) : false} pikiloom=${pikiloomSessions.length} native=${nativeSessions.length} merged=${sessions.length}`
-  );
   return { ok: true, sessions, error: null };
 }
 
-function getGeminiSessionTail(opts: SessionTailOpts): SessionTailResult {
-  const limit = opts.limit ?? 4;
+export function getGeminiSessionTail(opts: SessionTailOpts): SessionTailResult {
   const filePath = findGeminiSessionFile(opts.workdir, opts.sessionId);
   if (!filePath) return { ok: false, messages: [], error: 'Session file not found' };
 
   try {
     const data = loadGeminiSessionData(filePath);
-    const messages = Array.isArray(data?.messages) ? data.messages : [];
-    const allMsgs: { role: 'user' | 'assistant'; text: string }[] = [];
-    for (const msg of messages) {
-      const type = typeof msg?.type === 'string' ? msg.type.trim().toLowerCase() : '';
-      const role = type === 'user' ? 'user' : (type === 'gemini' || type === 'model' || type === 'assistant') ? 'assistant' : null;
-      if (!role) continue;
-      const rawText = extractGeminiText(msg?.content);
-      const text = role === 'user' ? dropGeminiFileRefs(cleanGeminiUserText(rawText)) : rawText;
-      if (text) allMsgs.push({ role, text });
+    if (!data?.messages || !Array.isArray(data.messages)) {
+      return { ok: true, messages: [], error: null };
     }
-    return { ok: true, messages: allMsgs.slice(-limit), error: null };
+
+    const messages: TailMessage[] = [];
+    for (const msg of data.messages) {
+      const isUser = msg.type === 'user';
+      const isGemini = msg.type === 'gemini' || msg.type === 'model' || msg.type === 'assistant';
+      if (!isUser && !isGemini) continue;
+
+      const text = extractGeminiText(msg.content);
+      if (!text) continue;
+
+      if (isUser) {
+        const cleaned = cleanGeminiUserText(text);
+        if (cleaned) messages.push({ role: 'user', text: cleaned });
+      } else {
+        messages.push({ role: 'assistant', text });
+      }
+    }
+
+    const { messages: sliced } = applyTurnWindow(messages, { turnLimit: opts.limit ?? 4 });
+    return { ok: true, messages: sliced, error: null };
   } catch (e: any) {
     return { ok: false, messages: [], error: e.message };
   }
 }
 
-function getGeminiSessionMessages(opts: SessionMessagesOpts): SessionMessagesResult {
+export function getGeminiSessionMessages(opts: SessionMessagesOpts): SessionMessagesResult {
   const filePath = findGeminiSessionFile(opts.workdir, opts.sessionId);
   if (!filePath) return { ok: false, messages: [], totalTurns: 0, error: 'Session file not found' };
 
   try {
     const data = loadGeminiSessionData(filePath);
-    const messages = Array.isArray(data?.messages) ? data.messages : [];
-    const allMsgs: TailMessage[] = [];
-    const richMsgs: RichMessage[] = [];
-    for (const msg of messages) {
-      const type = typeof msg?.type === 'string' ? msg.type.trim().toLowerCase() : '';
-      const role = type === 'user' ? 'user' : (type === 'gemini' || type === 'model' || type === 'assistant') ? 'assistant' : null;
-      if (!role) continue;
-      const rawText = extractGeminiText(msg?.content);
-      if (role === 'user') {
-        const { text, blocks: imageBlocks } = buildGeminiUserMessageContent(rawText, opts.workdir);
+    if (!data?.messages || !Array.isArray(data.messages)) {
+      return { ok: true, messages: [], totalTurns: 0, error: null };
+    }
+
+    const messages: TailMessage[] = [];
+    const richMessages: RichMessage[] = [];
+    for (const msg of data.messages) {
+      const isUser = msg.type === 'user';
+      const isGemini = msg.type === 'gemini' || msg.type === 'model' || msg.type === 'assistant';
+      if (!isUser && !isGemini) continue;
+
+      const raw = extractGeminiText(msg.content);
+      if (!raw) continue;
+
+      if (isUser) {
+        const { text, blocks: imageBlocks } = buildGeminiUserMessageContent(raw, opts.workdir);
         if (!text && !imageBlocks.length) continue;
-        allMsgs.push({ role, text });
+        messages.push({ role: 'user', text });
         const blocks: MessageBlock[] = [];
         if (text) blocks.push({ type: 'text', content: text });
         blocks.push(...imageBlocks);
-        richMsgs.push({ role, text, blocks });
+        richMessages.push({ role: 'user', text, blocks });
       } else {
-        if (!rawText) continue;
-        allMsgs.push({ role, text: rawText });
-        richMsgs.push({ role, text: rawText, blocks: [{ type: 'text', content: rawText }] });
+        messages.push({ role: 'assistant', text: raw });
+        richMessages.push({ role: 'assistant', text: raw, blocks: [{ type: 'text', content: raw }] });
       }
     }
-    return applyTurnWindow(allMsgs, opts, opts.rich ? richMsgs : undefined);
+
+    return applyTurnWindow(messages, opts, richMessages);
   } catch (e: any) {
     return { ok: false, messages: [], totalTurns: 0, error: e.message };
   }
 }
 
+export const getGeminiUsageLive = (agent: 'gemini' | 'agy' = 'gemini') => getGoogleQuotaLive(agent);
+export const getGeminiUsage = (agent: 'gemini' | 'agy' = 'gemini') => getGoogleQuota(agent);
+
 const GEMINI_MODELS = [
-  { id: 'auto-gemini-3', alias: 'auto-3' },
-  { id: 'auto-gemini-2.5', alias: 'auto' },
-  { id: 'gemini-3.1-pro-preview', alias: '3.1-pro' },
-  { id: 'gemini-3-pro-preview', alias: '3-pro' },
-  { id: 'gemini-3-flash-preview', alias: '3-flash' },
-  { id: 'gemini-2.5-pro', alias: 'pro' },
-  { id: 'gemini-2.5-flash', alias: 'flash' },
-  { id: 'gemini-2.5-flash-lite', alias: 'flash-lite' },
+  { id: 'gemini-3.8-flash-high', alias: '3.8-flash' },
+  { id: 'gemini-3.8-flash-medium', alias: null },
+  { id: 'gemini-3.8-flash-low', alias: null },
+  { id: 'gemini-3.7-flash-high', alias: '3.7-flash' },
+  { id: 'gemini-3.7-flash-medium', alias: null },
+  { id: 'gemini-3.7-flash-low', alias: null },
+  { id: 'gemini-3.6-flash-high', alias: '3.6-flash' },
+  { id: 'gemini-3.6-flash-medium', alias: null },
+  { id: 'gemini-3.6-flash-low', alias: null },
+  { id: 'gemini-3.1-pro-high', alias: '3.1-pro' },
+  { id: 'gemini-3.1-pro-low', alias: null },
+  { id: 'claude-sonnet-4-6', alias: 'sonnet-4.6' },
+  { id: 'claude-opus-4-6-thinking', alias: 'opus-4.6' },
+  { id: 'gpt-oss-120b-medium', alias: 'gpt-oss-120b' },
 ];
 
-const GEMINI_USAGE_TIMEOUT_MS = GEMINI_USAGE_TIMEOUTS.request;
-const GEMINI_USAGE_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota';
-let lastGeminiUsage: UsageResult | null = null;
-
-function cachedGeminiUsage(error: string): UsageResult {
-  return lastGeminiUsage?.ok ? lastGeminiUsage : emptyUsage('gemini', error);
-}
-
-function getGeminiOAuthToken(): string | null {
-  const home = getHome();
-  if (!home) return null;
-  const credsPath = path.join(home, '.gemini', 'oauth_creds.json');
-  try {
-    const raw = fs.readFileSync(credsPath, 'utf-8').trim();
-    if (!raw || raw[0] !== '{') return null;
-    const parsed = JSON.parse(raw);
-    const token = typeof parsed?.access_token === 'string' ? parsed.access_token.trim() : '';
-    return token || null;
-  } catch {
-    return null;
-  }
-}
-
-function geminiUsageLabel(modelId: unknown): string {
-  const raw = typeof modelId === 'string' ? modelId.trim() : '';
-  const lower = raw.toLowerCase();
-  if (!lower) return 'Gemini';
-  if (lower.includes('flash-lite')) return 'Flash Lite';
-  if (lower.includes('flash')) return 'Flash';
-  if (lower.includes('pro')) return 'Pro';
-  return raw
-    .replace(/^gemini-/i, '')
-    .replace(/[-_]+/g, ' ')
-    .trim() || 'Gemini';
-}
-
-function geminiUsageStatus(usedPercent: number | null): string | null {
-  if (usedPercent == null) return null;
-  if (usedPercent >= 100) return 'limit_reached';
-  if (usedPercent >= 80) return 'warning';
-  return 'allowed';
-}
-
-function geminiResetAt(value: unknown): string | null {
-  const raw = typeof value === 'string' ? value.trim() : '';
-  if (!raw) return null;
-  const ms = Date.parse(raw);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
-
-function geminiResetAtMs(value: string | null): number {
-  if (!value) return Number.POSITIVE_INFINITY;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
-}
-
-function geminiUsageWindowSort(label: string): number {
-  switch (label) {
-    case 'Pro': return 0;
-    case 'Flash': return 1;
-    case 'Flash Lite': return 2;
-    default: return 10;
-  }
-}
-
-function parseGeminiUsageResponse(data: any, capturedAt: string): UsageResult | null {
-  const buckets = Array.isArray(data?.buckets) ? data.buckets : [];
-  const grouped = new Map<string, { label: string; remainingFraction: number; resetAt: string | null }>();
-
-  for (const bucket of buckets) {
-    const remainingFraction = Number(bucket?.remainingFraction);
-    if (!Number.isFinite(remainingFraction)) continue;
-    const label = geminiUsageLabel(bucket?.modelId);
-    const resetAt = geminiResetAt(bucket?.resetTime);
-    const prev = grouped.get(label);
-    if (!prev
-      || remainingFraction < prev.remainingFraction
-      || (remainingFraction === prev.remainingFraction && geminiResetAtMs(resetAt) < geminiResetAtMs(prev.resetAt))) {
-      grouped.set(label, { label, remainingFraction, resetAt });
-    }
-  }
-
-  const windows: UsageWindowInfo[] = [...grouped.values()]
-    .map(entry => {
-      const usedPercent = roundPercent((1 - entry.remainingFraction) * 100);
-      const remainingPercent = roundPercent(entry.remainingFraction * 100);
-      let resetAfterSeconds: number | null = null;
-      if (entry.resetAt) {
-        const resetAtMs = Date.parse(entry.resetAt);
-        if (Number.isFinite(resetAtMs)) resetAfterSeconds = Math.max(0, Math.round((resetAtMs - Date.now()) / 1000));
-      }
-      return {
-        label: entry.label,
-        usedPercent,
-        remainingPercent,
-        resetAt: entry.resetAt,
-        resetAfterSeconds,
-        status: geminiUsageStatus(usedPercent),
-      };
-    })
-    .sort((a, b) => {
-      const byLabel = geminiUsageWindowSort(a.label) - geminiUsageWindowSort(b.label);
-      return byLabel || a.label.localeCompare(b.label);
-    });
-
-  if (!windows.length) return null;
-
-  const status = windows.some(window => window.status === 'limit_reached') ? 'limit_reached'
-    : windows.some(window => window.status === 'warning') ? 'warning'
-    : 'allowed';
-
-  return { ok: true, agent: 'gemini', source: 'quota-api', capturedAt, status, windows, error: null };
-}
-
-function geminiUsageError(status: number, bodyText: string): UsageResult {
-  let detail = '';
-  const trimmed = String(bodyText || '').trim();
-  if (trimmed && trimmed[0] === '{') {
-    try {
-      const parsed = JSON.parse(trimmed);
-      detail = normalizeErrorMessage(parsed?.error?.message)
-        || normalizeErrorMessage(parsed?.error)
-        || normalizeErrorMessage(parsed?.message)
-        || '';
-    } catch {}
-  }
-  return cachedGeminiUsage(`HTTP ${status}${detail ? `: ${detail}` : ''}`);
-}
-
-async function getGeminiUsageLive(): Promise<UsageResult> {
-  const token = getGeminiOAuthToken();
-  if (!token) return cachedGeminiUsage('Gemini OAuth token not found.');
-
-  try {
-    const raw = execSync(
-      `curl -sS --max-time ${Math.ceil(GEMINI_USAGE_TIMEOUT_MS / 1000)} -w '\\n%{http_code}' -H ${Q(`Authorization: Bearer ${token}`)} -H 'Content-Type: application/json' -d '{}' ${Q(GEMINI_USAGE_URL)}`,
-      { encoding: 'utf-8', timeout: GEMINI_USAGE_TIMEOUT_MS + GEMINI_USAGE_TIMEOUTS.execSyncBuffer },
-    );
-    const trimmed = raw.trimEnd();
-    const sep = trimmed.lastIndexOf('\n');
-    const bodyText = sep >= 0 ? trimmed.slice(0, sep) : '';
-    const status = Number(sep >= 0 ? trimmed.slice(sep + 1).trim() : '');
-    if (!Number.isFinite(status)) return cachedGeminiUsage('Gemini quota query returned an invalid HTTP status.');
-    if (status < 200 || status >= 300) return geminiUsageError(status, bodyText);
-    if (!bodyText.trim() || bodyText.trim()[0] !== '{') return cachedGeminiUsage('Gemini quota query returned an invalid response.');
-    const usage = parseGeminiUsageResponse(JSON.parse(bodyText), new Date().toISOString())
-      || cachedGeminiUsage('No Gemini quota buckets returned.');
-    if (usage.ok) lastGeminiUsage = usage;
-    return usage;
-  } catch (err: any) {
-    const detail = normalizeErrorMessage(err?.message || err) || 'Gemini usage query failed.';
-    return cachedGeminiUsage(detail);
-  }
-}
-
-class GeminiDriver implements AgentDriver {
+export class GeminiDriver implements AgentDriver {
   readonly id = 'gemini';
-  readonly cmd = 'gemini';
+  readonly cmd = 'agy';
   readonly thinkLabel = 'Thinking';
+  readonly hidden = true;
   readonly acceptedProviderKinds = ['google'] as const;
 
-  async doStream(opts: StreamOpts): Promise<StreamResult> { return doGeminiStream(opts); }
+  async doStream(opts: StreamOpts): Promise<StreamResult> {
+    return doAgyStream({
+      ...opts,
+      agyModel: opts.agyModel || opts.geminiModel,
+      agyReasoningEffort: opts.agyReasoningEffort || opts.geminiReasoningEffort,
+      agyExtraArgs: opts.agyExtraArgs || opts.geminiExtraArgs,
+    });
+  }
 
   async getSessions(workdir: string, limit?: number): Promise<SessionListResult> {
+    const agyRes = await getAgySessions(workdir, limit);
+    if (agyRes.ok && agyRes.sessions.length > 0) {
+      return agyRes;
+    }
     return getGeminiSessions(workdir, limit);
   }
 
   async getSessionTail(opts: SessionTailOpts): Promise<SessionTailResult> {
+    const agyRes = await getAgySessionTail(opts);
+    if (agyRes.ok && agyRes.messages.length > 0) {
+      return agyRes;
+    }
     return getGeminiSessionTail(opts);
   }
 
   async getSessionMessages(opts: SessionMessagesOpts): Promise<SessionMessagesResult> {
+    const agyRes = await getAgySessionMessages(opts);
+    if (agyRes.ok && agyRes.messages.length > 0) {
+      return agyRes;
+    }
     return getGeminiSessionMessages(opts);
   }
 
@@ -920,17 +467,20 @@ class GeminiDriver implements AgentDriver {
   }
 
   getUsage(_opts: UsageOpts): UsageResult {
-    return cachedGeminiUsage('No recent Gemini usage data found.');
+    return getGeminiUsage();
   }
 
   async getUsageLive(_opts: UsageOpts): Promise<UsageResult> {
-    return getGeminiUsageLive();
+    return getGeminiUsageLive('gemini');
   }
 
   async deleteNativeSession(workdir: string, sessionId: string): Promise<string[]> {
+    const deleted = await deleteAgyNativeSession(workdir, sessionId);
     const file = findGeminiSessionFile(workdir, sessionId);
-    if (!file) return [];
-    try { fs.rmSync(file, { force: true }); return [file]; } catch { return []; }
+    if (file) {
+      try { fs.rmSync(file, { force: true }); deleted.push(file); } catch {}
+    }
+    return deleted;
   }
 
   shutdown() {}

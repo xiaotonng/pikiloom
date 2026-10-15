@@ -38,6 +38,7 @@ function brandIdForProvider(p: { kind: ProviderKind; baseURL: string }): string 
   if ((host.startsWith('127.0.0.1') || host.startsWith('localhost')) && port === '11434') return 'ollama';
   if ((host.startsWith('127.0.0.1') || host.startsWith('localhost')) && port === '8080') return 'mlx';
   if (host.includes('openrouter')) return 'openrouter';
+  if (host.includes('requesty')) return 'requesty';
   if (host.includes('anthropic')) return 'anthropic';
   if (host.includes('deepseek')) return 'deepseek';
   if (host.includes('googleapis') || host.includes('vertex')) return 'google';

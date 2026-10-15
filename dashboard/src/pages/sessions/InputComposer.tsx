@@ -33,6 +33,7 @@ const EMPTY_ACTIVE_PROFILES: ModelLayer['activeProfiles'] = {};
 function brandIdForProvider(p: { kind: string; baseURL: string }): string {
   const host = (() => { try { return new URL(p.baseURL).host.toLowerCase(); } catch { return ''; } })();
   if (host.includes('openrouter')) return 'openrouter';
+  if (host.includes('requesty')) return 'requesty';
   if (host.includes('anthropic')) return 'anthropic';
   if (host.includes('deepseek')) return 'deepseek';
   if (host.includes('googleapis') || host.includes('vertex')) return 'google';

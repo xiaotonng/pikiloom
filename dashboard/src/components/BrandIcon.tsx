@@ -15,6 +15,7 @@ import windsurfLogo from '../assets/brands/windsurf.svg';
 import finderLogo from '../assets/brands/finder.svg';
 import hermesLogo from '../assets/brands/hermes.png';
 import openrouterLogo from '../assets/brands/openrouter.ico';
+import requestyLogo from '../assets/brands/requesty.svg';
 import anthropicLogo from '../assets/brands/anthropic.ico';
 import deepseekLogo from '../assets/brands/deepseek.ico';
 import qwenLogo from '../assets/brands/qwen.png';
@@ -44,6 +45,7 @@ const brandIcons: Record<string, string> = {
   finder: finderLogo,
   hermes: hermesLogo,
   openrouter: openrouterLogo,
+  requesty: requestyLogo,
   anthropic: anthropicLogo,
   deepseek: deepseekLogo,
   google: geminiLogo,

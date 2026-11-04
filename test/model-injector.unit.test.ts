@@ -84,6 +84,13 @@ describe('resolveAgentInjection — Claude BYOK ANTHROPIC_BASE_URL', () => {
     expect(inj.env.ANTHROPIC_BASE_URL).toBe('https://openrouter.ai/api');
   });
 
+  it('strips /v1 for Requesty so Claude talks to its native /v1/messages', async () => {
+    const inj = await bindClaude('openai-compatible', 'https://router.requesty.ai/v1', 'anthropic/claude-sonnet-4-5');
+    expect(inj.env.ANTHROPIC_BASE_URL).toBe('https://router.requesty.ai');
+    expect(inj.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-test-key');
+    expect(inj.modelOverride).toBe('anthropic/claude-sonnet-4-5');
+  });
+
   it('routes 豆包/Ark (OpenAI-only, no native /v1/messages) through the Anthropic↔Chat bridge', async () => {
     const inj = await bindClaude('openai-compatible', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-1-pro-260628');
     const m = inj.env.ANTHROPIC_BASE_URL.match(/^http:\/\/127\.0\.0\.1:\d+\/u\/([^/]+)$/);
@@ -159,6 +166,16 @@ describe('resolveAgentInjection — Codex routing (Responses-only)', () => {
     expect(inj.env.OPENROUTER_API_KEY).toBe('sk-test-key');
     expect(ovr.some(o => o.includes('127.0.0.1'))).toBe(false);
     expect(ovr.some(o => o.includes('wire_api'))).toBe(false);
+  });
+
+  it('points codex straight at a Responses-native provider (Requesty)', async () => {
+    const inj = await bindCodex('openai-compatible', 'Requesty', 'https://router.requesty.ai/v1', 'openai/gpt-4o-mini');
+    const ovr = overrides(inj);
+    expect(ovr).toContain('model_provider="requesty"');
+    expect(ovr).toContain('model_providers.requesty.base_url="https://router.requesty.ai/v1"');
+    expect(ovr).toContain('model_providers.requesty.env_key="REQUESTY_API_KEY"');
+    expect(inj.env.REQUESTY_API_KEY).toBe('sk-test-key');
+    expect(ovr.some(o => o.includes('127.0.0.1'))).toBe(false);
   });
 
   it('routes 豆包/Ark codex through the bridge (its native Responses rejects codex namespace/web_search tool types)', async () => {

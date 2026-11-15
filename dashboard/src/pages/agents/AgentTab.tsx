@@ -73,6 +73,7 @@ function isNativeConfigExternal(agent: Agent): boolean {
 function brandIdForNativeSlug(slug: string | undefined | null): string {
   const s = (slug || '').toLowerCase().trim();
   if (s === 'openrouter') return 'openrouter';
+  if (s === 'requesty') return 'requesty';
   if (s === 'anthropic') return 'anthropic';
   if (s === 'openai') return 'openai';
   if (s === 'google' || s === 'gemini') return 'google';
@@ -97,6 +98,7 @@ interface BoundProfileInfo {
 function brandIdForProvider(p: { kind: string; baseURL: string }): string {
   const host = (() => { try { return new URL(p.baseURL).host.toLowerCase(); } catch { return ''; } })();
   if (host.includes('openrouter')) return 'openrouter';
+  if (host.includes('requesty')) return 'requesty';
   if (host.includes('anthropic')) return 'anthropic';
   if (host.includes('deepseek')) return 'deepseek';
   if (host.includes('googleapis') || host.includes('vertex')) return 'google';

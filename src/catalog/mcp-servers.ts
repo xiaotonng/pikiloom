@@ -267,6 +267,17 @@ export const MCP_SERVERS: RecommendedMcpServer[] = [
     homepage: 'https://docs.stripe.com/mcp',
   },
   {
+    id: 'parallel-search',
+    name: 'Parallel Search',
+    description: 'Web search and page fetching, free for light use with no API key',
+    descriptionZh: '网页搜索与页面内容提取，轻量使用免费，无需 API 密钥',
+    category: 'search',
+    recommendedScope: 'global',
+    transport: { type: 'http', url: 'https://search.parallel.ai/mcp' },
+    auth: { type: 'none' },
+    homepage: 'https://docs.parallel.ai/integrations/mcp/search-mcp',
+  },
+  {
     id: 'brave-search',
     name: 'Brave Search',
     description: 'Web and local search via Brave Search API',
